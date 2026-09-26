@@ -875,3 +875,60 @@ fn folder_template_context_has_null_commit() {
     let document = output_document(&output, 4, &validator);
     assert_eq!(document["context"]["commit"], Value::Null, "{document}");
 }
+#[test]
+fn optional_select_enum_lists_only_its_options() {
+    let folder = tempfile::tempdir().unwrap();
+    fs::create_dir(folder.path().join("template")).unwrap();
+    fs::write(
+        folder.path().join("template.yml"),
+        "name: sample\ninterview:\n  - { id: optional, type: select, prompt: Optional?, options: [one, two] }\n  - { id: needed, type: select, prompt: Needed?, options: [one, two], required: true }\n",
+    )
+    .unwrap();
+    let template = Template::load(folder.path()).unwrap();
+    let Interview::Asking(pending) = Interview::start(
+        &template,
+        Seed {
+            now: "2026-01-02T03:04:05+00:00[UTC]".parse().unwrap(),
+            defaults: Default::default(),
+        },
+    )
+    .unwrap() else {
+        panic!("expected questions")
+    };
+    let batch = protocol::batch_document(
+        pending.batch(),
+        &Context {
+            target: "target".into(),
+            template: "sample".into(),
+            commit: None,
+        },
+        None,
+    );
+    let properties = &batch["schema"]["properties"];
+    assert_eq!(
+        properties["optional"]["anyOf"],
+        json!([{"enum": ["one", "two"]}, {"type": "null"}]),
+        "{batch}"
+    );
+    assert!(properties["optional"].get("enum").is_none(), "{batch}");
+    assert_eq!(
+        properties["needed"]["enum"],
+        json!(["one", "two"]),
+        "{batch}"
+    );
+    let validator = jsonschema::options()
+        .with_draft(jsonschema::Draft::Draft202012)
+        .build(&batch["schema"])
+        .unwrap();
+    for (optional, valid) in [
+        (json!("one"), true),
+        (Value::Null, true),
+        (json!("three"), false),
+    ] {
+        assert_eq!(
+            validator.is_valid(&json!({"optional": optional, "needed": "two"})),
+            valid,
+            "{optional}"
+        );
+    }
+}
