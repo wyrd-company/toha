@@ -90,7 +90,9 @@ description: >-
   nothing, lists the conflicting paths on standard error one per line after
   `conflicting files:`, and names the same command with `--force`.
 
-  Printed target paths use `/` separators on every platform.
+  `apply` prints each target path on standard output when it writes the
+  file, so every path precedes the output of the hooks. Printed target paths
+  use `/` separators on every platform.
 
   Environment. `toha --help` lists every environment variable that toha
   reads in an `Environment:` section after its options. `TOHA_CONFIG` and
