@@ -525,7 +525,7 @@ fn headless_apply_stops_at_an_early_answer_that_fails_when_reached() {
         String::from_utf8_lossy(&output.stderr)
     );
     let document: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(questions(&document), ["extras", "flavor", "items"]);
+    assert_eq!(questions(&document), ["flavor"]);
     assert_eq!(
         document["errors"],
         json!({"flavor": ["value recorded earlier is not allowed: must be one of: fast-plain, fast-rich"]})
@@ -626,4 +626,130 @@ fn placeholder_is_a_schema_example() {
     let properties = &result["schema"]["properties"];
     assert_eq!(properties["code"]["examples"], json!(["alphacode"]));
     assert!(properties["label"].get("examples").is_none(), "{result}");
+}
+
+fn staged_submissions(state: &Path, target: &Path) -> Vec<Value> {
+    let store = toha::staging::Store::new(support::staged_dir(state));
+    store
+        .load(&toha::staging::canonical_target(target).unwrap())
+        .unwrap()
+        .map(|record| {
+            record
+                .submissions
+                .into_iter()
+                .map(|s| serde_json::to_value(s).unwrap())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The exit code, batch questions, errors, and recorded submissions after
+/// one answers document.
+fn outcome(code: i32, document: &Value, state: &Path, target: &Path) -> Value {
+    json!({
+        "code": code,
+        "questions": document["schema"]["properties"]
+            .as_object()
+            .map(|p| { let mut k: Vec<_> = p.keys().cloned().collect(); k.sort(); k }),
+        "errors": document.get("errors"),
+        "answers": document.get("answers"),
+        "submissions": staged_submissions(state, target),
+    })
+}
+
+#[test]
+fn one_answers_document_has_the_same_outcome_through_apply_and_continue() {
+    let documents = [
+        json!({"name": "Alpha", "code": "ABC"}),
+        json!({"name": "Alpha", "code": "abc"}),
+        json!({"name": "Alpha", "label": "First", "enabled": false, "mode": "fast",
+            "code": "abc", "flavor": "odd", "items": ["x"], "extras": ["one"]}),
+    ];
+    for document in documents {
+        let state = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        stage(state.path(), target.path(), &early_template());
+        let (code, result) = continue_with(state.path(), target.path(), document.clone());
+        let through_continue = outcome(code, &result, state.path(), target.path());
+
+        let state = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let answers = state.path().join("answers.json");
+        fs::write(&answers, document.to_string()).unwrap();
+        let output = support::isolated_command(state.path())
+            .arg("apply")
+            .arg(support::folder_address(&early_template()))
+            .args([target.path().to_str().unwrap(), "--answers"])
+            .arg(&answers)
+            .output()
+            .unwrap();
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
+        let mut through_apply = outcome(
+            output.status.code().unwrap(),
+            &result,
+            state.path(),
+            target.path(),
+        );
+        // A headless run also answers the next batch from defaults and states
+        // which required questions the document leaves unanswered.
+        if let Some(errors) = through_apply["errors"].as_object_mut() {
+            errors.retain(|id, e| document.get(id).is_some() || e != &json!(["is required"]));
+            if errors.is_empty() {
+                through_apply["errors"] = Value::Null;
+            }
+        }
+        assert_eq!(through_apply, through_continue, "{document}");
+    }
+}
+
+#[test]
+fn rejected_document_keeps_the_error_of_an_answer_recorded_earlier() {
+    let state = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    stage(state.path(), target.path(), &early_template());
+    let (code, _) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"name": "Alpha", "flavor": "odd"}),
+    );
+    assert_eq!(code, 4);
+    let (code, result) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"label": "First", "mode": "fast"}),
+    );
+    assert_eq!(code, 4, "{result}");
+    let (code, result) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"flavor": "fast-rich", "items": ["NO"]}),
+    );
+    assert_eq!(code, 4, "{result}");
+    assert_eq!(
+        result["errors"],
+        json!({
+            "flavor": ["value recorded earlier is not allowed: must be one of: fast-plain, fast-rich"],
+            "items": ["each item must match ^[a-z]+$"],
+        })
+    );
+    assert_eq!(submissions(state.path(), target.path()), 2);
+    let (code, result) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"items": ["ok"], "extras": []}),
+    );
+    assert_eq!(code, 4, "{result}");
+    assert_eq!(
+        result["errors"],
+        json!({"flavor": ["value recorded earlier is not allowed: must be one of: fast-plain, fast-rich"]})
+    );
+    assert_eq!(questions(&result), ["extras", "flavor", "items"]);
+    assert_eq!(submissions(state.path(), target.path()), 2);
+    let (code, result) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"flavor": "fast-rich", "items": ["ok"], "extras": []}),
+    );
+    assert_eq!(code, 0, "{result}");
+    assert_eq!(result["answers"]["flavor"], json!("fast-rich"));
 }
