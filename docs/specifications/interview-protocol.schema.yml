@@ -3,7 +3,7 @@
 #   realizes: interview-protocol
 # ---
 $schema: https://json-schema.org/draft/2020-12/schema
-$id: https://toha.wyrd.company/schemas/interview-protocol
+$id: https://wyrd.foo/toha/schemas/interview-protocol
 title: Toha Interview Protocol
 description: Documents exchanged by `stage --async`, `continue`, and `--answers`.
 oneOf:

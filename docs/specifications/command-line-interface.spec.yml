@@ -221,6 +221,24 @@ commands:
               machine-readable: false
             - name: json
               machine-readable: true
+      - name: update
+        summary: Move installed git templates that follow a branch to its newest commit.
+        mode: non-interactive
+        positional-arguments:
+          - name: template
+            position: 0
+            required: false
+            description: Template to update. All installed git templates when absent.
+            value:
+              type: string
+        output:
+          exit-codes:
+            - code: 0
+              meaning: Every selected template is at the newest commit of its branch.
+            - code: 1
+              meaning: A fetch failed, or no installed template matches.
+            - code: 5
+              meaning: The template name is ambiguous.
       - name: remove
         summary: Uninstall a template and delete its settings from the user configuration.
         mode: non-interactive

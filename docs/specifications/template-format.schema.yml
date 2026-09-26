@@ -3,7 +3,7 @@
 #   realizes: template-format
 # ---
 $schema: https://json-schema.org/draft/2020-12/schema
-$id: https://toha.wyrd.company/schemas/template
+$id: https://wyrd.foo/toha/schemas/template
 title: Toha Template
 description: The `template.yml` file at the root of a toha template.
 type: object

@@ -37,6 +37,12 @@ description: >-
   is not trusted, `apply` performs a dry run, lists the hooks, states that
   `--trust` is required, and exits with code 3.
 
+  Updates. `templates update` fetches every installed git template, or the
+  one named, whose address has no ref or names a branch, and moves it to the
+  newest commit of that branch. A template pinned to a tag or a commit is left
+  unchanged. The formal name, aliases, and trust of an updated template are
+  unchanged.
+
   Overwriting. `apply` writes no file over an existing file unless `--force` is
   given. When any target file exists and `--force` is absent, `apply` writes
   nothing and lists the conflicting paths.

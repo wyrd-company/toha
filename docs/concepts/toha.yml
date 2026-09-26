@@ -1,5 +1,6 @@
 $schema: https://refinery.systems/ontology/concept
-relationships: {}
+relationships:
+  shapes: scaffolding-tool
 description:
   - >-
     Toha is a project scaffolding tool and Rust crate. It generates files and
@@ -57,7 +58,8 @@ properties:
     over user values, and user values over system values.
   trust: >-
     Hooks run only for trusted templates. Trust comes from the user or system
-    configuration, or from the `--trust` flag on a single run.
+    configuration, or from the `--trust` flag on a single run. Trust in an
+    installed template carries over when the template is updated.
   staged-interviews: >-
     An interview in progress is saved in the user's state directory, keyed by
     its target path, so it continues in a later process.
@@ -101,6 +103,9 @@ features:
   install-templates: >-
     Adds every template in a git repository, or a single template addressed by
     path, to the user's template library, pinned to a ref when one is given.
+  update-templates: >-
+    Refreshes installed templates that follow a branch to the newest commit
+    of that branch.
   name-templates: >-
     Resolves templates by alias, short name, or formal name, and reports
     ambiguous short names with the commands to resolve them.
@@ -118,11 +123,3 @@ benefits:
   - >-
     Makes template logic one language, Jinja, for conditions, computed values,
     defaults, and rendering.
-open-questions:
-  Q01: >-
-    Does the user and system configuration define custom git host shorthands
-    through a `hosts` map, in addition to the built-in `gh`, `gl`, `bb`, `cb`,
-    and `ge` shorthands?
-  Q02: >-
-    Does `templates update` refresh an installed template to the newest commit
-    of its branch, and does trust carry over to the refreshed content?

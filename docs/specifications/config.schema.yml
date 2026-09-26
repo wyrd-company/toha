@@ -3,7 +3,7 @@
 #   realizes: config
 # ---
 $schema: https://json-schema.org/draft/2020-12/schema
-$id: https://toha.wyrd.company/schemas/config
+$id: https://wyrd.foo/toha/schemas/config
 title: Toha Configuration
 description: System, user, and local toha configuration files.
 $defs:
