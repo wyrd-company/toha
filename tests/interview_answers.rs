@@ -1229,3 +1229,76 @@ fn unknown_id_for_an_interview_complete_before_any_submission_is_an_error() {
     };
     assert_eq!(error, "other.answer: is not a question in this template");
 }
+
+/// A template for classifying an early answer that fails a constraint:
+/// `style` is skipped for `plain` and active for `fancy`; `deep` is not
+/// reached until `title` has an answer; the message faults when `boom`;
+/// `last` is never answered, so every run stops with questions.
+const CLASSIFY: &str = "name: classify\ninterview:\n  - { id: kind, type: select, prompt: Kind?, options: [plain, fancy], required: true }\n  - { id: boom, type: confirm, prompt: Boom?, default: false }\n  - { id: style, type: text, prompt: Style?, when: \"kind == 'fancy'\", validate: { regex: '^[a-z]+$' } }\n  - message: \"{{ (1 | dateformat) if boom else 'fine' }}\"\n  - { id: title, type: text, prompt: Title?, required: true, validate: { regex: '^[a-z]+$' } }\n  - { id: deep, type: text, prompt: 'Deep {{ title }}?', required: true, validate: { regex: '^[a-z]+$' } }\n  - { id: last, type: text, prompt: 'Last after {{ deep }}?', required: true }\n";
+
+#[test]
+fn template_fault_after_a_skipped_invalid_answer_is_the_error() {
+    let (folder, _template) = inline(CLASSIFY);
+    let state = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    stage(state.path(), target.path(), folder.path());
+    let (code, result) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"kind": "plain", "boom": true, "style": 1}),
+    );
+    assert_eq!(code, 1, "{result}");
+    let stderr = result["stderr"].as_str().unwrap();
+    assert!(
+        stderr.contains("template error in message.message "),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("style"), "{stderr}");
+}
+
+#[test]
+fn skipped_invalid_answer_is_dropped_beside_another_failing_answer() {
+    let (folder, _template) = inline(CLASSIFY);
+    let state = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    stage(state.path(), target.path(), folder.path());
+    let (code, result) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"kind": "plain", "style": 1, "title": "NO"}),
+    );
+    assert_eq!(code, 4, "{result}");
+    assert_eq!(result["errors"], json!({"title": ["must match ^[a-z]+$"]}));
+    let (code, result) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"kind": "fancy", "style": 1, "title": "NO"}),
+    );
+    assert_eq!(code, 4, "{result}");
+    assert_eq!(
+        result["errors"],
+        json!({"style": ["must be a string"], "title": ["must match ^[a-z]+$"]})
+    );
+    assert_eq!(submissions(state.path(), target.path()), 0);
+}
+
+#[test]
+fn early_answer_classification_matrix_is_the_same_through_apply_and_continue() {
+    let (folder, _template) = inline(CLASSIFY);
+    for kind in ["plain", "fancy"] {
+        for target in ["style", "deep"] {
+            for value in [json!("ok"), json!(1)] {
+                for other in [None, Some("good"), Some("NO")] {
+                    for boom in [false, true] {
+                        let mut document = json!({"kind": kind, "boom": boom});
+                        document[target] = value.clone();
+                        if let Some(title) = other {
+                            document["title"] = json!(title);
+                        }
+                        same_outcome_through_apply_and_continue(folder.path(), &[], &document);
+                    }
+                }
+            }
+        }
+    }
+}
