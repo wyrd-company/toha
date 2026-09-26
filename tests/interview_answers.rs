@@ -209,3 +209,168 @@ fn continue_with(state: &Path, target: &Path, answers: Value) -> (i32, Value) {
         .unwrap_or_else(|_| json!({"stderr": String::from_utf8_lossy(&output.stderr)}));
     (output.status.code().unwrap(), document)
 }
+
+fn early_template() -> std::path::PathBuf {
+    Path::new("tests/fixtures/early-answers/template")
+        .canonicalize()
+        .unwrap()
+}
+
+fn stage(state: &Path, target: &Path, template: &Path) -> Value {
+    let output = support::isolated_command(state)
+        .args([
+            "stage",
+            support::folder_address(template).as_str(),
+            target.to_str().unwrap(),
+            "--async",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(4));
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+fn questions(document: &Value) -> Vec<String> {
+    let mut ids: Vec<String> = document["schema"]["properties"]
+        .as_object()
+        .unwrap_or_else(|| panic!("no batch: {document}"))
+        .keys()
+        .cloned()
+        .collect();
+    ids.sort();
+    ids
+}
+
+#[test]
+fn early_answers_are_applied_when_their_questions_are_reached() {
+    let state = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    stage(state.path(), target.path(), &early_template());
+    let (code, document) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"name": "Alpha", "enabled": false, "mode": "slow", "code": "abc"}),
+    );
+    assert_eq!(code, 4, "{document}");
+    assert_eq!(questions(&document), ["extras", "flavor", "items", "label"]);
+    let (code, document) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"label": "First", "flavor": "slow-plain", "items": ["x"], "extras": ["one"]}),
+    );
+    assert_eq!(code, 0, "{document}");
+    assert_eq!(
+        document["answers"],
+        json!({"name": "Alpha", "label": "First", "enabled": false, "mode": "slow",
+            "code": "abc", "flavor": "slow-plain", "items": ["x"], "extras": ["one"]})
+    );
+}
+
+#[test]
+fn basic_example_early_boolean_and_select_are_not_asked_again() {
+    let state = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    let template = Path::new("docs/examples/basic").canonicalize().unwrap();
+    stage(state.path(), target.path(), &template);
+    let (code, document) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"title": "Early", "has_summary": false, "status": "final"}),
+    );
+    assert_eq!(code, 4, "{document}");
+    assert_eq!(questions(&document), ["slug", "tags"]);
+    let (code, document) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"slug": "early", "tags": []}),
+    );
+    assert_eq!(code, 0, "{document}");
+    assert_eq!(document["answers"]["has_summary"], json!(false));
+    assert_eq!(document["answers"]["status"], json!("final"));
+}
+
+#[test]
+fn headless_apply_does_not_ask_answers_held_from_continue() {
+    let state = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    stage(state.path(), target.path(), &early_template());
+    let (code, _) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"name": "Alpha", "enabled": false, "mode": "slow"}),
+    );
+    assert_eq!(code, 4);
+    let answers = state.path().join("answers.json");
+    fs::write(&answers, "{}").unwrap();
+    let apply = |answers: &Path| {
+        support::isolated_command(state.path())
+            .arg("apply")
+            .arg(support::folder_address(&early_template()))
+            .args([target.path().to_str().unwrap(), "--answers"])
+            .arg(answers)
+            .output()
+            .unwrap()
+    };
+    let output = apply(&answers);
+    assert_eq!(output.status.code(), Some(4));
+    let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        questions(&document),
+        ["code", "extras", "flavor", "items", "label"]
+    );
+    fs::write(
+        &answers,
+        json!({"label": "First", "code": "abc", "flavor": "slow-rich", "items": ["x"], "extras": []})
+            .to_string(),
+    )
+    .unwrap();
+    let output = apply(&answers);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(target.path().join("out.txt")).unwrap(),
+        "Alpha First False slow abc slow-rich x \n"
+    );
+}
+
+#[test]
+fn headless_answer_replaces_an_answer_held_from_continue() {
+    let state = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    stage(state.path(), target.path(), &early_template());
+    let (code, _) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"name": "Alpha", "flavor": "slow-plain"}),
+    );
+    assert_eq!(code, 4);
+    let answers = state.path().join("answers.json");
+    fs::write(
+        &answers,
+        json!({"label": "First", "mode": "slow", "flavor": "slow-rich", "items": [], "extras": []})
+            .to_string(),
+    )
+    .unwrap();
+    let output = support::isolated_command(state.path())
+        .arg("apply")
+        .arg(support::folder_address(&early_template()))
+        .args([target.path().to_str().unwrap(), "--answers"])
+        .arg(&answers)
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        fs::read_to_string(target.path().join("out.txt"))
+            .unwrap()
+            .contains(" slow-rich "),
+    );
+}

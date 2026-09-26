@@ -281,6 +281,8 @@ mod tests {
         loop_index: HashMap<String, usize>,
         text_responses: VecDeque<String>,
         attempts: usize,
+        asked: Vec<String>,
+        calls: usize,
     }
     impl Script {
         fn new(values: Value) -> Self {
@@ -289,9 +291,16 @@ mod tests {
                 loop_index: HashMap::new(),
                 text_responses: VecDeque::new(),
                 attempts: 0,
+                asked: Vec::new(),
+                calls: 0,
             }
         }
-        fn value(&self, prompt: &Prompt) -> Value {
+        fn value(&mut self, prompt: &Prompt) -> Value {
+            if self.asked.last() != Some(&prompt.id.to_string()) {
+                self.asked.push(prompt.id.to_string());
+            }
+            self.calls += 1;
+            assert!(self.calls < 50, "asked too often: {:?}", self.asked);
             self.values
                 .get(prompt.id.as_str())
                 .cloned()
@@ -444,6 +453,38 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("item.format"), "{error}");
         assert!(records.is_empty());
+    }
+
+    #[test]
+    fn answers_held_from_an_earlier_document_are_not_asked() {
+        let template = Template::load(std::path::Path::new(
+            "tests/fixtures/early-answers/template",
+        ))
+        .unwrap();
+        let saved = StagedRecord {
+            target: std::path::PathBuf::from("/tmp/sample-target"),
+            template: "/tmp/sample-template".into(),
+            commit: String::new(),
+            named: false,
+            now: "2026-01-02T03:04:05+00:00[UTC]".into(),
+            submissions: vec![IndexMap::from([
+                ("name".into(), json!("Alpha")),
+                ("enabled".into(), json!(false)),
+                ("mode".into(), json!("slow")),
+            ])],
+        };
+        let mut script =
+            Script::new(json!({"label": "First", "code": "abc", "flavor": "slow-rich"}));
+        let completed = drive(saved.replay(&template).unwrap(), &mut script, |_| Ok(())).unwrap();
+        assert_eq!(script.asked, ["label", "code", "flavor", "items", "extras"]);
+        assert_eq!(
+            completed.answers[&toha::Id::parse("enabled").unwrap()],
+            Answer::Bool(false)
+        );
+        assert_eq!(
+            completed.answers[&toha::Id::parse("mode").unwrap()],
+            Answer::Text("slow".into())
+        );
     }
 
     #[test]

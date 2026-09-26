@@ -1,0 +1,44 @@
+name: early
+description: Questions spread over three batches
+interview:
+  - id: name
+    type: text
+    prompt: Name
+    required: true
+    validate:
+      min: 2
+      max: 20
+  - id: label
+    type: text
+    prompt: "Label for {{ name }}"
+    required: true
+  - id: enabled
+    type: confirm
+    prompt: "Enable {{ name }}?"
+  - id: mode
+    type: select
+    prompt: "Mode for {{ name }}"
+    options: [ fast, slow ]
+  - id: code
+    type: text
+    prompt: "Code for {{ name }}"
+    placeholder: "{{ name | lower }}code"
+    validate:
+      regex: '^[a-z]+$'
+  - id: flavor
+    type: select
+    prompt: Flavor
+    options: "[mode ~ '-plain', mode ~ '-rich']"
+  - id: items
+    type: text
+    prompt: Item
+    loop:
+      max: 2
+    validate:
+      regex: '^[a-z]+$'
+  - id: extras
+    type: multiselect
+    prompt: Extras
+    options: [ one, two ]
+    validate:
+      max: 1

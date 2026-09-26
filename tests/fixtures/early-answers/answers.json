@@ -1,0 +1,10 @@
+{
+  "name": "Alpha",
+  "label": "First",
+  "enabled": true,
+  "mode": "slow",
+  "code": "abc",
+  "flavor": "slow-rich",
+  "items": ["x"],
+  "extras": ["two"]
+}
