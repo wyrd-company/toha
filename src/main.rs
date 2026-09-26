@@ -70,7 +70,11 @@ Environment:
                     on Windows. When the editor is not found, answers end with a line of \".\".
   PATH              Directories searched for the editor and for the program of a run hook.
   TOHA_NOW          Instant that now() returns for a new interview, such as
-                    2026-01-02T03:04:05+00:00[UTC]. Default: the current time.";
+                    2026-01-02T03:04:05+00:00[UTC]. Default: the current time.
+
+  XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_CACHE_HOME, XDG_STATE_HOME, HOME, USERPROFILE,
+  APPDATA, LOCALAPPDATA, and PROGRAMDATA count only when they hold an absolute path.
+  An empty or relative value counts as unset.";
 
 /// Help layout for `apply`, whose operands are one clap argument so that
 /// `[TEMPLATE] <PATH>` parses the same on either side of `--`.

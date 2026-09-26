@@ -24,6 +24,8 @@ Toha reads these environment variables. `toha --help` lists them too.
 | `PATH` | Directories searched for the editor and for the program of a `run` hook. |
 | `TOHA_NOW` | Instant that `now()` returns for a new interview, such as `2026-01-02T03:04:05+00:00[UTC]`. Default: the current time. |
 
+`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME`, `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, and `PROGRAMDATA` count only when they hold an absolute path. An empty or relative value counts as unset: an XDG variable falls back to its default, `HOME` falls back to `USERPROFILE`, and toha exits with code 1 when no home directory counts or, on Windows, when `APPDATA`, `LOCALAPPDATA`, or `PROGRAMDATA` does not count.
+
 On macOS, the user registry and installed templates are in `~/Library/Application Support/toha`, staged interviews in `~/Library/Application Support/toha/staged`, and fetched git templates in `~/Library/Caches/toha`. On Linux and macOS, the system configuration is `/etc/toha/config.yml` and the system registry is `/usr/local/share/toha/templates.yml`.
 
 Configuration layers merge local over user over system; a missing file is an empty layer. `local-config-name` and `hosts` come from the user and system layers only. The local registry, `.templates/templates.yml` unless configured, holds aliases only, so trust never comes from a project.

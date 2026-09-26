@@ -100,18 +100,29 @@ description: >-
   the base of the user registry and installed templates as the template
   registry specification defines, and `XDG_STATE_HOME` is the base of staged
   interviews as the interview protocol specification defines. Git templates
-  fetched by address are cached in `$XDG_CACHE_HOME/toha/`, falling back to
-  `~/.cache/toha/`, on Linux, `~/Library/Caches/toha/` on macOS, and
-  `%LOCALAPPDATA%\toha\cache\` on Windows. `HOME`, or `USERPROFILE` when
-  `HOME` is unset, is the home directory for `~` in folder addresses and for
-  the default directories. On Windows, `APPDATA`, `LOCALAPPDATA`, and
-  `PROGRAMDATA` locate the user, cache and state, and system directories.
+  fetched by address are cached in `$XDG_CACHE_HOME/toha/` on Linux,
+  `~/Library/Caches/toha/` on macOS, and `%LOCALAPPDATA%\toha\cache\` on
+  Windows. `HOME`, or `USERPROFILE` when `HOME` is unset, is the home
+  directory for `~` in folder addresses and for the default directories. On
+  Windows, `APPDATA`, `LOCALAPPDATA`, and `PROGRAMDATA` locate the user,
+  cache and state, and system directories.
   `VISUAL`, then `EDITOR`, names the editor for multiline answers, `nano` by
   default and `notepad` on Windows. `PATH` is searched for the editor and for
   the program of a `run` hook. `TOHA_NOW` sets the instant that `now()`
   returns for a new interview, an RFC 9557 timestamp such as
   `2026-01-02T03:04:05+00:00[UTC]`; without it the instant is the current
   time.
+
+  Directory variables. `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`,
+  `XDG_STATE_HOME`, `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, and
+  `PROGRAMDATA` count only when they hold an absolute path. An empty or
+  relative value counts as unset, as the XDG Base Directory Specification
+  requires for its variables, so that no toha directory depends on the
+  current directory. An XDG variable that counts as unset falls back to its
+  default, `~/.config`, `~/.local/share`, `~/.cache`, and `~/.local/state`
+  respectively. When neither `HOME` nor `USERPROFILE` counts, or on Windows
+  when `APPDATA`, `LOCALAPPDATA`, or `PROGRAMDATA` does not count, toha
+  writes an error on standard error and exits with code 1.
 
   Version. `toha --version` and `toha -V` print `toha <VERSION>` and exit with
   code 0. `<VERSION>` is a SemVer version fixed at build time from the git
