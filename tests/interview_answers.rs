@@ -656,8 +656,21 @@ fn outcome(code: i32, document: &Value, state: &Path, target: &Path) -> Value {
         "answers": document.get("answers"),
         "submissions": staged_submissions(state, target),
     });
-    let text = outcome.to_string().replace(target.to_str().unwrap(), "<P>");
-    serde_json::from_str(&text).unwrap()
+    normalized(outcome, target.to_str().unwrap())
+}
+
+/// `value` with `path` written as `<P>` inside each string. Strings are
+/// rewritten before JSON escaping, so a Windows path matches.
+fn normalized(value: Value, path: &str) -> Value {
+    match value {
+        Value::String(s) => Value::String(s.replace(path, "<P>")),
+        Value::Array(items) => items.into_iter().map(|v| normalized(v, path)).collect(),
+        Value::Object(map) => map
+            .into_iter()
+            .map(|(k, v)| (k, normalized(v, path)))
+            .collect(),
+        other => other,
+    }
 }
 
 /// A template whose second question is skipped unless the first is `fancy`.
@@ -794,8 +807,8 @@ fn repeated_answer_that_differs_rejects_the_document_and_names_the_commands() {
     assert_eq!(questions(&result), ["title"]);
     // Temporary paths need no shell quoting.
     let t = target.path().to_str().unwrap();
-    let f = folder.path().canonicalize().unwrap();
-    let f = f.to_str().unwrap();
+    // `stage` names a folder by its drive path, as the product suggests it.
+    let f = support::folder_address(&folder.path().canonicalize().unwrap());
     assert_eq!(
         result["errors"],
         json!({"kind": [format!(
