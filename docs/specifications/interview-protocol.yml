@@ -50,8 +50,11 @@ description: >-
   document is submitted, against each constraint of its question that does
   not depend on other answers: the answer type, a literal `required`, literal
   `options`, `validate.regex`, and literal `validate` and `loop` bounds. A
-  failure rejects the document unless the answers of that document skip the
-  question. It checks the remaining constraints when the question is
+  failure is decided by applying the document in one tentative step: it
+  rejects the document when that step stops with the question active or not
+  reached, or when the batch the document answers fails; it is dropped when
+  the step skips the question; and a template fault in the step is the error
+  instead. It checks the remaining constraints when the question is
   reached. When a held
   answer fails then, the question is part of that batch, and its error starts
   with `value recorded earlier is not allowed:`. That error stays on the
