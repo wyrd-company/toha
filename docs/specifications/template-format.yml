@@ -45,7 +45,10 @@ description: >-
 
   Identifiers. Question ids, computed ids, and top-level `data` keys are Jinja
   identifiers matching `^[a-z_][a-z0-9_]*$`. They share one namespace; a
-  duplicate is a load error. Answers are one flat object keyed by id.
+  duplicate is a load error. The `<name>` bound by an `each` is a load error
+  when it equals any id in that namespace, wherever the id is defined; two
+  `each` entries may bind the same `<name>`. Answers are one flat object keyed
+  by id.
 
   Interview. `interview` is an ordered list of nodes. Every node has an
   optional `when` expression; a node whose `when` is false is skipped, with all
@@ -116,7 +119,7 @@ validation-criteria: >-
   A conforming `template.yml` validates against
   `docs/specifications/template-format.schema.yml` after every `!include` is
   resolved. Toha additionally rejects, at load time, a template with a
-  duplicate identifier, an expression or template that references an id not
+  duplicate identifier, an `each` name equal to an identifier, an expression or template that references an id not
   defined earlier in interview order, a `loop` on a question whose type is not
   `text`, `options` on a question whose type is not `select` or `multiselect`,
   an `!include` or `script` path outside the template root, and a `source`
