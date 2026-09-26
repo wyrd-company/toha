@@ -30,8 +30,8 @@ $defs:
         description: Formal name of the template.
         type: string
       commit:
-        description: Resolved commit of a git template; empty for a local folder.
-        type: string
+        description: Resolved commit of a git template; null for a local folder.
+        type: [ string, "null" ]
   batch:
     type: object
     additionalProperties: false

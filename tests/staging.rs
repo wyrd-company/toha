@@ -45,7 +45,7 @@ fn optional_null_validates_against_batch_schema() {
         &Context {
             target: "target".into(),
             template: "sample".into(),
-            commit: String::new(),
+            commit: None,
         },
         None,
     );
@@ -150,7 +150,7 @@ fn one_shot(path: &Path, target: &Path) -> Value {
                 .unwrap()
                 .to_string_lossy()
                 .into_owned(),
-            commit: String::new(),
+            commit: None,
         },
     )
 }
@@ -297,7 +297,7 @@ fn every_success_fixture_through_library_replay() {
         let ctx = Context {
             target: record.target.to_string_lossy().into_owned(),
             template: formal,
-            commit: String::new(),
+            commit: None,
         };
         assert_eq!(
             protocol::complete_document(&replayed.answers, &ctx),
@@ -550,7 +550,7 @@ fn explicit_null_differs_from_missing_in_one_shot_and_staged() {
                 .to_string_lossy()
                 .into_owned(),
             template: template_path.to_string_lossy().into_owned(),
-            commit: String::new(),
+            commit: None,
         };
         assert_eq!(
             second_batch,
@@ -607,7 +607,7 @@ fn skipped_group_has_same_batch_boundary_after_replay() {
     let ctx = Context {
         target: saved.target.to_string_lossy().into_owned(),
         template: saved.template.clone(),
-        commit: saved.commit.clone(),
+        commit: Some(saved.commit.clone()).filter(|c| !c.is_empty()),
     };
     assert_eq!(next, protocol::batch_document(replayed.batch(), &ctx, None));
     assert!(next["schema"]["properties"].get("search_engine").is_none());

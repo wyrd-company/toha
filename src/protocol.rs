@@ -14,7 +14,8 @@ use std::sync::LazyLock;
 pub struct Context {
     pub target: String,
     pub template: String,
-    pub commit: String,
+    /// The resolved commit of a git template; `None` for a local folder.
+    pub commit: Option<String>,
 }
 fn context_value(context: &Context) -> Value {
     json!({"target": context.target, "template": context.template, "commit": context.commit})

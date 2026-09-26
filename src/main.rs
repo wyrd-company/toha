@@ -431,7 +431,7 @@ fn context(record: &StagedRecord) -> Context {
     Context {
         target: record.target.to_string_lossy().into_owned(),
         template: record.template.clone(),
-        commit: record.commit.clone(),
+        commit: Some(record.commit.clone()).filter(|commit| !commit.is_empty()),
     }
 }
 /// The formal name of a template resolved by name from the user or system
