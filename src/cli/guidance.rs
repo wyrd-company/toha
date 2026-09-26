@@ -28,6 +28,22 @@ const SHELL: Shell = if cfg!(windows) {
     Shell::Posix
 };
 
+/// A formal name as a command operand. A local folder's formal name on
+/// Windows is an extended path (`\\?\D:\...`), which a `<TEMPLATE>` argument
+/// reads as a name; its drive path names the same folder.
+pub fn plain_formal(formal: &str) -> &str {
+    match formal.strip_prefix(r"\\?\") {
+        Some(rest)
+            if rest.as_bytes().get(0..3).is_some_and(|prefix| {
+                prefix[0].is_ascii_alphabetic() && prefix[1] == b':' && prefix[2] == b'\\'
+            }) =>
+        {
+            rest
+        }
+        _ => formal,
+    }
+}
+
 /// `value` as one shell word for the shell of this platform.
 pub fn word(value: &str) -> String {
     word_for(value, SHELL)
@@ -403,7 +419,7 @@ pub fn complete(path: &Path) -> String {
 /// An answers document was given for a complete staged interview.
 pub fn complete_answers_unused(path: &Path, staged: &str) -> String {
     let restage = Invocation::Stage {
-        template: Arg::Given(staged),
+        template: Arg::Given(plain_formal(staged)),
         path,
         output: None,
     };
@@ -516,7 +532,7 @@ pub fn answers_without_template(
             ));
             lines.push(format!(
                 "to answer it and write its files in one command: {}",
-                apply_new(Arg::Given(staged)).command()
+                apply_new(Arg::Given(plain_formal(staged))).command()
             ));
         }
         None => lines.push(format!(
@@ -540,7 +556,11 @@ pub fn needs_trust(invocation: &Invocation, installed: Option<&str>) -> String {
     if let Some(formal) = installed {
         lines.push(format!(
             "to trust {formal} for every run: {}",
-            toha("templates add", &["--trust".into()], &[value(formal)])
+            toha(
+                "templates add",
+                &["--trust".into()],
+                &[value(plain_formal(formal))]
+            )
         ));
     }
     lines.join("\n")
@@ -641,7 +661,7 @@ pub fn ambiguous(name: &str, matches: &[String], retry: &[String]) -> String {
             toha(
                 "templates alias",
                 &[],
-                &[value(formal), placeholder("<ALIAS>")]
+                &[value(plain_formal(formal)), placeholder("<ALIAS>")]
             )
         ));
     }
