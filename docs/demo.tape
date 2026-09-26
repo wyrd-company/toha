@@ -22,6 +22,7 @@ Set WindowBar "Colorful"
 Set TypingSpeed 24ms
 
 Hide
+Type 'unset NO_COLOR; export TERM=xterm-256color COLORTERM=truecolor LS_COLORS="di=01;34:ex=01;32"' Enter
 Type 'export PATH="$PWD/target/debug:$PATH"' Enter
 Type 'export PS1="demo> "' Enter
 Type 'DEMO_ROOT=$(mktemp -d); cp -R docs/examples/demo "$DEMO_ROOT/template"; cd "$DEMO_ROOT"' Enter
