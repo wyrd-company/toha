@@ -1232,6 +1232,54 @@ mod dirs_tests {
         assert_eq!(actual.state, absolute("state").join("toha/staged"));
     }
 
+    /// Absolute values for every XDG variable.
+    fn every_xdg() -> Vec<(&'static str, String)> {
+        [
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "XDG_CACHE_HOME",
+            "XDG_STATE_HOME",
+        ]
+        .into_iter()
+        .map(|key| (key, text(&absolute(&key.to_lowercase()))))
+        .collect()
+    }
+
+    #[test]
+    fn macos_reads_only_xdg_config_home() {
+        let xdg = every_xdg();
+        let vars: Vec<_> = xdg.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        let actual = dirs(Platform::MacOs, &vars).unwrap();
+        let home = absolute("home");
+        assert_eq!(
+            actual.user_config,
+            absolute("xdg_config_home").join("toha/config.yml")
+        );
+        assert_eq!(
+            actual.user_data,
+            home.join("Library/Application Support/toha")
+        );
+        assert_eq!(actual.cache, home.join("Library/Caches/toha"));
+        assert_eq!(
+            actual.state,
+            home.join("Library/Application Support/toha/staged")
+        );
+    }
+
+    #[test]
+    fn windows_reads_no_xdg_variable() {
+        let xdg = every_xdg();
+        let vars: Vec<_> = xdg.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        let actual = dirs(Platform::Windows, &vars).unwrap();
+        assert_eq!(
+            actual.user_config,
+            absolute("roaming").join("toha/config.yml")
+        );
+        assert_eq!(actual.user_data, absolute("roaming").join("toha"));
+        assert_eq!(actual.cache, absolute("local").join("toha/cache"));
+        assert_eq!(actual.state, absolute("local").join("toha/staged"));
+    }
+
     #[test]
     fn home_is_used_only_when_absolute() {
         let profile = text(&absolute("profile"));
