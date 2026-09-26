@@ -1,0 +1,10 @@
+name: sample
+interview:
+  - id: first
+    type: text
+    prompt: First?
+    required: true
+  - id: second
+    type: text
+    prompt: Second?
+    default: "{{ first | nope }}"

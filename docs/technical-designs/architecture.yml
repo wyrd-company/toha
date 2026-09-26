@@ -102,7 +102,8 @@ proposed-design:
 
   interview-engine: >-
     The engine is a state machine whose states are values:
-    `Interview::start(template: &Template, seed: Seed) -> Interview` and
+    `Interview::start(template: &Template, seed: Seed) -> Result<Interview,
+    EvalError>` and
     `enum Interview { Asking(Pending), Complete(Completed) }`. `Seed` holds the
     configured defaults and the frozen instant that `now()` returns.
     `Pending::batch(&self) -> &Batch` exposes the current batch.
@@ -110,8 +111,11 @@ proposed-design:
     validates and formats one answer without recording it, so the terminal
     driver reports an error the moment a question is answered.
     `Pending::answer(self, answers: RawAnswers) -> Result<Interview,
-    (Pending, Rejections)>` records a whole batch or nothing: on any rejection
-    the caller gets back the same pending state and the per-id errors.
+    AnswerError>` records a whole batch or nothing. `AnswerError::Rejected`
+    returns the same pending state and the per-id rejections.
+    `AnswerError::Eval` reports a Jinja evaluation failure without recording
+    answers. `EvalError` names the node id, the prompt, description, or default
+    field, and the minijinja error message.
     Answers for ids beyond the batch are held and applied when their questions
     are reached. The engine evaluates computed, message, and hook nodes as
     soon as their references are answered, applies the skipped-question

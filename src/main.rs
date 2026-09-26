@@ -10,7 +10,9 @@ use std::{
 };
 
 use clap::{Parser, Subcommand};
-use toha::{Applied, ApplyOptions, Id, Interview, Plan, RawAnswer, RawAnswers, Seed, Template};
+use toha::{
+    AnswerError, Applied, ApplyOptions, Id, Interview, Plan, RawAnswer, RawAnswers, Seed, Template,
+};
 
 #[derive(Parser)]
 #[command(name = "toha")]
@@ -107,22 +109,26 @@ fn run(template: Option<String>, path: &Path, answers: Option<String>, force: bo
         Ok(raw) => raw,
         Err(error) => return Outcome::Error(error),
     };
-    let mut interview = Interview::start(&template, Seed {});
+    let mut interview = match Interview::start(&template, Seed {}) {
+        Ok(interview) => interview,
+        Err(error) => return Outcome::Error(error.to_string()),
+    };
     let completed = loop {
         match interview {
             Interview::Complete(completed) => break completed,
             Interview::Asking(pending) => {
                 interview = match pending.answer(std::mem::take(&mut raw)) {
                     Ok(interview) => interview,
-                    Err((_, errors)) => {
+                    Err(AnswerError::Rejected { rejections, .. }) => {
                         return Outcome::Incomplete(
-                            errors
+                            rejections
                                 .iter()
                                 .map(ToString::to_string)
                                 .collect::<Vec<_>>()
                                 .join("\n"),
                         );
                     }
+                    Err(AnswerError::Eval(error)) => return Outcome::Error(error.to_string()),
                 };
             }
         }

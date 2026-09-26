@@ -72,6 +72,33 @@ pub struct Rejection {
     pub message: String,
 }
 pub type Rejections = Vec<Rejection>;
+#[derive(Debug, thiserror::Error)]
+#[error("{id}.{field}: {message}")]
+pub struct EvalError {
+    pub id: Id,
+    pub field: &'static str,
+    pub message: String,
+}
+
+#[derive(Debug)]
+pub enum AnswerError<'a> {
+    Rejected {
+        pending: Pending<'a>,
+        rejections: Rejections,
+    },
+    Eval(EvalError),
+}
+
+impl EvalError {
+    fn render(id: &Id, field: &'static str, error: minijinja::Error) -> Self {
+        Self {
+            id: id.clone(),
+            field,
+            message: error.to_string(),
+        }
+    }
+}
+
 impl fmt::Display for Rejection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}: {}", self.id, self.message)
@@ -79,12 +106,16 @@ impl fmt::Display for Rejection {
 }
 
 impl<'a> Interview<'a> {
-    pub fn start(template: &'a Template, _seed: Seed) -> Self {
+    pub fn start(template: &'a Template, _seed: Seed) -> Result<Self, EvalError> {
         advance(template, Answers::new(), RawAnswers::new())
     }
 }
 
-fn advance<'a>(template: &'a Template, answers: Answers, held: RawAnswers) -> Interview<'a> {
+fn advance<'a>(
+    template: &'a Template,
+    answers: Answers,
+    held: RawAnswers,
+) -> Result<Interview<'a>, EvalError> {
     let mut batch = Batch::default();
     for node in &template.interview {
         let Node::Question(question) = node;
@@ -113,29 +144,43 @@ fn advance<'a>(template: &'a Template, answers: Answers, held: RawAnswers) -> In
         }
         let context = context_from_answers(&answers);
         let QuestionKind::Text { default } = &question.kind;
+        let title = question
+            .prompt
+            .render(&context)
+            .map_err(|error| EvalError::render(&question.id, "prompt", error))?;
+        let description = question
+            .description
+            .as_ref()
+            .map(|tmpl| {
+                tmpl.render(&context)
+                    .map_err(|error| EvalError::render(&question.id, "description", error))
+            })
+            .transpose()?;
+        let default = default
+            .as_ref()
+            .map(|tmpl| {
+                tmpl.render(&context)
+                    .map_err(|error| EvalError::render(&question.id, "default", error))
+            })
+            .transpose()?;
         batch.items.push(Item::Prompt(Prompt {
             id: question.id.clone(),
             kind: PromptKind::Text,
-            title: question.prompt.render(&context).unwrap_or_default(),
-            description: question
-                .description
-                .as_ref()
-                .map(|tmpl| tmpl.render(&context).unwrap_or_default()),
-            default: default
-                .as_ref()
-                .map(|tmpl| tmpl.render(&context).unwrap_or_default()),
+            title,
+            description,
+            default,
             required: question.required,
         }));
     }
     if batch.items.is_empty() {
-        Interview::Complete(Completed { answers })
+        Ok(Interview::Complete(Completed { answers }))
     } else {
-        Interview::Asking(Pending {
+        Ok(Interview::Asking(Pending {
             template,
             answers,
             held,
             batch,
-        })
+        }))
     }
 }
 
@@ -176,10 +221,7 @@ impl<'a> Pending<'a> {
 
     // The state-machine contract returns the original Pending value on rejection.
     #[allow(clippy::result_large_err)]
-    pub fn answer(
-        mut self,
-        incoming: RawAnswers,
-    ) -> Result<Interview<'a>, (Pending<'a>, Rejections)> {
+    pub fn answer(self, incoming: RawAnswers) -> Result<Interview<'a>, AnswerError<'a>> {
         let mut rejections = Vec::new();
         let mut held = self.held.clone();
         for (id, raw) in incoming {
@@ -213,12 +255,83 @@ impl<'a> Pending<'a> {
             }
         }
         if !rejections.is_empty() {
-            return Err((self, rejections));
+            return Err(AnswerError::Rejected {
+                pending: self,
+                rejections,
+            });
         }
-        self.answers.extend(next);
-        for id in self.answers.keys() {
+        let mut answers = self.answers.clone();
+        answers.extend(next);
+        for id in answers.keys() {
             held.shift_remove(id);
         }
-        Ok(advance(self.template, self.answers, held))
+        advance(self.template, answers, held).map_err(AnswerError::Eval)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AnswerError, Interview, Item, RawAnswer, RawAnswers, Seed};
+    use crate::{
+        jinja::Tmpl,
+        template::{Id, Node, Question, QuestionKind, Template},
+    };
+    use std::path::Path;
+
+    #[test]
+    fn later_batch_render_failure_does_not_record_submission() {
+        let template = Template::load(Path::new("tests/fixtures/err-default-render/template"))
+            .expect("fixture loads");
+        let Interview::Asking(pending) = Interview::start(&template, Seed {}).expect("first batch")
+        else {
+            panic!("expected first batch")
+        };
+        assert_eq!(pending.batch().items.len(), 1);
+        let mut answers = RawAnswers::new();
+        answers.insert(
+            Id::parse("first").unwrap(),
+            RawAnswer(serde_json::json!("value")),
+        );
+        let AnswerError::Eval(error) = pending.answer(answers).unwrap_err() else {
+            panic!("expected evaluation failure")
+        };
+        assert_eq!(error.id.as_str(), "second");
+        assert_eq!(error.field, "default");
+
+        let Interview::Asking(restarted) = Interview::start(&template, Seed {}).unwrap() else {
+            panic!("the failed submission must not complete the interview")
+        };
+        let Item::Prompt(prompt) = &restarted.batch().items[0];
+        assert_eq!(prompt.id.as_str(), "first");
+    }
+
+    #[test]
+    fn start_reports_the_failing_field() {
+        for field in ["prompt", "description", "default"] {
+            let bad = || Tmpl::compile("{{ 'value' | nope }}".into()).unwrap();
+            let question = Question {
+                id: Id::parse("item").unwrap(),
+                prompt: if field == "prompt" {
+                    bad()
+                } else {
+                    Tmpl::compile("Item?".into()).unwrap()
+                },
+                description: (field == "description").then(bad),
+                required: false,
+                kind: QuestionKind::Text {
+                    default: (field == "default").then(bad),
+                },
+            };
+            let template = Template {
+                name: "sample".into(),
+                description: None,
+                source_dir: std::path::PathBuf::new(),
+                interview: vec![Node::Question(question)],
+            };
+            let error = Interview::start(&template, Seed {}).unwrap_err();
+            assert_eq!(error.id.as_str(), "item");
+            assert_eq!(error.field, field);
+            assert!(error.message.contains("unknown filter"));
+        }
     }
 }

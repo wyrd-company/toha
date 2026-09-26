@@ -5,7 +5,9 @@
 mod support;
 
 use std::{fs, path::Path};
-use toha::{Applied, ApplyOptions, Id, Interview, Plan, RawAnswer, RawAnswers, Seed, Template};
+use toha::{
+    AnswerError, Applied, ApplyOptions, Id, Interview, Plan, RawAnswer, RawAnswers, Seed, Template,
+};
 
 fn run(fixture: &Path, target: &Path) -> Result<(), (u8, String)> {
     let template =
@@ -16,23 +18,26 @@ fn run(fixture: &Path, target: &Path) -> Result<(), (u8, String)> {
         .into_iter()
         .map(|(key, value)| (Id::parse(&key).unwrap(), RawAnswer(value)))
         .collect();
-    let mut interview = Interview::start(&template, Seed {});
+    let mut interview =
+        Interview::start(&template, Seed {}).map_err(|error| (1, error.to_string()))?;
     let completed = loop {
         match interview {
             Interview::Complete(completed) => break completed,
             Interview::Asking(pending) => {
-                interview = pending
-                    .answer(std::mem::take(&mut raw))
-                    .map_err(|(_, errors)| {
-                        (
-                            4,
-                            errors
-                                .iter()
-                                .map(ToString::to_string)
-                                .collect::<Vec<_>>()
-                                .join("\n"),
-                        )
-                    })?;
+                interview =
+                    pending
+                        .answer(std::mem::take(&mut raw))
+                        .map_err(|error| match error {
+                            AnswerError::Rejected { rejections, .. } => (
+                                4,
+                                rejections
+                                    .iter()
+                                    .map(ToString::to_string)
+                                    .collect::<Vec<_>>()
+                                    .join("\n"),
+                            ),
+                            AnswerError::Eval(error) => (1, error.to_string()),
+                        })?;
             }
         }
     };
@@ -75,7 +80,7 @@ fn every_fixture_through_library() {
 #[test]
 fn rejected_batch_keeps_answers_unrecorded() {
     let template = Template::load(Path::new("tests/fixtures/text-basic/template")).unwrap();
-    let Interview::Asking(pending) = Interview::start(&template, Seed {}) else {
+    let Interview::Asking(pending) = Interview::start(&template, Seed {}).unwrap() else {
         panic!("expected batch")
     };
     let mut bad = RawAnswers::new();
@@ -87,8 +92,14 @@ fn rejected_batch_keeps_answers_unrecorded() {
         Id::parse("other").unwrap(),
         RawAnswer(serde_json::json!("x")),
     );
-    let (pending, errors) = pending.answer(bad).unwrap_err();
-    assert_eq!(errors.len(), 1);
+    let AnswerError::Rejected {
+        pending,
+        rejections,
+    } = pending.answer(bad).unwrap_err()
+    else {
+        panic!("expected rejection")
+    };
+    assert_eq!(rejections.len(), 1);
     assert_eq!(pending.batch().items.len(), 1);
     let result = pending.answer(RawAnswers::new());
     assert!(result.is_err(), "rejected answer must not be retained");
