@@ -651,6 +651,21 @@ fn alias(
     lines.push(format!("added alias {alias} for {formal}"));
     Ok(lines)
 }
+/// The same `templates` command with a formal name in place of an ambiguous
+/// template name.
+pub fn retry(args: &TemplatesArgs) -> impl Fn(&str) -> String + use<> {
+    let (command, alias) = match &args.command {
+        TemplatesCommand::Update { .. } => ("templates update", None),
+        TemplatesCommand::Remove { .. } => ("templates remove", None),
+        TemplatesCommand::Alias { alias, .. } => ("templates alias", alias.clone()),
+        TemplatesCommand::Add { .. } | TemplatesCommand::List { .. } => ("templates list", None),
+    };
+    move |formal| {
+        let mut operands = vec![guidance::value(formal)];
+        operands.extend(alias.as_deref().map(guidance::value));
+        guidance::toha(command, &[], &operands)
+    }
+}
 pub fn run(args: TemplatesArgs, dirs: Dirs, cwd: &Path) -> Result<Vec<String>, CommandError> {
     let ctx = Context::load(dirs, cwd)?;
     match args.command {

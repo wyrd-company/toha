@@ -243,9 +243,25 @@ enum Outcome {
     Document(serde_json::Value, u8),
     Saved(u8),
     NeedsTrust(String),
-    Ambiguous { name: String, matches: Vec<String> },
+    Ambiguous {
+        name: String,
+        matches: Vec<String>,
+        /// The same command with each match's formal name, in match order.
+        retry: Vec<String>,
+    },
 }
 impl Outcome {
+    /// Names `command` with each formal name when the template name is ambiguous.
+    fn retry(self, command: impl Fn(&str) -> String) -> Self {
+        match self {
+            Self::Ambiguous { name, matches, .. } => Self::Ambiguous {
+                retry: matches.iter().map(|formal| command(formal)).collect(),
+                name,
+                matches,
+            },
+            other => other,
+        }
+    }
     fn finish(self) -> ExitCode {
         match self {
             Self::Written(lines) => {
@@ -266,11 +282,12 @@ impl Outcome {
                 );
                 ExitCode::from(code)
             }
-            Self::Ambiguous { name, matches } => {
-                eprintln!("ambiguous template name: {name}");
-                for formal in matches {
-                    eprintln!("toha templates alias {formal} <alias>");
-                }
+            Self::Ambiguous {
+                name,
+                matches,
+                retry,
+            } => {
+                eprintln!("{}", guidance::ambiguous(&name, &matches, &retry));
                 ExitCode::from(5)
             }
             Self::NeedsTrust(message) => {
@@ -366,7 +383,11 @@ fn environment(
 fn resolve_error(error: ResolveError) -> Outcome {
     match error {
         ResolveError::Error(message) => Outcome::Error(message),
-        ResolveError::Ambiguous { name, matches } => Outcome::Ambiguous { name, matches },
+        ResolveError::Ambiguous { name, matches } => Outcome::Ambiguous {
+            name,
+            matches,
+            retry: vec![],
+        },
     }
 }
 fn record(target: PathBuf, resolved: &ResolvedTemplate, now: &jiff::Zoned) -> StagedRecord {
@@ -973,7 +994,16 @@ fn main() -> ExitCode {
             template,
             path,
             r#async,
-        } => stage(template, path, r#async, &dirs).finish(),
+        } => stage(template, path.clone(), r#async.clone(), &dirs)
+            .retry(|formal| {
+                Invocation::Stage {
+                    template: Arg::Given(formal),
+                    path: &path,
+                    output: r#async.as_ref().map(|file| file.as_deref()),
+                }
+                .command()
+            })
+            .finish(),
         Command::Continue { path, answers } => continue_run(path, answers, &dirs).finish(),
         Command::Abort { path } => abort(path, &dirs).finish(),
         Command::Templates(args) => {
@@ -981,13 +1011,20 @@ fn main() -> ExitCode {
                 Ok(cwd) => cwd,
                 Err(error) => return Outcome::Error(error.to_string()).finish(),
             };
+            let retry = cli::templates::retry(&args);
             match cli::templates::run(args, dirs, &cwd) {
                 Ok(lines) => Outcome::Written(lines).finish(),
                 Err(cli::templates::CommandError::Error(message)) => {
                     Outcome::Error(message).finish()
                 }
                 Err(cli::templates::CommandError::Ambiguous { name, matches }) => {
-                    Outcome::Ambiguous { name, matches }.finish()
+                    Outcome::Ambiguous {
+                        name,
+                        matches,
+                        retry: vec![],
+                    }
+                    .retry(retry)
+                    .finish()
                 }
             }
         }
@@ -1003,7 +1040,27 @@ fn main() -> ExitCode {
                 [template, path] => (Some(template.clone()), PathBuf::from(path)),
                 _ => unreachable!("clap requires one or two operands"),
             };
-            run(template, &path, answers, force, dry_run, trust, &dirs).finish()
+            run(
+                template,
+                &path,
+                answers.clone(),
+                force,
+                dry_run,
+                trust,
+                &dirs,
+            )
+            .retry(|formal| {
+                Invocation::Apply {
+                    template: Some(Arg::Given(formal)),
+                    path: &path,
+                    answers: answers.as_deref().map(Arg::Given),
+                    force,
+                    dry_run,
+                    trust,
+                }
+                .command()
+            })
+            .finish()
         }
     }
 }

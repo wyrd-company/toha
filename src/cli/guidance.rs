@@ -560,3 +560,22 @@ pub fn not_in_user_registry(name: &str) -> String {
     ]
     .join("\n")
 }
+
+/// A template name matched more than one installed template.
+pub fn ambiguous(name: &str, matches: &[String], retry: &[String]) -> String {
+    let mut lines = vec![format!("ambiguous template name: {name}")];
+    for (index, formal) in matches.iter().enumerate() {
+        if let Some(command) = retry.get(index) {
+            lines.push(format!("to use {formal}: {command}"));
+        }
+        lines.push(format!(
+            "to give {formal} an alias: {}",
+            toha(
+                "templates alias",
+                &[],
+                &[value(formal), placeholder("<ALIAS>")]
+            )
+        ));
+    }
+    lines.join("\n")
+}

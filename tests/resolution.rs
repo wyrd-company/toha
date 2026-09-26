@@ -664,7 +664,8 @@ fn ambiguous_name_names_the_same_command_with_each_formal_name() {
     let target = root.path().join("target");
     let target = target.to_str().unwrap();
     let formal = ["local:owner/repo#one", "local:owner/repo#two"];
-    let cases: [(Vec<&str>, Box<dyn Fn(&str) -> String>); 4] = [
+    type Retry<'a> = Box<dyn Fn(&str) -> String + 'a>;
+    let cases: [(Vec<&str>, Retry); 4] = [
         (
             vec!["apply", "--answers", answers, "same", target],
             Box::new(|formal| format!("toha apply --answers {answers} {formal} {target}")),
