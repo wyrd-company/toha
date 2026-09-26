@@ -125,3 +125,19 @@ fn answers_from_standard_input_are_named_stdin() {
         "{stderr}"
     );
 }
+
+#[test]
+fn answers_object_with_an_invalid_key_names_the_file_and_the_format() {
+    let folder = tempfile::tempdir().unwrap();
+    let answers = write(folder.path(), "answers.json", "{\"Bad Key\":\"Item\"}");
+    let output = apply_with(&answers);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr(&output);
+    assert!(
+        stderr.contains(&format!(
+            "{}: not a JSON answers document: \"Bad Key\"",
+            answers.display()
+        )),
+        "{stderr}"
+    );
+}
