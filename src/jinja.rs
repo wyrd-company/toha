@@ -170,3 +170,73 @@ pub fn context_from_answers(
     );
     values
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Tmpl;
+    use serde_json::json;
+
+    fn render(source: &str, ctx: serde_json::Value) -> String {
+        Tmpl::compile(source.into())
+            .unwrap_or_else(|err| panic!("compile {source:?}: {err}"))
+            .render(ctx)
+            .unwrap_or_else(|err| panic!("render {source:?}: {err}"))
+    }
+
+    #[test]
+    fn tojson_serializes_values() {
+        let ctx = json!({
+            "flag": true,
+            "text": "say \"hi\"",
+            "item": {"b": [1, 2], "a": "x"},
+        });
+        assert_eq!(render("{{ flag | tojson }}", ctx.clone()), "true");
+        assert_eq!(
+            render("{{ text | tojson }}", ctx.clone()),
+            r#""say \"hi\"""#
+        );
+        assert_eq!(render("{{ item | tojson }}", ctx), r#"{"a":"x","b":[1,2]}"#);
+    }
+
+    #[test]
+    fn toyaml_serializes_nested_object() {
+        let ctx = json!({
+            "item": {
+                "name": "demo",
+                "enabled": true,
+                "ports": [80, 443],
+                "inner": {"key": "value"},
+            },
+        });
+        assert_eq!(
+            render("{{ item | toyaml }}", ctx.clone()),
+            "enabled: true\ninner:\n  key: value\nname: demo\nports:\n- 80\n- 443"
+        );
+        assert_eq!(
+            render("root:\n  {{ item.inner | toyaml | indent(2) }}\n", ctx),
+            "root:\n  key: value\n"
+        );
+    }
+
+    #[test]
+    fn macro_is_defined_and_called_in_one_template() {
+        assert_eq!(
+            render(
+                "{% macro greet(who) %}hello {{ who }}{% endmacro %}{{ greet(name) }}",
+                json!({"name": "world"}),
+            ),
+            "hello world"
+        );
+    }
+
+    #[test]
+    fn loop_break_stops_iteration() {
+        assert_eq!(
+            render(
+                "{% for n in items %}{% if n > 2 %}{% break %}{% endif %}{{ n }}{% endfor %}",
+                json!({"items": [1, 2, 3, 4]}),
+            ),
+            "12"
+        );
+    }
+}
