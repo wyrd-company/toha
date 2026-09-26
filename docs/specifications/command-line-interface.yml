@@ -82,8 +82,8 @@ description: >-
 
   Overwriting. `apply` writes no file over an existing file unless `--force` is
   given. When any target file exists and `--force` is absent, `apply` writes
-  nothing, lists the conflicting paths, and names the same command with
-  `--force`.
+  nothing, lists the conflicting paths on standard error one per line after
+  `conflicting files:`, and names the same command with `--force`.
 
   Printed target paths use `/` separators on every platform.
 

@@ -24,9 +24,13 @@ pub enum Applied {
     },
     NeedsTrust(Plan),
 }
+/// One indented target path per line, each after a line break.
+fn conflict_lines(paths: &[TargetPath]) -> String {
+    paths.iter().map(|path| format!("\n  {path}")).collect()
+}
 #[derive(Debug, thiserror::Error)]
 pub enum ApplyError {
-    #[error("conflicting files: {0:?}")]
+    #[error("conflicting files:{}", conflict_lines(.0))]
     Conflicts(Vec<TargetPath>),
     #[error("{path}: {source}")]
     Io {
