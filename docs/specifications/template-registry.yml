@@ -1,0 +1,47 @@
+$schema: https://refinery.systems/ontology/specification
+relationships:
+  realizes:
+    - toha
+description: >-
+  Defines the template registry: the record of installed templates, their
+  aliases, and their trust. `docs/specifications/template-registry.schema.yml`
+  is the machine-readable definition.
+
+  Layers. Each configuration layer has one registry file named `templates.yml`.
+  The system registry is `/usr/local/share/toha/templates.yml` on Linux and
+  macOS and `%PROGRAMDATA%\toha\templates.yml` on Windows. The user registry is
+  `$XDG_DATA_HOME/toha/templates.yml`, falling back to
+  `~/.local/share/toha/templates.yml`, on Linux,
+  `~/Library/Application Support/toha/templates.yml` on macOS, and
+  `%APPDATA%\toha\templates.yml` on Windows. The local registry is
+  `templates.yml` in the first templates path of the local layer,
+  `.templates/templates.yml` unless configured. A missing file
+  is an empty registry. Entries merge by formal name, and fields from the layer
+  with higher precedence win: local over user over system.
+
+  Entries. `templates` maps a formal template name to its entry. `name` is the
+  short name from the template's `template.yml`. `source` is the repository URL
+  of a git template or the canonical absolute path of a local folder template.
+  `ref` is the ref from the address, when one was given. `commit` is the
+  resolved commit of the installed content of a git template. `path` is the
+  directory that holds the template: the install directory of a git template,
+  or the folder itself for a local folder template. `aliases` lists alias
+  names. `trusted: true` lets the hooks of the template run without `--trust`.
+
+  Ownership. `templates add`, `templates update`, `templates remove`, and
+  `templates alias` write the user registry. The system registry is provisioned
+  by the system administrator. The local registry holds aliases only, so trust
+  never comes from a project.
+
+  Discovery. A template found by scanning a templates path without a registry
+  entry has the canonical absolute path of its folder as its formal name, and
+  is not trusted.
+format: json-schema
+validation-criteria: >-
+  Each system and user registry file validates against `#/$defs/registry` in
+  `docs/specifications/template-registry.schema.yml`, and each local registry
+  file validates against `#/$defs/local-registry`. Toha rejects a merged
+  registry in which one alias names two templates or an alias equals a formal
+  name. After `templates add`, the user registry holds one entry for each added
+  template, with `commit` equal to the checked-out commit of its install
+  directory.

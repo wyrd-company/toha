@@ -1,0 +1,75 @@
+$schema: https://refinery.systems/ontology/specification
+relationships:
+  realizes:
+    - toha
+description: >-
+  Defines the documents toha exchanges with a script or agent that answers an
+  interview across several processes, and the answers file accepted by headless
+  runs. `docs/specifications/interview-protocol.schema.yml` is the
+  machine-readable definition of the question batch, the answers document, and
+  the result document.
+
+  Batches. `stage --async` and `continue` emit a question batch. A batch holds
+  every pending question from the interview position up to, and not including,
+  the first node that references an id without an answer. A node references an
+  id when its `when`, any of its templates, or any of its expressions uses that
+  id. Computed nodes, message nodes, and hook nodes between the questions are
+  evaluated as soon as their references are answered, so a batch never holds
+  them. Messages reached while building a batch are included in its
+  `messages` array in interview order.
+
+  Question schema. A batch carries a JSON Schema 2020-12 object schema in
+  `schema`. Each pending question is one property keyed by its id. `prompt` is
+  the property `title`, `description` is the property `description`, and
+  `default` is the property `default`, all rendered. The question type maps to
+  JSON Schema as follows: `text` and `multiline` are `string`, with
+  `minLength`, `maxLength`, and `pattern` from `validate`; a looped `text` is
+  an `array` of those strings with `minItems` and `maxItems` from `loop`;
+  `confirm` is `boolean`; `select` is `string` with `enum` from the rendered
+  options; `multiselect` is an `array` of that `enum` with `uniqueItems: true`
+  and `minItems` and `maxItems` from `validate`. Required questions are listed
+  in `required`. Each property carries `x-toha-type` with the question type and
+  `x-toha-multiline: true` for `multiline`.
+
+  Answers. An answers document is a JSON object keyed by question id. `continue`
+  reads it from a file or from standard input. Answers for questions outside
+  the current batch are held and applied when their questions are reached.
+  An answer for an id that the template does not define is an error. Toha
+  validates each answer and applies its `format` expression before it records
+  the answer.
+
+  Results. `continue` emits a result document. When every answer is accepted
+  and questions remain, the result holds the next batch. When answers fail
+  validation, the result holds the same batch, with per-id errors, and no
+  answer from that document is recorded. When the interview is complete, the
+  result has `status: complete` and holds the full flat answers object.
+
+  Modality. The modality is chosen by each call. `continue` with an answers
+  file, or `-` for standard input, answers the current batch. `continue`
+  without an answers argument prompts in the terminal for every remaining
+  question. An interview started in one modality continues in either.
+
+  Headless answers files. `apply` accepts an answers document with
+  `--answers`. Toha answers each question from the document, then from
+  configured defaults, then from the question `default`. When a required
+  question has no answer, the run stops, stages the interview, and emits the
+  batch that holds the question.
+
+  Staged state. A staged interview is stored in the user state directory:
+  `$XDG_STATE_HOME/toha/staged/` on Linux, falling back to
+  `~/.local/state/toha/staged/`; `~/Library/Application Support/toha/staged/`
+  on macOS; and `%LOCALAPPDATA%\toha\staged\` on Windows. The file name is the
+  lowercase hexadecimal SHA-256 of the canonical absolute target path with a
+  `.json` suffix. The staged record holds the target path, the formal name and
+  resolved commit of the template, the instant that `now()` returns for this
+  interview, and the answers recorded so far. Resuming replays the recorded
+  answers, so the interview position is derived, not stored.
+format: json-schema
+validation-criteria: >-
+  Every batch and result document that toha emits validates against
+  `docs/specifications/interview-protocol.schema.yml`, every answers document
+  that toha reads validates against its `#/$defs/answers` definition, and
+  every `schema` value in a batch is a valid JSON Schema 2020-12 document. For
+  each fixture template, answering every batch with the fixture answers
+  through `stage --async` and `continue` produces the same answers object and
+  the same output tree as an interactive run with the same answers.

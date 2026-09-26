@@ -1,0 +1,6 @@
+$schema: https://refinery.systems/ontology/idea
+title: Scaffolding Tool
+statements:
+    A: Create a scaffolding tool that addresses our needs
+    B: Make it agent friendly
+    C: Adopt what we like from other tools in the ecosystem

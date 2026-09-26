@@ -1,0 +1,51 @@
+# ---
+# relationships:
+#   realizes: config
+# ---
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://wyrd.foo/toha/schemas/config
+title: Toha Configuration
+description: System, user, and local toha configuration files.
+$defs:
+  identifier:
+    type: string
+    pattern: '^[a-z_][a-z0-9_]*$'
+  prefix:
+    type: string
+    pattern: '^[a-z][a-z0-9]*$'
+  templates-paths:
+    type: array
+    items:
+      type: string
+  defaults:
+    type: object
+    propertyNames:
+      $ref: "#/$defs/identifier"
+  hosts:
+    type: object
+    propertyNames:
+      $ref: "#/$defs/prefix"
+    additionalProperties:
+      type: string
+      format: uri
+  shared-config:
+    type: object
+    additionalProperties: false
+    properties:
+      local-config-name:
+        type: string
+        default: .toha.yml
+      templates-paths:
+        $ref: "#/$defs/templates-paths"
+      defaults:
+        $ref: "#/$defs/defaults"
+      hosts:
+        $ref: "#/$defs/hosts"
+  local-config:
+    type: object
+    additionalProperties: false
+    properties:
+      templates-paths:
+        $ref: "#/$defs/templates-paths"
+      defaults:
+        $ref: "#/$defs/defaults"

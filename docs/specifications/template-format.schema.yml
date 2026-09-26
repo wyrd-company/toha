@@ -1,0 +1,240 @@
+# ---
+# relationships:
+#   realizes: template-format
+# ---
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://wyrd.foo/toha/schemas/template
+title: Toha Template
+description: The `template.yml` file at the root of a toha template.
+type: object
+additionalProperties: false
+required: [ name ]
+properties:
+  name:
+    description: Short name of the template.
+    $ref: "#/$defs/slug"
+  description:
+    type: string
+  source:
+    description: Source subdirectory, relative to the template root.
+    type: string
+    default: template
+  data:
+    description: Static data. Each top-level key is available to Jinja.
+    type: object
+    propertyNames:
+      $ref: "#/$defs/identifier"
+  interview:
+    $ref: "#/$defs/nodes"
+  files:
+    type: array
+    items:
+      $ref: "#/$defs/file-rule"
+  ignore:
+    $ref: "#/$defs/globs"
+  static:
+    $ref: "#/$defs/globs"
+  hooks:
+    type: array
+    items:
+      $ref: "#/$defs/hook-command"
+  messages:
+    type: object
+    additionalProperties: false
+    properties:
+      before-apply:
+        $ref: "#/$defs/template"
+      after-apply:
+        $ref: "#/$defs/template"
+$defs:
+  slug:
+    type: string
+    pattern: '^[a-z0-9]+(-[a-z0-9]+)*$'
+  identifier:
+    type: string
+    pattern: '^[a-z_][a-z0-9_]*$'
+  expression:
+    description: A Jinja expression.
+    type: string
+    minLength: 1
+  template:
+    description: A Jinja template, rendered to a string.
+    type: string
+  globs:
+    type: array
+    items:
+      type: string
+  bool-or-expression:
+    oneOf:
+      - type: boolean
+      - $ref: "#/$defs/expression"
+  integer-or-expression:
+    oneOf:
+      - type: integer
+        minimum: 0
+      - $ref: "#/$defs/expression"
+  strings-or-expression:
+    oneOf:
+      - type: array
+        items:
+          type: string
+      - $ref: "#/$defs/expression"
+  when:
+    $ref: "#/$defs/expression"
+  nodes:
+    type: array
+    items:
+      $ref: "#/$defs/node"
+  node:
+    oneOf:
+      - $ref: "#/$defs/question"
+      - $ref: "#/$defs/computed"
+      - $ref: "#/$defs/group"
+      - $ref: "#/$defs/hook-node"
+      - $ref: "#/$defs/message-node"
+  question:
+    type: object
+    additionalProperties: false
+    required: [ id, type, prompt ]
+    properties:
+      id:
+        $ref: "#/$defs/identifier"
+      type:
+        enum: [ text, multiline, confirm, select, multiselect ]
+      prompt:
+        $ref: "#/$defs/template"
+      description:
+        $ref: "#/$defs/template"
+      placeholder:
+        $ref: "#/$defs/template"
+      required:
+        $ref: "#/$defs/bool-or-expression"
+      default:
+        description: >-
+          A template for string answers; a literal or an expression for
+          boolean and array answers.
+      options:
+        $ref: "#/$defs/strings-or-expression"
+      loop:
+        type: object
+        additionalProperties: false
+        properties:
+          min:
+            $ref: "#/$defs/integer-or-expression"
+          max:
+            $ref: "#/$defs/integer-or-expression"
+      validate:
+        type: object
+        additionalProperties: false
+        properties:
+          min:
+            $ref: "#/$defs/integer-or-expression"
+          max:
+            $ref: "#/$defs/integer-or-expression"
+          regex:
+            type: string
+      format:
+        description: Expression over `value` that transforms the answer.
+        $ref: "#/$defs/expression"
+      when:
+        $ref: "#/$defs/when"
+  computed:
+    type: object
+    additionalProperties: false
+    required: [ id, computed ]
+    properties:
+      id:
+        $ref: "#/$defs/identifier"
+      computed:
+        $ref: "#/$defs/expression"
+      when:
+        $ref: "#/$defs/when"
+  group:
+    type: object
+    additionalProperties: false
+    required: [ group, nodes ]
+    properties:
+      group:
+        $ref: "#/$defs/identifier"
+      nodes:
+        $ref: "#/$defs/nodes"
+      when:
+        $ref: "#/$defs/when"
+  hook-command:
+    type: object
+    additionalProperties: false
+    oneOf:
+      - required: [ run ]
+      - required: [ script ]
+    properties:
+      run:
+        description: Argument vector. Each item is a template.
+        type: array
+        minItems: 1
+        items:
+          $ref: "#/$defs/template"
+      script:
+        description: Executable file relative to the template root.
+        type: string
+      args:
+        type: array
+        items:
+          $ref: "#/$defs/template"
+      cwd:
+        description: Working directory relative to the target directory.
+        $ref: "#/$defs/template"
+      when:
+        $ref: "#/$defs/when"
+  hook-node:
+    type: object
+    additionalProperties: false
+    required: [ hook ]
+    properties:
+      hook:
+        type: object
+        additionalProperties: false
+        oneOf:
+          - required: [ run ]
+          - required: [ script ]
+        properties:
+          run:
+            type: array
+            minItems: 1
+            items:
+              $ref: "#/$defs/template"
+          script:
+            type: string
+          args:
+            type: array
+            items:
+              $ref: "#/$defs/template"
+          cwd:
+            $ref: "#/$defs/template"
+      when:
+        $ref: "#/$defs/when"
+  message-node:
+    type: object
+    additionalProperties: false
+    required: [ message ]
+    properties:
+      message:
+        $ref: "#/$defs/template"
+      when:
+        $ref: "#/$defs/when"
+  file-rule:
+    type: object
+    additionalProperties: false
+    required: [ each, source, path ]
+    properties:
+      each:
+        description: "`<expression> as <name>`."
+        type: string
+        pattern: '^.+ as [a-z_][a-z0-9_]*$'
+      source:
+        description: Support file relative to the template root.
+        type: string
+      path:
+        description: Target path relative to the target directory.
+        $ref: "#/$defs/template"
+      when:
+        $ref: "#/$defs/when"

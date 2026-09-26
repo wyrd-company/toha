@@ -1,0 +1,239 @@
+$schema: https://refinery.systems/ontology/technical-design
+relationships:
+  realizes: toha
+  implements:
+    - template-format
+    - interview-protocol
+    - config
+    - template-registry
+    - command-line-interface
+objective: >-
+  Structure the toha crate and binary so that one pure interview engine serves
+  the terminal, the JSON interview protocol, headless answers files, and crate
+  callers; so that every external input is parsed once into domain types; and
+  so that the fixture suite exercises the whole system through the same
+  interfaces its callers use.
+design-challenges:
+  one-engine-many-drivers: >-
+    Terminal prompts, `stage --async`, `continue` with a file or with prompts,
+    `apply --answers`, and crate callers all drive the same interview, and one
+    interview moves between them. The engine holds every interview rule; the
+    drivers hold only presentation.
+  typed-jinja: >-
+    The same YAML string is a template in one field and an expression in
+    another, depending on the field type. The distinction is made once, when
+    the template loads, and every later stage works with compiled values whose
+    kind is fixed.
+  resumable-state: >-
+    A staged interview resumes in a later process, possibly in the other
+    modality, and must produce the same answers and output as an uninterrupted
+    run.
+  safe-output: >-
+    No rendered path leaves the target directory or enters `.git`, no existing
+    file is overwritten without `--force`, and no hook runs without trust.
+proposed-design:
+  high-level-overview: >-
+    One Cargo package named `toha` holds a library and a binary. The library
+    is the crate other applications embed. The binary is a thin shell built
+    behind the default `cli` feature, so crate callers compile without the
+    command-line and prompt dependencies. The library is organized around the
+    domain: templates, interviews, plans, sources, the registry,
+    configuration, and staging. Each is a deep module with a small interface.
+    Every file, argument, environment variable, and network response is parsed
+    into domain types at the module that reads it; code behind that point
+    trusts the types. The interview engine and the planner are pure: they
+    perform no I/O and read no clock or environment, so the same inputs always
+    produce the same outputs.
+
+  module-map: >-
+    `template` loads a template folder into a `Template`.
+    `interview` runs the interview state machine over a `Template`.
+    `plan` turns a completed interview into a `Plan` of files, hooks, and
+    messages. `apply` executes a `Plan` against the target directory.
+    `protocol` converts between engine values and the interview protocol
+    documents. `source` parses template addresses and fetches git templates
+    with gitoxide. `registry` reads and writes `templates.yml` layers and
+    resolves a template argument. `config` reads and merges configuration
+    layers. `staging` stores staged interviews. `jinja` owns the minijinja
+    environment, the compiled value types, and the toha filters; it is
+    private to the library. The binary holds argument parsing, the terminal
+    prompt driver, output formatting, the exit-code mapping, and the embedded
+    skills.
+
+  template-module: >-
+    `Template::load(folder: &Path) -> Result<Template, LoadError>` is the only
+    entry point. It reads `template.yml`, resolves `!include` tags inside the
+    template root, validates the document against the template-format schema
+    embedded from `docs/specifications/template-format.schema.yml`, and
+    deserializes it into raw serde types that mirror the schema. It then
+    builds the domain model and runs the semantic checks from the template
+    format specification: unique identifiers, references only to earlier ids,
+    and paths inside the template root. `LoadError` carries every problem
+    found, each with the YAML path of the offending value, so an author fixes
+    all of them in one pass. The raw serde types never leave the module.
+
+  template-model: >-
+    The domain model makes the format rules unrepresentable to violate.
+    `Id` is a newtype built only by parsing an identifier. A question is
+    `Question { id, prompt, description, placeholder, required, kind, validate,
+    format, when }`, where `kind` is a sum type: `Text { default, looped:
+    Option<Loop> }`, `Multiline { default }`, `Confirm { default }`,
+    `Select { options, default }`, and `MultiSelect { options, default }`.
+    A loop exists only on text, and options exist only on the two select
+    kinds, because no other variant has the field. Nodes are the sum type
+    `Node::{Question, Computed, Group, Hook, Message}`, each with an optional
+    `when`. File generation rules, the ignore and static glob sets, the
+    top-level hooks, and the two apply messages complete the `Template`.
+
+  typed-jinja-values: >-
+    The `jinja` module compiles every Jinja value at load time into one of
+    three types. `Tmpl` is a compiled template that renders to a `String`.
+    `Expr` is a compiled expression that evaluates to a minijinja value.
+    `Typed<T>` is `Literal(T)` or `Expr(Expr)` and evaluates to `T`, failing
+    with a typed error when the expression result does not convert to `T`.
+    The loader picks the type from the field's value type in the schema:
+    string fields become `Tmpl`; boolean, integer, and array fields become
+    `Typed<bool>`, `Typed<u32>`, and `Typed<Vec<String>>`; `when`, `computed`,
+    and `format` become `Expr`. Each compiled value records the ids it
+    references, taken from minijinja's undeclared-variable analysis, which
+    drives both the reference-order check and the batch boundary. One
+    `Environment` with the case filters, `now()`, and `dateformat` is built
+    per interview and is the only place the filters are registered.
+
+  interview-engine: >-
+    The engine is a state machine whose states are values:
+    `Interview::start(template: &Template, seed: Seed) -> Interview` and
+    `enum Interview { Asking(Pending), Complete(Completed) }`. `Seed` holds the
+    configured defaults and the frozen instant that `now()` returns.
+    `Pending::batch(&self) -> &Batch` exposes the current batch.
+    `Pending::check(&self, id, RawAnswer) -> Result<Answer, Rejection>`
+    validates and formats one answer without recording it, so the terminal
+    driver reports an error the moment a question is answered.
+    `Pending::answer(self, answers: RawAnswers) -> Result<Interview,
+    (Pending, Rejections)>` records a whole batch or nothing: on any rejection
+    the caller gets back the same pending state and the per-id errors.
+    Answers for ids beyond the batch are held and applied when their questions
+    are reached. The engine evaluates computed, message, and hook nodes as
+    soon as their references are answered, applies the skipped-question
+    default rule, and stops at the first node that references an unanswered
+    id. A `Batch` is an ordered list of `Item::Prompt(Prompt)` and
+    `Item::Message(String)` in interview order, where a `Prompt` is the
+    rendered question: id, kind, title, description, placeholder, default,
+    options, and constraints. `Completed` holds the flat `Answers`, the
+    rendered interview hooks in order, and the messages shown.
+
+  answers: >-
+    `Answer` is `Text(String)`, `Bool(bool)`, or `List(Vec<String>)`, and
+    `Answers` is an ordered map from `Id` to `Answer`. `RawAnswer` is the
+    untyped input from a driver: a string typed at a prompt, or a JSON value
+    from an answers document. `Pending::check` is the single parse point from
+    `RawAnswer` to `Answer` for the question's kind, followed by validation
+    and the `format` expression. The engine exposes answers to Jinja by
+    converting `Answers` to a minijinja context, together with the template
+    data and computed values.
+
+  drivers: >-
+    Drivers call the engine; the engine never calls a driver, so there is no
+    prompt port. The terminal driver in the binary walks the `Batch` items,
+    prints messages, asks each prompt with inquire, calls `check` after each
+    answer, and submits the batch with `answer`. An empty submission ends a
+    loop prompt. The protocol driver in `protocol` converts a `Batch` into the
+    batch document and its JSON Schema, parses an answers document into
+    `RawAnswers`, and converts the engine's response into a result document.
+    `apply --answers` and crate callers use the same `answer` call with
+    answers from a document or from code.
+
+  staging: >-
+    A staged interview is stored as its inputs, not as engine internals: the
+    target path, the template formal name and resolved commit, the frozen
+    `now()` instant, and every answer recorded so far. Resuming loads the
+    template at the recorded commit, starts a new interview with the same
+    `Seed`, and replays the recorded answers through `answer`. Because the
+    engine is pure, replay reaches the same pending batch as the original
+    process, in either modality. A template whose content changed so that
+    replay rejects a recorded answer fails with that rejection, and `abort`
+    clears it. `staging` writes records atomically through a temporary file
+    and rename, in the state directory resolved by the binary.
+
+  plan-and-apply: >-
+    `Plan::build(template: &Template, completed: &Completed, target: &Path) ->
+    Result<Plan, PlanError>` renders every file and path and reads nothing but
+    the template folder and the target directory listing. A `Plan` holds
+    `PlannedFile { path: TargetPath, content: Content }`, where `Content` is
+    `Rendered(String)` or `Copied(PathBuf)`; the conflicts with existing
+    files; the ordered hook commands, interview hooks first; and the rendered
+    apply messages. `TargetPath` is a newtype built only by a constructor that
+    normalizes a rendered relative path and rejects `..` escapes, absolute
+    paths, and any path inside `.git`, so no later code checks for them.
+    `Plan::apply(self, options: ApplyOptions, runner: &dyn HookRunner) ->
+    Result<Applied, ApplyError>` refuses to write when conflicts exist
+    without `force`, returns `Applied::NeedsTrust(Plan)` without writing when
+    the plan has hooks and `options.trusted` is false, and otherwise writes
+    every file, then runs the hooks in order and stops at the first failure.
+    A dry run is `Plan::build` followed by printing the plan.
+
+  hook-runner: >-
+    `HookRunner` is the one port in the library, with two adapters: the
+    process adapter runs the argument vector directly with
+    `std::process::Command`, no shell, in the hook working directory; the
+    recording adapter used by tests records each command and returns a
+    configured status. Hook order, conditions, and failure handling are
+    therefore tested without depending on platform commands.
+
+  sources-and-registry: >-
+    `source` parses a template argument into the sum type
+    `Address::{Git { repo, reference, path }, Folder(PathBuf), Name(String)}`
+    using the order in the command-line specification and the merged host
+    prefixes, and renders the formal name of an address. It clones and
+    fetches with gitoxide into the user templates path. `registry` merges the
+    `templates.yml` layers and exposes `Registry::resolve(&self, name) ->
+    Result<Entry, ResolveError>`, where `ResolveError::Ambiguous` carries
+    every matching formal name so the binary prints the `templates alias`
+    commands. `add`, `update`, `remove`, and `alias` are methods on the user
+    layer that return the new layer; the binary writes it atomically.
+
+  configuration-boundary: >-
+    The binary resolves every environment variable and platform directory
+    once, into a `Dirs` value holding the configuration, data, state, and
+    system paths, and passes it to `config`, `registry`, and `staging`. The
+    library reads no environment variables. `config::load(&Dirs, cwd) ->
+    Result<Config, ConfigError>` validates each layer against the embedded
+    configuration schema and merges them by the rules in the configuration
+    specification.
+
+  outcomes-and-exit-codes: >-
+    Each command returns a domain outcome, and one exhaustive match in the
+    binary maps outcomes and errors to the exit codes in the command-line
+    specification: success 0, errors 1, usage 2, `NeedsTrust` 3, a pending
+    batch 4, and `ResolveError::Ambiguous` 5. Adding a variant fails
+    compilation until it has an exit code.
+
+  schemas-as-source: >-
+    The JSON Schemas in `docs/specifications/` are embedded with
+    `include_str!` and validated at runtime with the `jsonschema` crate. The
+    protocol driver builds batch documents that validate against the embedded
+    interview protocol schema. A test validates every example in
+    `docs/examples/` and every fixture against the same embedded schemas, so
+    the specifications and the implementation share one definition.
+
+  dependencies: >-
+    minijinja for Jinja; heck for case conversion; gix for git; serde with
+    serde_json and toml for data; serde_norway for YAML, whose tagged values
+    carry `!include` into the loader; jsonschema for schema validation; globset for ignore and
+    static globs; sha2 for staged file names; etcetera for platform
+    directories; clap for arguments, inquire for prompts, and include_dir for
+    embedded skills, behind the `cli` feature; and dist for release
+    installers.
+
+  fixture-suite: >-
+    Each fixture is a directory under `tests/fixtures/` holding a `template/`
+    folder, an `answers.json`, an `expected/` output tree, and an
+    `expect.yml` with the exit code, messages, and recorded hook commands.
+    One library-level harness loads the template, drives the engine with the
+    answers through the protocol driver, builds and applies the plan into a
+    temporary directory with the recording hook runner and a fixed clock, and
+    compares the tree with `expected/`. A second harness replays the same
+    fixtures in batches through staging to prove resumption produces the same
+    result. A command-line harness runs the binary against a subset to cover
+    argument parsing and exit codes. Error fixtures hold an `expect.yml`
+    with the expected error instead of an `expected/` tree.

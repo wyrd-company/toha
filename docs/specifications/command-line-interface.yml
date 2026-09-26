@@ -1,0 +1,55 @@
+$schema: https://refinery.systems/ontology/specification
+relationships:
+  realizes:
+    - toha
+description: >-
+  Defines the toha command-line interface: interviews, staging, applying,
+  template management, and embedded skills.
+  `docs/specifications/command-line-interface.spec.yml` is the machine-readable
+  command definition.
+
+  Template arguments. A `<TEMPLATE>` argument is read in this order: a value
+  that contains `://` or starts with `git@` is a git URL; a value that starts
+  with a configured or built-in host prefix followed by `:` is a git shorthand
+  address; a value that starts with `.`, `/`, or `~`, or a Windows drive
+  letter, is a local folder; any other value is an alias, then a short name,
+  then a formal name of an installed template. A git address has the form
+  `<repository>[@<ref>][#<path>]`, where `<ref>` is a tag, branch, or commit and
+  `<path>` is the template folder inside the repository.
+
+  Formal names. The formal name of a git template is its address in shorthand
+  form when a host prefix matches, including `@<ref>` when a ref was given and
+  `#<path>` when the template is not at the repository root. The formal name of
+  a local folder template is its canonical absolute path. Two refs of one
+  template are two installed templates with two formal names.
+
+  Short names. A short name that matches more than one installed template is
+  ambiguous. A command given an ambiguous short name fails with exit code 5
+  and lists the formal name of every match with a `templates alias` command for
+  each. `templates add` reports every short name the new templates share with
+  installed templates, with the same `templates alias` commands, and completes
+  the add.
+
+  Trust. The hooks of a template run when the template is trusted in the user
+  or system template registry or when `--trust` is given. Templates from a local
+  templates path and templates given by address or folder to `stage` or
+  `apply` are trusted only through `--trust`. When the template has hooks and
+  is not trusted, `apply` performs a dry run, lists the hooks, states that
+  `--trust` is required, and exits with code 3.
+
+  Updates. `templates update` fetches every installed git template, or the
+  one named, whose address has no ref or names a branch, and moves it to the
+  newest commit of that branch. A template pinned to a tag or a commit is left
+  unchanged. The formal name, aliases, and trust of an updated template are
+  unchanged.
+
+  Overwriting. `apply` writes no file over an existing file unless `--force` is
+  given. When any target file exists and `--force` is absent, `apply` writes
+  nothing and lists the conflicting paths.
+format: cli
+validation-criteria: >-
+  A conforming command line matches
+  `docs/specifications/command-line-interface.spec.yml` under the CLI Command
+  Specification schema at `https://commonclischema.org/draft/2026-04/schema`.
+  Command tokens, option flags, value types, conflicts, output modes, and exit
+  codes match the specification exactly.
