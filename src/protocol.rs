@@ -41,6 +41,9 @@ fn prompt_schema(prompt: &Prompt) -> Value {
     if let Some(v) = &prompt.default {
         property.insert("default".into(), v.to_json());
     }
+    if let Some(v) = &prompt.placeholder {
+        property.insert("examples".into(), json!([v]));
+    }
     let kind = match prompt.kind {
         PromptKind::Text | PromptKind::TextLoop => "text",
         PromptKind::Multiline => "multiline",
