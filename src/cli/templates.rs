@@ -334,7 +334,7 @@ fn add(
         } else {
             folder.clone()
         };
-        let mut entry = Entry {
+        let entry = Entry {
             name: name.clone(),
             source: match &parsed {
                 Address::Git { repo, .. } => source::without_userinfo(repo),
@@ -350,28 +350,21 @@ fn add(
             aliases: alias.clone().into_iter().collect(),
             trusted: trust,
         };
-        if let Some(old) = ctx.user.templates.get(&formal) {
-            for old_alias in &old.aliases {
-                if !entry.aliases.contains(old_alias) {
-                    entry.aliases.push(old_alias.clone());
-                }
-            }
-            entry.trusted |= old.trusted;
-        }
         additions.push((formal.clone(), entry));
         names.push((formal, name));
     }
-    let mut next = ctx.user.clone();
-    for (formal, entry) in additions {
-        next.templates.insert(formal, entry);
-    }
+    let mut next = ctx.user.add(additions);
     if let (Some((_, install)), Some(commit)) = (&clone, &commit) {
-        for entry in next
+        let keys: Vec<_> = next
             .templates
-            .values_mut()
-            .filter(|entry| entry.path.starts_with(install))
-        {
-            entry.commit = Some(commit.clone());
+            .iter()
+            .filter(|(_, entry)| entry.path.starts_with(install))
+            .map(|(formal, _)| formal.clone())
+            .collect();
+        for formal in keys {
+            next = next
+                .set_commit(&formal, commit.clone())
+                .map_err(CommandError::text)?;
         }
     }
     let mut merged = ctx.registry.clone();
@@ -518,12 +511,16 @@ fn update(ctx: &Context, template: Option<String>) -> Result<Vec<String>, Comman
         let commit = result.commit;
         fetched.insert(install.clone());
         staged.push((clone, install.clone()));
-        for (key, value) in next
+        let keys: Vec<_> = next
             .templates
-            .iter_mut()
-            .filter(|(_, v)| v.path.starts_with(&install))
-        {
-            value.commit = Some(commit.clone());
+            .iter()
+            .filter(|(_, entry)| entry.path.starts_with(&install))
+            .map(|(formal, _)| formal.clone())
+            .collect();
+        for key in keys {
+            next = next
+                .set_commit(&key, commit.clone())
+                .map_err(CommandError::text)?;
             lines.push(format!("updated {key}"));
         }
     }

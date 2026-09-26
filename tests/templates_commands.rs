@@ -123,6 +123,34 @@ fn add_selected_trust_and_update_branch() {
     assert_eq!(json[0]["trusted"], true);
 }
 #[test]
+fn readd_sparse_entry_persists_alias_and_trust() {
+    let root = TempDir::new().unwrap();
+    let url = repo(&root);
+    let address = format!("{url}#one");
+    assert_exit(&run(&root, &["templates", "add", &address]), 0);
+    let registry_path = root.path().join("data/toha/templates.yml");
+    let mut sparse: serde_json::Value =
+        serde_norway::from_str(&fs::read_to_string(&registry_path).unwrap()).unwrap();
+    let entry = sparse["templates"][&address].as_object_mut().unwrap();
+    entry.remove("aliases");
+    entry.remove("trusted");
+    fs::write(&registry_path, serde_norway::to_string(&sparse).unwrap()).unwrap();
+    assert_exit(
+        &run(
+            &root,
+            &["templates", "add", &address, "-a", "kept", "--trust"],
+        ),
+        0,
+    );
+    let written: serde_json::Value =
+        serde_norway::from_str(&fs::read_to_string(&registry_path).unwrap()).unwrap();
+    assert_eq!(
+        written["templates"][&address]["aliases"],
+        serde_json::json!(["kept"])
+    );
+    assert_eq!(written["templates"][&address]["trusted"], true);
+}
+#[test]
 fn add_rejects_multiple_with_alias_and_bad_template() {
     let root = TempDir::new().unwrap();
     let url = repo(&root);

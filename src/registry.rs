@@ -590,6 +590,72 @@ mod tests {
         assert!(!merged.entries["formal"].entry.trusted);
     }
     #[test]
+    fn sparse_entry_writes_track_fields_set_by_each_operation() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("templates.yml");
+        fs::write(
+            &path,
+            "templates:\n  formal:\n    name: sample\n    source: file:///sample\n    path: /sample\n",
+        )
+        .unwrap();
+        let sparse = RegistryFile::load(&path, Layer::User).unwrap();
+        let mut replacement = entry("sample", &["kept"]);
+        replacement.trusted = true;
+        sparse
+            .add([("formal".into(), replacement)])
+            .write_atomic(&path)
+            .unwrap();
+        let written: Value = serde_norway::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            written["templates"]["formal"]["aliases"],
+            serde_json::json!(["kept"])
+        );
+        assert_eq!(written["templates"]["formal"]["trusted"], true);
+
+        let commit = "0000000000000000000000000000000000000000";
+        sparse
+            .set_commit("formal", commit.into())
+            .unwrap()
+            .write_atomic(&path)
+            .unwrap();
+        let written: Value = serde_norway::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(written["templates"]["formal"]["commit"], commit);
+        assert!(written["templates"]["formal"].get("aliases").is_none());
+        assert!(written["templates"]["formal"].get("trusted").is_none());
+        assert!(matches!(
+            sparse.set_commit("absent", commit.into()),
+            Err(RegistryError::NotFound(_))
+        ));
+
+        let with_alias = sparse.add_alias("formal", "kept").unwrap();
+        with_alias.write_atomic(&path).unwrap();
+        let written: Value = serde_norway::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            written["templates"]["formal"]["aliases"],
+            serde_json::json!(["kept"])
+        );
+        assert!(written["templates"]["formal"].get("trusted").is_none());
+        with_alias
+            .remove_alias("kept")
+            .unwrap()
+            .write_atomic(&path)
+            .unwrap();
+        let written: Value = serde_norway::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            written["templates"]["formal"]["aliases"],
+            serde_json::json!([])
+        );
+        assert!(written["templates"]["formal"].get("trusted").is_none());
+
+        sparse
+            .remove("formal")
+            .unwrap()
+            .write_atomic(&path)
+            .unwrap();
+        let written: Value = serde_norway::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(written["templates"].get("formal").is_none());
+    }
+    #[test]
     fn local_aliases_do_not_grant_trust() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("templates.yml");
