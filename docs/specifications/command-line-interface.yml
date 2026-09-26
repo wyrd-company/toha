@@ -48,6 +48,29 @@ description: >-
   unchanged. The formal name, aliases, and trust of an updated template are
   unchanged.
 
+  Staged interviews. A `<TEMPLATE>` argument names the template of a staged
+  interview when it resolves to the formal name that the staged record holds.
+  `apply <TEMPLATE> <PATH>` with an interview for that template staged at the
+  path runs as `apply <PATH>`: a complete interview is applied, and an
+  incomplete one emits its batch and exits with code 4. With `--answers`, the
+  document answers the staged interview as it answers a new headless run, and
+  a complete result is applied. `stage <TEMPLATE> <PATH>` with an interview for
+  that template staged at the path fails and names `continue` for an
+  incomplete interview, `apply` for a complete one, and `abort` followed by
+  the same `stage` command to start again. `stage` or `apply` with a
+  `<TEMPLATE>` whose formal name differs from the staged one fails, names both
+  templates, and names `abort` followed by the same command to replace the
+  staged interview and the `continue` and `apply` commands that finish it.
+  `continue <PATH>` on a complete interview emits the complete result
+  document, names `apply <PATH>` on standard error, and exits with code 0; an
+  answers document for a complete interview fails and names `apply`.
+  `continue`, `apply <PATH>`, and `abort` with no interview staged at the path
+  name `stage` and `apply` with a `<TEMPLATE>`.
+
+  Refusals. When a command refuses a valid request made at the wrong time or
+  in the wrong form, and nothing is faulty, the message names the command or
+  commands that do what the caller meant.
+
   Overwriting. `apply` writes no file over an existing file unless `--force` is
   given. When any target file exists and `--force` is absent, `apply` writes
   nothing and lists the conflicting paths.

@@ -21,6 +21,11 @@ echo '{"title":"Sample note","topic":"Research"}' | toha continue ./notes -
 toha apply ./notes
 ```
 
+`continue` on a complete interview prints the complete result again and exits
+0. `apply <template> <target>` with an interview of that template staged at the
+target applies it as `apply <target>` does. A command refused for the staged
+state of the target names the command that fits on standard error.
+
 `stage --async` exits 4 when it emits a batch. `continue` exits 4 when questions
 remain or answers are rejected, and 0 when complete. `apply` exits 0 after
 writing, 3 when hooks need trust, 4 for an incomplete staged interview, and 1

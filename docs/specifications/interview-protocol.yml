@@ -45,14 +45,18 @@ description: >-
   validation, the result holds the same batch, with per-id errors, and no
   answer from that document is recorded. When the interview is complete, the
   result has `status: complete` and holds the full flat answers object.
+  `continue` without an answers argument on a complete interview emits that
+  complete result.
 
   Modality. The modality is chosen by each call. `continue` with an answers
   file, or `-` for standard input, answers the current batch. `continue`
   without an answers argument prompts in the terminal for every remaining
-  question. An interview started in one modality continues in either.
+  question, and needs a terminal only while questions remain. An interview
+  started in one modality continues in either.
 
   Headless answers files. `apply` accepts an answers document with
-  `--answers`. Toha answers each question from the document, then from
+  `--answers`, for a new interview or for the interview staged at the target
+  for the same template. Toha answers each question from the document, then from
   configured defaults, then from the question `default`. When a required
   question has no answer, the run stops, stages the interview, and emits the
   batch that holds the question.
@@ -66,7 +70,9 @@ description: >-
   resolved commit of the template, whether the argument resolved by name, the
   instant that `now()` returns for this
   interview, and every accepted answers submission, in order. Resuming replays
-  those submissions, so the interview position is derived, not stored. A
+  those submissions, so the interview position is derived, not stored.
+  `apply <TEMPLATE> <PATH>` resumes the staged interview when `<TEMPLATE>`
+  resolves to the formal name the record holds, and refuses otherwise. A
   staged record without the name-resolution field treats it as false.
 format: json-schema
 validation-criteria: >-

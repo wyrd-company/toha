@@ -45,7 +45,9 @@ const APPLY_HELP: &str = "\
 
 Arguments:
   [TEMPLATE]  Template to interview when no interview is staged at the path.
-              When given, the command runs `stage` and then applies.
+              When given, the command runs `stage` and then applies. When an
+              interview for the same template is staged at the path, the
+              command applies it as `apply <PATH>` does.
   <PATH>      Target directory.
 
 {all-args}{after-help}";
@@ -86,7 +88,8 @@ enum Command {
         path: PathBuf,
         /// Answers document for the current batch; - reads standard input.
         ///
-        /// When absent, toha prompts in the terminal for every remaining question.
+        /// When absent, toha prompts in the terminal for every remaining question, or emits the
+        /// complete result document when none remain.
         #[arg(value_name = "FILE")]
         answers: Option<String>,
     },
@@ -106,7 +109,8 @@ enum Command {
         /// One operand is the target directory; two are the template and the target directory.
         #[arg(num_args = 1..=2, required = true, value_name = "PATH", hide = true)]
         paths: Vec<String>,
-        /// Answers document for a new interview; - reads standard input.
+        /// Answers document for a new interview, or for the staged interview of the named
+        /// template; - reads standard input.
         #[arg(short = 'A', long, value_name = "FILE")]
         answers: Option<String>,
         /// Overwrite existing files.

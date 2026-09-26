@@ -55,7 +55,9 @@ commands:
         - code: 0
           meaning: The interview is complete and staged.
         - code: 1
-          meaning: The template failed to load, or an interview is already staged at the path.
+          meaning: >-
+            The template failed to load, or an interview is already staged at
+            the path; the message names the commands that finish or replace it.
         - code: 2
           meaning: Invalid command line.
         - code: 4
@@ -80,7 +82,7 @@ commands:
         description: >-
           Answers document for the current batch; `-` reads standard input.
           When absent, toha prompts in the terminal for every remaining
-          question.
+          question, or emits the complete result document when none remain.
         value:
           type: path
     output:
@@ -89,13 +91,17 @@ commands:
           description: Interactive prompts and messages, when no answers document is given.
           machine-readable: false
         - name: result
-          description: The interview protocol result document, when an answers document is given.
+          description: >-
+            The interview protocol result document, when an answers document is
+            given or the interview is complete.
           machine-readable: true
       exit-codes:
         - code: 0
           meaning: The interview is complete.
         - code: 1
-          meaning: No interview is staged at the path.
+          meaning: >-
+            No interview is staged at the path, or an answers document was given
+            for a complete interview; the message names the commands that fit.
         - code: 4
           meaning: Questions remain or answers were rejected; the result holds the batch.
   - name: apply
@@ -109,7 +115,9 @@ commands:
         required: false
         description: >-
           Template to interview when no interview is staged at the path. When
-          given, the command runs `stage` and then applies.
+          given, the command runs `stage` and then applies. When an interview
+          for the same template is staged at the path, the command applies it
+          as `apply <PATH>` does.
         value:
           type: string
       - name: path
@@ -134,7 +142,9 @@ commands:
       - name: answers
         flags: [ -A, --answers ]
         kind: option
-        description: Answers document for a new interview; `-` reads standard input.
+        description: >-
+          Answers document for a new interview, or for the staged interview of
+          the named template; `-` reads standard input.
         value:
           type: path
     output:
@@ -146,7 +156,11 @@ commands:
         - code: 0
           meaning: Files were written and every hook succeeded, or the dry run completed.
         - code: 1
-          meaning: A file conflict, render failure, or hook failure.
+          meaning: >-
+            A file conflict, render failure, or hook failure; no interview is
+            staged at the path; an interview for another template is staged at
+            the path; or an answers document was given for a complete
+            interview.
         - code: 3
           meaning: The template has hooks and is not trusted; a dry run was printed.
         - code: 4
