@@ -98,8 +98,9 @@ fn prompt_schema(prompt: &Prompt) -> Value {
     if !prompt.constraints.required {
         let kind = property.get("type").cloned().unwrap();
         property.insert("type".into(), json!([kind, "null"]));
-        if let Some(Value::Array(options)) = property.get_mut("enum") {
-            options.push(Value::Null);
+        // The enum lists only the options; null is accepted beside it.
+        if let Some(options) = property.remove("enum") {
+            property.insert("anyOf".into(), json!([{"enum": options}, {"type": "null"}]));
         }
     }
     Value::Object(property)
