@@ -59,7 +59,8 @@ description: >-
   for the same template. Toha answers each question from the document, then from
   configured defaults, then from the question `default`. When a required
   question has no answer, the run stops, stages the interview, and emits the
-  batch that holds the question.
+  batch that holds the question. With `--dry-run`, the run emits that batch
+  and leaves the staged state unchanged.
 
   Staged state. A staged interview is stored in the user state directory:
   `$XDG_STATE_HOME/toha/staged/` on Linux, falling back to

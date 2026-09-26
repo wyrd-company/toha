@@ -152,6 +152,12 @@ commands:
         - name: human-readable
           description: Prompts, messages, written paths, and hook output.
           machine-readable: false
+        - name: question-batch
+          description: >-
+            The interview protocol batch on standard output, with exit code 4,
+            when the interview is incomplete. The commands that answer the
+            remaining questions are named on standard error.
+          machine-readable: true
       exit-codes:
         - code: 0
           meaning: Files were written and every hook succeeded, or the dry run completed.
@@ -164,7 +170,9 @@ commands:
         - code: 3
           meaning: The template has hooks and is not trusted; a dry run was printed.
         - code: 4
-          meaning: The staged interview is incomplete.
+          meaning: >-
+            The interview is incomplete; standard output holds the question
+            batch.
         - code: 5
           meaning: The template name is ambiguous.
   - name: abort

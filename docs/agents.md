@@ -42,8 +42,8 @@ toha apply ./docs/examples/demo ./notes --answers answers.json
 ```
 
 A headless run with a missing required answer stages the interview and emits a
-batch. Answers for later questions can be supplied early; unknown ids are
-errors. The
+batch; with `--dry-run` it emits the batch and stages nothing. Answers for later
+questions can be supplied early; unknown ids are errors. The
 [interview protocol](https://github.com/wyrd-company/toha/blob/main/docs/specifications/interview-protocol.yml)
 defines batch, result, and answers documents.
 
