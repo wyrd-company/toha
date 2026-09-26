@@ -114,3 +114,27 @@ fn untrusted_hooks_of_installed_template_name_registry_trust() {
         ],
     );
 }
+
+#[test]
+fn conflicting_files_name_the_command_with_force() {
+    let case = Case::new();
+    support::copy_tree(
+        Path::new("tests/fixtures/conflict/existing"),
+        case.target.path(),
+    );
+    let template = support::folder_address(&fixture_template("conflict"));
+    let answers =
+        case.answers(&std::fs::read_to_string("tests/fixtures/conflict/answers.json").unwrap());
+    let output = case.run(&["apply", "--answers", &answers, &template, case.target()]);
+    assert_code(&output, 1);
+    assert_stderr_names(
+        &output,
+        &[
+            "conflicting files".into(),
+            format!(
+                "toha apply --answers {answers} --force {template} {}",
+                case.target()
+            ),
+        ],
+    );
+}
