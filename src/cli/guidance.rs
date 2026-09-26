@@ -64,11 +64,14 @@ fn path_value(value: &str, shell: Shell) -> &str {
         Shell::Windows => &['/', '\\'],
     };
     let trimmed = value.trim_end_matches(separators);
+    let drive = trimmed.strip_prefix(r"\\?\").unwrap_or(trimmed);
     let drive = matches!(shell, Shell::Windows)
-        && trimmed.len() == 2
-        && trimmed.as_bytes()[0].is_ascii_alphabetic()
-        && trimmed.as_bytes()[1] == b':';
-    if trimmed.is_empty() || drive && value.len() > 2 {
+        && drive.len() == 2
+        && drive.as_bytes()[0].is_ascii_alphabetic()
+        && drive.as_bytes()[1] == b':';
+    let root = trimmed.is_empty() || drive;
+    if root && trimmed.len() < value.len() {
+        // Keep one separator: `/`, `\`, `C:\`, `\\?\C:\`.
         &value[..trimmed.len() + 1]
     } else {
         trimmed
@@ -107,13 +110,18 @@ fn posix_word(value: &str) -> String {
 /// `=` only after the first character. Any other word is double-quoted, the
 /// form both shells accept, with an embedded `"` written as `""`.
 ///
+/// A word's trailing backslashes are written after the closing quote
+/// (`"C:\my dir"\`, `"\\?\C:"\`); the command-line rules of the Universal
+/// CRT (as `CommandLineToArgvW`) and PowerShell argument mode both read that
+/// as one argument that ends in those backslashes.
+///
 /// What holds: cmd.exe and PowerShell both pass a double-quoted word with
 /// spaces, `&`, `|`, `<`, `>`, `(`, `)`, `;`, `,` and `#` as one argument, and
 /// toha reads `""` inside it as `"` through the Universal CRT command-line
 /// rules; PowerShell reads `""` as `"` too. A backslash is literal unless it
-/// precedes a `"`; suggested paths never end in a separator (see
-/// [`path_value`]) and Windows paths cannot contain `"`, so no backslash
-/// precedes a quote in a suggested path.
+/// precedes a `"`; trailing backslashes follow the closing quote and Windows
+/// paths cannot contain `"`, so no backslash precedes a quote in a suggested
+/// path.
 ///
 /// Limits: `%` stays plain, because cmd.exe expands `%NAME%` inside double
 /// quotes as well as outside. PowerShell expands `$` and backtick escapes
@@ -126,10 +134,13 @@ fn windows_word(value: &str) -> String {
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-\\~".contains(c));
     if plain {
-        value.into()
-    } else {
-        format!("\"{}\"", value.replace('"', "\"\""))
+        return value.into();
     }
+    // A backslash before the closing quote would escape it, so the trailing
+    // backslashes follow the closing quote.
+    let body = value.trim_end_matches('\\');
+    let trailing = &value[body.len()..];
+    format!("\"{}\"{trailing}", body.replace('"', "\"\""))
 }
 
 fn target(path: &Path) -> String {
