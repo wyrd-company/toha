@@ -174,3 +174,187 @@ impl Plan {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        hook::RecordingRunner,
+        plan::{PlannedFile, PlannedProgram},
+    };
+    use std::{cell::RefCell, rc::Rc};
+
+    /// A plan that renders `paths` in order from one support file, with
+    /// `hooks` hooks.
+    fn plan(source: &Path, paths: &[&str], hooks: usize) -> Plan {
+        Plan {
+            files: paths
+                .iter()
+                .map(|path| PlannedFile {
+                    path: TargetPath::parse(path).unwrap(),
+                    content: Content::Rendered(format!("{path}\n")),
+                    source: source.to_owned(),
+                })
+                .collect(),
+            conflicts: vec![],
+            hooks: (0..hooks)
+                .map(|index| PlannedHook {
+                    program: PlannedProgram::Run(vec!["tool".into(), index.to_string()]),
+                    cwd: None,
+                    template_root: source.parent().unwrap().to_owned(),
+                })
+                .collect(),
+            before_apply: None,
+            after_apply: None,
+        }
+    }
+
+    fn support() -> (tempfile::TempDir, PathBuf) {
+        let folder = tempfile::tempdir().unwrap();
+        let source = folder.path().join("support.txt");
+        fs::write(&source, "support\n").unwrap();
+        (folder, source)
+    }
+
+    /// Records each reported file and each hook run in one event list.
+    struct EventRunner(Rc<RefCell<Vec<String>>>);
+    impl HookRunner for EventRunner {
+        fn run(&self, hook: &PlannedHook, _target: &Path) -> Result<HookOutcome, HookError> {
+            self.0.borrow_mut().push(format!("hook {}", hook.argv()[1]));
+            Ok(HookOutcome {
+                success: true,
+                code: Some(0),
+            })
+        }
+    }
+
+    fn apply(
+        plan: Plan,
+        target: &Path,
+        options: ApplyOptions,
+        runner: &dyn HookRunner,
+        events: &Rc<RefCell<Vec<String>>>,
+    ) -> Result<Applied, ApplyError> {
+        plan.apply_reporting(target, options, runner, &mut |path| {
+            events.borrow_mut().push(format!("file {path}"))
+        })
+    }
+
+    const TRUSTED: ApplyOptions = ApplyOptions {
+        force: false,
+        trusted: true,
+    };
+
+    #[test]
+    fn reports_each_file_once_in_plan_order_before_any_hook() {
+        let (_folder, source) = support();
+        let target = tempfile::tempdir().unwrap();
+        let events = Rc::new(RefCell::new(vec![]));
+        let plan = plan(&source, &["b.txt", "a/c.txt", "a.txt"], 2);
+        let runner = EventRunner(events.clone());
+        apply(plan, target.path(), TRUSTED, &runner, &events).unwrap();
+        assert_eq!(
+            *events.borrow(),
+            [
+                "file b.txt",
+                "file a/c.txt",
+                "file a.txt",
+                "hook 0",
+                "hook 1"
+            ]
+        );
+    }
+
+    #[test]
+    fn reports_a_forced_overwrite() {
+        let (_folder, source) = support();
+        let target = tempfile::tempdir().unwrap();
+        fs::write(target.path().join("a.txt"), "existing\n").unwrap();
+        let events = Rc::new(RefCell::new(vec![]));
+        let options = ApplyOptions {
+            force: true,
+            trusted: true,
+        };
+        let plan = plan(&source, &["a.txt", "b.txt"], 0);
+        apply(
+            plan,
+            target.path(),
+            options,
+            &RecordingRunner::new(),
+            &events,
+        )
+        .unwrap();
+        assert_eq!(*events.borrow(), ["file a.txt", "file b.txt"]);
+        assert_eq!(
+            fs::read_to_string(target.path().join("a.txt")).unwrap(),
+            "a.txt\n"
+        );
+    }
+
+    #[test]
+    fn reports_nothing_on_a_conflict_or_without_trust() {
+        let (_folder, source) = support();
+        let target = tempfile::tempdir().unwrap();
+        fs::write(target.path().join("b.txt"), "existing\n").unwrap();
+        let events = Rc::new(RefCell::new(vec![]));
+        let plan_a = plan(&source, &["a.txt", "b.txt"], 0);
+        let error = apply(
+            plan_a,
+            target.path(),
+            TRUSTED,
+            &RecordingRunner::new(),
+            &events,
+        );
+        assert!(matches!(error, Err(ApplyError::Conflicts(_))));
+        let untrusted = ApplyOptions::default();
+        let plan_b = plan(&source, &["c.txt"], 1);
+        let applied = apply(
+            plan_b,
+            target.path(),
+            untrusted,
+            &RecordingRunner::new(),
+            &events,
+        );
+        assert!(matches!(applied, Ok(Applied::NeedsTrust(_))));
+        assert!(events.borrow().is_empty(), "{:?}", events.borrow());
+    }
+
+    #[test]
+    fn a_failed_write_reports_only_the_files_written() {
+        let (_folder, source) = support();
+        let target = tempfile::tempdir().unwrap();
+        fs::create_dir(target.path().join("dir")).unwrap();
+        let events = Rc::new(RefCell::new(vec![]));
+        let options = ApplyOptions {
+            force: true,
+            trusted: true,
+        };
+        let plan = plan(&source, &["a.txt", "dir", "z.txt"], 0);
+        let error = apply(
+            plan,
+            target.path(),
+            options,
+            &RecordingRunner::new(),
+            &events,
+        );
+        assert!(matches!(error, Err(ApplyError::Io { .. })), "{error:?}");
+        assert_eq!(*events.borrow(), ["file a.txt"]);
+    }
+
+    #[test]
+    fn a_failed_hook_keeps_the_reported_files() {
+        let (_folder, source) = support();
+        let target = tempfile::tempdir().unwrap();
+        let events = Rc::new(RefCell::new(vec![]));
+        let plan = plan(&source, &["a.txt", "b.txt"], 1);
+        let error = apply(
+            plan,
+            target.path(),
+            TRUSTED,
+            &RecordingRunner::fail_at(0),
+            &events,
+        );
+        assert!(matches!(error, Err(ApplyError::Hook { .. })));
+        assert_eq!(*events.borrow(), ["file a.txt", "file b.txt"]);
+    }
+}
