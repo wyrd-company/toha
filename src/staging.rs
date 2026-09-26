@@ -21,6 +21,8 @@ pub struct StagedRecord {
     pub target: PathBuf,
     pub template: String,
     pub commit: String,
+    #[serde(default)]
+    pub named: bool,
     pub now: String,
     pub submissions: Vec<IndexMap<String, Value>>,
 }

@@ -19,6 +19,7 @@ pub struct ResolvedTemplate {
     pub commit: String,
     pub folder: PathBuf,
     pub trusted: bool,
+    pub named: bool,
 }
 
 #[derive(Debug)]
@@ -75,6 +76,7 @@ fn entry(formal: String, registry: &Registry) -> Option<ResolvedTemplate> {
         commit: listed.entry.commit.clone().unwrap_or_default(),
         folder: listed.entry.path.clone(),
         trusted: listed.trusted,
+        named: true,
     })
 }
 
@@ -148,6 +150,7 @@ fn fetch_new(
                     commit: commit.clone(),
                     folder: selected_folder(&root, address)?,
                     trusted: false,
+                    named: false,
                 });
             }
         }
@@ -165,6 +168,7 @@ fn fetch_new(
         commit: fetched.commit,
         folder: selected_folder(&root, address)?,
         trusted: false,
+        named: false,
     })
 }
 
@@ -181,11 +185,18 @@ pub fn resolve_template(
             formal_name: folder.to_string_lossy().into_owned(),
             commit: String::new(),
             folder: folder.clone(),
-            trusted: entry(address.formal_name(&config.hosts), registry).is_some_and(|v| v.trusted),
+            trusted: false,
+            named: false,
         }),
         Address::Git { .. } => {
             let formal = address.formal_name(&config.hosts);
-            entry(formal, registry).map_or_else(|| fetch_new(&address, config, dirs), Ok)
+            if let Some(mut found) = entry(formal, registry) {
+                found.trusted = false;
+                found.named = false;
+                Ok(found)
+            } else {
+                fetch_new(&address, config, dirs)
+            }
         }
         Address::Name(name) => {
             let resolved = registry.resolve(name)?;
@@ -197,6 +208,7 @@ pub fn resolve_template(
 pub fn resume_template(
     formal: &str,
     commit: &str,
+    named: bool,
     config: &Config,
     registry: &Registry,
     dirs: &Dirs,
@@ -214,12 +226,17 @@ pub fn resume_template(
             formal_name: formal.into(),
             commit: String::new(),
             folder,
-            trusted: entry(formal.into(), registry).is_some_and(|v| v.trusted),
+            trusted: named && entry(formal.into(), registry).is_some_and(|v| v.trusted),
+            named,
         });
     }
     if let Some(found) = entry(formal.into(), registry) {
         if found.commit == commit {
-            return Ok(found);
+            return Ok(ResolvedTemplate {
+                trusted: named && found.trusted,
+                named,
+                ..found
+            });
         }
     }
     let mut address =
@@ -235,7 +252,8 @@ pub fn resume_template(
         formal_name: formal.into(),
         commit: commit.into(),
         folder,
-        trusted: entry(formal.into(), registry).is_some_and(|v| v.trusted),
+        trusted: named && entry(formal.into(), registry).is_some_and(|v| v.trusted),
+        named,
     })
 }
 

@@ -5,12 +5,19 @@ relationships:
 
 # A staged exchange
 
-This uses a copy of `docs/examples/basic` at `$TOHA_TEMPLATE`, a fresh `$TOHA_TARGET`, and an isolated `$XDG_STATE_HOME`. The JSON lines below show selected fields from real toha output and the submitted answer document; each shell block prints exactly the following `text` block. The full batch also has `context` (canonical target and template paths, plus commit), `protocol: 1`, and `messages`.
+This uses a copy of `docs/examples/basic` at `$TOHA_TEMPLATE`, a fresh `$TOHA_TARGET`, and isolated configuration, data, cache, and state directories. The JSON lines below show selected fields from real toha output and the submitted answer document; each shell block prints exactly the following `text` block. The full batch also has `context` (canonical target and template paths, plus commit), `protocol: 1`, and `messages`.
 
 The first call exits 4 and emits a batch with a required title. The second call submits one answers document on standard input. The next batch has a slug default and a looped array of tags.
 
 ```sh
 # test
+export HOME="$TOHA_TARGET/home"
+export XDG_CONFIG_HOME="$TOHA_TARGET/config"
+export XDG_DATA_HOME="$TOHA_TARGET/data"
+export XDG_CACHE_HOME="$TOHA_TARGET/cache"
+export XDG_STATE_HOME="$TOHA_TARGET/state"
+export TOHA_USER_CONFIG="$XDG_CONFIG_HOME/toha/config.yml"
+export TOHA_CONFIG="$TOHA_TARGET/local.yml"
 if "$TOHA_BIN" stage "$TOHA_TEMPLATE" "$TOHA_TARGET" --async > "$TOHA_TARGET/batch.json"; then exit 1; else test "$?" -eq 4; fi
 jq -cS '{status,questions:(.schema.properties|keys),required:.schema.required,messages}' "$TOHA_TARGET/batch.json"
 if printf '%s' '{"title":"Sample Note"}' | "$TOHA_BIN" continue "$TOHA_TARGET" - > "$TOHA_TARGET/batch.json"; then exit 1; else test "$?" -eq 4; fi
@@ -26,6 +33,13 @@ A rejected answer returns the same batch with per-id `errors` and records none o
 
 ```sh
 # test
+export HOME="$TOHA_TARGET/home"
+export XDG_CONFIG_HOME="$TOHA_TARGET/config"
+export XDG_DATA_HOME="$TOHA_TARGET/data"
+export XDG_CACHE_HOME="$TOHA_TARGET/cache"
+export XDG_STATE_HOME="$TOHA_TARGET/state"
+export TOHA_USER_CONFIG="$XDG_CONFIG_HOME/toha/config.yml"
+export TOHA_CONFIG="$TOHA_TARGET/local.yml"
 if printf '%s' '{"slug":"BAD NAME","tags":["One"]}' | "$TOHA_BIN" continue "$TOHA_TARGET" - > "$TOHA_TARGET/result.json"; then exit 1; else test "$?" -eq 4; fi
 jq -cS '{status,questions:(.schema.properties|keys),errors}' "$TOHA_TARGET/result.json"
 printf '%s\n' '{"slug":"sample-note","tags":["One"]}'

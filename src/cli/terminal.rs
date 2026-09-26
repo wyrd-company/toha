@@ -468,6 +468,7 @@ mod tests {
             target: std::path::PathBuf::from("/tmp/sample-target"),
             template: "/tmp/sample-template".into(),
             commit: String::new(),
+            named: false,
             now: "2026-01-02T03:04:05+00:00[UTC]".into(),
             submissions: vec![IndexMap::from([("first".into(), json!("Ada"))])],
         };
@@ -540,6 +541,7 @@ mod tests {
                 target: std::path::PathBuf::from("/tmp/sample-target"),
                 template: "/tmp/sample-template".into(),
                 commit: String::new(),
+                named: false,
                 now: expect.now.clone(),
                 submissions,
             };

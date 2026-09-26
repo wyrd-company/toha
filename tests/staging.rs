@@ -270,6 +270,7 @@ fn every_success_fixture_through_library_replay() {
             target: canonical_target(target.path()).unwrap(),
             template: formal.clone(),
             commit: String::new(),
+            named: false,
             now: expect.now.clone(),
             submissions: vec![],
         };
@@ -828,6 +829,7 @@ fn replay_stores_raw_answer_before_non_idempotent_format() {
         target: canonical_target(target.path()).unwrap(),
         template: folder.path().to_string_lossy().into_owned(),
         commit: String::new(),
+        named: false,
         now: "2026-01-02T03:04:05+00:00[UTC]".into(),
         submissions: vec![indexmap::indexmap! { "value".into() => json!("a") }],
     };

@@ -392,8 +392,36 @@ fn registry_trust_runs_hooks_but_discovery_and_local_registry_do_not() {
     );
     run(
         &root,
-        &["templates", "add", folder.to_str().unwrap(), "--trust"],
+        &[
+            "templates",
+            "add",
+            folder.to_str().unwrap(),
+            "--alias",
+            "chosen",
+            "--trust",
+        ],
         0,
+    );
+    let record_path = fs::read_dir(root.path().join("state/toha/staged"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let mut record: Value = serde_json::from_slice(&fs::read(&record_path).unwrap()).unwrap();
+    assert_eq!(record["named"], false);
+    record.as_object_mut().unwrap().remove("named");
+    fs::write(&record_path, serde_json::to_vec(&record).unwrap()).unwrap();
+    run(
+        &root,
+        &[
+            "apply",
+            folder.to_str().unwrap(),
+            root.path().join("trusted-folder").to_str().unwrap(),
+            "--answers",
+            answers.to_str().unwrap(),
+        ],
+        3,
     );
     run(
         &root,
@@ -403,6 +431,7 @@ fn registry_trust_runs_hooks_but_discovery_and_local_registry_do_not() {
             root.path().join("trusted-folder").to_str().unwrap(),
             "--answers",
             answers.to_str().unwrap(),
+            "--trust",
         ],
         0,
     );
@@ -425,8 +454,39 @@ fn registry_trust_runs_hooks_but_discovery_and_local_registry_do_not() {
         fs::read_to_string(root.path().join("trusted/hook.txt")).unwrap(),
         "ok"
     );
-    run(&root, &["apply", staged.to_str().unwrap()], 0);
+    run(
+        &root,
+        &[
+            "apply",
+            "chosen",
+            root.path().join("alias").to_str().unwrap(),
+            "--answers",
+            answers.to_str().unwrap(),
+        ],
+        0,
+    );
+    run(&root, &["apply", staged.to_str().unwrap()], 3);
+    run(&root, &["apply", staged.to_str().unwrap(), "--trust"], 0);
     assert_eq!(fs::read_to_string(staged.join("hook.txt")).unwrap(), "ok");
+    let named_staged = root.path().join("named-staged");
+    run(
+        &root,
+        &["stage", "hooked", named_staged.to_str().unwrap(), "--async"],
+        0,
+    );
+    let record_path = fs::read_dir(root.path().join("state/toha/staged"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let record: Value = serde_json::from_slice(&fs::read(record_path).unwrap()).unwrap();
+    assert_eq!(record["named"], true);
+    run(&root, &["apply", named_staged.to_str().unwrap()], 0);
+    assert_eq!(
+        fs::read_to_string(named_staged.join("hook.txt")).unwrap(),
+        "ok"
+    );
     let revoked = root.path().join("revoked-trust");
     run(
         &root,
@@ -478,4 +538,63 @@ fn registry_trust_runs_hooks_but_discovery_and_local_registry_do_not() {
         fs::read_to_string(root.path().join("allowed/hook.txt")).unwrap(),
         "ok"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn trusted_git_address_requires_explicit_trust_even_when_registered() {
+    let root = TempDir::new().unwrap();
+    let repo = root.path().join("source");
+    fs::create_dir_all(repo.join("template")).unwrap();
+    fs::write(
+        repo.join("template.yml"),
+        "name: hooked\nhooks:\n  - run: [/bin/sh, -c, 'printf ok > hook.txt']\n",
+    )
+    .unwrap();
+    fs::write(repo.join("template/file.txt"), "file").unwrap();
+    git(&repo, &["init", "-b", "main"]);
+    git(&repo, &["config", "user.name", "Sample"]);
+    git(&repo, &["config", "user.email", "sample@example.invalid"]);
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-m", "initial"]);
+    let address = format!("file://{}", repo.display());
+    let answers = root.path().join("answers.json");
+    fs::write(&answers, "{}").unwrap();
+    run(
+        &root,
+        &["templates", "add", &address, "--alias", "chosen", "--trust"],
+        0,
+    );
+    let apply = |template: &str, target: &str, extra: &[&str], exit| {
+        let target = root.path().join(target);
+        let mut args = vec![
+            "apply",
+            template,
+            target.to_str().unwrap(),
+            "--answers",
+            answers.to_str().unwrap(),
+        ];
+        args.extend_from_slice(extra);
+        run(&root, &args, exit);
+        target
+    };
+    apply(&address, "direct", &[], 3);
+    apply(&address, "allowed", &["--trust"], 0);
+    apply("chosen", "alias", &[], 0);
+    apply("hooked", "short", &[], 0);
+    let staged = root.path().join("staged-git");
+    run(
+        &root,
+        &["stage", &address, staged.to_str().unwrap(), "--async"],
+        0,
+    );
+    run(&root, &["apply", staged.to_str().unwrap()], 3);
+    run(&root, &["apply", staged.to_str().unwrap(), "--trust"], 0);
+    let named = root.path().join("staged-name");
+    run(
+        &root,
+        &["stage", "chosen", named.to_str().unwrap(), "--async"],
+        0,
+    );
+    run(&root, &["apply", named.to_str().unwrap()], 0);
 }

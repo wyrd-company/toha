@@ -175,10 +175,8 @@ fn documented_protocol_exchange() {
     let folder = tempfile::tempdir().unwrap();
     let template = folder.path().join("template");
     let target = folder.path().join("target");
-    let state = folder.path().join("state");
     fs::create_dir(&template).unwrap();
     fs::create_dir(&target).unwrap();
-    fs::create_dir(&state).unwrap();
     for file in ["template.yml", "template/{{ slug }}.txt"] {
         let source = Path::new("docs/examples/basic").join(file);
         let destination = template.join(file);
@@ -224,7 +222,13 @@ fn documented_protocol_exchange() {
             .env("TOHA_BIN", assert_cmd::cargo::cargo_bin!("toha"))
             .env("TOHA_TEMPLATE", &template)
             .env("TOHA_TARGET", &target)
-            .env("XDG_STATE_HOME", &state)
+            .env("HOME", target.join("home"))
+            .env("XDG_CONFIG_HOME", target.join("config"))
+            .env("XDG_DATA_HOME", target.join("data"))
+            .env("XDG_CACHE_HOME", target.join("cache"))
+            .env("XDG_STATE_HOME", target.join("state"))
+            .env("TOHA_USER_CONFIG", target.join("config/toha/config.yml"))
+            .env("TOHA_CONFIG", target.join("local.yml"))
             .output()
             .unwrap();
         assert!(

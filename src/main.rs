@@ -310,6 +310,7 @@ fn record(target: PathBuf, resolved: &ResolvedTemplate, now: &jiff::Zoned) -> St
         target,
         template: resolved.formal_name.clone(),
         commit: resolved.commit.clone(),
+        named: resolved.named,
         now: now.to_string(),
         submissions: vec![],
     }
@@ -415,6 +416,7 @@ fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome 
     let resolved = match cli::resolve::resume_template(
         &saved.template,
         &saved.commit,
+        saved.named,
         &config,
         &registry,
         dirs,
@@ -595,6 +597,7 @@ fn run(
             let resolved = match cli::resolve::resume_template(
                 &saved.template,
                 &saved.commit,
+                saved.named,
                 &config,
                 &registry,
                 dirs,

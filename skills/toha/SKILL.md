@@ -14,7 +14,7 @@ relationships:
 
 An omitted key in `--answers` or `continue` uses the configured default, then the question default, then `none`. A configured default replaces the question default. Explicit JSON `null` is an empty answer and skips both defaults; a required question rejects it. Show `messages` to the caller in order. A batch's `schema` is JSON Schema 2020-12; do not infer answer types from prompt text.
 
-Hooks need registry trust or `--trust` for this run. A folder or address supplied directly is not trusted by default. Inspect the dry run before granting trust. `--force` permits overwriting target files; without it a conflict writes nothing.
+Hooks need registry trust through a name or `--trust` for this run. A folder or address supplied directly needs `--trust`, even when it matches a trusted registry entry. Inspect the dry run before granting trust. `--force` permits overwriting target files; without it a conflict writes nothing.
 
 | Exit | Action |
 | --- | --- |
