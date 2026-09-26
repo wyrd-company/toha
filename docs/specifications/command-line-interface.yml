@@ -60,8 +60,9 @@ description: >-
   carries a release tag prints that tag. A build of any other commit prints the
   tagver height version, which adds the number of commits since the latest
   reachable tag to the version of that tag; three commits after `0.1.0` it is
-  `0.1.1-alpha.0.3`. A build uses the package version when no repository has
-  the package root as its work tree, or when tagver fails.
+  `0.1.1-alpha.0.3`. With no reachable tag, or no commit, the version starts
+  from `0.0.0-alpha.0`. A build uses the package version when no repository
+  has the package root as its work tree, or when tagver fails.
 format: cli
 validation-criteria: >-
   A conforming command line matches
