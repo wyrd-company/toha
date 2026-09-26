@@ -345,6 +345,20 @@ pub fn fetch(address: &Address, dest: &Path) -> Result<Fetched, SourceError> {
 mod tests {
     use super::*;
     #[test]
+    fn local_file_url_uses_platform_path() {
+        let expected = if cfg!(windows) {
+            "C:/sample/repo"
+        } else {
+            "/sample/repo"
+        };
+        let input = if cfg!(windows) {
+            "file:///C:/sample/repo"
+        } else {
+            "file:///sample/repo"
+        };
+        assert_eq!(local_git_path(input), Some(expected));
+    }
+    #[test]
     fn parse_order_and_formal_names() {
         let root = tempfile::tempdir().unwrap();
         let hosts = Hosts::from([
