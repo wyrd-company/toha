@@ -1136,3 +1136,182 @@ fn main() -> ExitCode {
         }
     }
 }
+
+#[cfg(test)]
+mod dirs_tests {
+    use super::{Dirs, Platform};
+    use std::{collections::HashMap, ffi::OsString, path::PathBuf};
+
+    /// An absolute path on the host, so that `Path::is_absolute` accepts it
+    /// on every platform.
+    fn absolute(name: &str) -> PathBuf {
+        std::env::temp_dir().join("toha-dirs").join(name)
+    }
+
+    /// The directories of `platform` in an environment that holds `vars` and
+    /// an absolute HOME, APPDATA, LOCALAPPDATA, and PROGRAMDATA unless
+    /// `vars` names them.
+    fn dirs(platform: Platform, vars: &[(&str, &str)]) -> Result<Dirs, String> {
+        dirs_without(platform, vars, &[])
+    }
+
+    /// `dirs` with the variables in `unset` removed.
+    fn dirs_without(
+        platform: Platform,
+        vars: &[(&str, &str)],
+        unset: &[&str],
+    ) -> Result<Dirs, String> {
+        let mut env: HashMap<String, OsString> = [
+            ("HOME", absolute("home")),
+            ("APPDATA", absolute("roaming")),
+            ("LOCALAPPDATA", absolute("local")),
+            ("PROGRAMDATA", absolute("program")),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value.into_os_string()))
+        .collect();
+        for (key, value) in vars {
+            env.insert((*key).to_owned(), OsString::from(value));
+        }
+        for key in unset {
+            env.remove(*key);
+        }
+        Dirs::from_env(platform, |key| env.get(key).cloned())
+    }
+
+    fn text(path: &std::path::Path) -> String {
+        path.to_str().unwrap().to_owned()
+    }
+
+    #[test]
+    fn xdg_config_home_is_used_only_when_absolute() {
+        let default = absolute("home").join(".config/toha/config.yml");
+        for platform in [Platform::Unix, Platform::MacOs] {
+            for value in ["", "relative"] {
+                let actual = dirs(platform, &[("XDG_CONFIG_HOME", value)]).unwrap();
+                assert_eq!(actual.user_config, default, "{platform:?} {value:?}");
+            }
+            let base = text(&absolute("config"));
+            let actual = dirs(platform, &[("XDG_CONFIG_HOME", &base)]).unwrap();
+            assert_eq!(
+                actual.user_config,
+                absolute("config").join("toha/config.yml")
+            );
+        }
+    }
+
+    #[test]
+    fn xdg_data_home_is_used_only_when_absolute() {
+        let default = absolute("home").join(".local/share/toha");
+        for value in ["", "relative"] {
+            let actual = dirs(Platform::Unix, &[("XDG_DATA_HOME", value)]).unwrap();
+            assert_eq!(actual.user_data, default, "{value:?}");
+        }
+        let base = text(&absolute("data"));
+        let actual = dirs(Platform::Unix, &[("XDG_DATA_HOME", &base)]).unwrap();
+        assert_eq!(actual.user_data, absolute("data").join("toha"));
+    }
+
+    #[test]
+    fn xdg_cache_home_is_used_only_when_absolute() {
+        let default = absolute("home").join(".cache/toha");
+        for value in ["", "relative"] {
+            let actual = dirs(Platform::Unix, &[("XDG_CACHE_HOME", value)]).unwrap();
+            assert_eq!(actual.cache, default, "{value:?}");
+        }
+        let base = text(&absolute("cache"));
+        let actual = dirs(Platform::Unix, &[("XDG_CACHE_HOME", &base)]).unwrap();
+        assert_eq!(actual.cache, absolute("cache").join("toha"));
+    }
+
+    #[test]
+    fn xdg_state_home_is_used_only_when_absolute() {
+        let default = absolute("home").join(".local/state/toha/staged");
+        for value in ["", "relative"] {
+            let actual = dirs(Platform::Unix, &[("XDG_STATE_HOME", value)]).unwrap();
+            assert_eq!(actual.state, default, "{value:?}");
+        }
+        let base = text(&absolute("state"));
+        let actual = dirs(Platform::Unix, &[("XDG_STATE_HOME", &base)]).unwrap();
+        assert_eq!(actual.state, absolute("state").join("toha/staged"));
+    }
+
+    #[test]
+    fn home_is_used_only_when_absolute() {
+        let profile = text(&absolute("profile"));
+        for value in ["", "relative"] {
+            let actual = dirs(
+                Platform::Unix,
+                &[("HOME", value), ("USERPROFILE", &profile)],
+            )
+            .unwrap();
+            assert_eq!(actual.home, absolute("profile"), "{value:?}");
+        }
+        let home = text(&absolute("other-home"));
+        let actual = dirs(
+            Platform::Unix,
+            &[("HOME", &home), ("USERPROFILE", &profile)],
+        )
+        .unwrap();
+        assert_eq!(actual.home, absolute("other-home"));
+    }
+
+    #[test]
+    fn userprofile_is_used_only_when_absolute() {
+        for value in ["", "relative"] {
+            let error = dirs_without(Platform::Windows, &[("USERPROFILE", value)], &["HOME"])
+                .err()
+                .unwrap_or_else(|| panic!("USERPROFILE {value:?} was used"));
+            assert_eq!(error, "home directory unavailable");
+        }
+        let profile = text(&absolute("profile"));
+        let actual =
+            dirs_without(Platform::Windows, &[("USERPROFILE", &profile)], &["HOME"]).unwrap();
+        assert_eq!(actual.home, absolute("profile"));
+    }
+
+    #[test]
+    fn appdata_is_used_only_when_absolute() {
+        for value in ["", "relative"] {
+            let error = dirs(Platform::Windows, &[("APPDATA", value)])
+                .err()
+                .unwrap_or_else(|| panic!("APPDATA {value:?} was used"));
+            assert_eq!(error, "APPDATA unavailable");
+        }
+        let actual = dirs(Platform::Windows, &[]).unwrap();
+        assert_eq!(
+            actual.user_config,
+            absolute("roaming").join("toha/config.yml")
+        );
+        assert_eq!(actual.user_data, absolute("roaming").join("toha"));
+    }
+
+    #[test]
+    fn localappdata_is_used_only_when_absolute() {
+        for value in ["", "relative"] {
+            let error = dirs(Platform::Windows, &[("LOCALAPPDATA", value)])
+                .err()
+                .unwrap_or_else(|| panic!("LOCALAPPDATA {value:?} was used"));
+            assert_eq!(error, "LOCALAPPDATA unavailable");
+        }
+        let actual = dirs(Platform::Windows, &[]).unwrap();
+        assert_eq!(actual.cache, absolute("local").join("toha/cache"));
+        assert_eq!(actual.state, absolute("local").join("toha/staged"));
+    }
+
+    #[test]
+    fn programdata_is_used_only_when_absolute() {
+        for value in ["", "relative"] {
+            let error = dirs(Platform::Windows, &[("PROGRAMDATA", value)])
+                .err()
+                .unwrap_or_else(|| panic!("PROGRAMDATA {value:?} was used"));
+            assert_eq!(error, "PROGRAMDATA unavailable");
+        }
+        let actual = dirs(Platform::Windows, &[]).unwrap();
+        assert_eq!(
+            actual.system_config,
+            absolute("program").join("toha/config.yml")
+        );
+        assert_eq!(actual.system_data, absolute("program").join("toha"));
+    }
+}
