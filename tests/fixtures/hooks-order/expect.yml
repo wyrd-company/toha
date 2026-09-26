@@ -1,0 +1,21 @@
+exit: 0
+options:
+  trust: true
+cli: false
+hooks:
+- argv:
+  - tool
+  - first
+  cwd: ''
+- argv:
+  - tool
+  - second
+  cwd: work
+- argv:
+  - scripts/go.sh
+  - 'True'
+  cwd: ''
+- argv:
+  - tool
+  - last
+  cwd: ''

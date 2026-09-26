@@ -1,0 +1,4 @@
+name: err-top-hook-when-eval
+hooks:
+  - run: [ tool ]
+    when: "'bad' | dateformat"

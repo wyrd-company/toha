@@ -1,0 +1,5 @@
+# {{ title }}
+Status: {{ status }}
+Tags: {{ tags | join(', ') }}
+{% if has_summary %}{{ summary }}
+{% endif %}

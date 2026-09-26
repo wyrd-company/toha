@@ -7,6 +7,7 @@ mod support;
 use std::{fs, path::Path};
 use toha::{
     AnswerError, Applied, ApplyOptions, Id, Interview, Plan, RawAnswer, RawAnswers, Seed, Template,
+    hook::RecordingRunner,
 };
 
 fn run(fixture: &Path, target: &Path) -> Result<Vec<String>, (u8, String)> {
@@ -47,13 +48,42 @@ fn run(fixture: &Path, target: &Path) -> Result<Vec<String>, (u8, String)> {
             }
         }
     };
+    let expect = support::expectation(fixture);
     let plan =
         Plan::build(&template, &completed, target).map_err(|error| (1, error.to_string()))?;
-    match plan
-        .apply(target, ApplyOptions::default())
-        .map_err(|error| (1, error.to_string()))?
-    {
-        Applied::Written(_) => Ok(completed.messages),
+    assert_eq!(plan.before_apply, expect.before_apply);
+    assert_eq!(plan.after_apply, expect.after_apply);
+    let runner = expect
+        .fail_hook
+        .map(RecordingRunner::fail_at)
+        .unwrap_or_default();
+    let result = if expect.options.dry_run {
+        Ok(Applied::Written {
+            files: vec![],
+            hooks_run: 0,
+            after_apply: None,
+        })
+    } else {
+        plan.apply(
+            target,
+            ApplyOptions {
+                force: expect.options.force,
+                trusted: expect.options.trust,
+            },
+            &runner,
+        )
+        .map_err(|error| (1, error.to_string()))
+    };
+    let calls = runner.calls();
+    let wanted: Vec<_> = expect
+        .hooks
+        .iter()
+        .map(|h| (h.argv.clone(), h.cwd.clone()))
+        .collect();
+    assert_eq!(calls, wanted, "{}", fixture.display());
+    match result? {
+        Applied::Written { .. } => Ok(completed.messages),
+        Applied::NeedsTrust(_) => Err((3, "hooks will not run without --trust".into())),
     }
 }
 
@@ -62,6 +92,7 @@ fn every_fixture_through_library() {
     for fixture in support::fixtures() {
         let target = tempfile::tempdir().unwrap();
         let expect = support::expectation(&fixture);
+        support::copy_tree(&fixture.join("existing"), target.path());
         let result = run(&fixture, target.path());
         let name = fixture.file_name().unwrap().to_string_lossy();
         match result {
@@ -75,10 +106,14 @@ fn every_fixture_through_library() {
                 for part in expect.error_contains {
                     assert!(text.contains(&part), "{name}: missing {part:?} in {text:?}");
                 }
-                assert!(
-                    fs::read_dir(target.path()).unwrap().next().is_none(),
-                    "{name}: wrote files on error"
-                );
+                if fixture.join("expected").exists() {
+                    support::assert_tree(target.path(), &fixture.join("expected"));
+                } else {
+                    assert!(
+                        fs::read_dir(target.path()).unwrap().next().is_none(),
+                        "{name}: wrote files on error"
+                    );
+                }
             }
         }
     }
@@ -399,4 +434,14 @@ interview:
         })
         .collect();
     assert_eq!(ids, ["first"]);
+}
+
+#[test]
+fn every_documented_example_loads() {
+    for entry in fs::read_dir("docs/examples").unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            Template::load(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        }
+    }
 }

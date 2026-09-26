@@ -1,0 +1,4 @@
+Site: {{ site_name }}
+Theme: {{ theme }}
+Search: {{ search }}
+Hosted: {{ uses_hosted_services }}

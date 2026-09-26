@@ -1,0 +1,20 @@
+name: files-each
+source: template
+interview:
+  - id: items
+    type: text
+    prompt: Items
+    loop: { min: 1 }
+  - id: copies
+    computed: "items | map('upper') | list"
+files:
+  - each: items as item
+    source: parts/a.txt
+    path: "a/{{ item }}.txt"
+  - each: copies as copy
+    source: parts/b.txt
+    path: "b/{{ copy }}.txt"
+  - each: items as item
+    source: parts/a.txt
+    path: "skip/{{ item }}.txt"
+    when: "false"

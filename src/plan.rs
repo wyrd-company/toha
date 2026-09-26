@@ -77,15 +77,41 @@ pub(crate) fn has_symlink_component(
 pub struct Plan {
     pub files: Vec<PlannedFile>,
     pub conflicts: Vec<TargetPath>,
+    pub hooks: Vec<PlannedHook>,
+    pub before_apply: Option<String>,
+    pub after_apply: Option<String>,
 }
 #[derive(Debug)]
 pub struct PlannedFile {
     pub path: TargetPath,
     pub content: Content,
+    pub source: PathBuf,
 }
 #[derive(Debug)]
 pub enum Content {
     Rendered(String),
+    Copied(PathBuf),
+}
+#[derive(Debug, Clone)]
+pub struct PlannedHook {
+    pub program: PlannedProgram,
+    pub cwd: Option<TargetPath>,
+    pub template_root: PathBuf,
+}
+#[derive(Debug, Clone)]
+pub enum PlannedProgram {
+    Run(Vec<String>),
+    Script { path: PathBuf, args: Vec<String> },
+}
+impl PlannedHook {
+    pub fn argv(&self) -> Vec<String> {
+        match &self.program {
+            PlannedProgram::Run(v) => v.clone(),
+            PlannedProgram::Script { path, args } => std::iter::once(path.display().to_string())
+                .chain(args.iter().cloned())
+                .collect(),
+        }
+    }
 }
 #[derive(Debug, thiserror::Error)]
 pub enum PlanError {
@@ -98,116 +124,163 @@ pub enum PlanError {
     },
     #[error("{path}: {message}")]
     Render { path: PathBuf, message: String },
+    #[error("duplicate target {target}: {first} and {second}")]
+    Duplicate {
+        target: TargetPath,
+        first: PathBuf,
+        second: PathBuf,
+    },
 }
-
+fn rendered(text: &str, ctx: &impl serde::Serialize, source: &Path) -> Result<String, PlanError> {
+    Tmpl::compile(text.into())
+        .and_then(|t| t.render(ctx))
+        .map_err(|e| PlanError::Render {
+            path: source.into(),
+            message: e.to_string(),
+        })
+}
+fn read_render(path: &Path, ctx: &impl serde::Serialize) -> Result<String, PlanError> {
+    let bytes = fs::read(path).map_err(|source| PlanError::Io {
+        path: path.into(),
+        source,
+    })?;
+    let text = String::from_utf8(bytes).map_err(|_| PlanError::Render {
+        path: path.into(),
+        message: "file is not UTF-8; add it to static".into(),
+    })?;
+    rendered(&text, ctx, path)
+}
+fn target_path(path: &Path, ctx: &impl serde::Serialize) -> Result<Option<TargetPath>, PlanError> {
+    let mut parts = PathBuf::new();
+    for segment in path.components() {
+        let value = rendered(&segment.as_os_str().to_string_lossy(), ctx, path)?;
+        if value.is_empty() {
+            return Ok(None);
+        }
+        parts.push(value);
+    }
+    TargetPath::parse(&parts.to_string_lossy())
+        .map(Some)
+        .map_err(PlanError::Path)
+}
 impl Plan {
     pub fn build(
         template: &Template,
         completed: &Completed,
         target: &Path,
     ) -> Result<Self, PlanError> {
+        let ctx = context_from_answers(&completed.answers, &template.data, &completed.now);
         let mut plan = Self {
-            files: Vec::new(),
-            conflicts: Vec::new(),
+            files: vec![],
+            conflicts: vec![],
+            hooks: vec![],
+            before_apply: None,
+            after_apply: None,
         };
         walk(
             &template.source_dir,
             &template.source_dir,
             target,
-            completed,
             template,
+            &ctx,
             &mut plan,
         )?;
+        for (i, rule) in template.files.iter().enumerate() {
+            let origin = template.root.join(&rule.source);
+            if let Some(when) = &rule.when {
+                let enabled = when.eval(&ctx).map_err(|e| PlanError::Render {
+                    path: origin.clone(),
+                    message: format!("files[{i}].when: {e}"),
+                })?;
+                if !enabled.is_true() {
+                    continue;
+                }
+            }
+            let values = rule.each.eval(&ctx).map_err(|e| PlanError::Render {
+                path: origin.clone(),
+                message: format!("files[{i}].each: {e}"),
+            })?;
+            let values = serde_json::to_value(values).map_err(|e| PlanError::Render {
+                path: origin.clone(),
+                message: e.to_string(),
+            })?;
+            let Some(items) = values.as_array() else {
+                return Err(PlanError::Render {
+                    path: origin,
+                    message: format!("files[{i}].each: expected array"),
+                });
+            };
+            for item in items {
+                let mut local = ctx.clone();
+                local.insert(
+                    rule.binding.as_str().into(),
+                    serde_json::to_value(item).map_err(|e| PlanError::Render {
+                        path: origin.clone(),
+                        message: e.to_string(),
+                    })?,
+                );
+                let path_text = rule.path.render(&local).map_err(|e| PlanError::Render {
+                    path: origin.clone(),
+                    message: e.to_string(),
+                })?;
+                let path = TargetPath::parse(&path_text).map_err(PlanError::Path)?;
+                let content = Content::Rendered(read_render(&origin, &local)?);
+                plan.add(path, content, origin.clone(), target)?;
+            }
+        }
+        for hook in &completed.hooks {
+            plan.hooks.push(plan_hook(hook, template)?);
+        }
+        for (i, hook) in template.hooks.iter().enumerate() {
+            if let Some(when) = &hook.when {
+                if !when
+                    .eval(&ctx)
+                    .map_err(|e| PlanError::Render {
+                        path: template.root.clone(),
+                        message: format!("hooks[{i}].when: {e}"),
+                    })?
+                    .is_true()
+                {
+                    continue;
+                }
+            }
+            let rendered =
+                crate::interview::render_hook(hook, &ctx).map_err(|message| PlanError::Render {
+                    path: template.root.clone(),
+                    message,
+                })?;
+            plan.hooks.push(plan_hook(&rendered, template)?);
+        }
+        for (source, target_message) in [
+            (&template.messages.before_apply, &mut plan.before_apply),
+            (&template.messages.after_apply, &mut plan.after_apply),
+        ] {
+            if let Some(source) = source {
+                let text = source.render(&ctx).map_err(|e| PlanError::Render {
+                    path: template.root.clone(),
+                    message: e.to_string(),
+                })?;
+                if !text.trim().is_empty() {
+                    *target_message = Some(text);
+                }
+            }
+        }
         Ok(plan)
     }
-}
-
-fn walk(
-    source_root: &Path,
-    dir: &Path,
-    target: &Path,
-    completed: &Completed,
-    template: &Template,
-    plan: &mut Plan,
-) -> Result<(), PlanError> {
-    let mut entries = fs::read_dir(dir)
-        .map_err(|source| PlanError::Io {
-            path: dir.to_owned(),
-            source,
-        })?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|source| PlanError::Io {
-            path: dir.to_owned(),
-            source,
-        })?;
-    entries.sort_by_key(|entry| entry.file_name());
-    for entry in entries {
-        let source_path = entry.path();
-        if source_root == dir && entry.file_name() == "template.yml" {
-            continue;
+    fn add(
+        &mut self,
+        path: TargetPath,
+        content: Content,
+        source: PathBuf,
+        target: &Path,
+    ) -> Result<(), PlanError> {
+        if let Some(first) = self.files.iter().find(|f| f.path == path) {
+            return Err(PlanError::Duplicate {
+                target: path,
+                first: first.source.clone(),
+                second: source,
+            });
         }
-        let relative = source_path
-            .strip_prefix(source_root)
-            .expect("walk stays under source root");
-        let mut rendered = PathBuf::new();
-        let mut skip = false;
-        for segment in relative.components() {
-            let text = segment.as_os_str().to_string_lossy();
-            let segment_template =
-                Tmpl::compile(text.into_owned()).map_err(|error| PlanError::Render {
-                    path: source_path.clone(),
-                    message: error.to_string(),
-                })?;
-            let value = segment_template
-                .render(context_from_answers(
-                    &completed.answers,
-                    &template.data,
-                    &completed.now,
-                ))
-                .map_err(|error| PlanError::Render {
-                    path: source_path.clone(),
-                    message: error.to_string(),
-                })?;
-            if value.is_empty() {
-                skip = true;
-                break;
-            }
-            rendered.push(value);
-        }
-        if skip {
-            continue;
-        }
-        let path = TargetPath::parse(&rendered.to_string_lossy()).map_err(PlanError::Path)?;
-        let file_type = entry.file_type().map_err(|source| PlanError::Io {
-            path: source_path.clone(),
-            source,
-        })?;
-        if file_type.is_symlink() {
-            return Err(PlanError::Path(format!(
-                "source symlink not supported: {}",
-                source_path.display()
-            )));
-        }
-        if file_type.is_dir() {
-            walk(source_root, &source_path, target, completed, template, plan)?;
-            continue;
-        }
-        let source = fs::read_to_string(&source_path).map_err(|source| PlanError::Io {
-            path: source_path.clone(),
-            source,
-        })?;
-        let content = Tmpl::compile(source)
-            .and_then(|tmpl| {
-                tmpl.render(context_from_answers(
-                    &completed.answers,
-                    &template.data,
-                    &completed.now,
-                ))
-            })
-            .map_err(|error| PlanError::Render {
-                path: source_path.clone(),
-                message: error.to_string(),
-            })?;
         let destination = target.join(path.as_path());
         if has_symlink_component(target, &path).map_err(|source| PlanError::Io {
             path: destination.clone(),
@@ -217,17 +290,101 @@ fn walk(
                 "target path contains symlink: {path}"
             )));
         }
-        if destination.exists() || plan.files.iter().any(|file| file.path == path) {
-            plan.conflicts.push(path.clone());
+        if destination.exists() {
+            self.conflicts.push(path.clone());
         }
-        plan.files.push(PlannedFile {
+        self.files.push(PlannedFile {
             path,
-            content: Content::Rendered(content),
+            content,
+            source,
         });
+        Ok(())
+    }
+}
+fn plan_hook(
+    hook: &crate::interview::RenderedHook,
+    template: &Template,
+) -> Result<PlannedHook, PlanError> {
+    use crate::interview::RenderedProgram;
+    let program = match &hook.program {
+        RenderedProgram::Run(v) => PlannedProgram::Run(v.clone()),
+        RenderedProgram::Script { path, args } => PlannedProgram::Script {
+            path: template.root.join(path),
+            args: args.clone(),
+        },
+    };
+    let cwd = hook
+        .cwd
+        .as_deref()
+        .filter(|v| !v.is_empty())
+        .map(TargetPath::parse)
+        .transpose()
+        .map_err(PlanError::Path)?;
+    Ok(PlannedHook {
+        program,
+        cwd,
+        template_root: template.root.clone(),
+    })
+}
+fn walk(
+    root: &Path,
+    dir: &Path,
+    target: &Path,
+    template: &Template,
+    ctx: &impl serde::Serialize,
+    plan: &mut Plan,
+) -> Result<(), PlanError> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    let mut entries = fs::read_dir(dir)
+        .map_err(|source| PlanError::Io {
+            path: dir.into(),
+            source,
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|source| PlanError::Io {
+            path: dir.into(),
+            source,
+        })?;
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
+        let source = entry.path();
+        let relative = source.strip_prefix(root).unwrap();
+        if root == template.root && dir == root && entry.file_name() == "template.yml" {
+            continue;
+        }
+        if template.ignore.is_match(relative) {
+            continue;
+        }
+        let file_type = entry
+            .file_type()
+            .map_err(|source: std::io::Error| PlanError::Io {
+                path: entry.path(),
+                source,
+            })?;
+        if file_type.is_symlink() {
+            return Err(PlanError::Path(format!(
+                "source symlink not supported: {}",
+                source.display()
+            )));
+        }
+        if file_type.is_dir() {
+            walk(root, &source, target, template, ctx, plan)?;
+            continue;
+        }
+        let Some(path) = target_path(relative, ctx)? else {
+            continue;
+        };
+        let content = if template.static_files.is_match(relative) {
+            Content::Copied(source.clone())
+        } else {
+            Content::Rendered(read_render(&source, ctx)?)
+        };
+        plan.add(path, content, source, target)?;
     }
     Ok(())
 }
-
 #[cfg(test)]
 mod tests {
     use super::TargetPath;

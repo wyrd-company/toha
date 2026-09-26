@@ -3,6 +3,7 @@
 //   implements: architecture
 // ---
 use crate::jinja::{Expr, Tmpl, Typed, is_global};
+use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use indexmap::IndexMap;
 use regex::Regex;
 use serde::Deserialize;
@@ -44,6 +45,12 @@ pub struct Template {
     pub source_dir: PathBuf,
     pub data: IndexMap<Id, Value>,
     pub interview: Vec<Node>,
+    pub root: PathBuf,
+    pub files: Vec<FileRule>,
+    pub ignore: GlobSet,
+    pub static_files: GlobSet,
+    pub hooks: Vec<HookNode>,
+    pub messages: ApplyMessages,
 }
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
@@ -52,6 +59,7 @@ pub enum Node {
     Computed(Computed),
     Group(Group),
     Message(Message),
+    Hook(HookNode),
 }
 #[derive(Debug)]
 pub struct Question {
@@ -113,6 +121,35 @@ pub struct Message {
     pub text: Tmpl,
     pub when: Option<Expr>,
 }
+#[derive(Debug)]
+pub struct HookNode {
+    pub command: HookCommand,
+    pub when: Option<Expr>,
+}
+#[derive(Debug)]
+pub struct HookCommand {
+    pub program: HookProgram,
+    pub cwd: Option<Tmpl>,
+}
+#[derive(Debug)]
+pub enum HookProgram {
+    Run(Vec<Tmpl>),
+    Script { path: PathBuf, args: Vec<Tmpl> },
+}
+#[derive(Debug)]
+pub struct FileRule {
+    pub each: Expr,
+    pub binding: Id,
+    pub source: PathBuf,
+    pub path: Tmpl,
+    pub when: Option<Expr>,
+}
+#[derive(Debug, Default)]
+pub struct ApplyMessages {
+    pub before_apply: Option<Tmpl>,
+    pub after_apply: Option<Tmpl>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Problem {
     pub path: String,
@@ -155,8 +192,12 @@ struct RawTemplate {
     source: Option<String>,
     data: Option<Map<String, Value>>,
     interview: Option<Vec<Value>>,
-    #[serde(flatten)]
-    extra: Map<String, Value>,
+    files: Option<Vec<Value>>,
+    ignore: Option<Vec<String>>,
+    #[serde(rename = "static")]
+    static_files: Option<Vec<String>>,
+    hooks: Option<Vec<Value>>,
+    messages: Option<Map<String, Value>>,
 }
 static SCHEMA: LazyLock<jsonschema::Validator> = LazyLock::new(|| {
     let schema: Value = serde_norway::from_str(include_str!(
@@ -252,6 +293,7 @@ struct Builder {
     problems: Vec<Problem>,
     seen: HashSet<String>,
     names: HashSet<String>,
+    root: PathBuf,
 }
 impl Builder {
     fn id(&mut self, value: Option<&Value>, path: &str) -> Option<Id> {
@@ -335,6 +377,84 @@ impl Builder {
             None => None,
         }
     }
+    fn confined_file(&mut self, value: &str, path: &str, executable: bool) -> Option<PathBuf> {
+        let candidate = self.root.join(value);
+        let actual = match candidate.canonicalize() {
+            Ok(path) => path,
+            Err(_) => {
+                problem(&mut self.problems, path, "file does not exist");
+                return None;
+            }
+        };
+        if !actual.starts_with(&self.root) || !actual.is_file() {
+            problem(
+                &mut self.problems,
+                path,
+                "file must stay inside template root and be a file",
+            );
+            return None;
+        }
+        #[cfg(unix)]
+        if executable {
+            use std::os::unix::fs::PermissionsExt;
+            match actual.metadata() {
+                Ok(m) if m.permissions().mode() & 0o111 != 0 => {}
+                _ => {
+                    problem(&mut self.problems, path, "script is not executable");
+                    return None;
+                }
+            }
+        }
+        let _ = executable;
+        Some(actual.strip_prefix(&self.root).unwrap().to_owned())
+    }
+    fn hook(
+        &mut self,
+        map: &Map<String, Value>,
+        path: &str,
+        when: Option<Expr>,
+    ) -> Option<HookNode> {
+        let cwd = self.tmpl(map.get("cwd"), &format!("{path}.cwd"));
+        let program = if let Some(run) = map.get("run").and_then(Value::as_array) {
+            let args: Option<Vec<_>> = run
+                .iter()
+                .enumerate()
+                .map(|(i, v)| self.tmpl(Some(v), &format!("{path}.run[{i}]")))
+                .collect();
+            HookProgram::Run(args?)
+        } else {
+            let value = map.get("script")?.as_str()?;
+            let script = self.confined_file(value, &format!("{path}.script"), true)?;
+            let args: Option<Vec<_>> = map
+                .get("args")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .enumerate()
+                .map(|(i, v)| self.tmpl(Some(v), &format!("{path}.args[{i}]")))
+                .collect();
+            HookProgram::Script {
+                path: script,
+                args: args?,
+            }
+        };
+        Some(HookNode {
+            command: HookCommand { program, cwd },
+            when,
+        })
+    }
+    fn globs(&mut self, patterns: Option<&Vec<String>>, path: &str) -> GlobSet {
+        let mut builder = GlobSetBuilder::new();
+        for (i, pattern) in patterns.into_iter().flatten().enumerate() {
+            match GlobBuilder::new(pattern).literal_separator(true).build() {
+                Ok(glob) => {
+                    builder.add(glob);
+                }
+                Err(e) => problem(&mut self.problems, format!("{path}[{i}]"), e.to_string()),
+            }
+        }
+        builder.build().expect("validated globs")
+    }
     fn nodes(&mut self, values: &[Value], prefix: &str) -> Vec<Node> {
         let mut result = Vec::new();
         for (i, value) in values.iter().enumerate() {
@@ -344,7 +464,13 @@ impl Builder {
             };
             let when = self.expr(map.get("when"), &format!("{path}.when"), &[]);
             if map.contains_key("hook") {
-                problem(&mut self.problems, &path, "not supported yet: hook");
+                if let Some(hook) = map
+                    .get("hook")
+                    .and_then(Value::as_object)
+                    .and_then(|m| self.hook(m, &format!("{path}.hook"), when))
+                {
+                    result.push(Node::Hook(hook));
+                }
                 continue;
             }
             if map.contains_key("group") {
@@ -523,11 +649,6 @@ impl Template {
         }
         let raw: RawTemplate =
             serde_json::from_value(doc).map_err(|e| error("template.yml", e.to_string()))?;
-        for key in ["files", "ignore", "static", "hooks", "messages"] {
-            if raw.extra.contains_key(key) {
-                problem(&mut problems, key, format!("not supported yet: {key}"));
-            }
-        }
         let source = raw.source.as_deref().unwrap_or("template");
         let source_dir = root.join(source);
         if Path::new(source).is_absolute()
@@ -544,13 +665,12 @@ impl Template {
                 "source must stay inside template root",
             );
         }
-        if !source_dir.is_dir() {
-            problem(&mut problems, "source", "source directory does not exist");
-        }
+        let source_dir = source_dir.canonicalize().unwrap_or(source_dir);
         let mut b = Builder {
             problems,
             seen: HashSet::new(),
             names: HashSet::new(),
+            root: root.clone(),
         };
         let mut data = IndexMap::new();
         if let Some(values) = &raw.data {
@@ -562,6 +682,92 @@ impl Template {
             }
         }
         let interview = b.nodes(raw.interview.as_deref().unwrap_or_default(), "interview");
+        // Output expressions see the complete interview, including computed answers.
+        fn collect_answers(nodes: &[Node], names: &mut HashSet<String>) {
+            for node in nodes {
+                match node {
+                    Node::Question(q) => {
+                        names.insert(q.id.as_str().into());
+                    }
+                    Node::Computed(c) => {
+                        names.insert(c.id.as_str().into());
+                    }
+                    Node::Group(g) => collect_answers(&g.nodes, names),
+                    Node::Message(_) | Node::Hook(_) => {}
+                }
+            }
+        }
+        b.seen = data.keys().map(|id| id.as_str().to_owned()).collect();
+        collect_answers(&interview, &mut b.seen);
+        let ignore = b.globs(raw.ignore.as_ref(), "ignore");
+        let static_files = b.globs(raw.static_files.as_ref(), "static");
+        let mut files = Vec::new();
+        for (i, value) in raw.files.as_deref().unwrap_or_default().iter().enumerate() {
+            let path = format!("files[{i}]");
+            let Some(map) = value.as_object() else {
+                continue;
+            };
+            let Some((expression, binding)) = map
+                .get("each")
+                .and_then(Value::as_str)
+                .and_then(|v| v.rsplit_once(" as "))
+            else {
+                continue;
+            };
+            let Some(binding) = Id::parse(binding).ok() else {
+                continue;
+            };
+            let each = b.expr(
+                Some(&Value::String(expression.into())),
+                &format!("{path}.each"),
+                &[],
+            );
+            let when = b.expr(map.get("when"), &format!("{path}.when"), &[]);
+            let Some(source) = map
+                .get("source")
+                .and_then(Value::as_str)
+                .and_then(|v| b.confined_file(v, &format!("{path}.source"), false))
+            else {
+                continue;
+            };
+            let inserted = b.seen.insert(binding.as_str().into());
+            let target = b.tmpl(map.get("path"), &format!("{path}.path"));
+            if inserted {
+                b.seen.remove(binding.as_str());
+            }
+            if let (Some(each), Some(path)) = (each, target) {
+                files.push(FileRule {
+                    each,
+                    binding,
+                    source,
+                    path,
+                    when,
+                });
+            }
+        }
+        let hooks = raw
+            .hooks
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, v)| {
+                let map = v.as_object()?;
+                let when = b.expr(map.get("when"), &format!("hooks[{i}].when"), &[]);
+                b.hook(map, &format!("hooks[{i}]"), when)
+            })
+            .collect();
+        let messages = raw.messages.as_ref();
+        let messages = ApplyMessages {
+            before_apply: b.tmpl(
+                messages.and_then(|m| m.get("before-apply")),
+                "messages.before-apply",
+            ),
+            after_apply: b.tmpl(
+                messages.and_then(|m| m.get("after-apply")),
+                "messages.after-apply",
+            ),
+        };
         if !b.problems.is_empty() {
             return Err(LoadError {
                 problems: b.problems,
@@ -573,6 +779,12 @@ impl Template {
             source_dir,
             data,
             interview,
+            root,
+            files,
+            ignore,
+            static_files,
+            hooks,
+            messages,
         })
     }
 }

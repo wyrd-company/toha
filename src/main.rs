@@ -12,6 +12,7 @@ use std::{
 use clap::{Parser, Subcommand};
 use toha::{
     AnswerError, Applied, ApplyOptions, Id, Interview, Plan, RawAnswer, RawAnswers, Seed, Template,
+    hook::ProcessRunner,
 };
 
 #[derive(Parser)]
@@ -29,23 +30,25 @@ enum Command {
         answers: Option<String>,
         #[arg(short, long)]
         force: bool,
+        #[arg(short = 'd', long)]
+        dry_run: bool,
+        #[arg(long)]
+        trust: bool,
     },
 }
 
 enum Outcome {
-    Written(Vec<toha::TargetPath>, Vec<String>),
+    Written(Vec<String>),
     Error(String),
     Incomplete(String),
+    NeedsTrust(String),
 }
 impl Outcome {
     fn finish(self) -> ExitCode {
         match self {
-            Self::Written(paths, messages) => {
-                for message in messages {
-                    println!("{message}");
-                }
-                for path in paths {
-                    println!("{path}");
+            Self::Written(lines) => {
+                for line in lines {
+                    println!("{line}");
                 }
                 ExitCode::SUCCESS
             }
@@ -57,8 +60,40 @@ impl Outcome {
                 eprintln!("{message}");
                 ExitCode::from(4)
             }
+            Self::NeedsTrust(message) => {
+                eprintln!("{message}");
+                ExitCode::from(3)
+            }
         }
     }
+}
+fn plan_lines(plan: &Plan, force: bool) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(message) = &plan.before_apply {
+        lines.push(message.clone());
+    }
+    for file in &plan.files {
+        let action = if plan.conflicts.contains(&file.path) {
+            if force { "overwrite" } else { "conflict" }
+        } else {
+            "create"
+        };
+        lines.push(format!("{action} {}", file.path));
+    }
+    for hook in &plan.hooks {
+        lines.push(format!(
+            "hook {:?} cwd {}",
+            hook.argv(),
+            hook.cwd
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| ".".into())
+        ));
+    }
+    if let Some(message) = &plan.after_apply {
+        lines.push(message.clone());
+    }
+    lines
 }
 
 fn local_folder(value: &str) -> Result<PathBuf, String> {
@@ -104,7 +139,14 @@ fn seed() -> Seed {
     }
 }
 
-fn run(template: Option<String>, path: &Path, answers: Option<String>, force: bool) -> Outcome {
+fn run(
+    template: Option<String>,
+    path: &Path,
+    answers: Option<String>,
+    force: bool,
+    dry_run: bool,
+    trust: bool,
+) -> Outcome {
     let Some(template) = template else {
         return Outcome::Error("template folder is required".into());
     };
@@ -151,8 +193,47 @@ fn run(template: Option<String>, path: &Path, answers: Option<String>, force: bo
         Ok(plan) => plan,
         Err(error) => return Outcome::Error(error.to_string()),
     };
-    match plan.apply(path, ApplyOptions { force }) {
-        Ok(Applied::Written(paths)) => Outcome::Written(paths, completed.messages),
+    if dry_run {
+        return Outcome::Written(
+            completed
+                .messages
+                .into_iter()
+                .chain(plan_lines(&plan, force))
+                .collect(),
+        );
+    }
+    let before = plan.before_apply.clone();
+    let preview = plan_lines(&plan, force);
+    for message in completed.messages {
+        println!("{message}");
+    }
+    if let Some(message) = &before {
+        println!("{message}");
+    }
+    match plan.apply(
+        path,
+        ApplyOptions {
+            force,
+            trusted: trust,
+        },
+        &ProcessRunner,
+    ) {
+        Ok(Applied::Written {
+            files, after_apply, ..
+        }) => {
+            let mut lines = Vec::new();
+            lines.extend(files.into_iter().map(|p| p.to_string()));
+            if let Some(message) = after_apply {
+                lines.push(message);
+            }
+            Outcome::Written(lines)
+        }
+        Ok(Applied::NeedsTrust(_)) => {
+            for line in preview.into_iter().skip(usize::from(before.is_some())) {
+                println!("{line}");
+            }
+            Outcome::NeedsTrust("hooks will not run without --trust".into())
+        }
         Err(error) => Outcome::Error(error.to_string()),
     }
 }
@@ -163,13 +244,15 @@ fn main() -> ExitCode {
             paths,
             answers,
             force,
+            dry_run,
+            trust,
         } => {
             let (template, path) = match paths.as_slice() {
                 [path] => (None, PathBuf::from(path)),
                 [template, path] => (Some(template.clone()), PathBuf::from(path)),
                 _ => unreachable!("clap enforces one or two positional arguments"),
             };
-            run(template, &path, answers, force).finish()
+            run(template, &path, answers, force, dry_run, trust).finish()
         }
     }
 }

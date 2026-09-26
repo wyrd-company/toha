@@ -1,0 +1,49 @@
+# ---
+# relationships:
+#   exemplifies: template-format
+# ---
+name: generated-files
+description: A task runner config with one file for each task
+
+interview:
+  - id: project
+    type: text
+    prompt: Project name
+    required: true
+
+  - id: tasks
+    type: text
+    prompt: "Task name (empty to finish)"
+    loop:
+      min: 1
+    validate:
+      regex: '^[a-z][a-z0-9-]*$'
+
+  - id: init_git
+    type: confirm
+    prompt: Make a git repository?
+    default: true
+
+  - hook:                                        # joins the hook list here, in interview order
+      run: [ git, init ]
+    when: init_git
+
+  - message: "Generating {{ tasks | length }} task file(s) for {{ project }}"
+
+files:
+  - each: tasks as task                          # one file for each item
+    source: parts/task.yml                       # support file outside template/
+    path: "tasks/{{ task }}.yml"
+
+ignore:
+  - "**/*.orig"
+
+static:
+  - "assets/**"                                  # copied, not rendered
+
+hooks:                                           # run after the interview hooks
+  - run: [ git, add, "." ]
+    when: init_git
+
+messages:
+  after-apply: "Run `tasks/{{ tasks | first }}.yml` to start"

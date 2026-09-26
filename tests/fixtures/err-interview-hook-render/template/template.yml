@@ -1,0 +1,3 @@
+name: err-interview-hook-render
+interview:
+  - hook: { run: [ tool, "{{ 'bad' | dateformat }}" ] }

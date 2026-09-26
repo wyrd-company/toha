@@ -1,0 +1,7 @@
+name: ignore-and-static
+interview:
+  - id: folder
+    type: text
+    prompt: Folder
+ignore: ["**/*.orig"]
+static: ["assets/**", "**/leaf.txt"]

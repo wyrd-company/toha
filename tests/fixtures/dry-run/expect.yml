@@ -1,0 +1,5 @@
+exit: 0
+options:
+  dry_run: true
+stdout_contains:
+- create file.txt

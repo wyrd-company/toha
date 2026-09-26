@@ -1,0 +1,4 @@
+name: err-hook-cwd-escape
+hooks:
+  - run: [ tool ]
+    cwd: ../escape

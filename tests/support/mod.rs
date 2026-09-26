@@ -10,8 +10,20 @@ use std::{
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct Expect {
     pub exit: u8,
+    #[serde(default)]
+    pub options: Options,
+    #[serde(default)]
+    pub hooks: Vec<HookCall>,
+    pub fail_hook: Option<usize>,
+    pub before_apply: Option<String>,
+    pub after_apply: Option<String>,
+    #[serde(default = "yes")]
+    pub cli: bool,
+    #[serde(default)]
+    pub stdout_contains: Vec<String>,
     #[serde(default)]
     #[allow(dead_code)]
     pub error_contains: Vec<String>,
@@ -21,6 +33,39 @@ pub struct Expect {
     pub now: String,
 }
 
+fn yes() -> bool {
+    true
+}
+#[derive(Debug, Default, Deserialize)]
+pub struct Options {
+    #[serde(default)]
+    pub force: bool,
+    #[serde(default)]
+    pub trust: bool,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+pub struct HookCall {
+    pub argv: Vec<String>,
+    pub cwd: String,
+}
+pub fn copy_tree(source: &Path, target: &Path) {
+    if !source.exists() {
+        return;
+    }
+    for entry in fs::read_dir(source).unwrap() {
+        let entry = entry.unwrap();
+        let dest = target.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            fs::create_dir_all(&dest).unwrap();
+            copy_tree(&entry.path(), &dest);
+        } else {
+            fs::copy(entry.path(), dest).unwrap();
+        }
+    }
+}
 fn fixed_now() -> String {
     "2026-01-02T03:04:05+00:00[UTC]".into()
 }

@@ -51,6 +51,7 @@ pub struct Pending<'a> {
     answers: Answers,
     held: RawAnswers,
     messages: Vec<String>,
+    hooks: Vec<RenderedHook>,
     visited: HashSet<String>,
     batch: Batch,
 }
@@ -58,7 +59,41 @@ pub struct Pending<'a> {
 pub struct Completed {
     pub answers: Answers,
     pub messages: Vec<String>,
+    pub hooks: Vec<RenderedHook>,
     pub now: jiff::Zoned,
+}
+#[derive(Debug, Clone)]
+pub struct RenderedHook {
+    pub program: RenderedProgram,
+    pub cwd: Option<String>,
+}
+#[derive(Debug, Clone)]
+pub enum RenderedProgram {
+    Run(Vec<String>),
+    Script {
+        path: std::path::PathBuf,
+        args: Vec<String>,
+    },
+}
+pub(crate) fn render_hook(
+    hook: &crate::template::HookNode,
+    ctx: &impl serde::Serialize,
+) -> Result<RenderedHook, String> {
+    use crate::template::HookProgram;
+    let render = |t: &crate::jinja::Tmpl| t.render(ctx).map_err(|e| e.to_string());
+    let program = match &hook.command.program {
+        HookProgram::Run(args) => {
+            RenderedProgram::Run(args.iter().map(render).collect::<Result<_, _>>()?)
+        }
+        HookProgram::Script { path, args } => RenderedProgram::Script {
+            path: path.clone(),
+            args: args.iter().map(render).collect::<Result<_, _>>()?,
+        },
+    };
+    Ok(RenderedHook {
+        program,
+        cwd: hook.command.cwd.as_ref().map(render).transpose()?,
+    })
 }
 #[derive(Debug, Default)]
 pub struct Batch {
@@ -158,6 +193,14 @@ fn tmpl_ready(v: &crate::jinja::Tmpl, a: &Answers, t: &Template) -> bool {
 }
 fn expr_ready(v: &Expr, a: &Answers, t: &Template) -> bool {
     has_refs(v.references(), a, t)
+}
+fn hook_ready(h: &crate::template::HookNode, a: &Answers, t: &Template) -> bool {
+    use crate::template::HookProgram;
+    h.command.cwd.as_ref().is_none_or(|v| tmpl_ready(v, a, t))
+        && match &h.command.program {
+            HookProgram::Run(v) => v.iter().all(|x| tmpl_ready(x, a, t)),
+            HookProgram::Script { args, .. } => args.iter().all(|x| tmpl_ready(x, a, t)),
+        }
 }
 fn question_ready(q: &Question, a: &Answers, t: &Template, seed: &Seed) -> bool {
     let base = tmpl_ready(&q.prompt, a, t)
@@ -413,7 +456,7 @@ fn skipped_descendants_ready(
                         return false;
                     }
                 }
-                Node::Message(_) => {}
+                Node::Message(_) | Node::Hook(_) => {}
             }
         }
         true
@@ -426,6 +469,7 @@ struct Advance<'a> {
     answers: Answers,
     held: RawAnswers,
     messages: Vec<String>,
+    hooks: Vec<RenderedHook>,
     visited: HashSet<String>,
     batch: Batch,
 }
@@ -542,6 +586,41 @@ impl Advance<'_> {
                         return Ok(false);
                     }
                 }
+                Node::Hook(h) => {
+                    if self.visited.contains(&key) {
+                        continue;
+                    }
+                    if !skip
+                        && (h
+                            .when
+                            .as_ref()
+                            .is_some_and(|w| !expr_ready(w, &self.answers, self.template))
+                            || !hook_ready(h, &self.answers, self.template))
+                    {
+                        return Ok(false);
+                    }
+                    self.visited.insert(key);
+                    if skip {
+                        continue;
+                    }
+                    let ctx = context(self.template, &self.answers, &self.seed);
+                    let active = h
+                        .when
+                        .as_ref()
+                        .map(|w| {
+                            w.eval(&ctx)
+                                .map(|v| v.is_true())
+                                .map_err(|e| eval_error(&Id::parse("hook").unwrap(), "when", e))
+                        })
+                        .transpose()?
+                        .unwrap_or(true);
+                    if active {
+                        self.hooks.push(
+                            render_hook(h, &ctx)
+                                .map_err(|e| eval_error(&Id::parse("hook").unwrap(), "hook", e))?,
+                        );
+                    }
+                }
                 Node::Message(m) => {
                     if self.visited.contains(&key) {
                         continue;
@@ -590,6 +669,7 @@ fn advance<'a>(
     answers: Answers,
     held: RawAnswers,
     messages: Vec<String>,
+    hooks: Vec<RenderedHook>,
     visited: HashSet<String>,
 ) -> Result<Interview<'a>, EvalError> {
     let mut state = Advance {
@@ -598,6 +678,7 @@ fn advance<'a>(
         answers,
         held,
         messages,
+        hooks,
         visited,
         batch: Batch::default(),
     };
@@ -618,6 +699,7 @@ fn advance<'a>(
         Ok(Interview::Complete(Completed {
             answers: state.answers,
             messages: state.messages,
+            hooks: state.hooks,
             now: state.seed.now,
         }))
     } else {
@@ -627,6 +709,7 @@ fn advance<'a>(
             answers: state.answers,
             held: state.held,
             messages: state.messages,
+            hooks: state.hooks,
             visited: state.visited,
             batch: state.batch,
         }))
@@ -639,6 +722,7 @@ impl<'a> Interview<'a> {
             seed,
             Answers::new(),
             RawAnswers::new(),
+            vec![],
             vec![],
             HashSet::new(),
         )
@@ -833,6 +917,7 @@ impl<'a> Pending<'a> {
             answers,
             held,
             self.messages,
+            self.hooks,
             self.visited,
         )
         .map_err(AnswerError::Eval)
