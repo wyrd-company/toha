@@ -1336,6 +1336,7 @@ impl<'a> Pending<'a> {
     pub fn answer(self, incoming: RawAnswers) -> Result<Interview<'a>, AnswerError<'a>> {
         let mut held = self.held.clone();
         let mut rejections = vec![];
+        let mut unless_skipped = vec![];
         for (id, raw) in incoming {
             let Some(q) = question_by_id(&self.template.interview, &id) else {
                 rejections.push(rejection(&id, "is not a question in this template"));
@@ -1376,9 +1377,10 @@ impl<'a> Pending<'a> {
             if early {
                 // What can be checked now is checked now; the rest is checked
                 // when the question is reached.
+                // A failure stands unless this document skips the question.
                 if let Err(r) = validate(&id, &Rules::of_question(q), raw.0.clone()) {
                     rejections.push(r);
-                    continue;
+                    unless_skipped.push(id.clone());
                 }
             }
             held.insert(id, raw);
@@ -1422,7 +1424,7 @@ impl<'a> Pending<'a> {
                 Err(CheckError::Eval(e)) => return Err(AnswerError::Eval(e)),
             }
         }
-        if !rejections.is_empty() {
+        if rejections.len() > unless_skipped.len() {
             return Err(AnswerError::Rejected {
                 pending: self,
                 rejections,
@@ -1433,19 +1435,39 @@ impl<'a> Pending<'a> {
         }
         let mut answers = self.answers.clone();
         answers.extend(next);
-        advance(Advance {
+        let advanced = advance(Advance {
             template: self.template,
-            seed: self.seed,
+            seed: self.seed.clone(),
             answers,
             held,
-            skipped: self.skipped,
+            skipped: self.skipped.clone(),
             step_start: self.messages.len(),
-            messages: self.messages,
-            hooks: self.hooks,
-            visited: self.visited,
+            messages: self.messages.clone(),
+            hooks: self.hooks.clone(),
+            visited: self.visited.clone(),
             batch: Batch::default(),
             blocked: None,
-        })
-        .map_err(AnswerError::Eval)
+        });
+        if unless_skipped.is_empty() {
+            return advanced.map_err(AnswerError::Eval);
+        }
+        // An answer that fails a constraint is not used, and is not an
+        // error, only when this document skips its question. A complete
+        // interview reached every question, so it skipped each of them.
+        let skipped = match &advanced {
+            Ok(Interview::Complete(_)) => true,
+            Ok(Interview::Asking(next)) => unless_skipped
+                .iter()
+                .all(|id| next.skipped.contains_key(id)),
+            Err(_) => false,
+        };
+        if skipped {
+            advanced.map_err(AnswerError::Eval)
+        } else {
+            Err(AnswerError::Rejected {
+                pending: self,
+                rejections,
+            })
+        }
     }
 }
