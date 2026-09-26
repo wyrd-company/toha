@@ -102,6 +102,9 @@ commands:
           meaning: >-
             No interview is staged at the path, or an answers document was given
             for a complete interview; the message names the commands that fit.
+            Or an expression in the template failed to evaluate; the message
+            starts with `template error in` and names the field and the
+            expression.
         - code: 4
           meaning: Questions remain or answers were rejected; the result holds the batch.
   - name: apply

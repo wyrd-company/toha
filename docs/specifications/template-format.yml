@@ -58,7 +58,8 @@ description: >-
   template in a node references only ids defined by earlier nodes in document
   order, so the interview is acyclic; toha rejects a template that references
   a later or unknown id. A skipped question takes its `default` as its answer
-  when it has one, and `none` otherwise.
+  when it has one; otherwise a looped `text` or a `multiselect` question takes
+  `[]`, and any other question takes `none`.
 
   Questions. `type` is one of `text`, `multiline`, `confirm`, `select`, and
   `multiselect`. `prompt` is required. `description` and `placeholder` are

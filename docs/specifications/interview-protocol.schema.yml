@@ -55,7 +55,10 @@ $defs:
         items:
           type: string
       errors:
-        description: Validation errors for the rejected answers, keyed by question id.
+        description: >-
+          Validation errors keyed by question id: for the answers of a rejected
+          document, or for held answers that failed when their questions were
+          reached. Each error is a sentence that states the failed constraint.
         type: object
         propertyNames:
           $ref: "#/$defs/identifier"

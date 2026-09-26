@@ -20,8 +20,9 @@ description: >-
 
   Question schema. A batch carries a JSON Schema 2020-12 object schema in
   `schema`. Each pending question is one property keyed by its id. `prompt` is
-  the property `title`, `description` is the property `description`, and
-  `default` is the property `default`, all rendered. The question type maps to
+  the property `title`, `description` is the property `description`,
+  `default` is the property `default`, and `placeholder` is the single item of
+  the property `examples`, all rendered. The question type maps to
   JSON Schema as follows: `text` and `multiline` are `string`, with
   `minLength`, `maxLength`, and `pattern` from `validate`; a looped `text` is
   an `array` of those strings with `minItems` and `maxItems` from `loop`;
@@ -34,16 +35,33 @@ description: >-
 
   Answers. An answers document is a JSON object keyed by question id. `continue`
   reads it from a file or from standard input. Answers for questions outside
-  the current batch are held and applied when their questions are reached.
-  An answer for an id that the template does not define is an error. Toha
-  treats explicit `null` as an empty answer that does not take a default; a
-  required question rejects it. Toha validates each answer and applies its `format` expression before it records
+  the current batch are held and applied when their questions are reached; a
+  question whose held answer is applied does not appear in a batch, and its
+  answer appears in the complete result. Toha validates a held answer when the
+  document is submitted, against each constraint of its question that does
+  not depend on other answers: the answer type, a literal `required`, literal
+  `options`, `validate.regex`, and literal `validate` and `loop` bounds. It
+  checks the remaining constraints when the question is reached. When a held
+  answer fails then, the question is part of that batch, and its error starts
+  with `value recorded earlier is not allowed:`. An answer for an id that the
+  template does not define is an error. Toha treats explicit `null` as an
+  empty answer that does not take a default; a required question rejects it.
+  The empty answer of a looped `text` or `multiselect` question is `[]`, and
+  of any other question `null`; a question left out of a document for its
+  batch takes its default, or that empty answer when it has none. Toha
+  validates each answer and applies its `format` expression before it records
   the answer.
 
   Results. `continue` emits a result document. When every answer is accepted
   and questions remain, the result holds the next batch. When answers fail
   validation, the result holds the same batch, with per-id errors, and no
-  answer from that document is recorded. When the interview is complete, the
+  answer from that document is recorded. `errors` maps a question id to a list
+  of sentences; each sentence states the constraint that the answer fails,
+  such as `must match ^[a-z0-9-]+$`, `must be one of: draft, review, final`,
+  `must have at least 1 item`, `must be at most 80 characters`,
+  `is required`, or `is not a question in this template`. A next batch holds
+  errors only for held answers that failed when their questions were
+  reached. When the interview is complete, the
   result has `status: complete` and holds the full flat answers object.
   `continue` without an answers argument on a complete interview emits that
   complete result.
@@ -60,8 +78,9 @@ description: >-
   `--answers`, for a new interview or for the interview staged at the target
   for the same template. Toha answers each question from the document, then from
   configured defaults, then from the question `default`. When a required
-  question has no answer, the run stops, stages the interview, and emits the
-  batch that holds the question. With `--dry-run`, the run emits that batch
+  question has no answer, or a held answer fails when its question is reached
+  and the document does not answer that question, the run stops, stages the
+  interview, and emits the batch that holds the question. With `--dry-run`, the run emits that batch
   and leaves the staged state unchanged.
 
   Staged state. A staged interview is stored in the user state directory:
