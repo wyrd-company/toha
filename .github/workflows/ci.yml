@@ -7,7 +7,6 @@ on:
   push:
     branches: [main, "epic/**"]
   pull_request:
-  workflow_dispatch:
 permissions:
   contents: read
 jobs:
@@ -26,7 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --locked --no-fail-fast
+      - run: cargo test --locked
   test:
     runs-on: ubuntu-latest
     steps:
