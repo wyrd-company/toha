@@ -232,6 +232,29 @@ mod tests {
     }
 
     #[test]
+    fn toyaml_round_trips_values() {
+        let failures = [
+            json!("hello\n"),
+            json!("\n"),
+            json!({"inner": {"k": "v\n"}}),
+            json!(["a", "b\n"]),
+            json!({"a": 2, "b": [1, true, null], "c": "x"}),
+            json!("true"),
+            json!({}),
+            json!(null),
+        ]
+        .into_iter()
+        .filter_map(|value| {
+            let yaml = render("{{ value | toyaml }}", json!({ "value": value }));
+            let parsed: serde_json::Value =
+                serde_norway::from_str(&yaml).unwrap_or_else(|err| panic!("parse {yaml:?}: {err}"));
+            (parsed != value).then(|| format!("{value} -> {yaml:?} -> {parsed}"))
+        })
+        .collect::<Vec<_>>();
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    #[test]
     fn macro_is_defined_and_called_in_one_template() {
         assert_eq!(
             render(
