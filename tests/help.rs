@@ -124,3 +124,29 @@ fn apply_help_names_its_values() {
         assert!(names.iter().any(|n| n == name), "{name}: {names:?}");
     }
 }
+
+/// The words made of capitals, digits, and underscores in `text`.
+fn names(text: &str) -> Vec<&str> {
+    text.split(|c: char| !(c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'))
+        .filter(|word| !word.is_empty())
+        .collect()
+}
+
+#[test]
+fn long_help_names_every_environment_variable() {
+    let text = help(&[], "--help");
+    let start = text
+        .lines()
+        .position(|line| line == "Environment:")
+        .unwrap_or_else(|| panic!("no Environment section:\n{text}"));
+    let section: Vec<_> = text
+        .lines()
+        .skip(start + 1)
+        .take_while(|line| line.is_empty() || line.starts_with(' '))
+        .collect();
+    let section = section.join("\n");
+    let named = names(&section);
+    for variable in support::ENVIRONMENT {
+        assert!(named.contains(variable), "{variable}:\n{section}");
+    }
+}

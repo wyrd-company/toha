@@ -305,3 +305,22 @@ pub fn assert_tree(actual: &Path, expected: &Path, fixture: &Path) {
         );
     }
 }
+
+/// Every environment variable toha reads, as its documentation names it.
+pub const ENVIRONMENT: &[&str] = &[
+    "TOHA_CONFIG",
+    "TOHA_USER_CONFIG",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_CACHE_HOME",
+    "XDG_STATE_HOME",
+    "HOME",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "PROGRAMDATA",
+    "VISUAL",
+    "EDITOR",
+    "PATH",
+    "TOHA_NOW",
+];
