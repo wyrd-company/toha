@@ -563,3 +563,38 @@ fn suggested_commands_guard_a_target_spelled_like_a_flag() {
         ],
     );
 }
+
+#[test]
+fn answers_without_template_name_the_commands_that_take_them() {
+    let case = Case::new();
+    let answers = case.state.path().join("answers.json");
+    std::fs::write(&answers, r#"{"name":"Item"}"#).unwrap();
+    let answers = answers.to_str().unwrap();
+    let args = ["apply", "--answers", answers, case.target()];
+
+    let output = case.run(&args);
+    assert_code(&output, 1);
+    assert_stderr_names(
+        &output,
+        &[format!(
+            "toha apply --answers {answers} <TEMPLATE> {}",
+            case.target()
+        )],
+    );
+
+    case.stage_incomplete(&text_basic());
+    let output = case.run(&args);
+    assert_code(&output, 1);
+    assert_stderr_names(
+        &output,
+        &[
+            format!("toha continue {} {answers}", case.target()),
+            format!("toha apply {}", case.target()),
+            format!(
+                "toha apply --answers {answers} {} {}",
+                text_basic(),
+                case.target()
+            ),
+        ],
+    );
+}
