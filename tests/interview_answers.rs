@@ -854,3 +854,21 @@ fn unresolved_dependency_names_the_node_field_and_expression() {
         "template error in second.prompt `After {{ first }}`: first has no answer when this node is reached"
     );
 }
+
+#[test]
+fn unknown_id_for_an_interview_complete_before_any_submission_is_an_error() {
+    // An interview with no question to ask completes at start, so the
+    // headless document is never submitted; its ids are checked at completion.
+    let (_folder, template) =
+        inline("name: sample\ninterview:\n  - { id: fixed, computed: '1' }\n");
+    let document = protocol::parse_answers(r#"{"other": "x"}"#).unwrap();
+    let error = match protocol::answer_headless(
+        &template,
+        Interview::start(&template, seed()).unwrap(),
+        document,
+    ) {
+        Err(error) => error.to_string(),
+        Ok(_) => panic!("expected an error"),
+    };
+    assert_eq!(error, "other.answer: is not a question in this template");
+}
