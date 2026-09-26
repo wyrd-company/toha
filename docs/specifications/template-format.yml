@@ -91,9 +91,10 @@ description: >-
   A failing hook stops the remaining hooks and fails the apply.
 
   Messages. A message node shows its rendered text when the interview reaches
-  it. The top-level `messages` list shows each message at its `at` point:
-  `before-apply`, before any file is written, or `after-apply`, after the last
-  hook.
+  it. The top-level `messages` map has two optional keys, each a template:
+  `before-apply` is shown before any file is written, and `after-apply` is
+  shown after the last hook. A message that renders to an empty or
+  whitespace-only string is not shown.
 format: json-schema
 validation-criteria: >-
   A conforming `template.yml` validates against

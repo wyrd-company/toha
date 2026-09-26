@@ -39,9 +39,13 @@ properties:
     items:
       $ref: "#/$defs/hook-command"
   messages:
-    type: array
-    items:
-      $ref: "#/$defs/apply-message"
+    type: object
+    additionalProperties: false
+    properties:
+      before-apply:
+        $ref: "#/$defs/template"
+      after-apply:
+        $ref: "#/$defs/template"
 $defs:
   slug:
     type: string
@@ -214,17 +218,6 @@ $defs:
     required: [ message ]
     properties:
       message:
-        $ref: "#/$defs/template"
-      when:
-        $ref: "#/$defs/when"
-  apply-message:
-    type: object
-    additionalProperties: false
-    required: [ at, text ]
-    properties:
-      at:
-        enum: [ before-apply, after-apply ]
-      text:
         $ref: "#/$defs/template"
       when:
         $ref: "#/$defs/when"
