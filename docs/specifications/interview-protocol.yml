@@ -49,8 +49,10 @@ description: >-
   answer appears in the complete result. Toha validates a held answer when the
   document is submitted, against each constraint of its question that does
   not depend on other answers: the answer type, a literal `required`, literal
-  `options`, `validate.regex`, and literal `validate` and `loop` bounds. It
-  checks the remaining constraints when the question is reached. When a held
+  `options`, `validate.regex`, and literal `validate` and `loop` bounds. A
+  failure rejects the document unless the answers of that document skip the
+  question. It checks the remaining constraints when the question is
+  reached. When a held
   answer fails then, the question is part of that batch, and its error starts
   with `value recorded earlier is not allowed:`. That error stays on the
   question, also in the result of a rejected document, until a document
@@ -61,12 +63,13 @@ description: >-
   parsing and `format` that recorded it: an equal answer is ignored, and a
   different answer is an error, `is already answered with <recorded JSON
   value>`, followed by the commands that change it: abort the staged
-  interview, then stage it again. An answer for a question skipped by a
-  `when`, of the question or of a group that holds it, is not used and is
-  not an error: the step that skips the question, or that receives the
+  interview, then stage it again. The comparison is in list order, and a
+  fault in `format` is a template error. An answer for a question skipped
+  by a `when`, of the question or of a group that holds it, is not used and
+  is not an error: the step that skips the question, or that receives the
   answer when the question is already skipped, adds the warning `warning:
   answer for "<id>" was not used: the question was skipped` to `messages`
-  once. Toha treats explicit `null` as an
+  once, at the position of the question in interview order. Toha treats explicit `null` as an
   empty answer that does not take a default; a required question rejects it.
   The empty answer of a looped `text` or `multiselect` question is `[]`, and
   of any other question `null`; a question left out of a document for its
