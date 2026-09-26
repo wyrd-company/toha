@@ -160,7 +160,10 @@ commands:
           machine-readable: true
       exit-codes:
         - code: 0
-          meaning: Files were written and every hook succeeded, or the dry run completed.
+          meaning: >-
+            Files were written and every hook succeeded, or the dry run
+            completed; after a dry run of untrusted hooks, standard error
+            names the command with `--trust` that runs them.
         - code: 1
           meaning: >-
             A file conflict, render failure, or hook failure; no interview is
