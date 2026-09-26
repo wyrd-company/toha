@@ -672,7 +672,7 @@ fn remove_of_a_template_outside_the_user_registry_names_list() {
         &output,
         &[
             "not installed in user registry: discovered".into(),
-            "toha templates list".into(),
+            "toha templates list --json".into(),
         ],
     );
 }
