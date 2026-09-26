@@ -204,7 +204,7 @@ pub fn answer_headless<'a>(
                 return Err(EvalError {
                     id: id.clone(),
                     field: "answer",
-                    message: "unknown answer id".into(),
+                    message: "is not a question in this template".into(),
                 });
             }
             return Ok(Headless::Completed {

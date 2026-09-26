@@ -411,19 +411,16 @@ fn make_prompt(q: &Question, t: &Template, a: &Answers, seed: &Seed) -> Result<P
     })
 }
 fn parse_kind(id: &Id, kind: PromptKind, value: Value) -> Result<Answer, Rejection> {
-    let fail = |msg: &str| Rejection {
-        id: id.clone(),
-        message: msg.into(),
-    };
+    let fail = |msg: &str| rejection(id, msg);
     match kind {
         PromptKind::Text | PromptKind::Multiline | PromptKind::Select => value
             .as_str()
             .map(|v| Answer::Text(v.into()))
-            .ok_or_else(|| fail("expected text answer")),
+            .ok_or_else(|| fail("must be a string")),
         PromptKind::Confirm => value
             .as_bool()
             .map(Answer::Bool)
-            .ok_or_else(|| fail("expected boolean answer")),
+            .ok_or_else(|| fail("must be true or false")),
         PromptKind::MultiSelect | PromptKind::TextLoop => value
             .as_array()
             .and_then(|v| {
@@ -432,8 +429,117 @@ fn parse_kind(id: &Id, kind: PromptKind, value: Value) -> Result<Answer, Rejecti
                     .collect::<Option<Vec<_>>>()
             })
             .map(Answer::List)
-            .ok_or_else(|| fail("expected array of strings")),
+            .ok_or_else(|| fail("must be an array of strings")),
     }
+}
+fn count(n: u32, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+/// The constraints an answer must satisfy. A constraint that is `None` is
+/// absent or not yet known.
+struct Rules<'q> {
+    kind: PromptKind,
+    required: Option<bool>,
+    min: Option<u32>,
+    max: Option<u32>,
+    loop_min: Option<u32>,
+    loop_max: Option<u32>,
+    options: Option<Vec<String>>,
+    regex: Option<&'q regex::Regex>,
+}
+impl<'q> Rules<'q> {
+    fn of_prompt(prompt: &Prompt, q: &'q Question) -> Self {
+        let c = &prompt.constraints;
+        Self {
+            kind: prompt.kind,
+            required: Some(c.required),
+            min: c.min,
+            max: c.max,
+            loop_min: c.loop_min,
+            loop_max: c.loop_max,
+            options: matches!(prompt.kind, PromptKind::Select | PromptKind::MultiSelect)
+                .then(|| prompt.options.clone()),
+            regex: q.validate.regex.as_ref(),
+        }
+    }
+}
+/// Checks `value` against `rules`. Each error is one sentence that names the
+/// constraint it fails.
+fn validate(id: &Id, rules: &Rules, value: Value) -> Result<Answer, Rejection> {
+    let fail = |msg: String| Err(rejection(id, msg));
+    if value.is_null() {
+        if rules.required == Some(true) {
+            return fail("is required".into());
+        }
+        return Ok(Answer::None);
+    }
+    let answer = parse_kind(id, rules.kind, value)?;
+    if rules.required == Some(true)
+        && match &answer {
+            Answer::Text(v) => v.is_empty(),
+            Answer::List(v) => v.is_empty(),
+            _ => false,
+        }
+    {
+        return fail("is required".into());
+    }
+    let (strings, prefix): (Vec<&str>, &str) = match &answer {
+        Answer::Text(v) => (vec![v], ""),
+        Answer::List(v) if rules.kind == PromptKind::TextLoop => {
+            (v.iter().map(String::as_str).collect(), "each item ")
+        }
+        _ => (vec![], ""),
+    };
+    for s in strings {
+        let len = s.chars().count() as u32;
+        if let Some(n) = rules.min.filter(|n| len < *n) {
+            return fail(format!(
+                "{prefix}must be at least {}",
+                count(n, "character", "characters")
+            ));
+        }
+        if let Some(n) = rules.max.filter(|n| len > *n) {
+            return fail(format!(
+                "{prefix}must be at most {}",
+                count(n, "character", "characters")
+            ));
+        }
+        if let Some(r) = rules.regex.filter(|r| !r.is_match(s)) {
+            return fail(format!("{prefix}must match {}", r.as_str()));
+        }
+    }
+    let (at_least, at_most) = match rules.kind {
+        PromptKind::MultiSelect => (rules.min, rules.max),
+        _ => (rules.loop_min, rules.loop_max),
+    };
+    if let Answer::List(v) = &answer {
+        let len = v.len() as u32;
+        if let Some(n) = at_least.filter(|n| len < *n) {
+            return fail(format!("must have at least {}", count(n, "item", "items")));
+        }
+        if let Some(n) = at_most.filter(|n| len > *n) {
+            return fail(format!("must have at most {}", count(n, "item", "items")));
+        }
+        if rules.kind == PromptKind::MultiSelect {
+            if let Some(options) = &rules.options {
+                if v.iter().any(|s| !options.contains(s)) {
+                    return fail(format!("each item must be one of: {}", options.join(", ")));
+                }
+            }
+            let mut seen = HashSet::new();
+            if !v.iter().all(|s| seen.insert(s)) {
+                return fail("must not repeat an item".into());
+            }
+        }
+    }
+    if let (Answer::Text(v), PromptKind::Select, Some(options)) =
+        (&answer, rules.kind, &rules.options)
+    {
+        if !options.contains(v) {
+            return fail(format!("must be one of: {}", options.join(", ")));
+        }
+    }
+    Ok(answer)
 }
 pub fn configured_defaults(
     template: &Template,
@@ -796,72 +902,11 @@ impl Pending<'_> {
                 Item::Prompt(p) if &p.id == id => Some(p),
                 _ => None,
             })
-            .ok_or_else(|| rejection(id, "not in current batch"))?;
+            .ok_or_else(|| rejection(id, "is not in the current batch"))?;
         let q = question_by_id(&self.template.interview, id).expect("prompt has question");
-        if raw.0.is_null() {
-            return if prompt.constraints.required {
-                Err(rejection(id, "required answer is missing").into())
-            } else {
-                Ok(Answer::None)
-            };
-        }
-        let mut answer = parse_kind(id, prompt.kind, raw.0)?;
-        let c = &prompt.constraints;
-        if c.required
-            && match &answer {
-                Answer::Text(v) => v.is_empty(),
-                Answer::List(v) => v.is_empty(),
-                _ => false,
-            }
-        {
-            return Err(rejection(id, "required answer is missing").into());
-        }
-        let strings: Vec<&str> = match &answer {
-            Answer::Text(v) => vec![v],
-            Answer::List(v) if prompt.kind == PromptKind::TextLoop => {
-                v.iter().map(String::as_str).collect()
-            }
-            _ => vec![],
-        };
-        for s in strings {
-            let len = s.chars().count() as u32;
-            if c.min.is_some_and(|v| len < v) {
-                return Err(rejection(id, "validate.min").into());
-            }
-            if c.max.is_some_and(|v| len > v) {
-                return Err(rejection(id, "validate.max").into());
-            }
-            if q.validate.regex.as_ref().is_some_and(|r| !r.is_match(s)) {
-                return Err(rejection(id, "validate.regex").into());
-            }
-        }
-        if let Answer::List(v) = &answer {
-            if prompt.kind == PromptKind::MultiSelect {
-                if c.min.is_some_and(|n| v.len() < n as usize) {
-                    return Err(rejection(id, "validate.min").into());
-                }
-                if c.max.is_some_and(|n| v.len() > n as usize) {
-                    return Err(rejection(id, "validate.max").into());
-                }
-                let mut seen = HashSet::new();
-                if v.iter()
-                    .any(|s| !prompt.options.contains(s) || !seen.insert(s))
-                {
-                    return Err(rejection(id, "select options must be unique and allowed").into());
-                }
-            } else {
-                if c.loop_min.is_some_and(|n| v.len() < n as usize) {
-                    return Err(rejection(id, "loop.min").into());
-                }
-                if c.loop_max.is_some_and(|n| v.len() > n as usize) {
-                    return Err(rejection(id, "loop.max").into());
-                }
-            }
-        }
-        if let Answer::Text(v) = &answer {
-            if prompt.kind == PromptKind::Select && !prompt.options.contains(v) {
-                return Err(rejection(id, "select option not allowed").into());
-            }
+        let mut answer = validate(id, &Rules::of_prompt(prompt, q), raw.0)?;
+        if answer == Answer::None {
+            return Ok(answer);
         }
         if let Some(expr) = &q.format {
             let ctx = context(self.template, &self.answers, &self.seed);
@@ -931,7 +976,7 @@ impl<'a> Pending<'a> {
         let mut rejections = vec![];
         for (id, raw) in incoming {
             if !self.template.has_question_id(&id) {
-                rejections.push(rejection(&id, "unknown answer id"))
+                rejections.push(rejection(&id, "is not a question in this template"))
             } else {
                 held.insert(id, raw);
             }
@@ -945,7 +990,7 @@ impl<'a> Pending<'a> {
                 None => match &p.default {
                     Some(v) => self.check_inner(&p.id, RawAnswer(v.to_json())),
                     None if !p.constraints.required => Ok(Answer::None),
-                    None => Err(rejection(&p.id, "required answer is missing").into()),
+                    None => Err(rejection(&p.id, "is required").into()),
                 },
             };
             match checked {
