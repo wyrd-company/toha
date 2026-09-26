@@ -368,3 +368,56 @@ fn trusted_hook_runs_once_per_item() {
         "alpha=one\nbeta=two\ngamma=three\n"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn trusted_apply_prints_written_files_before_hooks_run() {
+    use std::os::unix::fs::PermissionsExt;
+    let folder = tempfile::tempdir().unwrap();
+    std::fs::write(
+        folder.path().join("template.yml"),
+        concat!(
+            "name: files-then-hooks\n",
+            "source: .\n",
+            "ignore: [mark.sh, answers.json]\n",
+            "hooks:\n",
+            "  - script: mark.sh\n",
+        ),
+    )
+    .unwrap();
+    std::fs::write(folder.path().join("sample.txt"), "sample\n").unwrap();
+    let script = folder.path().join("mark.sh");
+    std::fs::write(&script, "#!/bin/sh\necho HOOK-MARKER\n").unwrap();
+    let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&script, permissions).unwrap();
+    let answers = folder.path().join("answers.json");
+    std::fs::write(&answers, "{}").unwrap();
+    let target = tempfile::tempdir().unwrap();
+    let isolation = tempfile::tempdir().unwrap();
+    let output = support::isolated_command(isolation.path())
+        .args([
+            "apply",
+            folder.path().to_str().unwrap(),
+            target.path().to_str().unwrap(),
+            "--answers",
+            answers.to_str().unwrap(),
+            "--trust",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<_> = stdout.lines().collect();
+    let file = lines.iter().position(|line| *line == "sample.txt");
+    let marker = lines.iter().position(|line| *line == "HOOK-MARKER");
+    assert!(
+        matches!((file, marker), (Some(file), Some(marker)) if file < marker),
+        "{stdout}"
+    );
+}
