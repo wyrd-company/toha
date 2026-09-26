@@ -737,6 +737,20 @@ mod tests {
             word_for(path_value(r"C:\", Shell::Windows), Shell::Windows),
             r"C:\"
         );
+        assert_eq!(path_value("", Shell::Windows), "");
+        assert_eq!(path_value("", Shell::Posix), "");
+        assert_eq!(path_value(r"\\?\C:\", Shell::Windows), r"\\?\C:\");
+        assert_eq!(path_value(r"\\?\C:\dir\", Shell::Windows), r"\\?\C:\dir");
+        assert_eq!(path_value(r"\\?\C:\\", Shell::Windows), r"\\?\C:\");
+    }
+
+    #[test]
+    fn windows_quoted_words_keep_trailing_backslashes_outside_the_quotes() {
+        assert_eq!(word_for(r"\\?\C:\", Shell::Windows), r#""\\?\C:"\"#);
+        assert_eq!(word_for(r"C:\my dir\", Shell::Windows), r#""C:\my dir"\"#);
+        assert_eq!(word_for(r"C:\my dir\\", Shell::Windows), r#""C:\my dir"\\"#);
+        assert_eq!(word_for(r"C:\my dir", Shell::Windows), r#""C:\my dir""#);
+        assert_eq!(word_for("", Shell::Windows), r#""""#);
     }
 
     #[test]

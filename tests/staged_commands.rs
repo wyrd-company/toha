@@ -707,3 +707,18 @@ fn suggested_commands_quote_words_a_shell_would_change() {
         ),
     );
 }
+
+#[test]
+fn empty_answers_path_is_named_as_an_empty_word() {
+    let case = Case::new();
+    let output = case.run(&["apply", case.target(), "--answers", ""]);
+    assert_code(&output, 1);
+    assert_stderr_names(
+        &output,
+        &[format!(
+            "toha apply --answers {} <TEMPLATE> {}",
+            support::shell_quoted(""),
+            case.target()
+        )],
+    );
+}
