@@ -102,7 +102,6 @@ fn view_and_export_round_trip() {
 fn view_errors_and_export_does_not_overwrite() {
     for args in [
         vec!["skills", "view", "unknown"],
-        vec!["skills", "view", "toha", "-p", "../toha-templates/SKILL.md"],
         vec!["skills", "view", "toha", "-p", "references/absent.md"],
     ] {
         let output = toha(&args);
@@ -111,6 +110,9 @@ fn view_errors_and_export_does_not_overwrite() {
     let unknown = toha(&["skills", "view", "unknown"]);
     let error = String::from_utf8(unknown.stderr).unwrap();
     assert!(error.contains("toha, toha-templates"));
+    let escaped = toha(&["skills", "view", "toha", "-p", "../toha-templates/SKILL.md"]);
+    assert_eq!(escaped.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&escaped.stderr).contains("outside skill"));
     let destination = tempfile::tempdir().unwrap();
     fs::create_dir(destination.path().join("toha")).unwrap();
     let existing = destination.path().join("toha/SKILL.md");
@@ -126,6 +128,22 @@ fn view_errors_and_export_does_not_overwrite() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("toha/SKILL.md"));
     assert_eq!(fs::read_to_string(existing).unwrap(), "keep");
     assert!(!destination.path().join("toha/references").exists());
+    let later_collision = tempfile::tempdir().unwrap();
+    fs::create_dir_all(later_collision.path().join("toha/references")).unwrap();
+    fs::write(
+        later_collision.path().join("toha/references/protocol.md"),
+        "keep",
+    )
+    .unwrap();
+    let output = toha(&[
+        "skills",
+        "view",
+        "toha",
+        "-e",
+        later_collision.path().to_str().unwrap(),
+    ]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(!later_collision.path().join("toha/SKILL.md").exists());
     assert_eq!(
         toha(&["skills", "view", "toha", "-p", "SKILL.md", "-e", "."])
             .status
