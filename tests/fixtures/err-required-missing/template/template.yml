@@ -1,0 +1,6 @@
+name: sample
+interview:
+  - id: item
+    type: text
+    prompt: Item?
+    required: true

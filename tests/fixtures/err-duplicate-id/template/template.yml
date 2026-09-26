@@ -1,0 +1,8 @@
+name: sample
+interview:
+  - id: item
+    type: text
+    prompt: One?
+  - id: item
+    type: text
+    prompt: Two?

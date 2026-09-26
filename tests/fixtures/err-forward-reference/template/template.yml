@@ -1,0 +1,8 @@
+name: sample
+interview:
+  - id: first
+    type: text
+    prompt: "{{ second }}"
+  - id: second
+    type: text
+    prompt: Second?
