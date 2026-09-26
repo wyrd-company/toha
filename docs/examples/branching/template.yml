@@ -1,0 +1,52 @@
+name: branching
+description: A static web site with optional search and optional analytics
+
+data:
+  themes: !include data/themes.yml              # path relative to the template root
+  regions:                                      # inline static data
+    - { id: eu, label: Europe }
+    - { id: us, label: North America }
+
+interview:
+  - id: site_name
+    type: text
+    prompt: Site name
+    required: true
+
+  - id: theme
+    type: select
+    prompt: Theme
+    options: "themes | map(attribute='id') | list"   # expression: must return an array
+
+  - id: search
+    type: confirm
+    prompt: Add search?
+    default: false
+
+  - group: search_settings
+    when: search
+    nodes:
+      - id: search_engine
+        type: select
+        prompt: "Search engine for {{ site_name }}"
+        options: [ local, hosted ]
+
+      - group: hosted_search
+        when: search_engine == 'hosted'
+        nodes:
+          - id: search_region
+            type: select
+            prompt: Region
+            options: "regions | map(attribute='id') | list"
+
+  - id: analytics
+    type: multiselect
+    prompt: Analytics
+    options: [ page-views, referrers, errors ]
+    default: "['page-views'] if search else []"      # expression: multiselect default is an array
+
+  - id: output_dir
+    computed: "'public/' ~ (site_name | kebab)"
+
+  - id: uses_hosted_services
+    computed: "search_engine == 'hosted' or analytics | length > 0"

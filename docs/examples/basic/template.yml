@@ -1,0 +1,42 @@
+name: basic
+description: A note file with a title, tags and an optional summary
+
+interview:
+  - id: title
+    type: text
+    prompt: Title
+    required: true
+    validate:
+      min: 3
+      max: 80
+
+  - id: slug
+    type: text
+    prompt: File name
+    default: "{{ title | kebab }}"            # template: text default is a string
+    validate:
+      regex: '^[a-z0-9-]+$'
+
+  - id: tags
+    type: text
+    prompt: "Tag (empty to finish)"
+    loop:                                       # answer is an array of strings
+      min: 0
+      max: 5
+    format: lower                               # applied to each item
+
+  - id: has_summary
+    type: confirm
+    prompt: Add a summary?
+    default: "tags | length > 0"                # expression: confirm default is a bool
+
+  - id: summary
+    type: multiline
+    prompt: Summary
+    when: has_summary
+
+  - id: status
+    type: select
+    prompt: Status
+    options: [ draft, review, final ]             # literal array
+    default: draft                              # template: select default is a string

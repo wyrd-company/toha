@@ -1,0 +1,39 @@
+name: generated-files
+description: A task runner config with one file for each task
+
+interview:
+  - id: project
+    type: text
+    prompt: Project name
+    required: true
+
+  - id: tasks
+    type: text
+    prompt: "Task name (empty to finish)"
+    loop:
+      min: 1
+    validate:
+      regex: '^[a-z][a-z0-9-]*$'
+
+  - message: "Generating {{ tasks | length }} task file(s) for {{ project }}"
+    at: before-apply
+
+files:
+  - each: tasks as task                          # one file for each item
+    source: tasks/_task.yml                      # not rendered by itself
+    path: "tasks/{{ task }}.yml"
+
+ignore:
+  - "**/*.orig"
+  - "tasks/_task.yml"                            # the source above is only used by `each`
+
+static:
+  - "assets/**"                                  # copied, not rendered
+
+hooks:
+  after-apply:
+    - run: [ git, init ]
+
+messages:
+  - at: after-apply
+    text: "Run `tasks/{{ tasks | first }}.yml` to start"
