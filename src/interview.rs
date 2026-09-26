@@ -50,7 +50,7 @@ pub struct Pending<'a> {
     seed: Seed,
     answers: Answers,
     held: RawAnswers,
-    skipped: HashSet<Id>,
+    skipped: Skipped,
     messages: Vec<String>,
     hooks: Vec<RenderedHook>,
     visited: HashSet<String>,
@@ -65,6 +65,25 @@ pub struct Completed {
     pub last_messages: Vec<String>,
     pub hooks: Vec<RenderedHook>,
     pub now: jiff::Zoned,
+    skipped: Skipped,
+    step_start: usize,
+}
+/// The questions skipped by a `when`, in interview order, each with the
+/// number of messages reached before it was skipped.
+type Skipped = IndexMap<Id, usize>;
+impl Completed {
+    /// Adds the warning for each answer in `unused` whose question was
+    /// skipped, at the position the question was skipped.
+    pub(crate) fn warn_unused(&mut self, unused: &RawAnswers) {
+        let mut added = 0;
+        for (id, position) in &self.skipped {
+            if unused.contains_key(id) {
+                self.messages.insert(position + added, skipped_warning(id));
+                added += 1;
+            }
+        }
+        self.last_messages = self.messages[self.step_start..].to_vec();
+    }
 }
 /// The warning for an answer to `id` that is not used because its question
 /// is skipped.
@@ -938,8 +957,7 @@ struct Advance<'a> {
     seed: Seed,
     answers: Answers,
     held: RawAnswers,
-    /// The questions skipped by a `when`.
-    skipped: HashSet<Id>,
+    skipped: Skipped,
     messages: Vec<String>,
     /// The number of messages reached before this step.
     step_start: usize,
@@ -967,9 +985,14 @@ impl<'a> Advance<'a> {
             q.id.clone(),
             default.unwrap_or_else(|| empty_answer(prompt_kind(q))),
         );
-        self.skipped.insert(q.id.clone());
-        if self.held.shift_remove(&q.id).is_some() {
-            self.message(skipped_warning(&q.id));
+        self.skipped.insert(q.id.clone(), self.messages.len());
+        self.warn_if_held(&q.id);
+    }
+    /// Reaches the warning for an answer held for the skipped question `id`,
+    /// which is not used.
+    fn warn_if_held(&mut self, id: &Id) {
+        if self.held.shift_remove(id).is_some() {
+            self.message(skipped_warning(id));
         }
     }
     fn walk(&mut self, nodes: &'a [Node], prefix: &str, skip: bool) -> Result<bool, EvalError> {
@@ -978,6 +1001,9 @@ impl<'a> Advance<'a> {
             match node {
                 Node::Question(q) => {
                     if self.answers.contains_key(&q.id) {
+                        if self.skipped.contains_key(&q.id) {
+                            self.warn_if_held(&q.id);
+                        }
                         continue;
                     }
                     if skip {
@@ -1219,6 +1245,8 @@ fn advance(mut state: Advance<'_>) -> Result<Interview<'_>, EvalError> {
             messages: state.messages,
             hooks: state.hooks,
             now: state.seed.now,
+            skipped: state.skipped,
+            step_start: state.step_start,
         }))
     } else {
         Ok(Interview::Asking(Pending {
@@ -1241,7 +1269,7 @@ impl<'a> Interview<'a> {
             seed,
             answers: Answers::new(),
             held: RawAnswers::new(),
-            skipped: HashSet::new(),
+            skipped: Skipped::new(),
             messages: vec![],
             step_start: 0,
             hooks: vec![],
@@ -1308,14 +1336,14 @@ impl<'a> Pending<'a> {
     pub fn answer(self, incoming: RawAnswers) -> Result<Interview<'a>, AnswerError<'a>> {
         let mut held = self.held.clone();
         let mut rejections = vec![];
-        let mut warnings = vec![];
         for (id, raw) in incoming {
             let Some(q) = question_by_id(&self.template.interview, &id) else {
                 rejections.push(rejection(&id, "is not a question in this template"));
                 continue;
             };
-            if self.skipped.contains(&id) {
-                warnings.push(skipped_warning(&id));
+            if self.skipped.contains_key(&id) {
+                // Not used; the walk warns at the skipped question.
+                held.insert(id, raw);
                 continue;
             }
             if let Some(recorded) = self.answers.get(&id) {
@@ -1400,28 +1428,22 @@ impl<'a> Pending<'a> {
                 rejections,
             });
         }
-        let mut answers = self.answers.clone();
-        answers.extend(next);
-        for id in answers.keys() {
+        for id in next.keys() {
             held.shift_remove(id);
         }
-        let step_start = self.messages.len();
-        let mut messages = self.messages;
-        messages.extend(warnings.iter().cloned());
+        let mut answers = self.answers.clone();
+        answers.extend(next);
         advance(Advance {
             template: self.template,
             seed: self.seed,
             answers,
             held,
             skipped: self.skipped,
-            messages,
-            step_start,
+            step_start: self.messages.len(),
+            messages: self.messages,
             hooks: self.hooks,
             visited: self.visited,
-            batch: Batch {
-                items: warnings.into_iter().map(Item::Message).collect(),
-                ..Batch::default()
-            },
+            batch: Batch::default(),
             blocked: None,
         })
         .map_err(AnswerError::Eval)

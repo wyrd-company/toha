@@ -188,6 +188,7 @@ pub fn protocol_schema() -> &'static Value {
     &SCHEMA
 }
 
+#[allow(clippy::large_enum_variant)]
 pub enum Headless<'a> {
     Completed {
         completed: Completed,
@@ -225,11 +226,7 @@ pub fn answer_headless<'a>(
             }
             // An interview complete before any submission skipped each of
             // its questions, so none of these answers is used.
-            for id in remaining.keys() {
-                let warning = crate::interview::skipped_warning(id);
-                completed.messages.push(warning.clone());
-                completed.last_messages.push(warning);
-            }
+            completed.warn_unused(&remaining);
             return Ok(Headless::Completed {
                 completed,
                 accepted,
