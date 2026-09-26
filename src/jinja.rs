@@ -53,16 +53,20 @@ pub fn environment() -> Environment<'static> {
     env
 }
 
-/// Serializes a value as a YAML document body: no leading `---` and no
-/// trailing newline, so the result composes with `indent`.
+/// Serializes a value as a YAML document body with no leading `---`. The
+/// document's trailing newline is dropped, so the result composes with
+/// `indent`, unless it is data: a block scalar ending the document keeps it.
 fn toyaml(value: &Value) -> Result<Value, Error> {
     let yaml = serde_norway::to_string(value).map_err(|err| {
         Error::new(ErrorKind::InvalidOperation, "cannot serialize to YAML").with_source(err)
     })?;
     let body = yaml.strip_prefix("---\n").unwrap_or(&yaml);
-    Ok(Value::from_safe_string(
-        body.trim_end_matches('\n').to_owned(),
-    ))
+    let parse = |text: &str| serde_norway::from_str::<serde_json::Value>(text).ok();
+    let body = match body.strip_suffix('\n') {
+        Some(stripped) if parse(stripped).is_some_and(|v| Some(v) == parse(body)) => stripped,
+        _ => body,
+    };
+    Ok(Value::from_safe_string(body.to_owned()))
 }
 
 static GLOBALS: LazyLock<HashSet<String>> = LazyLock::new(|| {
