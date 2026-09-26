@@ -4,7 +4,7 @@
 // ---
 use std::{
     fmt, fs,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
 
 use crate::{
@@ -26,19 +26,18 @@ impl TargetPath {
             return Err(format!("invalid target path: {value}"));
         }
         let mut parts = Vec::new();
-        for part in Path::new(value).components() {
+        for part in value.split('/') {
             match part {
-                Component::Normal(value) if value == ".git" => {
-                    return Err(format!("target path enters .git: {value:?}"));
+                ".git" => {
+                    return Err("target path enters .git".into());
                 }
-                Component::Normal(value) => parts.push(value.to_owned()),
-                Component::CurDir => {}
-                Component::ParentDir => {
+                "" | "." => {}
+                ".." => {
                     if parts.pop().is_none() {
                         return Err(format!("target path escapes target: {value}"));
                     }
                 }
-                _ => return Err(format!("invalid target path: {value}")),
+                value => parts.push(value.to_owned()),
             }
         }
         if parts.is_empty() {
@@ -52,7 +51,14 @@ impl TargetPath {
 }
 impl fmt::Display for TargetPath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.display().fmt(f)
+        let mut parts = self.0.components();
+        if let Some(first) = parts.next() {
+            first.as_os_str().to_string_lossy().fmt(f)?;
+        }
+        for part in parts {
+            write!(f, "/{}", part.as_os_str().to_string_lossy())?;
+        }
+        Ok(())
     }
 }
 
@@ -151,7 +157,7 @@ fn read_render(path: &Path, ctx: &impl serde::Serialize) -> Result<String, PlanE
     rendered(&text, ctx, path)
 }
 fn target_path(path: &Path, ctx: &impl serde::Serialize) -> Result<Option<TargetPath>, PlanError> {
-    let mut parts = PathBuf::new();
+    let mut parts = Vec::new();
     for segment in path.components() {
         let value = rendered(&segment.as_os_str().to_string_lossy(), ctx, path)?;
         if value.is_empty() {
@@ -159,7 +165,7 @@ fn target_path(path: &Path, ctx: &impl serde::Serialize) -> Result<Option<Target
         }
         parts.push(value);
     }
-    TargetPath::parse(&parts.to_string_lossy())
+    TargetPath::parse(&parts.join("/"))
         .map(Some)
         .map_err(PlanError::Path)
 }
@@ -400,6 +406,8 @@ mod tests {
             "a/.git/b",
             "a\\b",
             "C:/a",
+            "//server/share",
+            "\\\\server\\share",
         ] {
             assert!(TargetPath::parse(bad).is_err(), "{bad}");
         }

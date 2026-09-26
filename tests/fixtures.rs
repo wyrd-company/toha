@@ -2,6 +2,7 @@
 // relationships:
 //   implements: architecture
 // ---
+#[allow(dead_code)]
 mod support;
 
 use std::{fs, path::Path};

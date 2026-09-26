@@ -2,6 +2,7 @@
 // relationships:
 //   implements: architecture
 // ---
+#[allow(dead_code)]
 mod support;
 
 #[test]
@@ -160,7 +161,7 @@ fn cancel_during_continue_preserves_staged_record() {
         .output()
         .unwrap();
     assert_eq!(stage.status.code(), Some(4));
-    let record = std::fs::read_dir(state.path().join("toha/staged"))
+    let record = std::fs::read_dir(support::staged_dir(state.path()))
         .unwrap()
         .next()
         .unwrap()

@@ -2,6 +2,7 @@
 // relationships:
 //   implements: interview-protocol
 // ---
+#[allow(dead_code)]
 mod support;
 use serde_json::{Value, json};
 use std::{
@@ -67,9 +68,7 @@ fn valid(document: &Value, validator: &jsonschema::Validator) {
     }
 }
 fn command(state: &Path) -> Command {
-    let mut cmd = support::isolated_command(state);
-    cmd.env("XDG_STATE_HOME", state);
-    cmd
+    support::isolated_command(state)
 }
 fn output_document(
     output: &std::process::Output,
@@ -345,7 +344,7 @@ fn rejected_continue_preserves_record_and_abort_is_idempotent() {
         .output()
         .unwrap();
     assert_eq!(initial.status.code(), Some(4));
-    let store = Store::new(state.path().join("toha/staged"));
+    let store = Store::new(support::staged_dir(state.path()));
     let target_path = canonical_target(target.path()).unwrap();
     let before = fs::read(store.path_for(&target_path)).unwrap();
     let mut cmd = command(state.path());
@@ -386,7 +385,7 @@ fn missing_required_stages_then_continues_and_applies() {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(4));
-    let store = Store::new(state.path().join("toha/staged"));
+    let store = Store::new(support::staged_dir(state.path()));
     assert!(
         store
             .load(&canonical_target(target.path()).unwrap())
@@ -598,7 +597,7 @@ fn skipped_group_has_same_batch_boundary_after_replay() {
     let output = send(cmd, &first_answers);
     assert_eq!(output.status.code(), Some(4));
     let next: Value = serde_json::from_slice(&output.stdout).unwrap();
-    let store = Store::new(state.path().join("toha/staged"));
+    let store = Store::new(support::staged_dir(state.path()));
     let saved = store
         .load(&canonical_target(target.path()).unwrap())
         .unwrap()
@@ -630,7 +629,7 @@ fn evaluation_failure_exits_one_and_preserves_staged_bytes() {
         .output()
         .unwrap();
     assert_eq!(initial.status.code(), Some(4));
-    let store = Store::new(state.path().join("toha/staged"));
+    let store = Store::new(support::staged_dir(state.path()));
     let record_path = store.path_for(&canonical_target(target.path()).unwrap());
     let before = fs::read(&record_path).unwrap();
     let mut cmd = command(state.path());
@@ -684,7 +683,7 @@ fn async_file_pending_apply_and_invalid_answers_codes() {
             .unwrap();
         assert_eq!(output.status.code(), Some(1));
     }
-    let store = Store::new(state.path().join("toha/staged"));
+    let store = Store::new(support::staged_dir(state.path()));
     assert_eq!(
         store
             .load(&canonical_target(target.path()).unwrap())
@@ -712,7 +711,7 @@ fn staged_dry_run_and_needs_trust_keep_record() {
         .output()
         .unwrap();
     assert_eq!(stage.status.code(), Some(0));
-    let store = Store::new(state.path().join("toha/staged"));
+    let store = Store::new(support::staged_dir(state.path()));
     let target_path = canonical_target(target.path()).unwrap();
     for (flags, expected) in [(vec!["--dry-run"], 0), (vec![], 3)] {
         let mut cmd = command(state.path());
@@ -756,7 +755,7 @@ fn stage_with_no_questions_emits_complete_and_saves() {
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
     valid(&value, &schema_validator());
     assert_eq!(value["status"], "complete");
-    let store = Store::new(state.path().join("toha/staged"));
+    let store = Store::new(support::staged_dir(state.path()));
     assert!(
         store
             .load(&canonical_target(target.path()).unwrap())

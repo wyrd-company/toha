@@ -1,21 +1,12 @@
+#[allow(dead_code)]
+mod support;
 use std::{fs, path::Path, process::Command};
 use tempfile::TempDir;
 
 fn run(root: &TempDir, args: &[&str]) -> std::process::Output {
-    let bin = assert_cmd::cargo::cargo_bin!("toha");
-    Command::new(bin)
+    support::isolated_command(root.path())
         .args(args)
         .current_dir(root.path())
-        .env("HOME", root.path().join("home"))
-        .env("XDG_CONFIG_HOME", root.path().join("config"))
-        .env("XDG_DATA_HOME", root.path().join("data"))
-        .env("XDG_CACHE_HOME", root.path().join("cache"))
-        .env("XDG_STATE_HOME", root.path().join("state"))
-        .env(
-            "TOHA_USER_CONFIG",
-            root.path().join("config/toha/config.yml"),
-        )
-        .env_remove("TOHA_CONFIG")
         .output()
         .unwrap()
 }

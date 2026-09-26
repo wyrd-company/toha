@@ -88,11 +88,43 @@ fn fixed_now() -> String {
 pub fn fixtures() -> Vec<PathBuf> {
     let mut paths: Vec<_> = fs::read_dir("tests/fixtures")
         .unwrap()
-        .map(|entry| entry.unwrap().path())
+        .map(|entry| entry.unwrap().path().canonicalize().unwrap())
         .filter(|path| path.is_dir())
         .collect();
     paths.sort();
     paths
+}
+
+pub fn isolated_command(root: &Path) -> Command {
+    let mut command = Command::new(assert_cmd::cargo::cargo_bin("toha"));
+    isolate(&mut command, root);
+    command
+}
+
+pub fn isolate(command: &mut Command, root: &Path) {
+    for (key, path) in [
+        ("HOME", root.join("home")),
+        ("USERPROFILE", root.join("home")),
+        ("APPDATA", root.join("data")),
+        ("LOCALAPPDATA", root.to_path_buf()),
+        ("PROGRAMDATA", root.join("system")),
+        ("XDG_CONFIG_HOME", root.join("config")),
+        ("XDG_DATA_HOME", root.join("data")),
+        ("XDG_CACHE_HOME", root.join("cache")),
+        ("XDG_STATE_HOME", root.to_path_buf()),
+        ("TOHA_USER_CONFIG", root.join("config/toha/config.yml")),
+    ] {
+        command.env(key, path);
+    }
+    command.env_remove("TOHA_CONFIG");
+}
+
+pub fn staged_dir(root: &Path) -> PathBuf {
+    if cfg!(target_os = "macos") {
+        root.join("home/Library/Application Support/toha/staged")
+    } else {
+        root.join("toha/staged")
+    }
 }
 
 pub fn expectation(fixture: &Path) -> Expect {

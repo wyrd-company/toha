@@ -122,13 +122,14 @@ impl Context {
     }
 }
 fn find_templates(root: &Path, selected: Option<&str>) -> Result<Vec<PathBuf>, CommandError> {
+    let root = root.canonicalize().map_err(CommandError::text)?;
     let start = if let Some(path) = selected {
         root.join(path)
     } else {
-        root.to_path_buf()
+        root.clone()
     };
     let start = start.canonicalize().map_err(CommandError::text)?;
-    if !start.starts_with(root) {
+    if !start.starts_with(&root) {
         return Err(CommandError::text("template path leaves repository"));
     }
     let mut found = Vec::new();
@@ -162,7 +163,7 @@ fn find_templates(root: &Path, selected: Option<&str>) -> Result<Vec<PathBuf>, C
     }
     visit(
         &start,
-        root,
+        &root,
         &mut std::collections::HashSet::new(),
         &mut found,
     )?;
@@ -293,6 +294,7 @@ fn add(
         Address::Folder(folder) => (folder.clone(), None, None),
         Address::Name(_) => return Err(CommandError::text("add requires a git address or folder")),
     };
+    let root = root.canonicalize().map_err(CommandError::text)?;
     let selected = if let Address::Git { path, .. } = &parsed {
         path.as_deref()
     } else {
