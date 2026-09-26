@@ -79,6 +79,101 @@ fn every_fixture_through_cli() {
 }
 
 #[test]
+fn commands_without_documents_require_a_terminal() {
+    let target = tempfile::tempdir().unwrap();
+    let template = std::path::Path::new("tests/fixtures/text-basic/template")
+        .canonicalize()
+        .unwrap();
+    for args in [
+        vec![
+            "stage".to_string(),
+            template.display().to_string(),
+            target.path().display().to_string(),
+        ],
+        vec!["continue".to_string(), target.path().display().to_string()],
+        vec![
+            "apply".to_string(),
+            template.display().to_string(),
+            target.path().display().to_string(),
+        ],
+    ] {
+        let output = Command::new(assert_cmd::cargo::cargo_bin!("toha"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("no terminal: use --async, an answers document, or --answers")
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn terminal_text_and_confirm_write_rendered_file() {
+    use expectrl::{Expect, Session};
+    let folder = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    std::fs::create_dir(folder.path().join("template")).unwrap();
+    std::fs::write(folder.path().join("template.yml"), "name: sample\nsource: template\ninterview:\n  - id: label\n    type: text\n    prompt: Label?\n    required: true\n  - id: enabled\n    type: confirm\n    prompt: Enabled?\n").unwrap();
+    std::fs::write(
+        folder.path().join("template/result.txt"),
+        "{{ label }} {{ enabled }}",
+    )
+    .unwrap();
+    let mut command = Command::new(assert_cmd::cargo::cargo_bin!("toha"));
+    command.arg("apply").arg(folder.path()).arg(target.path());
+    let mut session = Session::spawn(command).unwrap();
+    session.expect("Label?").unwrap();
+    session.send_line("sample").unwrap();
+    session.expect("Enabled?").unwrap();
+    session.send_line("y").unwrap();
+    session.expect("result.txt").unwrap();
+    assert_eq!(
+        std::fs::read_to_string(target.path().join("result.txt")).unwrap(),
+        "sample True"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn cancel_during_continue_preserves_staged_record() {
+    use expectrl::{Expect, Session};
+    let fixture = std::path::Path::new("tests/fixtures/text-basic/template")
+        .canonicalize()
+        .unwrap();
+    let target = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let stage = Command::new(assert_cmd::cargo::cargo_bin!("toha"))
+        .arg("stage")
+        .arg(&fixture)
+        .arg(target.path())
+        .arg("--async")
+        .env("XDG_STATE_HOME", state.path())
+        .output()
+        .unwrap();
+    assert_eq!(stage.status.code(), Some(4));
+    let record = std::fs::read_dir(state.path().join("toha/staged"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let before = std::fs::read(&record).unwrap();
+    let mut command = Command::new(assert_cmd::cargo::cargo_bin!("toha"));
+    command
+        .arg("continue")
+        .arg(target.path())
+        .env("XDG_STATE_HOME", state.path());
+    let mut session = Session::spawn(command).unwrap();
+    session.expect("Name?").unwrap();
+    session.send("\u{1b}").unwrap();
+    session.expect("Operation was canceled").unwrap();
+    assert_eq!(std::fs::read(record).unwrap(), before);
+}
+
+#[test]
 fn default_render_failure_exits_one_without_writing() {
     let fixture = std::path::Path::new("tests/fixtures/err-default-render");
     let target = tempfile::tempdir().unwrap();

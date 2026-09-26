@@ -4,10 +4,12 @@
 // ---
 use std::{
     fs,
-    io::{self, Read},
+    io::{self, IsTerminal, Read},
     path::{Path, PathBuf},
     process::ExitCode,
 };
+#[path = "cli/terminal.rs"]
+mod terminal;
 
 use clap::{Parser, Subcommand};
 use toha::{
@@ -25,12 +27,14 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Command {
+    /// Interview a template and save its answers. Multiline input uses an editor, or lines ending with . when no editor is available.
     Stage {
         template: String,
         path: PathBuf,
         #[arg(short = 'a', long = "async", num_args = 0..=1)]
         r#async: Option<Option<String>>,
     },
+    /// Continue an interview. Multiline input uses an editor, or lines ending with . when no editor is available.
     Continue {
         path: PathBuf,
         answers: Option<String>,
@@ -38,6 +42,7 @@ enum Command {
     Abort {
         path: PathBuf,
     },
+    /// Apply a template. Multiline input uses an editor, or lines ending with . when no editor is available.
     Apply {
         #[arg(num_args = 1..=2)]
         paths: Vec<String>,
@@ -208,9 +213,9 @@ fn record(target: PathBuf, template: String, now: &jiff::Zoned) -> StagedRecord 
     }
 }
 fn stage(template: String, path: PathBuf, output: Option<Option<String>>, dirs: &Dirs) -> Outcome {
-    let Some(output) = output else {
-        return Outcome::Error("interactive prompts are not supported yet".into());
-    };
+    if output.is_none() && !io::stdin().is_terminal() {
+        return no_terminal();
+    }
     let (target, store) = match setup(&path, dirs) {
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
@@ -235,6 +240,26 @@ fn stage(template: String, path: PathBuf, output: Option<Option<String>>, dirs: 
         Ok(v) => v,
         Err(e) => return Outcome::Error(e.to_string()),
     };
+    if output.is_none() {
+        let mut saved = saved;
+        let completed = terminal::drive(interview, &mut terminal::InquireAsk, |submission| {
+            saved.submissions.push(submission);
+            store.save(&saved).map_err(|e| e.to_string())
+        });
+        return match completed {
+            Ok(_) => {
+                // An interview without prompts still needs a staged record.
+                if saved.submissions.is_empty() {
+                    if let Err(e) = store.save(&saved) {
+                        return Outcome::Error(e.to_string());
+                    }
+                }
+                Outcome::Saved(0)
+            }
+            Err(error) => Outcome::Error(error),
+        };
+    }
+    let output = output.unwrap();
     let (document, code) = match interview {
         Interview::Asking(pending) => (
             protocol::batch_document(pending.batch(), &context(&saved), None),
@@ -261,9 +286,9 @@ fn stage(template: String, path: PathBuf, output: Option<Option<String>>, dirs: 
     }
 }
 fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome {
-    let Some(answers) = answers else {
-        return Outcome::Error("interactive prompts are not supported yet".into());
-    };
+    if answers.is_none() && !io::stdin().is_terminal() {
+        return no_terminal();
+    }
     let (target, store) = match setup(&path, dirs) {
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
@@ -281,6 +306,19 @@ fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome 
         Ok(v) => v,
         Err(e) => return Outcome::Error(e.to_string()),
     };
+    if answers.is_none() {
+        if matches!(interview, Interview::Complete(_)) {
+            return Outcome::Error("interview already complete".into());
+        }
+        return match terminal::drive(interview, &mut terminal::InquireAsk, |submission| {
+            saved.submissions.push(submission);
+            store.save(&saved).map_err(|e| e.to_string())
+        }) {
+            Ok(_) => Outcome::Saved(0),
+            Err(error) => Outcome::Error(error),
+        };
+    }
+    let answers = answers.unwrap();
     let raw = match read_answers(&answers) {
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
@@ -329,6 +367,10 @@ fn abort(path: PathBuf, dirs: &Dirs) -> Outcome {
     }
 }
 
+fn no_terminal() -> Outcome {
+    Outcome::Error("no terminal: use --async, an answers document, or --answers".into())
+}
+
 fn run(
     template: Option<String>,
     path: &Path,
@@ -338,6 +380,7 @@ fn run(
     trust: bool,
     dirs: &Dirs,
 ) -> Outcome {
+    let terminal_run = template.is_some() && answers.is_none();
     let (target, store) = match setup(path, dirs) {
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
@@ -354,9 +397,9 @@ fn run(
     }
     let (template, interview, saved) = match (template, existing) {
         (Some(folder), None) => {
-            let Some(answers_file) = answers else {
-                return Outcome::Error("interactive prompts are not supported yet".into());
-            };
+            if answers.is_none() && !io::stdin().is_terminal() {
+                return no_terminal();
+            }
             let (template, formal) = match load_template(&folder) {
                 Ok(v) => v,
                 Err(e) => return Outcome::Error(e),
@@ -366,37 +409,46 @@ fn run(
                 Err(e) => return Outcome::Error(e),
             };
             let saved = record(target.clone(), formal, &seed.now);
-            let raw = match read_answers(&answers_file) {
-                Ok(v) => v,
-                Err(e) => return Outcome::Error(e),
-            };
             let interview = match Interview::start(&template, seed) {
                 Ok(v) => v,
                 Err(e) => return Outcome::Error(e.to_string()),
             };
-            let result = match protocol::answer_headless(&template, interview, raw) {
-                Ok(v) => v,
-                Err(e) => return Outcome::Error(e.to_string()),
-            };
-            match result {
-                Headless::Completed { completed, .. } => (template, completed, None),
-                Headless::Pending {
-                    pending,
-                    rejections,
-                    accepted,
-                } => {
-                    let mut saved = saved;
-                    saved.submissions = accepted;
-                    let document = protocol::batch_document(
-                        pending.batch(),
-                        &context(&saved),
-                        Some(&rejections),
-                    );
-                    if let Err(e) = store.save(&saved) {
-                        return Outcome::Error(e.to_string());
+            if let Some(answers_file) = answers {
+                let raw = match read_answers(&answers_file) {
+                    Ok(v) => v,
+                    Err(e) => return Outcome::Error(e),
+                };
+                let result = match protocol::answer_headless(&template, interview, raw) {
+                    Ok(v) => v,
+                    Err(e) => return Outcome::Error(e.to_string()),
+                };
+                match result {
+                    Headless::Completed { completed, .. } => (template, completed, None),
+                    Headless::Pending {
+                        pending,
+                        rejections,
+                        accepted,
+                    } => {
+                        let mut saved = saved;
+                        saved.submissions = accepted;
+                        let document = protocol::batch_document(
+                            pending.batch(),
+                            &context(&saved),
+                            Some(&rejections),
+                        );
+                        if let Err(e) = store.save(&saved) {
+                            return Outcome::Error(e.to_string());
+                        }
+                        return Outcome::Document(document, 4);
                     }
-                    return Outcome::Document(document, 4);
                 }
+            } else {
+                let completed =
+                    match terminal::drive(interview, &mut terminal::InquireAsk, |_| Ok(())) {
+                        Ok(v) => v,
+                        Err(e) => return Outcome::Error(e),
+                    };
+                (template, completed, None)
             }
         }
         (None, Some(saved)) => {
@@ -431,17 +483,22 @@ fn run(
     };
     if dry_run {
         return Outcome::Written(
-            completed
-                .messages
-                .into_iter()
-                .chain(plan_lines(&plan, force))
-                .collect(),
+            (if terminal_run {
+                vec![]
+            } else {
+                completed.messages
+            })
+            .into_iter()
+            .chain(plan_lines(&plan, force))
+            .collect(),
         );
     }
     let before = plan.before_apply.clone();
     let preview = plan_lines(&plan, force);
-    for message in completed.messages {
-        println!("{message}");
+    if !terminal_run {
+        for message in completed.messages {
+            println!("{message}");
+        }
     }
     if let Some(message) = &before {
         println!("{message}");
