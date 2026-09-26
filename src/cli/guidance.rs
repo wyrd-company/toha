@@ -650,7 +650,20 @@ pub fn ambiguous(name: &str, matches: &[String], retry: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Shell, word_for};
+    use super::{Shell, plain_formal, word_for};
+
+    #[test]
+    fn extended_drive_paths_are_named_by_their_drive_path() {
+        assert_eq!(plain_formal(r"\\?\D:\a\template"), r"D:\a\template");
+        for kept in [
+            r"\\?\UNC\server\share",
+            r"\\server\share",
+            "/srv/template",
+            "gh:org/repo#one",
+        ] {
+            assert_eq!(plain_formal(kept), kept);
+        }
+    }
 
     const SPECIAL: [&str; 19] = [
         "", "#x", "$x", "`x`", "a*", "a?", "[a]", "a!", "a&b", "a;b", "a|b", "<a>", "(a)", "{a}",
