@@ -1,3 +1,7 @@
+# ---
+# relationships:
+#   exemplifies: template-format
+# ---
 name: basic
 description: A note file with a title, tags and an optional summary
 
@@ -23,7 +27,7 @@ interview:
     loop:                                       # answer is an array of strings
       min: 0
       max: 5
-    format: lower                               # applied to each item
+    format: value | lower                       # expression, applied to each item
 
   - id: has_summary
     type: confirm

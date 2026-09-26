@@ -1,3 +1,8 @@
+---
+relationships:
+  exemplifies: template-format
+---
+
 # Template examples
 
 Each directory holds a `template.yml` that shows one part of the template

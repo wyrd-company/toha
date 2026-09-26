@@ -1,0 +1,78 @@
+# ---
+# relationships:
+#   realizes: interview-protocol
+# ---
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://toha.wyrd.company/schemas/interview-protocol
+title: Toha Interview Protocol
+description: Documents exchanged by `stage --async`, `continue`, and `--answers`.
+oneOf:
+  - $ref: "#/$defs/batch"
+  - $ref: "#/$defs/complete"
+$defs:
+  identifier:
+    type: string
+    pattern: '^[a-z_][a-z0-9_]*$'
+  answers:
+    description: Answers keyed by question id.
+    type: object
+    propertyNames:
+      $ref: "#/$defs/identifier"
+  context:
+    type: object
+    additionalProperties: false
+    required: [ target, template, commit ]
+    properties:
+      target:
+        description: Canonical absolute target path.
+        type: string
+      template:
+        description: Formal name of the template.
+        type: string
+      commit:
+        description: Resolved commit of a git template; empty for a local folder.
+        type: string
+  batch:
+    type: object
+    additionalProperties: false
+    required: [ protocol, status, context, schema, messages ]
+    properties:
+      protocol:
+        const: 1
+      status:
+        const: questions
+      context:
+        $ref: "#/$defs/context"
+      schema:
+        description: JSON Schema 2020-12 object schema of the pending questions.
+        type: object
+        required: [ type, properties ]
+        properties:
+          type:
+            const: object
+      messages:
+        type: array
+        items:
+          type: string
+      errors:
+        description: Validation errors for the rejected answers, keyed by question id.
+        type: object
+        propertyNames:
+          $ref: "#/$defs/identifier"
+        additionalProperties:
+          type: array
+          items:
+            type: string
+  complete:
+    type: object
+    additionalProperties: false
+    required: [ protocol, status, context, answers ]
+    properties:
+      protocol:
+        const: 1
+      status:
+        const: complete
+      context:
+        $ref: "#/$defs/context"
+      answers:
+        $ref: "#/$defs/answers"

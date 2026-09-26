@@ -1,3 +1,7 @@
+# ---
+# relationships:
+#   exemplifies: template-format
+# ---
 name: branching
 description: A static web site with optional search and optional analytics
 

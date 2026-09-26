@@ -1,0 +1,109 @@
+$schema: https://refinery.systems/ontology/specification
+relationships:
+  realizes:
+    - toha
+description: >-
+  Defines the toha template: the folder layout, the `template.yml` file, the
+  interview, data, file generation, hooks, messages, and how Jinja is evaluated.
+  `docs/specifications/template-format.schema.yml` is the machine-readable
+  definition of `template.yml`. `docs/examples/` holds conforming examples.
+
+  Layout. A template is a folder with a `template.yml` at its root, the
+  template root. The source subdirectory, `template/` unless `source` names
+  another path relative to the template root, holds the files to render.
+  `source: .` makes the template root the source; `template.yml` itself is then
+  never rendered. Files outside the source subdirectory are support material:
+  toha reads them only when `template.yml` references them. Every path in
+  `template.yml` is relative to the template root, except `ignore` and `static`
+  globs, which are relative to the source subdirectory.
+
+  Includes. The YAML tag `!include <path>` is valid on any value in
+  `template.yml`. It is replaced by the content of the file at `<path>`, parsed
+  as YAML for `.yml` and `.yaml`, JSON for `.json`, and TOML for `.toml`. An
+  include path resolves inside the template root.
+
+  Jinja evaluation. Toha evaluates Jinja with minijinja. A field whose value
+  type is string is a template: a string value is rendered, and the result is
+  the field value. A field whose value type is not string (boolean, number,
+  array, or object) accepts either a literal of that type or a string, and a
+  string is evaluated as an expression whose result has that type. `when`,
+  `computed`, and `format` values are always expressions. The evaluation
+  context holds every top-level key of `data`, every answer given so far, and
+  every computed value evaluated so far. Toha registers the case filters
+  `kebab`, `snake`, `camel`, `pascal`, `constant`, and `title`, and the date
+  function `now()` with the `dateformat` filter, in addition to the minijinja
+  built-ins.
+
+  Identifiers. Question ids, computed ids, and top-level `data` keys are Jinja
+  identifiers matching `^[a-z_][a-z0-9_]*$`. They share one namespace; a
+  duplicate is a load error. Answers are one flat object keyed by id.
+
+  Interview. `interview` is an ordered list of nodes. Every node has an
+  optional `when` expression; a node whose `when` is false is skipped, with all
+  of its children. A node kind is identified by its key: a question has `id`
+  and `type`; a computed value has `id` and `computed`; a group has `group` and
+  `nodes`; a hook has `hook`; a message has `message`. Each expression and
+  template in a node references only ids defined by earlier nodes in document
+  order, so the interview is acyclic; toha rejects a template that references
+  a later or unknown id. A skipped question takes its `default` as its answer
+  when it has one, and `none` otherwise.
+
+  Questions. `type` is one of `text`, `multiline`, `confirm`, `select`, and
+  `multiselect`. `prompt` is required. `description` and `placeholder` are
+  optional. `required: true` rejects an empty answer. `default` has the answer
+  type: string for `text`, `multiline`, and `select`; boolean for `confirm`;
+  array of strings for `multiselect` and for a looped `text`. `options` on
+  `select` and `multiselect` is a literal array of strings or an expression
+  that returns one. `validate.min` and `validate.max` bound the character
+  length of a string answer and the item count of a `multiselect` answer.
+  `validate.regex` matches a string answer. `format` is an expression over the
+  variable `value` that transforms the answer after validation.
+
+  Loops. A `text` question with `loop` asks repeatedly, and its answer is an
+  array of strings. An empty submission ends the loop. `loop.min` and
+  `loop.max` bound the item count; when `loop.max` is reached, the loop ends.
+  `validate` and `format` apply to each item.
+
+  Groups. A group holds child nodes under one `when`. The `group` value names
+  the group for diagnostics and is not an answer id.
+
+  Computed values. A computed node evaluates its expression at its position in
+  the interview and adds the result to the answers under its id.
+
+  Files. Every file in the source subdirectory is rendered to the target
+  directory at the same relative path, except files matched by `ignore`, which
+  are skipped, and files matched by `static`, which are copied byte for byte.
+  Each path segment is a template. A file or directory whose rendered name is
+  empty is not generated. Each entry of `files` renders the support file at
+  `source` once for each item of the `each` expression. `each` has the form
+  `<expression> as <name>`; the item is bound to `<name>` while `source` and
+  `path` are rendered. `path` is relative to the target directory. An entry
+  with a `when` that is false generates nothing.
+
+  Hooks. A hook runs a command after all files are written, with the target
+  directory as its working directory unless `cwd` names a path relative to it.
+  `run` is an argument vector; each argument is a template, and the program is
+  executed directly without a shell. `script` names an executable file
+  relative to the template root, with optional `args`. Hook nodes in the
+  interview run first, in interview order, when their position is reached and
+  their `when` is true. A hook runs once, including a hook inside the scope of
+  a looped question. The top-level `hooks` list runs after them, in list order.
+  A failing hook stops the remaining hooks and fails the apply.
+
+  Messages. A message node shows its rendered text when the interview reaches
+  it. The top-level `messages` list shows each message at its `at` point:
+  `before-apply`, before any file is written, or `after-apply`, after the last
+  hook.
+format: json-schema
+validation-criteria: >-
+  A conforming `template.yml` validates against
+  `docs/specifications/template-format.schema.yml` after every `!include` is
+  resolved. Toha additionally rejects, at load time, a template with a
+  duplicate identifier, an expression or template that references an id not
+  defined earlier in interview order, a `loop` on a question whose type is not
+  `text`, `options` on a question whose type is not `select` or `multiselect`,
+  an `!include` or `script` path outside the template root, and a `source`
+  path that does not exist. Rendering fails when a rendered target path leaves
+  the target directory or enters the target's `.git` directory. Every example
+  in `docs/examples/` loads without error, and the fixture suite renders each
+  fixture template with its answers file to the expected output tree.

@@ -1,0 +1,52 @@
+$schema: https://refinery.systems/ontology/specification
+relationships:
+  realizes:
+    - toha
+description: >-
+  Defines the toha configuration files and how their values combine.
+  `docs/specifications/config.schema.yml` is the machine-readable definition.
+
+  Layers. Toha reads up to three configuration files. The system file is
+  `/etc/toha/config.yml` on Linux and macOS and
+  `%PROGRAMDATA%\toha\config.yml` on Windows. The user file is
+  `$TOHA_USER_CONFIG` when set, otherwise `$XDG_CONFIG_HOME/toha/config.yml`
+  or `~/.config/toha/config.yml` on Linux and macOS, and
+  `%APPDATA%\toha\config.yml` on Windows. The local file is `$TOHA_CONFIG`
+  when set, otherwise the file named by `local-config-name`, `.toha.yml`
+  unless configured, in the current working directory. A missing file is an
+  empty layer. The local layer takes precedence over the user layer, and the
+  user layer over the system layer.
+
+  Merging. `templates-paths` lists from every layer are concatenated, local
+  first. `defaults`, `hosts`, and `templates` maps are merged key by key, and
+  the value from the layer with higher precedence wins. `local-config-name` and
+  `hosts` are read from the user and system layers only, so a formal name
+  always resolves to the same source.
+
+  Template paths. Each templates path is a directory scanned for templates:
+  every directory in it with a `template.yml` is a template. The system layer
+  defaults to `/usr/local/share/toha/`, the user layer to
+  `~/.local/share/toha/`, and the local layer to `.templates`. Templates
+  installed with `templates add` are stored under the user templates path.
+
+  Defaults. `defaults` maps a question id to a value. A configured default
+  replaces the question `default` of every template that defines that id, and
+  follows the same type rules.
+
+  Templates. `templates` maps a formal template name to its settings.
+  `aliases` lists alias names for the template; an alias is unique across all
+  templates in the merged configuration. `trusted: true` lets the hooks of the
+  template run without `--trust`. The local layer does not carry `trusted`.
+
+  Hosts. `hosts` maps a git host shorthand prefix to a base URL. The built-in
+  prefixes are `gh` (`https://github.com`), `gl` (`https://gitlab.com`), `bb`
+  (`https://bitbucket.org`), `cb` (`https://codeberg.org`), and `ge`
+  (`https://gitee.com`). A configured prefix replaces a built-in prefix of the
+  same name.
+format: json-schema
+validation-criteria: >-
+  Each system and user configuration file validates against
+  `#/$defs/shared-config` in `docs/specifications/config.schema.yml`, and each
+  local configuration file validates against `#/$defs/local-config`. Toha
+  rejects a merged configuration in which one alias names two templates, and
+  it rejects an alias that equals a formal template name.

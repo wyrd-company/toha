@@ -1,3 +1,7 @@
+# ---
+# relationships:
+#   exemplifies: template-format
+# ---
 name: generated-files
 description: A task runner config with one file for each task
 
@@ -25,16 +29,14 @@ interview:
     when: init_git
 
   - message: "Generating {{ tasks | length }} task file(s) for {{ project }}"
-    at: before-apply
 
 files:
   - each: tasks as task                          # one file for each item
-    source: tasks/_task.yml                      # not rendered by itself
+    source: parts/task.yml                       # support file outside template/
     path: "tasks/{{ task }}.yml"
 
 ignore:
   - "**/*.orig"
-  - "tasks/_task.yml"                            # the source above is only used by `each`
 
 static:
   - "assets/**"                                  # copied, not rendered

@@ -1,0 +1,80 @@
+# ---
+# relationships:
+#   realizes: config
+# ---
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://toha.wyrd.company/schemas/config
+title: Toha Configuration
+description: System, user, and local toha configuration files.
+$defs:
+  identifier:
+    type: string
+    pattern: '^[a-z_][a-z0-9_]*$'
+  alias:
+    type: string
+    pattern: '^[a-z0-9]+(-[a-z0-9]+)*$'
+  prefix:
+    type: string
+    pattern: '^[a-z][a-z0-9]*$'
+  templates-paths:
+    type: array
+    items:
+      type: string
+  defaults:
+    type: object
+    propertyNames:
+      $ref: "#/$defs/identifier"
+  hosts:
+    type: object
+    propertyNames:
+      $ref: "#/$defs/prefix"
+    additionalProperties:
+      type: string
+      format: uri
+  aliases:
+    type: array
+    uniqueItems: true
+    items:
+      $ref: "#/$defs/alias"
+  shared-config:
+    type: object
+    additionalProperties: false
+    properties:
+      local-config-name:
+        type: string
+        default: .toha.yml
+      templates-paths:
+        $ref: "#/$defs/templates-paths"
+      defaults:
+        $ref: "#/$defs/defaults"
+      hosts:
+        $ref: "#/$defs/hosts"
+      templates:
+        type: object
+        description: Settings keyed by formal template name.
+        additionalProperties:
+          type: object
+          additionalProperties: false
+          properties:
+            aliases:
+              $ref: "#/$defs/aliases"
+            trusted:
+              type: boolean
+              default: false
+  local-config:
+    type: object
+    additionalProperties: false
+    properties:
+      templates-paths:
+        $ref: "#/$defs/templates-paths"
+      defaults:
+        $ref: "#/$defs/defaults"
+      templates:
+        type: object
+        description: Settings keyed by formal template name.
+        additionalProperties:
+          type: object
+          additionalProperties: false
+          properties:
+            aliases:
+              $ref: "#/$defs/aliases"

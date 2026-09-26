@@ -1,0 +1,128 @@
+$schema: https://refinery.systems/ontology/concept
+relationships: {}
+description:
+  - >-
+    Toha is a project scaffolding tool and Rust crate. It generates files and
+    directory trees from templates. A template is a folder that holds a
+    `template.yml`, a source subdirectory of files to render, and any support
+    material the template needs. Toha asks the user an interview, combines the
+    answers with static and computed data, and renders every source file and
+    path name through Jinja.
+  - >-
+    The interview engine is a state machine with no user interface. It returns
+    the next questions and accepts answers. The interactive terminal prompts,
+    headless answer files, the resumable JSON interview protocol, and the crate
+    API are adapters over the same engine, so a person, a script, and an agent
+    drive the same interview with the same results.
+properties:
+  single-binary: >-
+    One self-contained executable for Linux, macOS, and Windows. It needs no
+    language runtime, SDK, or virtual environment.
+  crate: >-
+    The `toha` crate exposes the template loader, the interview engine, and the
+    renderer, so other Rust applications embed toha generators.
+  distribution: >-
+    Prebuilt installers through crates.io, Homebrew, npm, apt, rpm, the Arch
+    User Repository, and a container image. No channel requires the user to
+    build from source or to download a release archive by hand.
+  template: >-
+    A folder with a `template.yml` at its root. Files to render come from the
+    source subdirectory, `template/` by default. Everything outside the source
+    subdirectory is support material, such as scripts, data files, and file
+    parts, and is never rendered on its own.
+  interview: >-
+    An ordered list of nodes: questions, groups, computed values, hooks, and
+    messages. Each node has an optional `when` condition. An expression
+    references only ids defined earlier in the list, so the interview is a
+    directed acyclic graph by construction.
+  jinja-everywhere: >-
+    All logic is Jinja through minijinja. A string in a string-typed field is a
+    template. A string in a field of any other type is an expression. A
+    computed value is always an expression.
+  flat-answers: >-
+    Answers form one flat object keyed by id. Every question id and computed id
+    is unique in a template, and groups do not create a namespace.
+  static-data: >-
+    YAML, JSON, or TOML data, inline in `template.yml` or loaded from a file in
+    the template with `!include`, available to every expression and template.
+  template-sources: >-
+    Git repositories, addressed by full URL or by host shorthand such as
+    `gh:org/repo@ref#path`, and local folders.
+  template-names: >-
+    Every installed template has a formal name, which is its source address,
+    and a short name, which is the `name` in its `template.yml`. Aliases give
+    any template a name of the user's choice.
+  layered-config: >-
+    System, user, and local configuration files. Local values take precedence
+    over user values, and user values over system values.
+  trust: >-
+    Hooks run only for trusted templates. Trust comes from the user or system
+    configuration, or from the `--trust` flag on a single run.
+  staged-interviews: >-
+    An interview in progress is saved in the user's state directory, keyed by
+    its target path, so it continues in a later process.
+  embedded-skills: >-
+    Agent skills for using toha and for authoring templates ship inside the
+    binary and are listed, read, and exported through the `skills` command.
+features:
+  generate-projects: >-
+    Renders a template's source subdirectory into a target directory,
+    including templated file and directory names.
+  protect-existing-files: >-
+    Leaves every existing file unchanged unless the user explicitly requests
+    overwriting.
+  loop-questions: >-
+    Asks a text question repeatedly and collects the answers as an array of
+    strings, ending when the user submits an empty answer.
+  branch-interviews: >-
+    Asks or skips a question or a group of questions from a condition on
+    earlier answers.
+  compute-values: >-
+    Derives values from answers and data with Jinja expressions.
+  validate-and-format-answers: >-
+    Checks answers against length, count, and pattern rules, and transforms
+    them with a Jinja expression before use.
+  generate-files-from-arrays: >-
+    Renders one support file once for each item of an array answer or data
+    value, at a templated path.
+  run-hooks: >-
+    Runs commands after rendering, in interview order and then in template
+    order, with the conditions of their position in the interview.
+  show-messages: >-
+    Shows templated messages during the interview, before apply, and after
+    apply.
+  stage-and-apply: >-
+    Separates collecting answers from writing files, so an interview is staged,
+    continued, inspected with a dry run, applied, or aborted.
+  answer-asynchronously: >-
+    Emits the next batch of questions as a JSON Schema and accepts a JSON
+    answers document, so a script or agent answers an interview across several
+    processes.
+  install-templates: >-
+    Adds every template in a git repository, or a single template addressed by
+    path, to the user's template library, pinned to a ref when one is given.
+  name-templates: >-
+    Resolves templates by alias, short name, or formal name, and reports
+    ambiguous short names with the commands to resolve them.
+  guide-agents: >-
+    Provides embedded skills that teach an agent to drive toha and to author
+    templates.
+benefits:
+  - Installs as one binary on every major platform with no runtime to manage.
+  - Collects lists from users without asking them to type YAML or JSON.
+  - Lets agents and scripts complete an interview step by step with a machine-readable contract.
+  - >-
+    Keeps template repositories organized, because configuration, support
+    material, and rendered files live in separate places.
+  - Holds several templates in one repository and several versions of one template side by side.
+  - >-
+    Makes template logic one language, Jinja, for conditions, computed values,
+    defaults, and rendering.
+open-questions:
+  Q01: >-
+    Does the user and system configuration define custom git host shorthands
+    through a `hosts` map, in addition to the built-in `gh`, `gl`, `bb`, `cb`,
+    and `ge` shorthands?
+  Q02: >-
+    Does `templates update` refresh an installed template to the newest commit
+    of its branch, and does trust carry over to the refreshed content?
