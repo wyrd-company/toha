@@ -138,3 +138,27 @@ fn conflicting_files_name_the_command_with_force() {
         ],
     );
 }
+
+#[test]
+fn conflicting_files_are_listed_one_plain_path_per_line() {
+    let case = Case::new();
+    let folder = case.state.path().join("nested");
+    std::fs::create_dir_all(folder.join("template/dir")).unwrap();
+    std::fs::write(folder.join("template.yml"), "name: nested\n").unwrap();
+    std::fs::write(folder.join("template/file.txt"), "new").unwrap();
+    std::fs::write(folder.join("template/dir/other.txt"), "new").unwrap();
+    std::fs::create_dir_all(case.target.path().join("dir")).unwrap();
+    std::fs::write(case.target.path().join("file.txt"), "old").unwrap();
+    std::fs::write(case.target.path().join("dir/other.txt"), "old").unwrap();
+    let answers = case.answers("{}");
+    let template = support::folder_address(&folder);
+    let output = case.run(&["apply", "--answers", &answers, &template, case.target()]);
+    assert_code(&output, 1);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let lines: Vec<&str> = stderr.lines().collect();
+    assert_eq!(lines[0], "conflicting files:", "{stderr}");
+    let mut listed = lines[1..3].to_vec();
+    listed.sort();
+    assert_eq!(listed, ["  dir/other.txt", "  file.txt"], "{stderr}");
+    assert!(lines[3].starts_with("to overwrite them: "), "{stderr}");
+}
