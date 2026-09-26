@@ -203,7 +203,8 @@ impl Dirs {
     /// A directory variable counts only when it holds an absolute path. An
     /// empty or relative value counts as unset, as the XDG Base Directory
     /// Specification requires for its variables, so that no toha directory
-    /// depends on the current directory.
+    /// depends on the current directory. An empty `TOHA_USER_CONFIG` or
+    /// `TOHA_CONFIG` counts as unset.
     fn from_env(
         platform: Platform,
         var: impl Fn(&str) -> Option<OsString>,
@@ -213,11 +214,17 @@ impl Dirs {
                 .map(PathBuf::from)
                 .filter(|path| path.is_absolute())
         };
+        // A file variable may be relative to the current directory.
+        let file = |key: &str| {
+            var(key)
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+        };
         let windows = platform == Platform::Windows;
         let macos = platform == Platform::MacOs;
-        let home = dir("HOME")
-            .or_else(|| dir("USERPROFILE"))
-            .ok_or("home directory unavailable")?;
+        let home = dir("HOME").or_else(|| dir("USERPROFILE")).ok_or(
+            "home directory unavailable: set HOME (or USERPROFILE on Windows) to an absolute path",
+        )?;
         let system_root = if windows {
             dir("PROGRAMDATA")
                 .ok_or("PROGRAMDATA unavailable")?
@@ -235,8 +242,8 @@ impl Dirs {
         } else {
             None
         };
-        let user_config = if let Some(override_path) = var("TOHA_USER_CONFIG") {
-            PathBuf::from(override_path)
+        let user_config = if let Some(override_path) = file("TOHA_USER_CONFIG") {
+            override_path
         } else if let Some(app_data) = &app_data {
             app_data.join("toha/config.yml")
         } else {
@@ -279,7 +286,7 @@ impl Dirs {
         Ok(Self {
             system_config,
             user_config,
-            local_config_override: var("TOHA_CONFIG").map(PathBuf::from),
+            local_config_override: file("TOHA_CONFIG"),
             system_data: system_root,
             user_data,
             cache,
