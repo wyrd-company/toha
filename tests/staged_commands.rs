@@ -511,24 +511,56 @@ fn dry_run_hint_keeps_a_target_spelled_like_a_flag() {
     );
 }
 
-/// Runs `apply` with `operands` in a terminal on an incomplete staged
-/// text-basic interview, answers the remaining question, and checks the files.
+impl Case {
+    fn submissions(&self) -> Vec<serde_json::Map<String, Value>> {
+        Store::new(support::staged_dir(self.state.path()))
+            .load(&canonical_target(self.target.path()).unwrap())
+            .unwrap()
+            .expect("staged record")
+            .submissions
+            .into_iter()
+            .map(|submission| submission.into_iter().collect())
+            .collect()
+    }
+}
+
+/// Runs `apply` with `operands` in a terminal and checks that the first batch
+/// is recorded before the second prompt and the files are written.
 #[cfg(unix)]
 fn apply_prompts_in_terminal(operands: &[&str]) {
     use expectrl::{Expect, Session};
     let case = Case::new();
-    case.stage_incomplete(&text_basic());
+    let template = two_batch_template(case.state.path());
+    case.stage_incomplete(&template);
+    let operands: Vec<&str> = operands
+        .iter()
+        .map(|operand| {
+            if *operand == "<TEMPLATE>" {
+                template.as_str()
+            } else {
+                operand
+            }
+        })
+        .collect();
     let mut command = support::isolated_command(case.state.path());
-    command.arg("apply").args(operands).arg(case.target());
+    command.arg("apply").args(&operands).arg(case.target());
     let mut session = Session::spawn(command).unwrap();
-    session.expect("Name?").unwrap();
-    session.send_line("Item").unwrap();
-    session.expect("Item.txt").unwrap();
+    session.expect("First?").unwrap();
+    session.send_line("One").unwrap();
+    session.expect("After One?").unwrap();
+    let recorded = case.submissions();
+    assert_eq!(
+        recorded.len(),
+        1,
+        "the first batch is recorded before the second prompt: {recorded:?}"
+    );
+    assert_eq!(recorded[0]["first"], "One");
+    session.send_line("Two").unwrap();
+    session.expect("result.txt").unwrap();
     session.expect(expectrl::Eof).unwrap();
-    support::assert_tree(
-        case.target.path(),
-        Path::new("tests/fixtures/text-basic/expected"),
-        Path::new("tests/fixtures/text-basic"),
+    assert_eq!(
+        std::fs::read_to_string(case.target.path().join("result.txt")).unwrap(),
+        "One Two\n"
     );
     assert!(!case.staged());
 }
@@ -542,7 +574,36 @@ fn apply_prompts_for_incomplete_staged_interview_in_terminal() {
 #[cfg(unix)]
 #[test]
 fn apply_with_template_prompts_for_incomplete_staged_interview_in_terminal() {
-    apply_prompts_in_terminal(&[&text_basic()]);
+    apply_prompts_in_terminal(&["<TEMPLATE>"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn dry_run_in_terminal_records_and_writes_nothing() {
+    use expectrl::{Expect, Session};
+    let case = Case::new();
+    let template = two_batch_template(case.state.path());
+    case.stage_incomplete(&template);
+    let mut command = support::isolated_command(case.state.path());
+    command.args(["apply", "--dry-run"]).arg(case.target());
+    let mut session = Session::spawn(command).unwrap();
+    session.expect("First?").unwrap();
+    session.send_line("One").unwrap();
+    session.expect("After One?").unwrap();
+    session.send_line("Two").unwrap();
+    let rest = session.expect(expectrl::Eof).unwrap();
+    assert_eq!(
+        std::fs::read_dir(case.target.path()).unwrap().count(),
+        0,
+        "a dry run writes no file"
+    );
+    assert!(
+        case.submissions().is_empty(),
+        "a dry run records no answers: {:?}",
+        case.submissions()
+    );
+    let printed = String::from_utf8_lossy(rest.as_bytes());
+    assert!(printed.contains("create result.txt"), "{printed}");
 }
 
 #[test]
