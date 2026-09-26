@@ -685,3 +685,57 @@ fn remove_of_a_template_outside_the_user_registry_names_list() {
         ],
     );
 }
+
+/// Every command named for an ambiguous folder template, or for its hooks,
+/// is accepted by the command it names.
+#[test]
+fn suggested_commands_for_folder_templates_are_accepted() {
+    let root = TempDir::new().unwrap();
+    let mut folders = Vec::new();
+    for name in ["first", "second"] {
+        let folder = root.path().join(name);
+        fs::create_dir_all(folder.join("template")).unwrap();
+        fs::write(
+            folder.join("template.yml"),
+            "name: same\nhooks:\n  - run: [tool, call]\n",
+        )
+        .unwrap();
+        fs::write(folder.join("template/file.txt"), name).unwrap();
+        let address = support::folder_address(&folder.canonicalize().unwrap());
+        assert_exit(&run(&root, &["templates", "add", &address]), 0);
+        folders.push(address);
+    }
+    fs::write(root.path().join("answers.json"), "{}").unwrap();
+    let rerun = |args: Vec<String>, code: i32| {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let output = run(&root, &args);
+        assert_exit(&output, code);
+        String::from_utf8_lossy(&output.stderr).into_owned()
+    };
+    let stderr = |args: &[&str], code: i32| {
+        let output = run(&root, args);
+        assert_exit(&output, code);
+        String::from_utf8_lossy(&output.stderr).into_owned()
+    };
+
+    let ambiguous = stderr(&["stage", "same", "staged", "--async"], 5);
+    rerun(support::suggested(&ambiguous, "to use "), 0);
+
+    let ambiguous = stderr(&["apply", "--answers", "answers.json", "same", "out"], 5);
+    rerun(support::suggested(&ambiguous, "to use "), 3);
+
+    let ambiguous = stderr(&["templates", "alias", "same", "picked"], 5);
+    rerun(support::suggested(&ambiguous, "to use "), 0);
+    let mut alias = support::suggested(&ambiguous, "an alias: ");
+    *alias.last_mut().unwrap() = "chosen".into();
+    rerun(alias, 0);
+    let hooks = stderr(
+        &["apply", "--answers", "answers.json", "chosen", "named"],
+        3,
+    );
+    rerun(support::suggested(&hooks, "to trust "), 0);
+
+    let ambiguous = stderr(&["templates", "remove", "same"], 5);
+    rerun(support::suggested(&ambiguous, "to use "), 0);
+    assert_eq!(folders.len(), 2);
+}

@@ -670,7 +670,42 @@ pub fn ambiguous(name: &str, matches: &[String], retry: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Shell, plain_formal, word_for};
+    use super::{Shell, formal_for, path_value, plain_formal, word_for};
+
+    #[test]
+    fn each_command_gets_the_formal_name_form_it_accepts() {
+        let extended = r"\\?\D:\a\template";
+        for command in ["stage", "apply", "templates add"] {
+            assert_eq!(formal_for(command, extended), r"D:\a\template", "{command}");
+        }
+        for command in ["templates remove", "templates update", "templates alias"] {
+            assert_eq!(formal_for(command, extended), extended, "{command}");
+        }
+        assert_eq!(
+            word_for(formal_for("templates remove", extended), Shell::Windows),
+            r#""\\?\D:\a\template""#
+        );
+    }
+
+    #[test]
+    fn path_values_end_without_a_separator_except_a_root() {
+        assert_eq!(path_value(r"C:\my dir\", Shell::Windows), r"C:\my dir");
+        assert_eq!(path_value("C:/my dir/", Shell::Windows), "C:/my dir");
+        assert_eq!(path_value(r"C:\", Shell::Windows), r"C:\");
+        assert_eq!(path_value("C:/", Shell::Windows), "C:/");
+        assert_eq!(path_value(r"\", Shell::Windows), r"\");
+        assert_eq!(path_value("notes/", Shell::Posix), "notes");
+        assert_eq!(path_value("/", Shell::Posix), "/");
+        assert_eq!(path_value(r"a\", Shell::Posix), r"a\");
+        assert_eq!(
+            word_for(path_value(r"C:\my dir\", Shell::Windows), Shell::Windows),
+            r#""C:\my dir""#
+        );
+        assert_eq!(
+            word_for(path_value(r"C:\", Shell::Windows), Shell::Windows),
+            r"C:\"
+        );
+    }
 
     #[test]
     fn extended_drive_paths_are_named_by_their_drive_path() {
@@ -734,8 +769,6 @@ mod tests {
             );
         }
         assert_eq!(word_for(r"C:\my dir", Shell::Windows), r#""C:\my dir""#);
-        assert_eq!(word_for(r"C:\my dir\", Shell::Windows), r#""C:\my dir\\""#);
-        assert_eq!(word_for(r#"a"b"#, Shell::Windows), r#""a\"b""#);
-        assert_eq!(word_for(r#"a\"b"#, Shell::Windows), r#""a\\\"b""#);
+        assert_eq!(word_for(r#"a"b"#, Shell::Windows), r#""a""b""#);
     }
 }

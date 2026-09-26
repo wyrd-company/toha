@@ -115,6 +115,75 @@ pub fn shell_quoted(value: &str) -> String {
     }
 }
 
+/// The words of a suggested `toha` command line after the shell of this
+/// platform splits it: single quotes and `'\''` for a POSIX shell, double
+/// quotes and `""` on Windows.
+pub fn shell_words(line: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut started = false;
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            ' ' => {
+                if started {
+                    words.push(std::mem::take(&mut current));
+                    started = false;
+                }
+            }
+            '\'' if !cfg!(windows) => {
+                started = true;
+                for c in chars.by_ref() {
+                    if c == '\'' {
+                        break;
+                    }
+                    current.push(c);
+                }
+            }
+            '\\' if !cfg!(windows) => {
+                started = true;
+                current.extend(chars.next());
+            }
+            '"' if cfg!(windows) => {
+                started = true;
+                while let Some(c) = chars.next() {
+                    if c == '"' {
+                        if chars.peek() == Some(&'"') {
+                            chars.next();
+                            current.push('"');
+                        } else {
+                            break;
+                        }
+                    } else {
+                        current.push(c);
+                    }
+                }
+            }
+            c => {
+                started = true;
+                current.push(c);
+            }
+        }
+    }
+    if started {
+        words.push(current);
+    }
+    words
+}
+
+/// The suggested command in the first stderr line that contains `marker`,
+/// split into the arguments after `toha`.
+pub fn suggested(stderr: &str, marker: &str) -> Vec<String> {
+    let line = stderr
+        .lines()
+        .find(|line| line.contains(marker))
+        .unwrap_or_else(|| panic!("no line with `{marker}`:\n{stderr}"));
+    let command = &line[line.find("toha ").expect("a toha command")..];
+    let mut words = shell_words(command);
+    assert_eq!(words.remove(0), "toha");
+    words
+}
+
 pub fn staged_dir(root: &Path) -> PathBuf {
     if cfg!(target_os = "macos") {
         root.join("home/Library/Application Support/toha/staged")
