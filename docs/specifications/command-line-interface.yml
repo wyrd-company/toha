@@ -48,13 +48,17 @@ description: >-
   unchanged. The formal name, aliases, and trust of an updated template are
   unchanged.
 
-  Staged interviews. A `<TEMPLATE>` argument names the template of a staged
+  Staged interviews. `apply <PATH>` on an incomplete staged interview prompts
+  in the terminal for the remaining questions, records each accepted batch in
+  the staged record, and applies the complete interview; with `--dry-run` it
+  records nothing. Without a terminal on standard input and standard output,
+  it emits the batch, names the commands that answer it on standard error, and
+  exits with code 4. A `<TEMPLATE>` argument names the template of a staged
   interview when it resolves to the formal name that the staged record holds.
   `apply <TEMPLATE> <PATH>` with an interview for that template staged at the
-  path runs as `apply <PATH>`: a complete interview is applied, and an
-  incomplete one emits its batch and exits with code 4. With `--answers`, the
-  document answers the staged interview as it answers a new headless run, and
-  a complete result is applied. `stage <TEMPLATE> <PATH>` with an interview for
+  path runs as `apply <PATH>`. With `--answers`, the document answers the
+  staged interview as it answers a new headless run, and a complete result is
+  applied. `stage <TEMPLATE> <PATH>` with an interview for
   that template staged at the path fails and names `continue` for an
   incomplete interview, `apply` for a complete one, and `abort` followed by
   the same `stage` command to start again. `stage` or `apply` with a

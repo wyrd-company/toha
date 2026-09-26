@@ -701,7 +701,7 @@ fn run(
     }
     // A template named for its own staged interview resumes that interview.
     let template = template.filter(|_| existing.is_none());
-    let terminal_run = template.is_some() && answers.is_none();
+    let mut terminal_run = template.is_some() && answers.is_none();
     let registry_trusted;
     let (template, interview, saved) = match (template, existing) {
         (Some(folder), None) => {
@@ -855,6 +855,26 @@ fn run(
                 (interview, None) => interview,
             };
             match interview {
+                Interview::Asking(p) if io::stdin().is_terminal() && io::stdout().is_terminal() => {
+                    let completed = terminal::drive(
+                        Interview::Asking(p),
+                        &mut terminal::InquireAsk,
+                        |submission| {
+                            if dry_run {
+                                return Ok(());
+                            }
+                            saved.submissions.push(submission);
+                            store.save(&saved).map_err(|e| e.to_string())
+                        },
+                    );
+                    match completed {
+                        Ok(c) => {
+                            terminal_run = true;
+                            (template, c, Some(saved))
+                        }
+                        Err(e) => return Outcome::Error(e),
+                    }
+                }
                 Interview::Asking(p) => {
                     eprintln!("{}", guidance::incomplete(path));
                     return Outcome::Document(

@@ -22,5 +22,5 @@ Hooks need registry trust through a name or `--trust` for this run. A folder or 
 | 1 | Read the error: load, missing stage, another template staged, conflict, render, or hook failure. A refusal for the staged state names the command to run next. |
 | 2 | Correct the command syntax (`toha <command> --help`). |
 | 3 | Hooks need trust; inspect the printed dry run, then use `--trust` if approved. |
-| 4 | Read the batch, answer or correct it with `continue`; an incomplete staged interview cannot apply. |
+| 4 | Read the batch, answer or correct it with `continue`; without a terminal, an incomplete staged interview cannot apply. |
 | 5 | Resolve the ambiguous template name with a formal name or alias. |

@@ -28,8 +28,8 @@ state of the target names the command that fits on standard error.
 
 `stage --async` exits 4 when it emits a batch. `continue` exits 4 when questions
 remain or answers are rejected, and 0 when complete. `apply` exits 0 after
-writing, 3 when hooks need trust, 4 for an incomplete staged interview, and 1
-for a conflict or other failure. An ambiguous installed template name exits 5.
+writing, 3 when hooks need trust, 4 for an incomplete interview without a
+terminal to prompt in, and 1 for a conflict or other failure. An ambiguous installed template name exits 5.
 See the
 [CLI specification](https://github.com/wyrd-company/toha/blob/main/docs/specifications/command-line-interface.yml)
 for all exit codes.

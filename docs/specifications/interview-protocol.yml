@@ -51,7 +51,9 @@ description: >-
   Modality. The modality is chosen by each call. `continue` with an answers
   file, or `-` for standard input, answers the current batch. `continue`
   without an answers argument prompts in the terminal for every remaining
-  question, and needs a terminal only while questions remain. An interview
+  question, and needs a terminal only while questions remain. `apply` on an
+  incomplete staged interview prompts in the same way when a terminal is
+  available, then applies. An interview
   started in one modality continues in either.
 
   Headless answers files. `apply` accepts an answers document with

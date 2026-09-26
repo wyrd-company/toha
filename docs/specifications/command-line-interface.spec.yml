@@ -155,7 +155,7 @@ commands:
         - name: question-batch
           description: >-
             The interview protocol batch on standard output, with exit code 4,
-            when the interview is incomplete. The commands that answer the
+            when the interview is incomplete and no terminal can prompt for it. The commands that answer the
             remaining questions are named on standard error.
           machine-readable: true
       exit-codes:
@@ -171,8 +171,8 @@ commands:
           meaning: The template has hooks and is not trusted; a dry run was printed.
         - code: 4
           meaning: >-
-            The interview is incomplete; standard output holds the question
-            batch.
+            The interview is incomplete and no terminal can prompt for it;
+            standard output holds the question batch.
         - code: 5
           meaning: The template name is ambiguous.
   - name: abort
