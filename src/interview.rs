@@ -50,6 +50,7 @@ pub struct Pending<'a> {
     seed: Seed,
     answers: Answers,
     held: RawAnswers,
+    skipped: HashSet<Id>,
     messages: Vec<String>,
     hooks: Vec<RenderedHook>,
     visited: HashSet<String>,
@@ -58,9 +59,17 @@ pub struct Pending<'a> {
 #[derive(Debug)]
 pub struct Completed {
     pub answers: Answers,
+    /// Every message reached, in interview order.
     pub messages: Vec<String>,
+    /// The messages reached by the step that completed the interview.
+    pub last_messages: Vec<String>,
     pub hooks: Vec<RenderedHook>,
     pub now: jiff::Zoned,
+}
+/// The warning for an answer to `id` that is not used because its question
+/// is skipped.
+pub fn skipped_warning(id: &Id) -> String {
+    format!("warning: answer for \"{id}\" was not used: the question was skipped")
 }
 #[derive(Debug, Clone)]
 pub struct RenderedHook {
@@ -721,14 +730,7 @@ fn check_answer(
     if empty {
         return Ok(answer);
     }
-    Ok(format_answer(
-        template,
-        answers,
-        seed,
-        q,
-        prompt.kind,
-        answer,
-    )?)
+    format_answer(template, answers, seed, q, prompt.kind, answer).map_err(CheckError::Eval)
 }
 /// Applies the `format` expression of `q` to a non-empty `answer`.
 fn format_answer(
@@ -938,7 +940,11 @@ struct Advance<'a> {
     seed: Seed,
     answers: Answers,
     held: RawAnswers,
+    /// The questions skipped by a `when`.
+    skipped: HashSet<Id>,
     messages: Vec<String>,
+    /// The number of messages reached before this step.
+    step_start: usize,
     hooks: Vec<RenderedHook>,
     visited: HashSet<String>,
     batch: Batch,
@@ -950,6 +956,23 @@ impl<'a> Advance<'a> {
     fn block(&mut self, node: &'a Node) -> Result<bool, EvalError> {
         self.blocked = Some(node);
         Ok(false)
+    }
+    /// Reaches `message` in interview order.
+    fn message(&mut self, message: String) {
+        self.batch.items.push(Item::Message(message.clone()));
+        self.messages.push(message);
+    }
+    /// Records the question `q` as skipped with `default`. An answer held for
+    /// it is not used.
+    fn skip(&mut self, q: &Question, default: Option<Answer>) {
+        self.answers.insert(
+            q.id.clone(),
+            default.unwrap_or_else(|| empty_answer(prompt_kind(q))),
+        );
+        self.skipped.insert(q.id.clone());
+        if self.held.shift_remove(&q.id).is_some() {
+            self.message(skipped_warning(&q.id));
+        }
     }
     fn walk(&mut self, nodes: &'a [Node], prefix: &str, skip: bool) -> Result<bool, EvalError> {
         for (i, node) in nodes.iter().enumerate() {
@@ -964,10 +987,7 @@ impl<'a> Advance<'a> {
                             return self.block(node);
                         }
                         let default = render_default(q, self.template, &self.answers, &self.seed)?;
-                        self.answers.insert(
-                            q.id.clone(),
-                            default.unwrap_or_else(|| empty_answer(prompt_kind(q))),
-                        );
+                        self.skip(q, default);
                         continue;
                     }
                     if !question_ready(q, &self.answers, self.template, &self.seed) {
@@ -1016,10 +1036,7 @@ impl<'a> Advance<'a> {
                             return self.block(node);
                         }
                         let default = render_default(q, self.template, &self.answers, &self.seed)?;
-                        self.answers.insert(
-                            q.id.clone(),
-                            default.unwrap_or_else(|| empty_answer(prompt_kind(q))),
-                        );
+                        self.skip(q, default);
                     }
                 }
                 Node::Computed(c) => {
@@ -1167,8 +1184,7 @@ impl<'a> Advance<'a> {
                             )
                         })?;
                         if !text.trim().is_empty() {
-                            self.batch.items.push(Item::Message(text.clone()));
-                            self.messages.push(text);
+                            self.message(text);
                         }
                     }
                 }
@@ -1177,26 +1193,8 @@ impl<'a> Advance<'a> {
         Ok(true)
     }
 }
-fn advance<'a>(
-    template: &'a Template,
-    seed: Seed,
-    answers: Answers,
-    held: RawAnswers,
-    messages: Vec<String>,
-    hooks: Vec<RenderedHook>,
-    visited: HashSet<String>,
-) -> Result<Interview<'a>, EvalError> {
-    let mut state = Advance {
-        template,
-        seed,
-        answers,
-        held,
-        messages,
-        hooks,
-        visited,
-        batch: Batch::default(),
-        blocked: None,
-    };
+fn advance(mut state: Advance<'_>) -> Result<Interview<'_>, EvalError> {
+    let template = state.template;
     let complete = state.walk(&template.interview, "", false)?;
     let has_prompt = state
         .batch
@@ -1219,6 +1217,7 @@ fn advance<'a>(
     if complete && !has_prompt {
         Ok(Interview::Complete(Completed {
             answers: state.answers,
+            last_messages: state.messages[state.step_start..].to_vec(),
             messages: state.messages,
             hooks: state.hooks,
             now: state.seed.now,
@@ -1229,6 +1228,7 @@ fn advance<'a>(
             seed: state.seed,
             answers: state.answers,
             held: state.held,
+            skipped: state.skipped,
             messages: state.messages,
             hooks: state.hooks,
             visited: state.visited,
@@ -1238,15 +1238,19 @@ fn advance<'a>(
 }
 impl<'a> Interview<'a> {
     pub fn start(template: &'a Template, seed: Seed) -> Result<Self, EvalError> {
-        advance(
+        advance(Advance {
             template,
             seed,
-            Answers::new(),
-            RawAnswers::new(),
-            vec![],
-            vec![],
-            HashSet::new(),
-        )
+            answers: Answers::new(),
+            held: RawAnswers::new(),
+            skipped: HashSet::new(),
+            messages: vec![],
+            step_start: 0,
+            hooks: vec![],
+            visited: HashSet::new(),
+            batch: Batch::default(),
+            blocked: None,
+        })
     }
 }
 fn rejection(id: &Id, message: impl Into<String>) -> Rejection {
@@ -1306,11 +1310,16 @@ impl<'a> Pending<'a> {
     pub fn answer(self, incoming: RawAnswers) -> Result<Interview<'a>, AnswerError<'a>> {
         let mut held = self.held.clone();
         let mut rejections = vec![];
+        let mut warnings = vec![];
         for (id, raw) in incoming {
             let Some(q) = question_by_id(&self.template.interview, &id) else {
                 rejections.push(rejection(&id, "is not a question in this template"));
                 continue;
             };
+            if self.skipped.contains(&id) {
+                warnings.push(skipped_warning(&id));
+                continue;
+            }
             if let Some(recorded) = self.answers.get(&id) {
                 if !same_answer(
                     self.template,
@@ -1396,15 +1405,25 @@ impl<'a> Pending<'a> {
         for id in answers.keys() {
             held.shift_remove(id);
         }
-        advance(
-            self.template,
-            self.seed,
+        let step_start = self.messages.len();
+        let mut messages = self.messages;
+        messages.extend(warnings.iter().cloned());
+        advance(Advance {
+            template: self.template,
+            seed: self.seed,
             answers,
             held,
-            self.messages,
-            self.hooks,
-            self.visited,
-        )
+            skipped: self.skipped,
+            messages,
+            step_start,
+            hooks: self.hooks,
+            visited: self.visited,
+            batch: Batch {
+                items: warnings.into_iter().map(Item::Message).collect(),
+                ..Batch::default()
+            },
+            blocked: None,
+        })
         .map_err(AnswerError::Eval)
     }
 }

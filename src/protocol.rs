@@ -3,8 +3,8 @@
 //   implements: interview-protocol
 // ---
 use crate::{
-    AnswerError, Answers, Batch, Completed, EvalError, Id, Interview, Item, Pending, Prompt,
-    PromptKind, RawAnswer, RawAnswers, Rejections, Template,
+    AnswerError, Batch, Completed, EvalError, Id, Interview, Item, Pending, Prompt, PromptKind,
+    RawAnswer, RawAnswers, Rejections, Template,
 };
 use indexmap::IndexMap;
 use serde_json::{Map, Value, json};
@@ -141,12 +141,14 @@ pub fn batch_document(batch: &Batch, context: &Context, errors: Option<&Rejectio
     }
     result
 }
-pub fn complete_document(answers: &Answers, context: &Context) -> Value {
-    let values: Map<String, Value> = answers
+pub fn complete_document(completed: &Completed, context: &Context) -> Value {
+    let values: Map<String, Value> = completed
+        .answers
         .iter()
         .map(|(id, answer)| (id.to_string(), answer.to_json()))
         .collect();
-    json!({"protocol":1, "status":"complete", "context":context_value(context), "answers":values})
+    json!({"protocol":1, "status":"complete", "context":context_value(context),
+        "answers":values, "messages":completed.last_messages})
 }
 
 static SCHEMA: LazyLock<Value> = LazyLock::new(|| {
@@ -209,7 +211,7 @@ pub fn answer_headless<'a>(
     let mut remaining = document;
     loop {
         let Interview::Asking(pending) = interview else {
-            let Interview::Complete(completed) = interview else {
+            let Interview::Complete(mut completed) = interview else {
                 unreachable!()
             };
             // Only an interview complete before any submission leaves answers.
@@ -220,6 +222,13 @@ pub fn answer_headless<'a>(
                     message: "is not a question in this template".into(),
                     expression: None,
                 });
+            }
+            // An interview complete before any submission skipped each of
+            // its questions, so none of these answers is used.
+            for id in remaining.keys() {
+                let warning = crate::interview::skipped_warning(id);
+                completed.messages.push(warning.clone());
+                completed.last_messages.push(warning);
             }
             return Ok(Headless::Completed {
                 completed,

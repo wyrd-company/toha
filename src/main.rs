@@ -612,10 +612,9 @@ fn stage(template: String, path: PathBuf, output: Option<Option<String>>, dirs: 
             protocol::batch_document(pending.batch(), &context(&saved), None),
             4,
         ),
-        Interview::Complete(completed) => (
-            protocol::complete_document(&completed.answers, &context(&saved)),
-            0,
-        ),
+        Interview::Complete(completed) => {
+            (protocol::complete_document(&completed, &context(&saved)), 0)
+        }
     };
     if let Err(e) = store.save(&saved) {
         return Outcome::Error(e.to_string());
@@ -675,10 +674,7 @@ fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome 
             return Outcome::Error(guidance::complete_answers_unused(&path, &saved.template));
         }
         eprintln!("{}", guidance::complete(&path));
-        return Outcome::Document(
-            protocol::complete_document(&completed.answers, &context(&saved)),
-            0,
-        );
+        return Outcome::Document(protocol::complete_document(completed, &context(&saved)), 0);
     }
     if answers.is_none() {
         if !io::stdin().is_terminal() {
@@ -716,7 +712,7 @@ fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome 
                     4,
                 ),
                 Interview::Complete(c) => {
-                    Outcome::Document(protocol::complete_document(&c.answers, &context(&saved)), 0)
+                    Outcome::Document(protocol::complete_document(&c, &context(&saved)), 0)
                 }
             }
         }

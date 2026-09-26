@@ -138,7 +138,7 @@ fn one_shot(path: &Path, target: &Path) -> Value {
         }
     };
     protocol::complete_document(
-        &completed.answers,
+        &completed,
         &Context {
             target: canonical_target(target)
                 .unwrap()
@@ -300,8 +300,8 @@ fn every_success_fixture_through_library_replay() {
             commit: None,
         };
         assert_eq!(
-            protocol::complete_document(&replayed.answers, &ctx),
-            protocol::complete_document(&completed.answers, &ctx),
+            protocol::complete_document(&replayed, &ctx),
+            protocol::complete_document(&completed, &ctx),
             "{}",
             fixture.display()
         );
