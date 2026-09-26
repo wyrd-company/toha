@@ -9,13 +9,14 @@ description: >-
   Layers. Toha reads up to three configuration files. The system file is
   `/etc/toha/config.yml` on Linux and macOS and
   `%PROGRAMDATA%\toha\config.yml` on Windows. The user file is
-  `$TOHA_USER_CONFIG` when set, otherwise `$XDG_CONFIG_HOME/toha/config.yml`
-  on Linux and macOS, with `~/.config` in place of `$XDG_CONFIG_HOME` when it
-  is unset, empty, or relative, and `%APPDATA%\toha\config.yml` on Windows.
-  The command-line interface specification defines how toha reads these
-  directory variables. The local file is `$TOHA_CONFIG` when set, otherwise
-  the file named by `local-config-name`, `.toha.yml` unless configured, in
-  the current working directory. A missing file is an
+  `$TOHA_USER_CONFIG` when set and not empty, otherwise
+  `$XDG_CONFIG_HOME/toha/config.yml` on Linux and macOS, with `~/.config` in
+  place of `$XDG_CONFIG_HOME` when it is unset, empty, or relative, and
+  `%APPDATA%\toha\config.yml` on Windows. The command-line interface
+  specification defines how toha reads these variables. The local file is
+  `$TOHA_CONFIG` when set and not empty, otherwise the file named by
+  `local-config-name`, `.toha.yml` unless configured, in the current working
+  directory. A missing file is an
   empty layer. The local layer takes precedence over the user layer, and the
   user layer over the system layer.
 

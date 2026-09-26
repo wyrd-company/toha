@@ -120,11 +120,18 @@ description: >-
   `PROGRAMDATA` count only when they hold an absolute path. An empty or
   relative value counts as unset, as the XDG Base Directory Specification
   requires for its variables, so that no toha directory depends on the
-  current directory. An XDG variable that counts as unset falls back to its
-  default, `~/.config`, `~/.local/share`, `~/.cache`, and `~/.local/state`
-  respectively. When neither `HOME` nor `USERPROFILE` counts, or on Windows
-  when `APPDATA`, `LOCALAPPDATA`, or `PROGRAMDATA` does not count, toha
-  writes an error on standard error and exits with code 1.
+  current directory. On Linux, an XDG variable that counts as unset falls
+  back to its default, `~/.config`, `~/.local/share`, `~/.cache`, and
+  `~/.local/state` respectively. On macOS, `XDG_CONFIG_HOME` falls back to
+  `~/.config`, and `XDG_DATA_HOME`, `XDG_CACHE_HOME`, and `XDG_STATE_HOME` are
+  not read: the user data, cache, and state directories are under
+  `~/Library`. Windows reads no XDG variable. When neither `HOME` nor
+  `USERPROFILE` counts, or on Windows when `APPDATA`, `LOCALAPPDATA`, or
+  `PROGRAMDATA` does not count, toha writes an error on standard error and
+  exits with code 1; the error for a missing home directory names `HOME` and
+  `USERPROFILE`. `TOHA_CONFIG` and
+  `TOHA_USER_CONFIG` name files and may be relative to the current directory;
+  an empty value counts as unset.
 
   Version. `toha --version` and `toha -V` print `toha <VERSION>` and exit with
   code 0. `<VERSION>` is a SemVer version fixed at build time from the git

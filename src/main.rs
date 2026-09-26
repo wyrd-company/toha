@@ -74,7 +74,9 @@ Environment:
 
   XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_CACHE_HOME, XDG_STATE_HOME, HOME, USERPROFILE,
   APPDATA, LOCALAPPDATA, and PROGRAMDATA count only when they hold an absolute path.
-  An empty or relative value counts as unset.";
+  An empty or relative value counts as unset. toha exits with code 1 when neither HOME
+  nor USERPROFILE counts, and on Windows when APPDATA, LOCALAPPDATA, or PROGRAMDATA
+  does not count. An empty TOHA_CONFIG or TOHA_USER_CONFIG counts as unset.";
 
 /// Help layout for `apply`, whose operands are one clap argument so that
 /// `[TEMPLATE] <PATH>` parses the same on either side of `--`.

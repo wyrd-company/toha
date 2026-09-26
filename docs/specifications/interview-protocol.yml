@@ -90,9 +90,10 @@ description: >-
   and leaves the staged state unchanged.
 
   Staged state. A staged interview is stored in the user state directory:
-  `$XDG_STATE_HOME/toha/staged/` on Linux, falling back to
-  `~/.local/state/toha/staged/`; `~/Library/Application Support/toha/staged/`
-  on macOS; and `%LOCALAPPDATA%\toha\staged\` on Windows. The file name is the
+  `$XDG_STATE_HOME/toha/staged/` on Linux, with `~/.local/state` in place of
+  `$XDG_STATE_HOME` when it is unset, empty, or relative;
+  `~/Library/Application Support/toha/staged/` on macOS; and
+  `%LOCALAPPDATA%\toha\staged\` on Windows. The file name is the
   lowercase hexadecimal SHA-256 of the canonical absolute target path with a
   `.json` suffix. The staged record holds the target path, the formal name and
   resolved commit of the template, whether the argument resolved by name, the
