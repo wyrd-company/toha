@@ -2,20 +2,21 @@
 // relationships:
 //   implements: architecture
 // ---
+use crate::jinja::{Expr, Tmpl, Typed, is_global};
+use indexmap::IndexMap;
+use regex::Regex;
+use serde::Deserialize;
+use serde_json::{Map, Value};
 use std::{
     collections::HashSet,
     fmt, fs,
     path::{Path, PathBuf},
+    sync::LazyLock,
 };
-
-use serde::Deserialize;
-
-use crate::jinja::Tmpl;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize)]
 #[serde(transparent)]
 pub struct Id(String);
-
 impl Id {
     pub fn parse(value: &str) -> Result<Self, String> {
         let mut chars = value.chars();
@@ -24,13 +25,12 @@ impl Id {
         {
             return Err(format!("invalid identifier: {value}"));
         }
-        Ok(Self(value.to_owned()))
+        Ok(Self(value.into()))
     }
     pub fn as_str(&self) -> &str {
         &self.0
     }
 }
-
 impl fmt::Display for Id {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
@@ -42,174 +42,501 @@ pub struct Template {
     pub name: String,
     pub description: Option<String>,
     pub source_dir: PathBuf,
+    pub data: IndexMap<Id, Value>,
     pub interview: Vec<Node>,
 }
-
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum Node {
     Question(Question),
+    Computed(Computed),
+    Group(Group),
+    Message(Message),
 }
-
 #[derive(Debug)]
 pub struct Question {
     pub id: Id,
     pub prompt: Tmpl,
     pub description: Option<Tmpl>,
-    pub required: bool,
+    pub placeholder: Option<Tmpl>,
+    pub required: Typed<bool>,
     pub kind: QuestionKind,
+    pub validate: Validate,
+    pub format: Option<Expr>,
+    pub when: Option<Expr>,
 }
-
 #[derive(Debug)]
 pub enum QuestionKind {
-    Text { default: Option<Tmpl> },
+    Text {
+        default: Option<Tmpl>,
+    },
+    Multiline {
+        default: Option<Tmpl>,
+    },
+    Confirm {
+        default: Option<Typed<bool>>,
+    },
+    Select {
+        options: Typed<Vec<String>>,
+        default: Option<Tmpl>,
+    },
+    MultiSelect {
+        options: Typed<Vec<String>>,
+        default: Option<Typed<Vec<String>>>,
+    },
+    TextLoop {
+        default: Option<Typed<Vec<String>>>,
+        min: Option<Typed<u32>>,
+        max: Option<Typed<u32>>,
+    },
 }
-
+#[derive(Debug, Default)]
+pub struct Validate {
+    pub min: Option<Typed<u32>>,
+    pub max: Option<Typed<u32>>,
+    pub regex: Option<Regex>,
+}
+#[derive(Debug)]
+pub struct Computed {
+    pub id: Id,
+    pub expr: Expr,
+    pub when: Option<Expr>,
+}
+#[derive(Debug)]
+pub struct Group {
+    pub name: Id,
+    pub nodes: Vec<Node>,
+    pub when: Option<Expr>,
+}
+#[derive(Debug)]
+pub struct Message {
+    pub text: Tmpl,
+    pub when: Option<Expr>,
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Problem {
     pub path: String,
     pub message: String,
 }
-
 #[derive(Debug)]
 pub struct LoadError {
     pub problems: Vec<Problem>,
 }
-
 impl fmt::Display for LoadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (index, problem) in self.problems.iter().enumerate() {
-            if index > 0 {
+        for (i, p) in self.problems.iter().enumerate() {
+            if i > 0 {
                 writeln!(f)?;
             }
-            write!(f, "{}: {}", problem.path, problem.message)?;
+            write!(f, "{}: {}", p.path, p.message)?;
         }
         Ok(())
     }
 }
 impl std::error::Error for LoadError {}
-
-#[derive(Deserialize)]
-struct RawTemplate {
-    name: Option<serde_norway::Value>,
-    description: Option<serde_norway::Value>,
-    source: Option<serde_norway::Value>,
-    interview: Option<Vec<serde_norway::Value>>,
-    #[serde(flatten)]
-    extra: std::collections::BTreeMap<String, serde_norway::Value>,
-}
-
-fn problem(problems: &mut Vec<Problem>, path: impl Into<String>, message: impl Into<String>) {
-    problems.push(Problem {
+fn problem(ps: &mut Vec<Problem>, path: impl Into<String>, message: impl Into<String>) {
+    ps.push(Problem {
         path: path.into(),
         message: message.into(),
     });
 }
-
-fn compile(value: String, path: &str, problems: &mut Vec<Problem>) -> Option<Tmpl> {
-    match Tmpl::compile(value) {
-        Ok(value) => Some(value),
-        Err(error) => {
-            problem(problems, path, error.to_string());
-            None
-        }
+fn error(path: impl Into<String>, message: impl Into<String>) -> LoadError {
+    LoadError {
+        problems: vec![Problem {
+            path: path.into(),
+            message: message.into(),
+        }],
     }
 }
-
-fn string_field(
-    map: &serde_norway::Mapping,
-    key: &str,
-    prefix: &str,
-    required: bool,
-    problems: &mut Vec<Problem>,
-) -> Option<String> {
-    match map.get(serde_norway::Value::String(key.into())) {
-        Some(serde_norway::Value::String(value)) => Some(value.clone()),
-        Some(_) => {
-            problem(problems, format!("{prefix}.{key}"), "expected string");
-            None
-        }
-        None if required => {
-            problem(
-                problems,
-                format!("{prefix}.{key}"),
-                "missing required value",
-            );
-            None
-        }
-        None => None,
-    }
+#[derive(Deserialize)]
+struct RawTemplate {
+    name: String,
+    description: Option<String>,
+    source: Option<String>,
+    data: Option<Map<String, Value>>,
+    interview: Option<Vec<Value>>,
+    #[serde(flatten)]
+    extra: Map<String, Value>,
 }
-
-impl Template {
-    pub fn load(folder: &Path) -> Result<Self, LoadError> {
-        let text = fs::read_to_string(folder.join("template.yml")).map_err(|error| LoadError {
-            problems: vec![Problem {
-                path: "template.yml".into(),
-                message: error.to_string(),
-            }],
-        })?;
-        let raw: RawTemplate = serde_norway::from_str(&text).map_err(|error| LoadError {
-            problems: vec![Problem {
-                path: "template.yml".into(),
-                message: error.to_string(),
-            }],
-        })?;
-        let mut problems = Vec::new();
-        for key in raw.extra.keys() {
-            let message = if ["data", "files", "ignore", "static", "hooks", "messages"]
-                .contains(&key.as_str())
-            {
-                format!("not supported yet: {key}")
-            } else {
-                format!("unknown key: {key}")
+static SCHEMA: LazyLock<jsonschema::Validator> = LazyLock::new(|| {
+    let schema: Value = serde_norway::from_str(include_str!(
+        "../docs/specifications/template-format.schema.yml"
+    ))
+    .expect("embedded schema YAML");
+    jsonschema::options()
+        .with_draft(jsonschema::Draft::Draft202012)
+        .build(&schema)
+        .expect("embedded schema valid")
+});
+fn resolve(
+    value: &mut serde_norway::Value,
+    root: &Path,
+    stack: &mut Vec<PathBuf>,
+    path: &str,
+    ps: &mut Vec<Problem>,
+) {
+    match value {
+        serde_norway::Value::Tagged(tagged) => {
+            if tagged.tag != "include" {
+                problem(ps, path, format!("unknown tag: {}", tagged.tag));
+                return;
+            }
+            let Some(name) = tagged.value.as_str() else {
+                problem(ps, path, "include path must be string");
+                return;
             };
-            problem(&mut problems, key, message);
+            let candidate = root.join(name);
+            let Ok(actual) = candidate.canonicalize() else {
+                problem(ps, path, format!("include file not found: {name}"));
+                return;
+            };
+            if !actual.starts_with(root) {
+                problem(ps, path, "include escapes template root");
+                return;
+            }
+            if stack.contains(&actual) {
+                problem(ps, path, "include cycle");
+                return;
+            }
+            let Ok(text) = fs::read_to_string(&actual) else {
+                problem(ps, path, "include cannot be read");
+                return;
+            };
+            let parsed: Result<serde_norway::Value, String> = match actual
+                .extension()
+                .and_then(|s| s.to_str())
+            {
+                Some("yml" | "yaml") => serde_norway::from_str(&text).map_err(|e| e.to_string()),
+                Some("json") => serde_json::from_str::<Value>(&text)
+                    .and_then(serde_json::to_value)
+                    .map_err(|e| e.to_string())
+                    .and_then(|v| serde_norway::to_value(v).map_err(|e| e.to_string())),
+                Some("toml") => toml::from_str::<toml::Value>(&text)
+                    .map_err(|e| e.to_string())
+                    .and_then(|v| serde_norway::to_value(v).map_err(|e| e.to_string())),
+                _ => {
+                    problem(ps, path, "unsupported include extension");
+                    return;
+                }
+            };
+            match parsed {
+                Ok(mut next) => {
+                    stack.push(actual);
+                    resolve(&mut next, root, stack, path, ps);
+                    stack.pop();
+                    *value = next;
+                }
+                Err(e) => problem(ps, path, e),
+            }
         }
-        let name = match raw.name {
-            Some(serde_norway::Value::String(name)) => name,
-            Some(_) => {
-                problem(&mut problems, "name", "expected string");
-                String::new()
+        serde_norway::Value::Sequence(items) => {
+            for (i, item) in items.iter_mut().enumerate() {
+                resolve(item, root, stack, &format!("{path}[{i}]"), ps);
+            }
+        }
+        serde_norway::Value::Mapping(items) => {
+            for (key, item) in items.iter_mut() {
+                resolve(
+                    item,
+                    root,
+                    stack,
+                    &format!("{path}.{}", key.as_str().unwrap_or("?")),
+                    ps,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+struct Builder {
+    problems: Vec<Problem>,
+    seen: HashSet<String>,
+    names: HashSet<String>,
+}
+impl Builder {
+    fn id(&mut self, value: Option<&Value>, path: &str) -> Option<Id> {
+        match value
+            .and_then(Value::as_str)
+            .and_then(|s| Id::parse(s).ok())
+        {
+            Some(id) => {
+                if !self.names.insert(id.as_str().into()) {
+                    problem(&mut self.problems, path, format!("duplicate id: {id}"));
+                }
+                Some(id)
             }
             None => {
-                problem(&mut problems, "name", "missing required value");
-                String::new()
-            }
-        };
-        if !name.is_empty()
-            && (!name
-                .bytes()
-                .next()
-                .is_some_and(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())
-                || name.split('-').any(|part| {
-                    part.is_empty()
-                        || !part
-                            .bytes()
-                            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())
-                }))
-        {
-            problem(&mut problems, "name", "invalid short name");
-        }
-        let description = match raw.description {
-            Some(serde_norway::Value::String(value)) => Some(value),
-            Some(_) => {
-                problem(&mut problems, "description", "expected string");
+                problem(&mut self.problems, path, "invalid identifier");
                 None
             }
-            None => None,
-        };
-        let source = match raw.source {
-            Some(serde_norway::Value::String(value)) => value,
-            Some(_) => {
-                problem(&mut problems, "source", "expected string");
-                "template".into()
+        }
+    }
+    fn refs(&mut self, refs: &HashSet<String>, path: &str, local: &[&str]) {
+        for name in refs {
+            if !self.seen.contains(name) && !local.contains(&name.as_str()) && !is_global(name) {
+                problem(
+                    &mut self.problems,
+                    path,
+                    format!("id is not defined by an earlier node: {name}"),
+                );
             }
-            None => "template".into(),
-        };
-        if Path::new(&source).is_absolute()
-            || Path::new(&source)
+        }
+    }
+    fn tmpl(&mut self, value: Option<&Value>, path: &str) -> Option<Tmpl> {
+        if value.is_some_and(|v| !v.is_string()) {
+            problem(
+                &mut self.problems,
+                path,
+                "wrong literal type: expected string",
+            );
+            return None;
+        }
+        value
+            .and_then(Value::as_str)
+            .and_then(|s| match Tmpl::compile(s.into()) {
+                Ok(t) => {
+                    self.refs(t.references(), path, &[]);
+                    Some(t)
+                }
+                Err(e) => {
+                    problem(&mut self.problems, path, e.to_string());
+                    None
+                }
+            })
+    }
+    fn expr(&mut self, value: Option<&Value>, path: &str, local: &[&str]) -> Option<Expr> {
+        value
+            .and_then(Value::as_str)
+            .and_then(|s| match Expr::compile(s.into()) {
+                Ok(e) => {
+                    self.refs(e.references(), path, local);
+                    Some(e)
+                }
+                Err(e) => {
+                    problem(&mut self.problems, path, e.to_string());
+                    None
+                }
+            })
+    }
+    fn typed<T: serde::de::DeserializeOwned>(
+        &mut self,
+        value: Option<&Value>,
+        path: &str,
+    ) -> Option<Typed<T>> {
+        match value {
+            Some(Value::String(_)) => self.expr(value, path, &[]).map(Typed::Expr),
+            Some(v) => match serde_json::from_value(v.clone()) {
+                Ok(v) => Some(Typed::Literal(v)),
+                Err(e) => {
+                    problem(&mut self.problems, path, format!("wrong literal type: {e}"));
+                    None
+                }
+            },
+            None => None,
+        }
+    }
+    fn nodes(&mut self, values: &[Value], prefix: &str) -> Vec<Node> {
+        let mut result = Vec::new();
+        for (i, value) in values.iter().enumerate() {
+            let path = format!("{prefix}[{i}]");
+            let Some(map) = value.as_object() else {
+                continue;
+            };
+            let when = self.expr(map.get("when"), &format!("{path}.when"), &[]);
+            if map.contains_key("hook") {
+                problem(&mut self.problems, &path, "not supported yet: hook");
+                continue;
+            }
+            if map.contains_key("group") {
+                let name = self.id(map.get("group"), &format!("{path}.group"));
+                let children = map
+                    .get("nodes")
+                    .and_then(Value::as_array)
+                    .map(|v| self.nodes(v, &format!("{path}.nodes")))
+                    .unwrap_or_default();
+                if let Some(name) = name {
+                    result.push(Node::Group(Group {
+                        name,
+                        nodes: children,
+                        when,
+                    }));
+                }
+                continue;
+            }
+            if map.contains_key("message") {
+                if let Some(text) = self.tmpl(map.get("message"), &format!("{path}.message")) {
+                    result.push(Node::Message(Message { text, when }));
+                }
+                continue;
+            }
+            let id = self.id(map.get("id"), &format!("{path}.id"));
+            if map.contains_key("computed") {
+                let expr = self.expr(map.get("computed"), &format!("{path}.computed"), &[]);
+                if let (Some(id), Some(expr)) = (id, expr) {
+                    self.seen.insert(id.as_str().into());
+                    result.push(Node::Computed(Computed { id, expr, when }));
+                }
+                continue;
+            }
+            let Some(kind_name) = map.get("type").and_then(Value::as_str) else {
+                continue;
+            };
+            if map.contains_key("loop") && kind_name != "text" {
+                problem(
+                    &mut self.problems,
+                    format!("{path}.loop"),
+                    "loop only allowed on text",
+                );
+            }
+            if map.contains_key("options") && !["select", "multiselect"].contains(&kind_name) {
+                problem(
+                    &mut self.problems,
+                    format!("{path}.options"),
+                    "options only allowed on select or multiselect",
+                );
+            }
+            if ["select", "multiselect"].contains(&kind_name) && !map.contains_key("options") {
+                problem(
+                    &mut self.problems,
+                    format!("{path}.options"),
+                    "options required",
+                );
+            }
+            let prompt = self.tmpl(map.get("prompt"), &format!("{path}.prompt"));
+            let description = self.tmpl(map.get("description"), &format!("{path}.description"));
+            let placeholder = self.tmpl(map.get("placeholder"), &format!("{path}.placeholder"));
+            let required = self
+                .typed(map.get("required"), &format!("{path}.required"))
+                .unwrap_or(Typed::Literal(false));
+            let vm = map.get("validate").and_then(Value::as_object);
+            let min = self.typed(
+                vm.and_then(|m| m.get("min")),
+                &format!("{path}.validate.min"),
+            );
+            let max = self.typed(
+                vm.and_then(|m| m.get("max")),
+                &format!("{path}.validate.max"),
+            );
+            let regex = vm
+                .and_then(|m| m.get("regex"))
+                .and_then(Value::as_str)
+                .and_then(|s| match Regex::new(s) {
+                    Ok(r) => Some(r),
+                    Err(e) => {
+                        problem(
+                            &mut self.problems,
+                            format!("{path}.validate.regex"),
+                            e.to_string(),
+                        );
+                        None
+                    }
+                });
+            let format = self.expr(map.get("format"), &format!("{path}.format"), &["value"]);
+            let default = map.get("default");
+            let kind = match kind_name {
+                "text" if map.contains_key("loop") => {
+                    let lm = map.get("loop").and_then(Value::as_object);
+                    QuestionKind::TextLoop {
+                        default: self.typed(default, &format!("{path}.default")),
+                        min: self.typed(lm.and_then(|m| m.get("min")), &format!("{path}.loop.min")),
+                        max: self.typed(lm.and_then(|m| m.get("max")), &format!("{path}.loop.max")),
+                    }
+                }
+                "text" => QuestionKind::Text {
+                    default: self.tmpl(default, &format!("{path}.default")),
+                },
+                "multiline" => QuestionKind::Multiline {
+                    default: self.tmpl(default, &format!("{path}.default")),
+                },
+                "confirm" => QuestionKind::Confirm {
+                    default: self.typed(default, &format!("{path}.default")),
+                },
+                "select" => {
+                    let options = self
+                        .typed(map.get("options"), &format!("{path}.options"))
+                        .unwrap_or(Typed::Literal(vec![]));
+                    QuestionKind::Select {
+                        options,
+                        default: self.tmpl(default, &format!("{path}.default")),
+                    }
+                }
+                "multiselect" => {
+                    let options = self
+                        .typed(map.get("options"), &format!("{path}.options"))
+                        .unwrap_or(Typed::Literal(vec![]));
+                    QuestionKind::MultiSelect {
+                        options,
+                        default: self.typed(default, &format!("{path}.default")),
+                    }
+                }
+                _ => continue,
+            };
+            if let (Some(id), Some(prompt)) = (id, prompt) {
+                self.seen.insert(id.as_str().into());
+                result.push(Node::Question(Question {
+                    id,
+                    prompt,
+                    description,
+                    placeholder,
+                    required,
+                    kind,
+                    validate: Validate { min, max, regex },
+                    format,
+                    when,
+                }));
+            }
+        }
+        result
+    }
+}
+impl Template {
+    pub fn load(folder: &Path) -> Result<Self, LoadError> {
+        let root = folder
+            .canonicalize()
+            .map_err(|e| error("template.yml", e.to_string()))?;
+        let text = fs::read_to_string(root.join("template.yml"))
+            .map_err(|e| error("template.yml", e.to_string()))?;
+        let mut yaml: serde_norway::Value =
+            serde_norway::from_str(&text).map_err(|e| error("template.yml", e.to_string()))?;
+        let mut problems = Vec::new();
+        resolve(
+            &mut yaml,
+            &root,
+            &mut vec![root.join("template.yml")],
+            "template.yml",
+            &mut problems,
+        );
+        if !problems.is_empty() {
+            return Err(LoadError { problems });
+        }
+        let doc: Value =
+            serde_json::to_value(yaml).map_err(|e| error("template.yml", e.to_string()))?;
+        for e in SCHEMA.iter_errors(&doc) {
+            problem(
+                &mut problems,
+                format!("template.yml{}", e.instance_path()),
+                e.to_string(),
+            );
+        }
+        if !problems.is_empty() {
+            return Err(LoadError { problems });
+        }
+        let raw: RawTemplate =
+            serde_json::from_value(doc).map_err(|e| error("template.yml", e.to_string()))?;
+        for key in ["files", "ignore", "static", "hooks", "messages"] {
+            if raw.extra.contains_key(key) {
+                problem(&mut problems, key, format!("not supported yet: {key}"));
+            }
+        }
+        let source = raw.source.as_deref().unwrap_or("template");
+        let source_dir = root.join(source);
+        if Path::new(source).is_absolute()
+            || Path::new(source)
                 .components()
-                .any(|part| matches!(part, std::path::Component::ParentDir))
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+            || source_dir
+                .canonicalize()
+                .is_ok_and(|p| !p.starts_with(&root))
         {
             problem(
                 &mut problems,
@@ -217,153 +544,35 @@ impl Template {
                 "source must stay inside template root",
             );
         }
-        let source_dir = folder.join(&source);
         if !source_dir.is_dir() {
             problem(&mut problems, "source", "source directory does not exist");
         }
-        if let (Ok(root), Ok(actual)) = (folder.canonicalize(), source_dir.canonicalize()) {
-            if !actual.starts_with(root) {
-                problem(
-                    &mut problems,
-                    "source",
-                    "source must stay inside template root",
-                );
+        let mut b = Builder {
+            problems,
+            seen: HashSet::new(),
+            names: HashSet::new(),
+        };
+        let mut data = IndexMap::new();
+        if let Some(values) = &raw.data {
+            for (key, value) in values {
+                if let Some(id) = b.id(Some(&Value::String(key.clone())), &format!("data.{key}")) {
+                    b.seen.insert(id.as_str().into());
+                    data.insert(id, value.clone());
+                }
             }
         }
-        let mut interview = Vec::new();
-        let mut seen = HashSet::new();
-        for (index, value) in raw.interview.unwrap_or_default().into_iter().enumerate() {
-            let prefix = format!("interview[{index}]");
-            let Some(map) = value.as_mapping() else {
-                problem(&mut problems, prefix, "expected node object");
-                continue;
-            };
-            if !map.contains_key(serde_norway::Value::String("type".into())) {
-                let kind = map
-                    .keys()
-                    .filter_map(serde_norway::Value::as_str)
-                    .find(|key| ["computed", "group", "hook", "message"].contains(key))
-                    .unwrap_or("node");
-                problem(&mut problems, &prefix, format!("not supported yet: {kind}"));
-                continue;
-            }
-            let kind = string_field(map, "type", &prefix, true, &mut problems);
-            if kind.as_deref() != Some("text") {
-                if let Some(kind) = kind {
-                    problem(
-                        &mut problems,
-                        format!("{prefix}.type"),
-                        format!("not supported yet: {kind}"),
-                    );
-                }
-                continue;
-            }
-            for key in map.keys().filter_map(serde_norway::Value::as_str) {
-                if !["id", "type", "prompt", "description", "required", "default"].contains(&key) {
-                    let message = if [
-                        "placeholder",
-                        "options",
-                        "loop",
-                        "validate",
-                        "format",
-                        "when",
-                    ]
-                    .contains(&key)
-                    {
-                        format!("not supported yet: {key}")
-                    } else {
-                        format!("unknown key: {key}")
-                    };
-                    problem(&mut problems, format!("{prefix}.{key}"), message);
-                }
-            }
-            let id = string_field(map, "id", &prefix, true, &mut problems).and_then(|value| {
-                match Id::parse(&value) {
-                    Ok(id) => Some(id),
-                    Err(message) => {
-                        problem(&mut problems, format!("{prefix}.id"), message);
-                        None
-                    }
-                }
+        let interview = b.nodes(raw.interview.as_deref().unwrap_or_default(), "interview");
+        if !b.problems.is_empty() {
+            return Err(LoadError {
+                problems: b.problems,
             });
-            if let Some(id) = &id {
-                if !seen.insert(id.as_str().to_owned()) {
-                    problem(
-                        &mut problems,
-                        format!("{prefix}.id"),
-                        format!("duplicate id: {id}"),
-                    );
-                }
-            }
-            let prompt = string_field(map, "prompt", &prefix, true, &mut problems)
-                .and_then(|value| compile(value, &format!("{prefix}.prompt"), &mut problems));
-            let description = string_field(map, "description", &prefix, false, &mut problems)
-                .and_then(|value| compile(value, &format!("{prefix}.description"), &mut problems));
-            let default = string_field(map, "default", &prefix, false, &mut problems)
-                .and_then(|value| compile(value, &format!("{prefix}.default"), &mut problems));
-            let required = match map.get(serde_norway::Value::String("required".into())) {
-                Some(serde_norway::Value::Bool(value)) => *value,
-                Some(_) => {
-                    problem(
-                        &mut problems,
-                        format!("{prefix}.required"),
-                        "not supported yet: required expression",
-                    );
-                    false
-                }
-                None => false,
-            };
-            for (key, tmpl) in [
-                ("prompt", prompt.as_ref()),
-                ("description", description.as_ref()),
-                ("default", default.as_ref()),
-            ] {
-                if let Some(tmpl) = tmpl {
-                    for reference in tmpl.references() {
-                        if !seen.contains(reference)
-                            || id.as_ref().is_some_and(|id| id.as_str() == reference)
-                        {
-                            problem(
-                                &mut problems,
-                                format!("{prefix}.{key}"),
-                                format!("id is not defined by an earlier node: {reference}"),
-                            );
-                        }
-                    }
-                }
-            }
-            if let (Some(id), Some(prompt)) = (id, prompt) {
-                interview.push(Node::Question(Question {
-                    id,
-                    prompt,
-                    description,
-                    required,
-                    kind: QuestionKind::Text { default },
-                }));
-            }
-        }
-        if !problems.is_empty() {
-            return Err(LoadError { problems });
         }
         Ok(Self {
-            name,
-            description,
+            name: raw.name,
+            description: raw.description,
             source_dir,
+            data,
             interview,
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Id;
-    #[test]
-    fn id_parse() {
-        for good in ["a", "_", "a_1"] {
-            assert!(Id::parse(good).is_ok());
-        }
-        for bad in ["", "1a", "A", "a-b", "é"] {
-            assert!(Id::parse(bad).is_err());
-        }
     }
 }

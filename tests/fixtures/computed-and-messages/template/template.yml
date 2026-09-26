@@ -1,0 +1,9 @@
+name: sample
+interview:
+  - id: label
+    type: text
+    prompt: Label?
+  - message: "Hello {{ label }}"
+  - id: result_name
+    computed: "label | snake"
+  - message: "  "

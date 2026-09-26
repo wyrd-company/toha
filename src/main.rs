@@ -33,14 +33,17 @@ enum Command {
 }
 
 enum Outcome {
-    Written(Vec<toha::TargetPath>),
+    Written(Vec<toha::TargetPath>, Vec<String>),
     Error(String),
     Incomplete(String),
 }
 impl Outcome {
     fn finish(self) -> ExitCode {
         match self {
-            Self::Written(paths) => {
+            Self::Written(paths, messages) => {
+                for message in messages {
+                    println!("{message}");
+                }
                 for path in paths {
                     println!("{path}");
                 }
@@ -90,6 +93,17 @@ fn read_answers(path: &str) -> Result<RawAnswers, String> {
         .collect()
 }
 
+fn seed() -> Seed {
+    let now = std::env::var("TOHA_NOW")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(jiff::Zoned::now);
+    Seed {
+        now,
+        defaults: indexmap::IndexMap::new(),
+    }
+}
+
 fn run(template: Option<String>, path: &Path, answers: Option<String>, force: bool) -> Outcome {
     let Some(template) = template else {
         return Outcome::Error("template folder is required".into());
@@ -109,7 +123,7 @@ fn run(template: Option<String>, path: &Path, answers: Option<String>, force: bo
         Ok(raw) => raw,
         Err(error) => return Outcome::Error(error),
     };
-    let mut interview = match Interview::start(&template, Seed {}) {
+    let mut interview = match Interview::start(&template, seed()) {
         Ok(interview) => interview,
         Err(error) => return Outcome::Error(error.to_string()),
     };
@@ -138,7 +152,7 @@ fn run(template: Option<String>, path: &Path, answers: Option<String>, force: bo
         Err(error) => return Outcome::Error(error.to_string()),
     };
     match plan.apply(path, ApplyOptions { force }) {
-        Ok(Applied::Written(paths)) => Outcome::Written(paths),
+        Ok(Applied::Written(paths)) => Outcome::Written(paths, completed.messages),
         Err(error) => Outcome::Error(error.to_string()),
     }
 }

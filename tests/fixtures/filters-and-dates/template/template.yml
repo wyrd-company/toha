@@ -1,0 +1,5 @@
+name: sample
+interview:
+  - id: label
+    type: text
+    prompt: Label?

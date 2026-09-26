@@ -1,0 +1,4 @@
+Sample Site
+light
+eu
+True

@@ -1,0 +1,4 @@
+{{ site_name }}
+{{ theme }}
+{{ search_region }}
+{{ uses_hosted_services }}

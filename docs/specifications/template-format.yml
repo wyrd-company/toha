@@ -32,7 +32,8 @@ description: >-
   every computed value evaluated so far. Toha registers the case filters
   `kebab`, `snake`, `camel`, `pascal`, `constant`, and `title`, and the date
   function `now()` with the `dateformat` filter, in addition to the minijinja
-  built-ins.
+  built-ins. `now()` returns the interview seed instant; `dateformat` uses
+  jiff strftime syntax, defaults to `%Y-%m-%d`, and formats in the seed time zone.
 
   Identifiers. Question ids, computed ids, and top-level `data` keys are Jinja
   identifiers matching `^[a-z_][a-z0-9_]*$`. They share one namespace; a

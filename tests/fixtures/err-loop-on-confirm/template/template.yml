@@ -1,0 +1,2 @@
+name: sample
+interview: [{ id: test, type: confirm, prompt: Test, loop: { max: 2 } }]

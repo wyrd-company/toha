@@ -15,6 +15,14 @@ pub struct Expect {
     #[serde(default)]
     #[allow(dead_code)]
     pub error_contains: Vec<String>,
+    #[serde(default)]
+    pub messages: Vec<String>,
+    #[serde(default = "fixed_now")]
+    pub now: String,
+}
+
+fn fixed_now() -> String {
+    "2026-01-02T03:04:05+00:00[UTC]".into()
 }
 
 pub fn fixtures() -> Vec<PathBuf> {

@@ -7,11 +7,8 @@ mod support;
 use std::process::Command;
 
 #[test]
-fn successful_fixtures_through_cli() {
+fn every_fixture_through_cli() {
     for fixture in support::fixtures() {
-        if !fixture.join("expected").exists() {
-            continue;
-        }
         let target = tempfile::tempdir().unwrap();
         let output = Command::new(assert_cmd::cargo::cargo_bin!("toha"))
             .arg("apply")
@@ -19,6 +16,8 @@ fn successful_fixtures_through_cli() {
             .arg(target.path())
             .arg("--answers")
             .arg(fixture.join("answers.json"))
+            // The hidden TOHA_NOW seed hook fixes the clock for CLI fixtures.
+            .env("TOHA_NOW", support::expectation(&fixture).now.clone())
             .output()
             .unwrap();
         assert_eq!(
@@ -28,7 +27,25 @@ fn successful_fixtures_through_cli() {
             fixture.display(),
             String::from_utf8_lossy(&output.stderr)
         );
-        support::assert_tree(target.path(), &fixture.join("expected"));
+        let expect = support::expectation(&fixture);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        for part in &expect.error_contains {
+            assert!(stderr.contains(part), "{}: {stderr}", fixture.display());
+        }
+        if expect.exit == 0 {
+            support::assert_tree(target.path(), &fixture.join("expected"));
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let messages: Vec<_> = expect.messages.iter().map(|s| s.as_str()).collect();
+            let lines: Vec<_> = stdout.lines().collect();
+            assert_eq!(
+                &lines[..messages.len()],
+                messages.as_slice(),
+                "{}: {stdout}",
+                fixture.display()
+            );
+        } else {
+            assert!(std::fs::read_dir(target.path()).unwrap().next().is_none());
+        }
     }
 }
 

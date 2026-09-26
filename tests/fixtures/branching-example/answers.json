@@ -1,0 +1,10 @@
+{
+  "site_name": "Sample Site",
+  "theme": "light",
+  "search": true,
+  "search_engine": "hosted",
+  "search_region": "eu",
+  "analytics": [
+    "errors"
+  ]
+}

@@ -115,6 +115,7 @@ impl Plan {
             &template.source_dir,
             target,
             completed,
+            template,
             &mut plan,
         )?;
         Ok(plan)
@@ -126,6 +127,7 @@ fn walk(
     dir: &Path,
     target: &Path,
     completed: &Completed,
+    template: &Template,
     plan: &mut Plan,
 ) -> Result<(), PlanError> {
     let mut entries = fs::read_dir(dir)
@@ -151,12 +153,17 @@ fn walk(
         let mut skip = false;
         for segment in relative.components() {
             let text = segment.as_os_str().to_string_lossy();
-            let template = Tmpl::compile(text.into_owned()).map_err(|error| PlanError::Render {
-                path: source_path.clone(),
-                message: error.to_string(),
-            })?;
-            let value = template
-                .render(context_from_answers(&completed.answers))
+            let segment_template =
+                Tmpl::compile(text.into_owned()).map_err(|error| PlanError::Render {
+                    path: source_path.clone(),
+                    message: error.to_string(),
+                })?;
+            let value = segment_template
+                .render(context_from_answers(
+                    &completed.answers,
+                    &template.data,
+                    &completed.now,
+                ))
                 .map_err(|error| PlanError::Render {
                     path: source_path.clone(),
                     message: error.to_string(),
@@ -182,7 +189,7 @@ fn walk(
             )));
         }
         if file_type.is_dir() {
-            walk(source_root, &source_path, target, completed, plan)?;
+            walk(source_root, &source_path, target, completed, template, plan)?;
             continue;
         }
         let source = fs::read_to_string(&source_path).map_err(|source| PlanError::Io {
@@ -190,7 +197,13 @@ fn walk(
             source,
         })?;
         let content = Tmpl::compile(source)
-            .and_then(|tmpl| tmpl.render(context_from_answers(&completed.answers)))
+            .and_then(|tmpl| {
+                tmpl.render(context_from_answers(
+                    &completed.answers,
+                    &template.data,
+                    &completed.now,
+                ))
+            })
             .map_err(|error| PlanError::Render {
                 path: source_path.clone(),
                 message: error.to_string(),
