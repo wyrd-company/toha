@@ -55,9 +55,13 @@ description: >-
   Printed target paths use `/` separators on every platform.
 
   Version. `toha --version` and `toha -V` print `toha <VERSION>` and exit with
-  code 0. `<VERSION>` is the SemVer version calculated from the git tags of the
-  toha source at build time, or the package version when the build has no git
-  history. A release build prints its release tag.
+  code 0. `<VERSION>` is a SemVer version fixed at build time from the git
+  repository whose work tree is the package root. A build of a commit that
+  carries a release tag prints that tag. A build of any other commit prints the
+  tagver height version, which adds the number of commits since the latest
+  reachable tag to the version of that tag; three commits after `0.1.0` it is
+  `0.1.1-alpha.0.3`. A build uses the package version when no repository has
+  the package root as its work tree, or when tagver fails.
 format: cli
 validation-criteria: >-
   A conforming command line matches
