@@ -510,3 +510,56 @@ fn dry_run_hint_keeps_a_target_spelled_like_a_flag() {
         &format!("toha apply --answers {answers} -- {template} -d"),
     );
 }
+
+/// Runs `apply` with `operands` in a terminal on an incomplete staged
+/// text-basic interview, answers the remaining question, and checks the files.
+#[cfg(unix)]
+fn apply_prompts_in_terminal(operands: &[&str]) {
+    use expectrl::{Expect, Session};
+    let case = Case::new();
+    case.stage_incomplete(&text_basic());
+    let mut command = support::isolated_command(case.state.path());
+    command.arg("apply").args(operands).arg(case.target());
+    let mut session = Session::spawn(command).unwrap();
+    session.expect("Name?").unwrap();
+    session.send_line("Item").unwrap();
+    session.expect("Item.txt").unwrap();
+    session.expect(expectrl::Eof).unwrap();
+    support::assert_tree(
+        case.target.path(),
+        Path::new("tests/fixtures/text-basic/expected"),
+        Path::new("tests/fixtures/text-basic"),
+    );
+    assert!(!case.staged());
+}
+
+#[cfg(unix)]
+#[test]
+fn apply_prompts_for_incomplete_staged_interview_in_terminal() {
+    apply_prompts_in_terminal(&[]);
+}
+
+#[cfg(unix)]
+#[test]
+fn apply_with_template_prompts_for_incomplete_staged_interview_in_terminal() {
+    apply_prompts_in_terminal(&[&text_basic()]);
+}
+
+#[test]
+fn suggested_commands_guard_a_target_spelled_like_a_flag() {
+    let case = Case::new();
+    let output = support::isolated_command(case.state.path())
+        .current_dir(case.target.path())
+        .args(["continue", "--", "-d"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_code(&output, 1);
+    assert_stderr_names(
+        &output,
+        &[
+            "toha stage -- <TEMPLATE> -d".into(),
+            "toha apply -- <TEMPLATE> -d".into(),
+        ],
+    );
+}
