@@ -13,8 +13,40 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 jobs:
+  credential-preflight:
+    name: Verify publication credentials are configured
+    runs-on: ubuntu-latest
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      FORMULAE_PUBLISH_KEY: ${{ secrets.FORMULAE_PUBLISH_KEY }}
+      REPO_WYRD_FOO_PUBLISHER_APP_ID: ${{ secrets.REPO_WYRD_FOO_PUBLISHER_APP_ID }}
+      REPO_WYRD_FOO_PUBLISHER_PRIVATE_KEY: ${{ secrets.REPO_WYRD_FOO_PUBLISHER_PRIVATE_KEY }}
+      WYRD_TOOLS_DOCS_PUBLISHER_APP_ID: ${{ secrets.WYRD_TOOLS_DOCS_PUBLISHER_APP_ID }}
+      WYRD_TOOLS_DOCS_PUBLISHER_PRIVATE_KEY: ${{ secrets.WYRD_TOOLS_DOCS_PUBLISHER_PRIVATE_KEY }}
+    steps:
+      - name: Require every publication credential for a release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" != push ]]; then
+            echo "Build-only run; publication credentials are not required."
+            exit 0
+          fi
+          missing=0
+          for variable in CARGO_REGISTRY_TOKEN FORMULAE_PUBLISH_KEY \
+            REPO_WYRD_FOO_PUBLISHER_APP_ID REPO_WYRD_FOO_PUBLISHER_PRIVATE_KEY \
+            WYRD_TOOLS_DOCS_PUBLISHER_APP_ID WYRD_TOOLS_DOCS_PUBLISHER_PRIVATE_KEY; do
+            if [[ -z "${!variable}" ]]; then
+              echo "::error::$variable is not configured for the release workflow."
+              missing=1
+            fi
+          done
+          if (( missing )); then exit 1; fi
+          echo "Required release credentials are configured."
+
   build:
     name: Build ${{ matrix.target }}
+    needs: credential-preflight
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -158,6 +190,19 @@ jobs:
             gh release create "$GITHUB_REF_NAME" dist/* \
               --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
           fi
+
+  crates:
+    if: github.event_name == 'push'
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - name: Publish or verify the crate
+        shell: bash
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: scripts/release/ensure-crate.sh "$GITHUB_REF_NAME"
 
   homebrew:
     if: github.event_name == 'push'
