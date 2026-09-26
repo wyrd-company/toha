@@ -1,0 +1,14 @@
+# ---
+# relationships:
+#   exemplifies: template-format
+# ---
+name: demo
+interview:
+  - id: title
+    type: text
+    prompt: Note title
+    required: true
+  - id: topic
+    type: text
+    prompt: Topic
+    required: true

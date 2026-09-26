@@ -16,5 +16,9 @@ install:
     command: brew install wyrd-company/tools/toha
   - label: APT
     command: sudo apt install toha
+  - label: RPM
+    command: sudo dnf install toha
   - label: AUR
     command: paru -S toha-bin
+assets:
+  - assets/demo.gif

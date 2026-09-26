@@ -24,3 +24,8 @@ tasks:
       - intentional check
   ci:
     deps: [ fmt-check, lint, test, release:check ]
+  demo:
+    desc: Build the CLI and render the terminal demo
+    cmds:
+      - cargo build
+      - vhs docs/demo.tape
