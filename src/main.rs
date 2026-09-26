@@ -997,7 +997,7 @@ fn main() -> ExitCode {
         } => stage(template, path.clone(), r#async.clone(), &dirs)
             .retry(|formal| {
                 Invocation::Stage {
-                    template: Arg::Given(guidance::plain_formal(formal)),
+                    template: Arg::Given(guidance::formal_for("stage", formal)),
                     path: &path,
                     output: r#async.as_ref().map(|file| file.as_deref()),
                 }
@@ -1051,7 +1051,7 @@ fn main() -> ExitCode {
             )
             .retry(|formal| {
                 Invocation::Apply {
-                    template: Some(Arg::Given(guidance::plain_formal(formal))),
+                    template: Some(Arg::Given(guidance::formal_for("apply", formal))),
                     path: &path,
                     answers: answers.as_deref().map(Arg::Given),
                     force,

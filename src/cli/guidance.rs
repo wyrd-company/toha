@@ -44,6 +44,37 @@ pub fn plain_formal(formal: &str) -> &str {
     }
 }
 
+/// The form of a formal name that `command` accepts. `stage`, `apply`, and
+/// `templates add` read a `<TEMPLATE>` or address argument, so a folder is
+/// named by its drive path; `templates remove`, `update`, and `alias` look up
+/// the formal name as the registry stores it.
+pub fn formal_for<'a>(command: &str, formal: &'a str) -> &'a str {
+    match command {
+        "templates remove" | "templates update" | "templates alias" => formal,
+        _ => plain_formal(formal),
+    }
+}
+
+/// A path value without trailing separators, so that no suggested path ends
+/// in a separator before a closing quote. A root (`/`, `\`, `C:\`, `C:/`)
+/// is kept whole.
+fn path_value(value: &str, shell: Shell) -> &str {
+    let separators: &[char] = match shell {
+        Shell::Posix => &['/'],
+        Shell::Windows => &['/', '\\'],
+    };
+    let trimmed = value.trim_end_matches(separators);
+    let drive = matches!(shell, Shell::Windows)
+        && trimmed.len() == 2
+        && trimmed.as_bytes()[0].is_ascii_alphabetic()
+        && trimmed.as_bytes()[1] == b':';
+    if trimmed.is_empty() || drive && value.len() > 2 {
+        &value[..trimmed.len() + 1]
+    } else {
+        trimmed
+    }
+}
+
 /// `value` as one shell word for the shell of this platform.
 pub fn word(value: &str) -> String {
     word_for(value, SHELL)
@@ -74,12 +105,20 @@ fn posix_word(value: &str) -> String {
 
 /// Paths keep `\`, `:`, and `~` plain, as cmd.exe and PowerShell do; `~` and
 /// `=` only after the first character. Any other word is double-quoted, the
-/// form both shells accept, with `"` and the backslashes before it escaped by
-/// the rules Windows programs use to split a command line.
+/// form both shells accept, with an embedded `"` written as `""`.
 ///
-/// Limits: inside double quotes cmd.exe still expands `%NAME%`, and PowerShell
-/// still expands `$` and backtick escapes. A word with those characters is
-/// quoted but not protected from expansion in every shell.
+/// What holds: cmd.exe and PowerShell both pass a double-quoted word with
+/// spaces, `&`, `|`, `<`, `>`, `(`, `)`, `;`, `,` and `#` as one argument, and
+/// toha reads `""` inside it as `"` through the Universal CRT command-line
+/// rules; PowerShell reads `""` as `"` too. A backslash is literal unless it
+/// precedes a `"`; suggested paths never end in a separator (see
+/// [`path_value`]) and Windows paths cannot contain `"`, so no backslash
+/// precedes a quote in a suggested path.
+///
+/// Limits: `%` stays plain, because cmd.exe expands `%NAME%` inside double
+/// quotes as well as outside. PowerShell expands `$` and backtick escapes
+/// inside double quotes. A word with those characters is quoted but not
+/// protected from expansion in every shell.
 fn windows_word(value: &str) -> String {
     let plain = !value.is_empty()
         && !value.starts_with(['=', '~'])
@@ -87,32 +126,14 @@ fn windows_word(value: &str) -> String {
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-\\~".contains(c));
     if plain {
-        return value.into();
+        value.into()
+    } else {
+        format!("\"{}\"", value.replace('"', "\"\""))
     }
-    let mut quoted = String::from('"');
-    let mut backslashes = 0;
-    for c in value.chars() {
-        match c {
-            '\\' => backslashes += 1,
-            '"' => {
-                quoted.extend(std::iter::repeat_n('\\', backslashes * 2 + 1));
-                quoted.push('"');
-                backslashes = 0;
-            }
-            c => {
-                quoted.extend(std::iter::repeat_n('\\', backslashes));
-                quoted.push(c);
-                backslashes = 0;
-            }
-        }
-    }
-    quoted.extend(std::iter::repeat_n('\\', backslashes * 2));
-    quoted.push('"');
-    quoted
 }
 
 fn target(path: &Path) -> String {
-    word(&path.to_string_lossy())
+    word(path_value(&path.to_string_lossy(), SHELL))
 }
 
 /// One operand of a suggested command: its value and how it is written.
@@ -127,7 +148,11 @@ pub fn value(value: &str) -> Operand {
     }
 }
 fn path_operand(path: &Path) -> Operand {
-    value(&path.to_string_lossy())
+    file_operand(&path.to_string_lossy())
+}
+/// A file or folder operand, without trailing separators.
+fn file_operand(path: &str) -> Operand {
+    value(path_value(path, SHELL))
 }
 /// A placeholder such as `<TEMPLATE>`, written as is.
 pub fn placeholder(name: &str) -> Operand {
@@ -171,9 +196,9 @@ fn option_value(flag: &str, value: Arg) -> String {
     match value {
         Arg::Placeholder(name) => format!("{flag} {name}"),
         Arg::Given(value) if value.starts_with('-') && value != "-" => {
-            format!("{flag}={}", word(value))
+            format!("{flag}={}", word(path_value(value, SHELL)))
         }
-        Arg::Given(value) => format!("{flag} {}", word(value)),
+        Arg::Given(value) => format!("{flag} {}", word(path_value(value, SHELL))),
     }
 }
 
@@ -419,7 +444,7 @@ pub fn complete(path: &Path) -> String {
 /// An answers document was given for a complete staged interview.
 pub fn complete_answers_unused(path: &Path, staged: &str) -> String {
     let restage = Invocation::Stage {
-        template: Arg::Given(plain_formal(staged)),
+        template: Arg::Given(formal_for("stage", staged)),
         path,
         output: None,
     };
@@ -527,12 +552,16 @@ pub fn answers_without_template(
         Some((staged, _)) => {
             lines.push(format!(
                 "to answer the staged interview: {}, then {}",
-                toha("continue", &[], &[path_operand(path), value(answers)]),
+                toha(
+                    "continue",
+                    &[],
+                    &[path_operand(path), file_operand(answers)]
+                ),
                 apply_staged(path)
             ));
             lines.push(format!(
                 "to answer it and write its files in one command: {}",
-                apply_new(Arg::Given(plain_formal(staged))).command()
+                apply_new(Arg::Given(formal_for("apply", staged))).command()
             ));
         }
         None => lines.push(format!(
@@ -559,7 +588,7 @@ pub fn needs_trust(invocation: &Invocation, installed: Option<&str>) -> String {
             toha(
                 "templates add",
                 &["--trust".into()],
-                &[value(plain_formal(formal))]
+                &[value(formal_for("templates add", formal))]
             )
         ));
     }
@@ -661,7 +690,10 @@ pub fn ambiguous(name: &str, matches: &[String], retry: &[String]) -> String {
             toha(
                 "templates alias",
                 &[],
-                &[value(plain_formal(formal)), placeholder("<ALIAS>")]
+                &[
+                    value(formal_for("templates alias", formal)),
+                    placeholder("<ALIAS>")
+                ]
             )
         ));
     }

@@ -332,7 +332,7 @@ fn add(
                     let path = folder.strip_prefix(&root).unwrap_or(folder);
                     format!("{base}#{}", path.to_string_lossy().replace('\\', "/"))
                 }
-                _ => guidance::plain_formal(&folder.to_string_lossy()).to_string(),
+                _ => guidance::formal_for("templates add", &folder.to_string_lossy()).to_string(),
             })
             .collect();
         return Err(CommandError::text(guidance::alias_needs_one_template(
@@ -661,7 +661,7 @@ pub fn retry(args: &TemplatesArgs) -> impl Fn(&str) -> String + use<> {
         TemplatesCommand::Add { .. } | TemplatesCommand::List { .. } => ("templates list", None),
     };
     move |formal| {
-        let mut operands = vec![guidance::value(guidance::plain_formal(formal))];
+        let mut operands = vec![guidance::value(guidance::formal_for(command, formal))];
         operands.extend(alias.as_deref().map(guidance::value));
         guidance::toha(command, &[], &operands)
     }
