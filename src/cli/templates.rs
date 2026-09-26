@@ -17,35 +17,52 @@ pub struct TemplatesArgs {
 }
 #[derive(Subcommand)]
 enum TemplatesCommand {
+    /// Install every template in a repository, or the one template at #<path>.
     Add {
+        /// Git address or local folder.
         address: String,
+        /// Alias for the template; fails when the address holds more than one template.
         #[arg(short, long)]
         alias: Option<String>,
+        /// Record the added templates as trusted in the user registry.
         #[arg(long)]
         trust: bool,
     },
+    /// List available templates with formal name, short name, aliases, and trust.
     List {
+        /// Only templates from the local layer.
         #[arg(short, long, conflicts_with_all=["system", "user"])]
         local: bool,
+        /// Only templates from the system layer.
         #[arg(short, long, conflicts_with = "user")]
         system: bool,
+        /// Only templates from the user layer.
         #[arg(short, long)]
         user: bool,
+        /// Print the list as JSON.
         #[arg(long)]
         json: bool,
     },
+    /// Move installed git templates that follow a branch to its newest commit.
     Update {
+        /// Template to update; all installed git templates when absent.
         template: Option<String>,
     },
+    /// Uninstall a template and delete its entry from the user registry.
     Remove {
+        /// Template to uninstall.
         template: String,
     },
+    /// Add or remove an alias in the user registry.
     Alias {
+        /// Formal or short name of the template.
         #[arg(requires = "alias", required_unless_present = "remove")]
         template: Option<String>,
+        /// Alias to add.
         #[arg(requires = "template")]
         alias: Option<String>,
-        #[arg(short, long, conflicts_with_all=["template", "alias"])]
+        /// Alias to remove.
+        #[arg(short, long, conflicts_with_all=["template", "alias"], value_name = "ALIAS")]
         remove: Option<String>,
     },
 }

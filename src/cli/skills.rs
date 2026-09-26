@@ -18,16 +18,17 @@ static SKILLS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/skills");
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// List the embedded skills as JSON.
+    /// List the embedded skills as JSON objects with name and description.
     List,
-    /// Print or export an embedded skill.
+    /// Print the SKILL.md of a skill, or another file of it.
     View {
+        /// Name of the skill.
         name: String,
-        /// Print a file inside the skill.
+        /// Path of a file inside the skill.
         #[arg(short, long, conflicts_with = "export")]
         path: Option<PathBuf>,
-        /// Export the whole skill to this directory.
-        #[arg(short, long)]
+        /// Write the whole skill directory to <PATH>/<NAME>/.
+        #[arg(short, long, value_name = "PATH")]
         export: Option<PathBuf>,
     },
 }

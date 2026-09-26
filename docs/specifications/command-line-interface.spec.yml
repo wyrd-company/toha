@@ -154,6 +154,7 @@ commands:
       - name: path
         position: 0
         required: true
+        description: Target directory of the staged interview.
         value:
           type: directory
     output:
@@ -248,6 +249,7 @@ commands:
           - name: template
             position: 0
             required: true
+            description: Template to uninstall.
             value:
               type: string
         output:
@@ -271,6 +273,7 @@ commands:
           - name: alias
             position: 1
             required: false
+            description: Alias to add.
             value:
               type: string
         options:
@@ -314,6 +317,7 @@ commands:
           - name: name
             position: 0
             required: true
+            description: Name of the skill.
             value:
               type: string
         options:

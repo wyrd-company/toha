@@ -26,6 +26,7 @@ use toha::{
     staging::{self, StagedRecord, Store},
 };
 
+/// Generate projects and files from templates.
 #[derive(Parser)]
 #[command(name = "toha", version = env!("TOHA_VERSION"))]
 struct Cli {
@@ -34,37 +35,70 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Command {
+    /// Manage installed templates.
     Templates(cli::templates::TemplatesArgs),
     /// Read the agent skills embedded in toha.
     Skills {
         #[command(subcommand)]
         command: skills::Command,
     },
-    /// Interview a template and save its answers. Multiline input uses an editor, or lines ending with . when no editor is available.
+    /// Run the interview for a template and save the answers without writing files.
+    ///
+    /// Multiline input uses an editor, or lines ending with . when no editor is available.
     Stage {
+        /// Alias, short name, formal name, git address, or folder of the template.
         template: String,
+        /// Target directory.
         path: PathBuf,
-        #[arg(short = 'a', long = "async", num_args = 0..=1)]
+        /// Emit the first question batch instead of prompting.
+        ///
+        /// Writes to FILE, or to standard output when no file is given.
+        #[arg(
+            short = 'a',
+            long = "async",
+            num_args = 0..=1,
+            value_name = "FILE"
+        )]
         r#async: Option<Option<String>>,
     },
-    /// Continue an interview. Multiline input uses an editor, or lines ending with . when no editor is available.
+    /// Continue a staged interview with an answers document or terminal prompts.
+    ///
+    /// Multiline input uses an editor, or lines ending with . when no editor is available.
     Continue {
+        /// Target directory of the staged interview.
         path: PathBuf,
+        /// Answers document for the current batch; - reads standard input.
+        ///
+        /// When absent, toha prompts in the terminal for every remaining question.
+        #[arg(value_name = "FILE")]
         answers: Option<String>,
     },
+    /// Delete the staged interview for a target directory.
     Abort {
+        /// Target directory of the staged interview.
         path: PathBuf,
     },
-    /// Apply a template. Multiline input uses an editor, or lines ending with . when no editor is available.
+    /// Write the files of a staged or new interview and run its hooks.
+    ///
+    /// Multiline input uses an editor, or lines ending with . when no editor is available.
+    #[command(allow_missing_positional = true)]
     Apply {
-        #[arg(num_args = 1..=2)]
-        paths: Vec<String>,
-        #[arg(short = 'A', long)]
+        /// Template to interview when no interview is staged at the path.
+        ///
+        /// When given, the command runs stage and then applies.
+        template: Option<String>,
+        /// Target directory.
+        path: PathBuf,
+        /// Answers document for a new interview; - reads standard input.
+        #[arg(short = 'A', long, value_name = "FILE")]
         answers: Option<String>,
+        /// Overwrite existing files.
         #[arg(short, long)]
         force: bool,
+        /// Print the files, messages, and hooks apply would produce, and change nothing.
         #[arg(short = 'd', long)]
         dry_run: bool,
+        /// Run the hooks of this template for this run.
         #[arg(long)]
         trust: bool,
     },
@@ -731,18 +765,12 @@ fn main() -> ExitCode {
             }
         }
         Command::Apply {
-            paths,
+            template,
+            path,
             answers,
             force,
             dry_run,
             trust,
-        } => {
-            let (template, path) = match paths.as_slice() {
-                [path] => (None, PathBuf::from(path)),
-                [template, path] => (Some(template.clone()), PathBuf::from(path)),
-                _ => unreachable!("clap enforces one or two positional arguments"),
-            };
-            run(template, &path, answers, force, dry_run, trust, &dirs).finish()
-        }
+        } => run(template, &path, answers, force, dry_run, trust, &dirs).finish(),
     }
 }
