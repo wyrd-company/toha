@@ -90,6 +90,9 @@ jobs:
           if [[ "$RELEASE_SYSTEM" == windows ]]; then
             7z a "dist/toha_${version}_windows_${RELEASE_ARCH}.zip" "./stage/*"
           else
+            if [[ "$RELEASE_SYSTEM" == linux ]]; then
+              cp LICENSE README.md stage/
+            fi
             tar -C stage -czf "dist/toha_${version}_${RELEASE_SYSTEM}_${RELEASE_ARCH}.tar.gz" .
           fi
           if [[ "$RELEASE_SYSTEM" == linux ]]; then
@@ -127,13 +130,26 @@ jobs:
           pattern: toha-*
           path: dist
           merge-multiple: true
-      - name: Create checksums and GitHub Release
+      - name: Create checksums and package handoff from build artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd dist && sha256sum toha_* > SHA256SUMS && sha256sum -c SHA256SUMS)
+          python3 scripts/release/create-manifest.py dist "$GITHUB_REF_NAME" \
+            "$(git rev-parse HEAD)" release-manifest.json
+      - name: Retain package handoff
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: package-release-manifest
+          path: release-manifest.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Create or verify GitHub Release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          (cd dist && sha256sum toha_* > SHA256SUMS && sha256sum -c SHA256SUMS)
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             mkdir published
             gh release download "$GITHUB_REF_NAME" --dir published
@@ -198,25 +214,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      - name: Download and verify release assets
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          mkdir dist
-          gh release download "$GITHUB_REF_NAME" --dir dist
-          (cd dist && sha256sum -c SHA256SUMS)
-      - name: Create package handoff
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="$GITHUB_REF_NAME"
-          python3 scripts/release/create-manifest.py dist "$version" \
-            "$(git rev-parse HEAD)" release-manifest.json
+      - name: Download retained package handoff
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: package-release-manifest
+          path: handoff
       - name: Submit package release
         uses: wyrd-company/repo.wyrd.foo/.github/actions/submit-release@6aa63b5b47cf06dd9c037cbbd7e3acdd8ca5a6f2
         with:
-          manifest: release-manifest.json
+          manifest: handoff/release-manifest.json
           app-client-id: ${{ secrets.REPO_WYRD_FOO_PUBLISHER_APP_ID }}
           app-private-key: ${{ secrets.REPO_WYRD_FOO_PUBLISHER_PRIVATE_KEY }}

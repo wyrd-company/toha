@@ -3,7 +3,7 @@
 # relationships:
 #   implements: architecture
 # ---
-"""Create the immutable repo.wyrd.foo handoff from published release assets."""
+"""Create the immutable repo.wyrd.foo handoff from build artifacts."""
 import argparse
 import hashlib
 import json
