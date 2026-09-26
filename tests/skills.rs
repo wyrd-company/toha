@@ -144,6 +144,24 @@ fn view_errors_and_export_does_not_overwrite() {
     ]);
     assert_eq!(output.status.code(), Some(1));
     assert!(!later_collision.path().join("toha/SKILL.md").exists());
+    let ancestor_collision = tempfile::tempdir().unwrap();
+    fs::create_dir(ancestor_collision.path().join("toha")).unwrap();
+    let blocker = ancestor_collision.path().join("toha/references");
+    fs::write(&blocker, "keep").unwrap();
+    let output = toha(&[
+        "skills",
+        "view",
+        "toha",
+        "-e",
+        ancestor_collision.path().to_str().unwrap(),
+    ]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        format!("file blocks export: {}\n", blocker.display())
+    );
+    assert_eq!(fs::read_to_string(blocker).unwrap(), "keep");
+    assert!(!ancestor_collision.path().join("toha/SKILL.md").exists());
     assert_eq!(
         toha(&["skills", "view", "toha", "-p", "SKILL.md", "-e", "."])
             .status

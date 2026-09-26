@@ -31,12 +31,12 @@ Each `interview[]` node is exactly one of these shapes:
 | `description` | template string | Question help. |
 | `placeholder` | template string | Text input hint. |
 | `required` | boolean or expression | Reject an empty answer. |
-| `default` | template string for text, multiline, select; boolean/array literal or expression for other types | Fallback answer. |
+| `default` | template string for non-looped text, multiline, and select; boolean literal or expression for confirm; string array literal or expression for looped text and multiselect | Fallback answer. |
 | `options` | string array or expression | Choices for select or multiselect. |
 | `loop.min`, `loop.max` | nonnegative integer or expression | Bounds on a looped text question's item count. |
-| `validate.min`, `validate.max` | nonnegative integer or expression | String length or multiselect count bounds. |
-| `validate.regex` | regex string | Pattern for string answers. |
-| `format` | expression | Transform validated answer via `value`. |
+| `validate.min`, `validate.max` | nonnegative integer or expression | String length or multiselect count bounds; on looped text, bound each item's length. |
+| `validate.regex` | regex string | Pattern for string answers; on looped text, check each item. |
+| `format` | expression | Transform a validated answer via `value`; on looped text, transform each item. |
 | `when` | expression | Include node only when true. |
 | `computed` | expression, required with `id` | Store derived value. |
 | `group` | identifier string, required with `nodes` | Diagnostic name; not an answer id. |

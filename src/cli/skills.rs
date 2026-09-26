@@ -112,8 +112,26 @@ fn export(dir: &Dir<'_>, destination: &Path) -> Result<(), String> {
     collect_files(dir, &mut files);
     for file in &files {
         let path = destination.join(file.path());
-        if path.exists() {
-            return Err(format!("file already exists: {}", path.display()));
+        let mut ancestors: Vec<_> = path.ancestors().skip(1).collect();
+        ancestors.reverse();
+        for ancestor in ancestors {
+            match fs::metadata(ancestor) {
+                Ok(metadata) if !metadata.is_dir() => {
+                    return Err(format!("file blocks export: {}", ancestor.display()));
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    if fs::symlink_metadata(ancestor).is_ok() {
+                        return Err(format!("path blocks export: {}", ancestor.display()));
+                    }
+                }
+                Err(error) => return Err(format!("{}: {error}", ancestor.display())),
+            }
+        }
+        match fs::symlink_metadata(&path) {
+            Ok(_) => return Err(format!("file already exists: {}", path.display())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("{}: {error}", path.display())),
         }
     }
     fs::create_dir_all(&root).map_err(|error| error.to_string())?;
