@@ -114,6 +114,9 @@ pub(crate) fn render_hooks(
 #[derive(Debug, Default)]
 pub struct Batch {
     pub items: Vec<Item>,
+    /// Errors for questions in this batch whose answer, held from an earlier
+    /// document, failed validation when the question was reached.
+    pub errors: Rejections,
 }
 #[derive(Debug)]
 pub enum Item {
@@ -297,14 +300,7 @@ fn render_default(
     seed: &Seed,
 ) -> Result<Option<Answer>, EvalError> {
     let id = &q.id;
-    let kind = match &q.kind {
-        QuestionKind::Text { .. } => PromptKind::Text,
-        QuestionKind::Multiline { .. } => PromptKind::Multiline,
-        QuestionKind::Confirm { .. } => PromptKind::Confirm,
-        QuestionKind::Select { .. } => PromptKind::Select,
-        QuestionKind::MultiSelect { .. } => PromptKind::MultiSelect,
-        QuestionKind::TextLoop { .. } => PromptKind::TextLoop,
-    };
+    let kind = prompt_kind(q);
     if let Some(raw) = seed.defaults.get(id) {
         return parse_kind(id, kind, raw.0.clone())
             .map(Some)
@@ -463,6 +459,40 @@ impl<'q> Rules<'q> {
         }
     }
 }
+impl<'q> Rules<'q> {
+    /// The constraints of `q` that are known before its question is reached:
+    /// literal values only.
+    fn of_question(q: &'q Question) -> Self {
+        let literal = |v: &Option<Typed<u32>>| v.as_ref().and_then(|v| v.literal().copied());
+        let (options, loop_min, loop_max) = match &q.kind {
+            QuestionKind::Select { options, .. } | QuestionKind::MultiSelect { options, .. } => {
+                (options.literal().cloned(), None, None)
+            }
+            QuestionKind::TextLoop { min, max, .. } => (None, literal(min), literal(max)),
+            _ => (None, None, None),
+        };
+        Self {
+            kind: prompt_kind(q),
+            required: q.required.literal().copied(),
+            min: literal(&q.validate.min),
+            max: literal(&q.validate.max),
+            loop_min,
+            loop_max,
+            options,
+            regex: q.validate.regex.as_ref(),
+        }
+    }
+}
+fn prompt_kind(q: &Question) -> PromptKind {
+    match q.kind {
+        QuestionKind::Text { .. } => PromptKind::Text,
+        QuestionKind::Multiline { .. } => PromptKind::Multiline,
+        QuestionKind::Confirm { .. } => PromptKind::Confirm,
+        QuestionKind::Select { .. } => PromptKind::Select,
+        QuestionKind::MultiSelect { .. } => PromptKind::MultiSelect,
+        QuestionKind::TextLoop { .. } => PromptKind::TextLoop,
+    }
+}
 /// Checks `value` against `rules`. Each error is one sentence that names the
 /// constraint it fails.
 fn validate(id: &Id, rules: &Rules, value: Value) -> Result<Answer, Rejection> {
@@ -550,15 +580,7 @@ pub fn configured_defaults(
         let Some(question) = question_by_id(&template.interview, id) else {
             continue;
         };
-        let kind = match question.kind {
-            QuestionKind::Text { .. } => PromptKind::Text,
-            QuestionKind::Multiline { .. } => PromptKind::Multiline,
-            QuestionKind::Confirm { .. } => PromptKind::Confirm,
-            QuestionKind::Select { .. } => PromptKind::Select,
-            QuestionKind::MultiSelect { .. } => PromptKind::MultiSelect,
-            QuestionKind::TextLoop { .. } => PromptKind::TextLoop,
-        };
-        parse_kind(id, kind, value.clone()).map_err(|error| EvalError {
+        parse_kind(id, prompt_kind(question), value.clone()).map_err(|error| EvalError {
             id: id.clone(),
             field: "configured default",
             message: error.message,
@@ -715,14 +737,20 @@ impl Advance<'_> {
                                 &self.answers,
                                 &self.seed,
                                 &prompt,
-                                raw.clone(),
+                                raw,
                             ) {
                                 Ok(answer) => {
                                     self.answers.insert(q.id.clone(), answer);
                                     continue;
                                 }
-                                Err(CheckError::Rejected(_)) => {
-                                    self.held.insert(q.id.clone(), raw);
+                                Err(CheckError::Rejected(r)) => {
+                                    self.batch.errors.push(rejection(
+                                        &q.id,
+                                        format!(
+                                            "value recorded earlier is not allowed: {}",
+                                            r.message
+                                        ),
+                                    ));
                                 }
                                 Err(CheckError::Eval(e)) => return Err(e),
                             }
@@ -1001,15 +1029,30 @@ impl From<EvalError> for CheckError {
 }
 impl<'a> Pending<'a> {
     #[allow(clippy::result_large_err)]
-    pub fn answer(self, incoming: RawAnswers) -> Result<Interview<'a>, AnswerError<'a>> {
+    pub fn answer(mut self, incoming: RawAnswers) -> Result<Interview<'a>, AnswerError<'a>> {
         let mut held = self.held.clone();
         let mut rejections = vec![];
+        let submitted: HashSet<Id> = incoming.keys().cloned().collect();
         for (id, raw) in incoming {
-            if !self.template.has_question_id(&id) {
-                rejections.push(rejection(&id, "is not a question in this template"))
-            } else {
-                held.insert(id, raw);
+            let Some(q) = question_by_id(&self.template.interview, &id) else {
+                rejections.push(rejection(&id, "is not a question in this template"));
+                continue;
+            };
+            let early = !self.answers.contains_key(&id)
+                && !self
+                    .batch
+                    .items
+                    .iter()
+                    .any(|i| matches!(i, Item::Prompt(p) if p.id == id));
+            if early {
+                // What can be checked now is checked now; the rest is checked
+                // when the question is reached.
+                if let Err(r) = validate(&id, &Rules::of_question(q), raw.0.clone()) {
+                    rejections.push(r);
+                    continue;
+                }
             }
+            held.insert(id, raw);
         }
         let mut next = Answers::new();
         for item in &self.batch.items {
@@ -1032,6 +1075,8 @@ impl<'a> Pending<'a> {
             }
         }
         if !rejections.is_empty() {
+            // A resubmitted answer replaces the error of the value it replaces.
+            self.batch.errors.retain(|e| !submitted.contains(&e.id));
             return Err(AnswerError::Rejected {
                 pending: self,
                 rejections,

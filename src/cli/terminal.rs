@@ -224,19 +224,24 @@ fn drive_to<'a>(
                 Item::Message(message) => {
                     writeln!(output, "{message}").map_err(|e| e.to_string())?;
                 }
-                Item::Prompt(prompt) => loop {
-                    let value = ask_value(ask, prompt)?;
-                    match pending.check(&prompt.id, RawAnswer(value.clone())) {
-                        Ok(_) => {
-                            submission.insert(prompt.id.clone(), RawAnswer(value));
-                            break;
-                        }
-                        Err(CheckError::Rejected(rejection)) => {
-                            print_error(&rejection.to_string())?
-                        }
-                        Err(CheckError::Eval(error)) => return Err(error.to_string()),
+                Item::Prompt(prompt) => {
+                    if let Some(error) = pending.batch().errors.iter().find(|e| e.id == prompt.id) {
+                        print_error(&error.to_string())?;
                     }
-                },
+                    loop {
+                        let value = ask_value(ask, prompt)?;
+                        match pending.check(&prompt.id, RawAnswer(value.clone())) {
+                            Ok(_) => {
+                                submission.insert(prompt.id.clone(), RawAnswer(value));
+                                break;
+                            }
+                            Err(CheckError::Rejected(rejection)) => {
+                                print_error(&rejection.to_string())?
+                            }
+                            Err(CheckError::Eval(error)) => return Err(error.to_string()),
+                        }
+                    }
+                }
             }
         }
         let raw = submission

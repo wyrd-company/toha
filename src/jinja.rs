@@ -161,6 +161,13 @@ impl<T: Clone + DeserializeOwned> Typed<T> {
             }
         }
     }
+    /// The value when it is a literal, known before evaluation.
+    pub fn literal(&self) -> Option<&T> {
+        match self {
+            Self::Literal(value) => Some(value),
+            Self::Expr(_) => None,
+        }
+    }
     pub fn references(&self) -> HashSet<String> {
         match self {
             Self::Literal(_) => HashSet::new(),

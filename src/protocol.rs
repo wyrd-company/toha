@@ -117,9 +117,14 @@ pub fn batch_document(batch: &Batch, context: &Context, errors: Option<&Rejectio
     }
     let mut result = json!({"protocol":1, "status":"questions", "context":context_value(context),
         "schema":{"$schema":"https://json-schema.org/draft/2020-12/schema", "type":"object", "properties":properties, "required":required}, "messages":messages});
-    if let Some(errors) = errors {
+    if errors.is_some() || !batch.errors.is_empty() {
+        let errors = errors.map(Vec::as_slice).unwrap_or_default();
         let mut grouped: Map<String, Value> = Map::new();
-        for error in errors {
+        let carried = batch
+            .errors
+            .iter()
+            .filter(|c| !errors.iter().any(|e| e.id == c.id));
+        for error in carried.chain(errors) {
             grouped
                 .entry(error.id.to_string())
                 .or_insert_with(|| json!([]))
@@ -221,6 +226,20 @@ pub fn answer_headless<'a>(
                 _ => None,
             })
             .collect();
+        // An answer held from an earlier document that failed when its
+        // question was reached is not replaced silently by a default.
+        if pending
+            .batch()
+            .errors
+            .iter()
+            .any(|e| !remaining.contains_key(&e.id))
+        {
+            return Ok(Headless::Pending {
+                pending: Box::new(pending),
+                rejections: vec![],
+                accepted,
+            });
+        }
         let mut submission = RawAnswers::new();
         if first {
             let unknown: Vec<Id> = remaining
