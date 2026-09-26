@@ -309,7 +309,7 @@ fn configured_default_is_visible_and_answers_win() {
         ],
         1,
     );
-    assert!(String::from_utf8_lossy(&wrong.stderr).contains("label.configured default"));
+    assert!(String::from_utf8_lossy(&wrong.stderr).contains("configuration key defaults.label: "));
 }
 
 #[test]

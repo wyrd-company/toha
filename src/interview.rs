@@ -159,7 +159,8 @@ pub struct Rejection {
 }
 pub type Rejections = Vec<Rejection>;
 /// A failure to evaluate the interview. When `expression` is set, the fault
-/// is in that template expression at `id`.`field`.
+/// is in that template expression at `id`.`field`. When `field` is
+/// [`CONFIGURED_DEFAULT`], the fault is in the configured default of `id`.
 #[derive(Debug)]
 pub struct EvalError {
     pub id: Id,
@@ -167,8 +168,17 @@ pub struct EvalError {
     pub message: String,
     pub expression: Option<String>,
 }
+/// The `field` of an [`EvalError`] in a configured default.
+pub const CONFIGURED_DEFAULT: &str = "configured default";
+/// The configuration key that holds the configured default of `id`.
+fn configuration_key(id: &Id) -> String {
+    format!("configuration key defaults.{id}")
+}
 impl fmt::Display for EvalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.field == CONFIGURED_DEFAULT {
+            return write!(f, "{}: {}", configuration_key(&self.id), self.message);
+        }
         match &self.expression {
             Some(source) => write!(
                 f,
@@ -327,7 +337,7 @@ fn render_default(
     if let Some(raw) = seed.defaults.get(id) {
         return parse_kind(id, kind, raw.0.clone())
             .map(Some)
-            .map_err(|e| eval_error(id, "default", e.message));
+            .map_err(|e| eval_error(id, CONFIGURED_DEFAULT, e.message));
     }
     let ctx = context(t, a, seed);
     match &q.kind {
@@ -617,12 +627,8 @@ pub fn configured_defaults(
         let Some(question) = question_by_id(&template.interview, id) else {
             continue;
         };
-        parse_kind(id, prompt_kind(question), value.clone()).map_err(|error| EvalError {
-            id: id.clone(),
-            field: "configured default",
-            message: error.message,
-            expression: None,
-        })?;
+        parse_kind(id, prompt_kind(question), value.clone())
+            .map_err(|error| eval_error(id, CONFIGURED_DEFAULT, error.message))?;
         defaults.insert(id.clone(), RawAnswer(value.clone()));
     }
     Ok(defaults)
@@ -1112,6 +1118,21 @@ impl<'a> Pending<'a> {
                 // a document answers its question.
                 (None, Some(error)) => Err(error.clone().into()),
                 (None, None) => match &p.default {
+                    Some(v) if self.seed.defaults.contains_key(&p.id) => self
+                        .check_inner(&p.id, RawAnswer(v.to_json()))
+                        .map_err(|e| match e {
+                            CheckError::Rejected(r) => rejection(
+                                &p.id,
+                                format!(
+                                    "default {} from {} is not allowed: {}",
+                                    v.to_json(),
+                                    configuration_key(&p.id),
+                                    r.message
+                                ),
+                            )
+                            .into(),
+                            e => e,
+                        }),
                     Some(v) => self.check_inner(&p.id, RawAnswer(v.to_json())),
                     None if !p.constraints.required => Ok(empty_answer(p.kind)),
                     None => Err(rejection(&p.id, "is required").into()),
