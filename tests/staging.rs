@@ -449,7 +449,7 @@ fn duplicate_stage_and_missing_staged_apply() {
             .unwrap()
             .status
             .code(),
-        Some(1)
+        Some(4)
     );
     assert_eq!(
         command(state.path())

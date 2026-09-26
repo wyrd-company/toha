@@ -1,0 +1,268 @@
+// ---
+// relationships:
+//   implements: command-line-interface
+// ---
+//! Commands given at the wrong time for the staged state of a target: `apply`
+//! and `stage` with a template while an interview is staged, `continue` on a
+//! complete interview, and `continue`, `apply`, and `abort` with nothing staged.
+#[allow(dead_code)]
+mod support;
+use serde_json::Value;
+use std::{
+    io::Write,
+    path::{Path, PathBuf},
+    process::{Output, Stdio},
+};
+use toha::staging::{Store, canonical_target};
+
+struct Case {
+    state: tempfile::TempDir,
+    target: tempfile::TempDir,
+}
+impl Case {
+    fn new() -> Self {
+        Self {
+            state: tempfile::tempdir().unwrap(),
+            target: tempfile::tempdir().unwrap(),
+        }
+    }
+    fn target(&self) -> &str {
+        self.target.path().to_str().unwrap()
+    }
+    fn run(&self, args: &[&str]) -> Output {
+        support::isolated_command(self.state.path())
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    }
+    fn send(&self, args: &[&str], input: &str) -> Output {
+        let mut child = support::isolated_command(self.state.path())
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    }
+    fn staged(&self) -> bool {
+        Store::new(support::staged_dir(self.state.path()))
+            .load(&canonical_target(self.target.path()).unwrap())
+            .unwrap()
+            .is_some()
+    }
+    /// Stages `template` and returns the question batch.
+    fn stage_incomplete(&self, template: &str) -> Value {
+        let output = self.run(&["stage", template, self.target(), "--async"]);
+        assert_code(&output, 4);
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
+    /// Stages the text-basic template, completes it, and returns the complete document.
+    fn stage_complete(&self) -> Value {
+        self.stage_incomplete(&text_basic());
+        let output = self.send(&["continue", self.target(), "-"], r#"{"name":"Item"}"#);
+        assert_code(&output, 0);
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
+}
+
+fn fixture_template(name: &str) -> PathBuf {
+    Path::new("tests/fixtures")
+        .join(name)
+        .join("template")
+        .canonicalize()
+        .unwrap()
+}
+fn text_basic() -> String {
+    support::folder_address(&fixture_template("text-basic"))
+}
+fn text_default() -> String {
+    support::folder_address(&fixture_template("text-default"))
+}
+fn assert_code(output: &Output, code: i32) {
+    assert_eq!(
+        output.status.code(),
+        Some(code),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+fn assert_stderr_names(output: &Output, commands: &[String]) {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for command in commands {
+        assert!(
+            stderr.contains(command.as_str()),
+            "stderr does not name `{command}`:\n{stderr}"
+        );
+    }
+}
+
+#[test]
+fn apply_with_template_applies_complete_staged_interview_of_that_template() {
+    let case = Case::new();
+    case.stage_complete();
+    let output = case.run(&["apply", &text_basic(), case.target()]);
+    assert_code(&output, 0);
+    support::assert_tree(
+        case.target.path(),
+        Path::new("tests/fixtures/text-basic/expected"),
+        Path::new("tests/fixtures/text-basic"),
+    );
+    assert!(!case.staged());
+}
+
+#[test]
+fn apply_with_untrusted_hooks_template_dry_runs_staged_interview() {
+    let case = Case::new();
+    let template = support::folder_address(&fixture_template("hooks-untrusted"));
+    assert_code(
+        &case.run(&["stage", &template, case.target(), "--async"]),
+        0,
+    );
+    let output = case.run(&["apply", &template, case.target()]);
+    assert_code(&output, 3);
+    assert_stderr_names(&output, &["hooks will not run without --trust".into()]);
+    assert!(case.staged());
+}
+
+#[test]
+fn apply_with_template_emits_batch_of_incomplete_staged_interview() {
+    let case = Case::new();
+    let batch = case.stage_incomplete(&text_basic());
+    let output = case.run(&["apply", &text_basic(), case.target()]);
+    assert_code(&output, 4);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        batch
+    );
+    assert_stderr_names(
+        &output,
+        &[
+            format!("toha continue {}", case.target()),
+            format!("toha apply {}", case.target()),
+        ],
+    );
+    assert!(case.staged());
+}
+
+#[test]
+fn apply_with_template_answers_staged_interview_then_applies() {
+    let case = Case::new();
+    case.stage_incomplete(&text_basic());
+    let answers = case.state.path().join("answers.json");
+    std::fs::write(&answers, r#"{"name":"Item"}"#).unwrap();
+    let output = case.run(&[
+        "apply",
+        &text_basic(),
+        case.target(),
+        "--answers",
+        answers.to_str().unwrap(),
+    ]);
+    assert_code(&output, 0);
+    support::assert_tree(
+        case.target.path(),
+        Path::new("tests/fixtures/text-basic/expected"),
+        Path::new("tests/fixtures/text-basic"),
+    );
+    assert!(!case.staged());
+}
+
+#[test]
+fn apply_with_other_template_names_both_templates_and_both_intents() {
+    let case = Case::new();
+    case.stage_incomplete(&text_basic());
+    let output = case.run(&["apply", &text_default(), case.target()]);
+    assert_code(&output, 1);
+    assert_stderr_names(
+        &output,
+        &[
+            text_basic(),
+            text_default(),
+            format!("toha abort {}", case.target()),
+            format!("toha apply {} {}", text_default(), case.target()),
+            format!("toha continue {}", case.target()),
+            format!("toha apply {}", case.target()),
+        ],
+    );
+    assert!(case.staged());
+}
+
+#[test]
+fn continue_on_complete_interview_prints_complete_document() {
+    let case = Case::new();
+    let complete = case.stage_complete();
+    let output = case.run(&["continue", case.target()]);
+    assert_code(&output, 0);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        complete
+    );
+    assert_stderr_names(&output, &[format!("toha apply {}", case.target())]);
+    assert!(case.staged());
+}
+
+#[test]
+fn stage_of_staged_template_names_next_step() {
+    let case = Case::new();
+    case.stage_incomplete(&text_basic());
+    let output = case.run(&["stage", &text_basic(), case.target(), "--async"]);
+    assert_code(&output, 1);
+    assert_stderr_names(&output, &[format!("toha continue {}", case.target())]);
+
+    let case = Case::new();
+    case.stage_complete();
+    let output = case.run(&["stage", &text_basic(), case.target(), "--async"]);
+    assert_code(&output, 1);
+    assert_stderr_names(&output, &[format!("toha apply {}", case.target())]);
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("toha continue"),
+        "a complete interview has nothing to continue"
+    );
+}
+
+#[test]
+fn stage_of_other_template_names_both_templates_and_both_intents() {
+    let case = Case::new();
+    case.stage_incomplete(&text_basic());
+    let output = case.run(&["stage", &text_default(), case.target(), "--async"]);
+    assert_code(&output, 1);
+    assert_stderr_names(
+        &output,
+        &[
+            text_basic(),
+            text_default(),
+            format!("toha abort {}", case.target()),
+            format!("toha stage {} {} --async", text_default(), case.target()),
+            format!("toha continue {}", case.target()),
+            format!("toha apply {}", case.target()),
+        ],
+    );
+}
+
+#[test]
+fn commands_on_unstaged_target_name_the_commands_that_start_an_interview() {
+    let case = Case::new();
+    let start = [
+        format!("toha stage <TEMPLATE> {}", case.target()),
+        format!("toha apply <TEMPLATE> {}", case.target()),
+    ];
+    for output in [
+        case.run(&["continue", case.target()]),
+        case.send(&["continue", case.target(), "-"], "{}"),
+        case.run(&["apply", case.target()]),
+    ] {
+        assert_code(&output, 1);
+        assert_stderr_names(&output, &start);
+    }
+    let output = case.run(&["abort", case.target()]);
+    assert_code(&output, 0);
+    assert_stderr_names(&output, &start);
+}
