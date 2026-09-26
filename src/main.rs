@@ -955,6 +955,9 @@ fn run(
             }
             Outcome::NeedsTrust(guidance::needs_trust(&invocation, installed.as_deref()))
         }
+        Err(error @ toha::ApplyError::Conflicts(_)) => {
+            Outcome::Error(format!("{error}\n{}", guidance::conflicts(&invocation)))
+        }
         Err(error) => Outcome::Error(error.to_string()),
     }
 }

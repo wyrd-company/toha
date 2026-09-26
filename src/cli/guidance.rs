@@ -477,3 +477,12 @@ pub fn needs_trust(invocation: &Invocation, installed: Option<&str>) -> String {
     }
     lines.join("\n")
 }
+
+/// `apply` found target files that exist.
+pub fn conflicts(invocation: &Invocation) -> String {
+    let mut forced = *invocation;
+    if let Invocation::Apply { force, .. } = &mut forced {
+        *force = true;
+    }
+    format!("to overwrite them: {}", forced.command())
+}
