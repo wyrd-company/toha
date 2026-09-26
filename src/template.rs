@@ -334,7 +334,20 @@ struct Builder {
     problems: Vec<Problem>,
     seen: HashSet<String>,
     names: HashSet<String>,
+    /// Every question id, computed id, and `data` key, wherever it is defined.
+    answer_ids: HashSet<String>,
     root: PathBuf,
+}
+/// Collects question and computed ids from raw interview nodes, including nested groups.
+fn answer_ids(values: &[Value], ids: &mut HashSet<String>) {
+    for map in values.iter().filter_map(Value::as_object) {
+        if let Some(id) = map.get("id").and_then(Value::as_str) {
+            ids.insert(id.into());
+        }
+        if let Some(nodes) = map.get("nodes").and_then(Value::as_array) {
+            answer_ids(nodes, ids);
+        }
+    }
 }
 impl Builder {
     fn id(&mut self, value: Option<&Value>, path: &str) -> Option<Id> {
@@ -461,6 +474,9 @@ impl Builder {
     fn each(&mut self, value: Option<&Value>, path: &str) -> Option<Each> {
         let (expression, binding) = value.and_then(Value::as_str)?.rsplit_once(" as ")?;
         let binding = Id::parse(binding).ok()?;
+        if self.answer_ids.contains(binding.as_str()) {
+            problem(&mut self.problems, path, format!("duplicate id: {binding}"));
+        }
         let expr = self.expr(Some(&Value::String(expression.into())), path, &[])?;
         Some(Each { expr, binding })
     }
@@ -747,8 +763,16 @@ impl Template {
             problems,
             seen: HashSet::new(),
             names: HashSet::new(),
+            answer_ids: HashSet::new(),
             root: root.clone(),
         };
+        if let Some(values) = &raw.data {
+            b.answer_ids.extend(values.keys().cloned());
+        }
+        answer_ids(
+            raw.interview.as_deref().unwrap_or_default(),
+            &mut b.answer_ids,
+        );
         let mut data = IndexMap::new();
         if let Some(values) = &raw.data {
             for (key, value) in values {
