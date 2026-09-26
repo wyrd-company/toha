@@ -18,6 +18,17 @@ pub type RenderError = Error;
 pub fn environment() -> Environment<'static> {
     let mut env = Environment::new();
     env.set_keep_trailing_newline(true);
+    env.set_formatter(|out, state, value| {
+        minijinja::escape_formatter(
+            out,
+            state,
+            if value.is_none() {
+                &Value::UNDEFINED
+            } else {
+                value
+            },
+        )
+    });
     env.add_filter("kebab", |s: String| s.to_kebab_case());
     env.add_filter("snake", |s: String| s.to_snake_case());
     env.add_filter("camel", |s: String| s.to_lower_camel_case());

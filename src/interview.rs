@@ -389,6 +389,37 @@ fn question_by_id<'a>(nodes: &'a [Node], id: &Id) -> Option<&'a Question> {
     }
     None
 }
+fn skipped_descendants_ready(
+    nodes: &[Node],
+    answers: &Answers,
+    template: &Template,
+    seed: &Seed,
+) -> bool {
+    let mut available = answers.clone();
+    fn visit(nodes: &[Node], available: &mut Answers, template: &Template, seed: &Seed) -> bool {
+        for node in nodes {
+            match node {
+                Node::Question(q) => {
+                    if !default_ready(q, available, template, seed) {
+                        return false;
+                    }
+                    available.insert(q.id.clone(), Answer::None);
+                }
+                Node::Computed(c) => {
+                    available.insert(c.id.clone(), Answer::None);
+                }
+                Node::Group(g) => {
+                    if !visit(&g.nodes, available, template, seed) {
+                        return false;
+                    }
+                }
+                Node::Message(_) => {}
+            }
+        }
+        true
+    }
+    visit(nodes, &mut available, template, seed)
+}
 struct Advance<'a> {
     template: &'a Template,
     seed: Seed,
@@ -407,11 +438,16 @@ impl Advance<'_> {
                     if self.answers.contains_key(&q.id) {
                         continue;
                     }
-                    if !skip
-                        && q.when
-                            .as_ref()
-                            .is_some_and(|w| !expr_ready(w, &self.answers, self.template))
-                    {
+                    if skip {
+                        if !default_ready(q, &self.answers, self.template, &self.seed) {
+                            return Ok(false);
+                        }
+                        let default = render_default(q, self.template, &self.answers, &self.seed)?;
+                        self.answers
+                            .insert(q.id.clone(), default.unwrap_or(Answer::None));
+                        continue;
+                    }
+                    if !question_ready(q, &self.answers, self.template, &self.seed) {
                         return Ok(false);
                     }
                     let ctx = context(self.template, &self.answers, &self.seed);
@@ -426,9 +462,6 @@ impl Advance<'_> {
                             .transpose()?
                             .unwrap_or(true);
                     if active {
-                        if !question_ready(q, &self.answers, self.template, &self.seed) {
-                            return Ok(false);
-                        }
                         let prompt = make_prompt(q, self.template, &self.answers, &self.seed)?;
                         self.batch.items.push(Item::Prompt(prompt));
                     } else {
@@ -495,6 +528,16 @@ impl Advance<'_> {
                             })
                             .transpose()?
                             .unwrap_or(true);
+                    if !active
+                        && !skipped_descendants_ready(
+                            &g.nodes,
+                            &self.answers,
+                            self.template,
+                            &self.seed,
+                        )
+                    {
+                        return Ok(false);
+                    }
                     if !self.walk(&g.nodes, &key, !active)? {
                         return Ok(false);
                     }
@@ -722,14 +765,12 @@ impl Pending<'_> {
         }
         Ok(answer)
     }
-    pub fn check(&self, id: &Id, raw: RawAnswer) -> Result<Answer, Rejection> {
-        self.check_inner(id, raw).map_err(|e| match e {
-            CheckError::Rejected(r) => r,
-            CheckError::Eval(e) => rejection(id, e.to_string()),
-        })
+    pub fn check(&self, id: &Id, raw: RawAnswer) -> Result<Answer, CheckError> {
+        self.check_inner(id, raw)
     }
 }
-enum CheckError {
+#[derive(Debug)]
+pub enum CheckError {
     Rejected(Rejection),
     Eval(EvalError),
 }

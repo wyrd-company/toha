@@ -1,0 +1,16 @@
+name: sample
+interview:
+  - id: first
+    type: text
+    prompt: First?
+    required: true
+  - group: hidden
+    when: "false"
+    nodes:
+      - id: skipped
+        type: text
+        prompt: Skipped?
+        default: "{{ first }}"
+  - id: last
+    type: text
+    prompt: Last?

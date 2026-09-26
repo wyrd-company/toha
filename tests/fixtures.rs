@@ -275,3 +275,128 @@ fn configured_default_does_not_evaluate_question_default() {
         Some(&toha::Answer::Text("Configured".into()))
     );
 }
+
+#[test]
+fn false_when_waits_for_all_node_references() {
+    for name in [
+        "skip-boundary",
+        "skip-prompt-boundary",
+        "group-skip-boundary",
+    ] {
+        let fixture = Path::new("tests/fixtures").join(name);
+        let template = Template::load(&fixture.join("template")).unwrap();
+        let seed = Seed {
+            now: support::expectation(&fixture).now.parse().unwrap(),
+            defaults: indexmap::IndexMap::new(),
+        };
+        let Interview::Asking(first_batch) = Interview::start(&template, seed).unwrap() else {
+            panic!("{name}: first batch")
+        };
+        let ids: Vec<_> = first_batch
+            .batch()
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                toha::Item::Prompt(prompt) => Some(prompt.id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            ids,
+            ["first"],
+            "{name}: skipped node ran ahead of its references"
+        );
+        let Interview::Asking(second_batch) = first_batch
+            .answer(
+                [(
+                    Id::parse("first").unwrap(),
+                    RawAnswer(serde_json::json!("ready")),
+                )]
+                .into_iter()
+                .collect(),
+            )
+            .unwrap()
+        else {
+            panic!("{name}: second batch")
+        };
+        let ids: Vec<_> = second_batch
+            .batch()
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                toha::Item::Prompt(prompt) => Some(prompt.id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, ["last"], "{name}: skipped default was not recorded");
+    }
+}
+
+#[test]
+fn check_preserves_format_evaluation_failure() {
+    let fixture = Path::new("tests/fixtures/err-format-eval");
+    let template = Template::load(&fixture.join("template")).unwrap();
+    let seed = Seed {
+        now: support::expectation(fixture).now.parse().unwrap(),
+        defaults: indexmap::IndexMap::new(),
+    };
+    let Interview::Asking(pending) = Interview::start(&template, seed).unwrap() else {
+        panic!()
+    };
+    let error = pending
+        .check(
+            &Id::parse("item").unwrap(),
+            RawAnswer(serde_json::json!("ok")),
+        )
+        .unwrap_err();
+    let toha::CheckError::Eval(error) = error else {
+        panic!("format conversion must be evaluation failure")
+    };
+    assert_eq!(error.field, "format");
+}
+
+#[test]
+fn false_group_waits_for_all_skipped_defaults_before_rendering_any() {
+    let folder = tempfile::tempdir().unwrap();
+    fs::create_dir(folder.path().join("template")).unwrap();
+    fs::write(
+        folder.path().join("template.yml"),
+        r#"
+name: sample
+interview:
+  - id: first
+    type: text
+    prompt: First?
+  - group: hidden
+    when: "false"
+    nodes:
+      - id: early
+        type: text
+        prompt: Early?
+        default: "{{ 'value' | nope }}"
+      - id: late
+        type: text
+        prompt: Late?
+        default: "{{ first }}"
+"#,
+    )
+    .unwrap();
+    let template = Template::load(folder.path()).unwrap();
+    let seed = Seed {
+        now: "2026-01-02T03:04:05+00:00[UTC]".parse().unwrap(),
+        defaults: indexmap::IndexMap::new(),
+    };
+    let Interview::Asking(pending) = Interview::start(&template, seed).unwrap() else {
+        panic!()
+    };
+    let ids: Vec<_> = pending
+        .batch()
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            toha::Item::Prompt(prompt) => Some(prompt.id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ids, ["first"]);
+}

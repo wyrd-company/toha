@@ -110,9 +110,11 @@ proposed-design:
     `enum Interview { Asking(Pending), Complete(Completed) }`. `Seed` holds the
     configured defaults and the frozen instant that `now()` returns.
     `Pending::batch(&self) -> &Batch` exposes the current batch.
-    `Pending::check(&self, id, RawAnswer) -> Result<Answer, Rejection>`
-    validates and formats one answer without recording it, so the terminal
-    driver reports an error the moment a question is answered.
+    `Pending::check(&self, id, RawAnswer) -> Result<Answer, CheckError>`
+    validates and formats one answer without recording it. It returns
+    `CheckError::Rejected` for answer rules and `CheckError::Eval` for
+    evaluation failures, so the terminal driver reports an error as soon as
+    a question is answered.
     `Pending::answer(self, answers: RawAnswers) -> Result<Interview,
     AnswerError>` records a whole batch or nothing. `AnswerError::Rejected`
     returns the same pending state and the per-id rejections.

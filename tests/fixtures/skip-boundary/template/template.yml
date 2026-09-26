@@ -1,0 +1,14 @@
+name: sample
+interview:
+  - id: first
+    type: text
+    prompt: First?
+    required: true
+  - id: skipped
+    type: text
+    prompt: "{{ first }}?"
+    when: "false"
+    default: "{{ first }}"
+  - id: last
+    type: text
+    prompt: Last?
