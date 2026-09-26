@@ -38,7 +38,8 @@ description: >-
   uses jiff strftime syntax, defaults to `%Y-%m-%d`, and formats in the seed
   time zone. `tojson` serializes a value as compact JSON and accepts an
   optional indent. `toyaml` serializes a value as YAML with no leading `---`
-  and no trailing newline, so it composes with `indent`. Object keys serialize
+  and no trailing document newline, so it composes with `indent`; a trailing
+  newline that is part of the value is kept. Object keys serialize
   in sorted order. A macro is visible only in the value that defines it;
   `import`, `include`, and `extends` are not available.
 
