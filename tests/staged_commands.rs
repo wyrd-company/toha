@@ -319,3 +319,67 @@ fn apply_with_template_dry_runs_staged_interview_without_changes() {
         .unwrap();
     assert!(record.submissions.is_empty());
 }
+
+/// A template whose second question renders from the first, so a document
+/// that answers only the first leaves a second batch.
+fn two_batch_template(root: &Path) -> String {
+    let folder = root.join("two-batch");
+    std::fs::create_dir_all(folder.join("template")).unwrap();
+    std::fs::write(
+        folder.join("template/result.txt"),
+        "{{ first }} {{ second }}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        folder.join("template.yml"),
+        "name: two-batch\ninterview:\n  - { id: first, type: text, prompt: First?, required: true }\n  - { id: second, type: text, prompt: \"After {{ first }}?\", required: true }\n",
+    )
+    .unwrap();
+    support::folder_address(&folder.canonicalize().unwrap())
+}
+
+/// Runs `apply <template> <target> --answers {"first":"One"} --dry-run` and
+/// checks that it emits the second batch.
+fn dry_run_partial(case: &Case, template: &str) {
+    let answers = case.state.path().join("answers.json");
+    std::fs::write(&answers, r#"{"first":"One"}"#).unwrap();
+    let output = case.run(&[
+        "apply",
+        template,
+        case.target(),
+        "--answers",
+        answers.to_str().unwrap(),
+        "--dry-run",
+    ]);
+    assert_code(&output, 4);
+    let batch: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        batch["schema"]["properties"].get("second").is_some(),
+        "{batch}"
+    );
+}
+
+#[test]
+fn dry_run_with_partial_answers_stages_nothing() {
+    let case = Case::new();
+    let template = two_batch_template(case.state.path());
+    dry_run_partial(&case, &template);
+    assert!(!case.staged(), "a dry run stages nothing");
+}
+
+#[test]
+fn dry_run_with_partial_answers_records_nothing_in_staged_interview() {
+    let case = Case::new();
+    let template = two_batch_template(case.state.path());
+    case.stage_incomplete(&template);
+    dry_run_partial(&case, &template);
+    let record = Store::new(support::staged_dir(case.state.path()))
+        .load(&canonical_target(case.target.path()).unwrap())
+        .unwrap()
+        .unwrap();
+    assert!(
+        record.submissions.is_empty(),
+        "a dry run records no answers: {:?}",
+        record.submissions
+    );
+}
