@@ -32,11 +32,45 @@ use toha::{
 
 /// Generate projects and files from templates.
 #[derive(Parser)]
-#[command(name = "toha", version = env!("TOHA_VERSION"))]
+#[command(
+    name = "toha",
+    version = env!("TOHA_VERSION"),
+    after_long_help = ENVIRONMENT_HELP
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
 }
+/// The environment variables that `Dirs::resolve`, `seed`, and the terminal
+/// driver read.
+const ENVIRONMENT_HELP: &str = "\
+Environment:
+  TOHA_CONFIG       Local configuration file. Default: the file named by the configured
+                    local-config-name, .toha.yml unless configured, in the current directory.
+  TOHA_USER_CONFIG  User configuration file. Default: $XDG_CONFIG_HOME/toha/config.yml on
+                    Linux and macOS, %APPDATA%\\toha\\config.yml on Windows.
+  XDG_CONFIG_HOME   Linux and macOS: base of the user configuration file. Default: ~/.config.
+  XDG_DATA_HOME     Linux: base of the user registry and installed templates, toha/.
+                    Default: ~/.local/share. macOS uses ~/Library/Application Support/toha.
+  XDG_CACHE_HOME    Linux: base of git templates fetched by address, toha/.
+                    Default: ~/.cache. macOS uses ~/Library/Caches/toha.
+  XDG_STATE_HOME    Linux: base of staged interviews, toha/staged/. Default: ~/.local/state.
+                    macOS uses ~/Library/Application Support/toha/staged.
+  HOME              Home directory for ~ in addresses and the defaults above.
+  USERPROFILE       Home directory when HOME is unset.
+  APPDATA           Windows: user configuration, registry, and installed templates in
+                    %APPDATA%\\toha.
+  LOCALAPPDATA      Windows: fetched git templates in %LOCALAPPDATA%\\toha\\cache and staged
+                    interviews in %LOCALAPPDATA%\\toha\\staged.
+  PROGRAMDATA       Windows: system configuration and registry in %PROGRAMDATA%\\toha.
+                    Other platforms use /etc/toha/config.yml and
+                    /usr/local/share/toha/templates.yml.
+  VISUAL, EDITOR    Editor for multiline answers, VISUAL first. Default: nano, or notepad
+                    on Windows. When the editor is not found, answers end with a line of \".\".
+  PATH              Directories searched for the editor and for the program of a run hook.
+  TOHA_NOW          Instant that now() returns for a new interview, such as
+                    2026-01-02T03:04:05+00:00[UTC]. Default: the current time.";
+
 /// Help layout for `apply`, whose operands are one clap argument so that
 /// `[TEMPLATE] <PATH>` parses the same on either side of `--`.
 const APPLY_HELP: &str = "\
