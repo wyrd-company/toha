@@ -20,7 +20,7 @@ mod terminal;
 
 use clap::{Parser, Subcommand};
 use cli::{
-    guidance::{self, Invocation, Progress},
+    guidance::{self, Arg, Invocation, Progress},
     resolve::{ResolveError, ResolvedTemplate},
 };
 use toha::{
@@ -461,7 +461,7 @@ fn stage(template: String, path: PathBuf, output: Option<Option<String>>, dirs: 
             cwd: &cwd,
         };
         let invocation = Invocation::Stage {
-            template: &template,
+            template: Arg::Given(&template),
             path: &path,
             output: output.as_ref().map(|file| file.as_deref()),
         };
@@ -469,7 +469,7 @@ fn stage(template: String, path: PathBuf, output: Option<Option<String>>, dirs: 
             .expect("stage refuses every staged target");
     }
     if output.is_none() && !io::stdin().is_terminal() {
-        return no_terminal();
+        return Outcome::Error(guidance::no_terminal(&template, &path));
     }
     let resolved = match cli::resolve::resolve_template(&template, &config, &registry, dirs, &cwd) {
         Ok(v) => v,
@@ -646,10 +646,6 @@ fn abort(path: PathBuf, dirs: &Dirs) -> Outcome {
     }
 }
 
-fn no_terminal() -> Outcome {
-    Outcome::Error("no terminal: use --async, an answers document, or --answers".into())
-}
-
 fn run(
     template: Option<String>,
     path: &Path,
@@ -672,9 +668,9 @@ fn run(
     }
     let (requested_template, requested_answers) = (template.clone(), answers.clone());
     let invocation = Invocation::Apply {
-        template: requested_template.as_deref(),
+        template: requested_template.as_deref().map(Arg::Given),
         path,
-        answers: requested_answers.as_deref(),
+        answers: requested_answers.as_deref().map(Arg::Given),
         force,
         dry_run,
         trust,
@@ -706,7 +702,7 @@ fn run(
     let (template, interview, saved) = match (template, existing) {
         (Some(folder), None) => {
             if answers.is_none() && !io::stdin().is_terminal() {
-                return no_terminal();
+                return Outcome::Error(guidance::no_terminal(&folder, path));
             }
             let resolved =
                 match cli::resolve::resolve_template(&folder, &config, &registry, dirs, &cwd) {

@@ -68,11 +68,28 @@ fn toha(command: &str, options: &[String], operands: &[Operand]) -> String {
     words.extend(operands.iter().map(|operand| operand.written.clone()));
     words.join(" ")
 }
-fn option_value(flag: &str, value: &str) -> String {
-    if value.starts_with('-') && value != "-" {
-        format!("{flag}={}", word(value))
-    } else {
-        format!("{flag} {}", word(value))
+/// A value in a suggested command: one the caller gave, or a placeholder
+/// such as `<TEMPLATE>` for one the caller chooses.
+#[derive(Clone, Copy)]
+pub enum Arg<'a> {
+    Given(&'a str),
+    Placeholder(&'static str),
+}
+impl Arg<'_> {
+    fn operand(self) -> Operand {
+        match self {
+            Self::Given(given) => value(given),
+            Self::Placeholder(name) => placeholder(name),
+        }
+    }
+}
+fn option_value(flag: &str, value: Arg) -> String {
+    match value {
+        Arg::Placeholder(name) => format!("{flag} {name}"),
+        Arg::Given(value) if value.starts_with('-') && value != "-" => {
+            format!("{flag}={}", word(value))
+        }
+        Arg::Given(value) => format!("{flag} {}", word(value)),
     }
 }
 
@@ -81,20 +98,20 @@ fn option_value(flag: &str, value: &str) -> String {
 #[derive(Clone, Copy)]
 pub enum Invocation<'a> {
     Stage {
-        template: &'a str,
+        template: Arg<'a>,
         path: &'a Path,
         output: Option<Option<&'a str>>,
     },
     Apply {
-        template: Option<&'a str>,
+        template: Option<Arg<'a>>,
         path: &'a Path,
-        answers: Option<&'a str>,
+        answers: Option<Arg<'a>>,
         force: bool,
         dry_run: bool,
         trust: bool,
     },
 }
-impl Invocation<'_> {
+impl<'a> Invocation<'a> {
     fn verb(&self) -> &'static str {
         match self {
             Self::Stage { .. } => "stage",
@@ -103,29 +120,22 @@ impl Invocation<'_> {
     }
     fn template(&self) -> Option<&str> {
         match self {
-            Self::Stage { template, .. } => Some(template),
-            Self::Apply { template, .. } => *template,
+            Self::Stage {
+                template: Arg::Given(template),
+                ..
+            }
+            | Self::Apply {
+                template: Some(Arg::Given(template)),
+                ..
+            } => Some(template),
+            _ => None,
         }
     }
-    fn without_dry_run(self) -> Self {
-        match self {
-            Self::Apply {
-                template,
-                path,
-                answers,
-                force,
-                trust,
-                ..
-            } => Self::Apply {
-                template,
-                path,
-                answers,
-                force,
-                dry_run: false,
-                trust,
-            },
-            stage => stage,
+    fn without_dry_run(mut self) -> Self {
+        if let Self::Apply { dry_run, .. } = &mut self {
+            *dry_run = false;
         }
+        self
     }
     /// The request in canonical form: options first, in long form.
     pub fn command(&self) -> String {
@@ -135,7 +145,7 @@ impl Invocation<'_> {
                 path,
                 output,
             } => {
-                let operands = [value(template), path_operand(path)];
+                let operands = [template.operand(), path_operand(path)];
                 let option = output.map(|file| match file {
                     Some(file) => format!("--async={}", word(file)),
                     None => "--async".to_string(),
@@ -171,7 +181,7 @@ impl Invocation<'_> {
                     }
                 }
                 let operands: Vec<Operand> = template
-                    .map(value)
+                    .map(Arg::operand)
                     .into_iter()
                     .chain([path_operand(path)])
                     .collect();
@@ -325,7 +335,7 @@ pub fn complete(path: &Path) -> String {
 /// An answers document was given for a complete staged interview.
 pub fn complete_answers_unused(path: &Path, staged: &str) -> String {
     let restage = Invocation::Stage {
-        template: staged,
+        template: Arg::Given(staged),
         path,
         output: None,
     };
@@ -375,6 +385,35 @@ pub fn nothing_staged(path: &Path) -> String {
         format!(
             "to start one and write its files: {}",
             toha("apply", &[], &[template, path_operand(path)])
+        ),
+    ]
+    .join("\n")
+}
+
+/// `stage` or `apply` with a template has no terminal to prompt in.
+pub fn no_terminal(template: &str, path: &Path) -> String {
+    let stage = Invocation::Stage {
+        template: Arg::Given(template),
+        path,
+        output: Some(None),
+    };
+    let apply = Invocation::Apply {
+        template: Some(Arg::Given(template)),
+        path,
+        answers: Some(Arg::Placeholder("<FILE>")),
+        force: false,
+        dry_run: false,
+        trust: false,
+    };
+    [
+        "no terminal to prompt in".to_string(),
+        format!(
+            "to stage the interview and emit its question batch: {}",
+            stage.command()
+        ),
+        format!(
+            "to answer from an answers document and write the files: {}",
+            apply.command()
         ),
     ]
     .join("\n")
