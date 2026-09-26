@@ -53,6 +53,11 @@ description: >-
   nothing and lists the conflicting paths.
 
   Printed target paths use `/` separators on every platform.
+
+  Version. `toha --version` and `toha -V` print `toha <VERSION>` and exit with
+  code 0. `<VERSION>` is the SemVer version calculated from the git tags of the
+  toha source at build time, or the package version when the build has no git
+  history. A release build prints its release tag.
 format: cli
 validation-criteria: >-
   A conforming command line matches

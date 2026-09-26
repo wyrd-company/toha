@@ -7,6 +7,13 @@ tool:
   name: toha
   mode: interactive
   summary: Generate projects and files from templates.
+options:
+  - name: version
+    flags: [ -V, --version ]
+    kind: flag
+    description: >-
+      Print `toha <VERSION>` and exit with code 0. `<VERSION>` is the SemVer
+      version of the build.
 commands:
   - name: stage
     summary: Run the interview for a template and save the answers without writing files.
