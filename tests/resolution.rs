@@ -399,6 +399,21 @@ fn registry_trust_runs_hooks_but_discovery_and_local_registry_do_not() {
         &root,
         &[
             "apply",
+            folder.to_str().unwrap(),
+            root.path().join("trusted-folder").to_str().unwrap(),
+            "--answers",
+            answers.to_str().unwrap(),
+        ],
+        0,
+    );
+    assert_eq!(
+        fs::read_to_string(root.path().join("trusted-folder/hook.txt")).unwrap(),
+        "ok"
+    );
+    run(
+        &root,
+        &[
+            "apply",
             "hooked",
             root.path().join("trusted").to_str().unwrap(),
             "--answers",
