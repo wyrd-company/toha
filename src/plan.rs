@@ -37,6 +37,12 @@ impl TargetPath {
                         return Err(format!("target path escapes target: {value}"));
                     }
                 }
+                value
+                    if value.as_bytes().get(1) == Some(&b':')
+                        && value.as_bytes()[0].is_ascii_alphabetic() =>
+                {
+                    return Err(format!("invalid target path: {value}"));
+                }
                 value => parts.push(value.to_owned()),
             }
         }
@@ -406,6 +412,7 @@ mod tests {
             "a/.git/b",
             "a\\b",
             "C:/a",
+            "a/C:/b",
             "//server/share",
             "\\\\server\\share",
         ] {
