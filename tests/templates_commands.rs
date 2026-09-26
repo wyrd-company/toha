@@ -187,6 +187,56 @@ fn folder_and_ambiguous_short_name() {
     assert_exit(&output, 5);
     assert!(String::from_utf8_lossy(&output.stderr).contains("toha templates alias"));
 }
+
+#[cfg(windows)]
+#[test]
+fn registered_folder_canonical_formal_name_resolves_as_name() {
+    let root = TempDir::new().unwrap();
+    let folder = root.path().join("folder");
+    fs::create_dir_all(folder.join("template")).unwrap();
+    fs::write(folder.join("template.yml"), "name: sample\ninterview: []\n").unwrap();
+    fs::write(folder.join("template/result.txt"), "result").unwrap();
+
+    assert_exit(
+        &run(&root, &["templates", "add", folder.to_str().unwrap()]),
+        0,
+    );
+    let formal = folder
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    assert!(formal.starts_with(r"\\?\"), "{formal}");
+    let listed: serde_json::Value = serde_json::from_str(&assert_exit(
+        &run(&root, &["templates", "list", "--json"]),
+        0,
+    ))
+    .unwrap();
+    assert_eq!(listed[0]["formal_name"], formal);
+
+    let target = root.path().join("target");
+    assert_exit(
+        &run(
+            &root,
+            &["stage", &formal, target.to_str().unwrap(), "--async"],
+        ),
+        0,
+    );
+    let record_path = fs::read_dir(support::staged_dir(root.path()))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let record: serde_json::Value =
+        serde_json::from_slice(&fs::read(record_path).unwrap()).unwrap();
+    assert_eq!(record["named"], true);
+    assert_exit(&run(&root, &["apply", target.to_str().unwrap()]), 0);
+    assert_eq!(
+        fs::read_to_string(target.join("result.txt")).unwrap(),
+        "result"
+    );
+}
 #[test]
 fn pinned_tag_and_commit_do_not_move() {
     let root = TempDir::new().unwrap();

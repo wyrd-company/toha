@@ -90,16 +90,10 @@ pub fn parse(arg: &str, hosts: &Hosts, cwd: &Path, home: &Path) -> Result<Addres
             });
         }
     }
-    let drive = arg
-        .as_bytes()
-        .get(0..2)
-        .is_some_and(|v| v[0].is_ascii_alphabetic() && v[1] == b':');
-    if arg.starts_with('.')
-        || arg.starts_with('/')
-        || arg.starts_with('~')
-        || drive
-        || Path::new(arg).is_absolute()
-    {
+    let drive = arg.as_bytes().get(0..3).is_some_and(|v| {
+        v[0].is_ascii_alphabetic() && v[1] == b':' && matches!(v[2], b'/' | b'\\')
+    });
+    if arg.starts_with('.') || arg.starts_with('/') || arg.starts_with('~') || drive {
         let value = if arg == "~" {
             home.to_path_buf()
         } else if let Some(rest) = arg.strip_prefix("~/") {
@@ -422,10 +416,18 @@ mod tests {
             Address::Folder(_)
         ));
         let canonical = folder.canonicalize().unwrap();
-        assert!(matches!(
-            parse(canonical.to_str().unwrap(), &hosts, cwd, cwd).unwrap(),
-            Address::Folder(path) if path == canonical
-        ));
+        let parsed = parse(canonical.to_str().unwrap(), &hosts, cwd, cwd).unwrap();
+        if cfg!(windows) {
+            assert!(matches!(parsed, Address::Name(name) if name == canonical.to_string_lossy()));
+        } else {
+            assert!(matches!(parsed, Address::Folder(path) if path == canonical));
+        }
+        for name in [r"\\?\C:\sample", r"\\server\share", "C:relative"] {
+            assert_eq!(
+                parse(name, &hosts, cwd, cwd).unwrap(),
+                Address::Name(name.into())
+            );
+        }
         assert_eq!(
             parse("plain", &hosts, cwd, cwd).unwrap(),
             Address::Name("plain".into())
