@@ -136,6 +136,7 @@ pub struct Message {
 #[derive(Debug)]
 pub struct HookNode {
     pub command: HookCommand,
+    pub each: Option<Each>,
     pub when: Option<Expr>,
 }
 #[derive(Debug)]
@@ -150,11 +151,39 @@ pub enum HookProgram {
 }
 #[derive(Debug)]
 pub struct FileRule {
-    pub each: Expr,
-    pub binding: Id,
+    pub each: Each,
     pub source: PathBuf,
     pub path: Tmpl,
     pub when: Option<Expr>,
+}
+/// `<expression> as <name>`: the expression yields a sequence, and each item is
+/// bound to `binding` in turn.
+#[derive(Debug)]
+pub struct Each {
+    pub expr: Expr,
+    pub binding: Id,
+}
+impl Each {
+    /// One evaluation context per item, in item order, each holding the item
+    /// under the binding name.
+    pub fn contexts(
+        &self,
+        ctx: &std::collections::BTreeMap<String, Value>,
+    ) -> Result<Vec<std::collections::BTreeMap<String, Value>>, String> {
+        let values = self.expr.eval(ctx).map_err(|e| e.to_string())?;
+        let values = serde_json::to_value(values).map_err(|e| e.to_string())?;
+        let Some(items) = values.as_array() else {
+            return Err("expected array".into());
+        };
+        Ok(items
+            .iter()
+            .map(|item| {
+                let mut local = ctx.clone();
+                local.insert(self.binding.as_str().into(), item.clone());
+                local
+            })
+            .collect())
+    }
 }
 #[derive(Debug, Default)]
 pub struct ApplyMessages {
@@ -428,12 +457,40 @@ impl Builder {
         let _ = executable;
         Some(actual.strip_prefix(&self.root).unwrap().to_owned())
     }
+    /// Parses `<expression> as <name>`. The schema has already checked the form.
+    fn each(&mut self, value: Option<&Value>, path: &str) -> Option<Each> {
+        let (expression, binding) = value.and_then(Value::as_str)?.rsplit_once(" as ")?;
+        let binding = Id::parse(binding).ok()?;
+        let expr = self.expr(Some(&Value::String(expression.into())), path, &[])?;
+        Some(Each { expr, binding })
+    }
+    /// Runs `build` with the `each` binding visible to reference checks.
+    fn bound<T>(&mut self, each: Option<&Each>, build: impl FnOnce(&mut Self) -> T) -> T {
+        let inserted = each.is_some_and(|e| self.seen.insert(e.binding.as_str().into()));
+        let result = build(self);
+        if inserted {
+            self.seen.remove(each.unwrap().binding.as_str());
+        }
+        result
+    }
     fn hook(
         &mut self,
         map: &Map<String, Value>,
         path: &str,
         when: Option<Expr>,
     ) -> Option<HookNode> {
+        let each = match map.get("each") {
+            Some(value) => Some(self.each(Some(value), &format!("{path}.each"))?),
+            None => None,
+        };
+        let command = self.bound(each.as_ref(), |b| b.hook_command(map, path))?;
+        Some(HookNode {
+            command,
+            each,
+            when,
+        })
+    }
+    fn hook_command(&mut self, map: &Map<String, Value>, path: &str) -> Option<HookCommand> {
         let cwd = self.tmpl(map.get("cwd"), &format!("{path}.cwd"));
         let program = if let Some(run) = map.get("run").and_then(Value::as_array) {
             let args: Option<Vec<_>> = run
@@ -458,10 +515,7 @@ impl Builder {
                 args: args?,
             }
         };
-        Some(HookNode {
-            command: HookCommand { program, cwd },
-            when,
-        })
+        Some(HookCommand { program, cwd })
     }
     fn globs(&mut self, patterns: Option<&Vec<String>>, path: &str) -> GlobSet {
         let mut builder = GlobSetBuilder::new();
@@ -730,21 +784,7 @@ impl Template {
             let Some(map) = value.as_object() else {
                 continue;
             };
-            let Some((expression, binding)) = map
-                .get("each")
-                .and_then(Value::as_str)
-                .and_then(|v| v.rsplit_once(" as "))
-            else {
-                continue;
-            };
-            let Some(binding) = Id::parse(binding).ok() else {
-                continue;
-            };
-            let each = b.expr(
-                Some(&Value::String(expression.into())),
-                &format!("{path}.each"),
-                &[],
-            );
+            let each = b.each(map.get("each"), &format!("{path}.each"));
             let when = b.expr(map.get("when"), &format!("{path}.when"), &[]);
             let Some(source) = map
                 .get("source")
@@ -753,22 +793,25 @@ impl Template {
             else {
                 continue;
             };
-            let inserted = b.seen.insert(binding.as_str().into());
-            let target = b.tmpl(map.get("path"), &format!("{path}.path"));
-            match fs::read_to_string(root.join(&source)) {
-                Ok(content) => {
-                    b.tmpl(Some(&Value::String(content)), &format!("{path}.source"));
+            let Some(each) = each else {
+                continue;
+            };
+            let target = b.bound(Some(&each), |b| {
+                let target = b.tmpl(map.get("path"), &format!("{path}.path"));
+                match fs::read_to_string(root.join(&source)) {
+                    Ok(content) => {
+                        b.tmpl(Some(&Value::String(content)), &format!("{path}.source"));
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {}
+                    Err(error) => {
+                        problem(&mut b.problems, format!("{path}.source"), error.to_string())
+                    }
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {}
-                Err(error) => problem(&mut b.problems, format!("{path}.source"), error.to_string()),
-            }
-            if inserted {
-                b.seen.remove(binding.as_str());
-            }
-            if let (Some(each), Some(path)) = (each, target) {
+                target
+            });
+            if let Some(path) = target {
                 files.push(FileRule {
                     each,
-                    binding,
                     source,
                     path,
                     when,

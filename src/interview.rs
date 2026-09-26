@@ -95,6 +95,22 @@ pub(crate) fn render_hook(
         cwd: hook.command.cwd.as_ref().map(render).transpose()?,
     })
 }
+/// Renders a hook once, or once per item of its `each`. The error names the
+/// failing field: `each` or `hook`.
+pub(crate) fn render_hooks(
+    hook: &crate::template::HookNode,
+    ctx: &std::collections::BTreeMap<String, Value>,
+) -> Result<Vec<RenderedHook>, (&'static str, String)> {
+    match &hook.each {
+        None => Ok(vec![render_hook(hook, ctx).map_err(|e| ("hook", e))?]),
+        Some(each) => each
+            .contexts(ctx)
+            .map_err(|e| ("each", e))?
+            .iter()
+            .map(|local| render_hook(hook, local).map_err(|e| ("hook", e)))
+            .collect(),
+    }
+}
 #[derive(Debug, Default)]
 pub struct Batch {
     pub items: Vec<Item>,
@@ -196,10 +212,18 @@ fn expr_ready(v: &Expr, a: &Answers, t: &Template) -> bool {
 }
 fn hook_ready(h: &crate::template::HookNode, a: &Answers, t: &Template) -> bool {
     use crate::template::HookProgram;
-    h.command.cwd.as_ref().is_none_or(|v| tmpl_ready(v, a, t))
+    let binding = h.each.as_ref().map(|e| e.binding.as_str());
+    let ready = |v: &crate::jinja::Tmpl| {
+        v.references()
+            .iter()
+            .filter(|name| Some(name.as_str()) != binding)
+            .all(|name| has_refs(&HashSet::from([name.clone()]), a, t))
+    };
+    h.each.as_ref().is_none_or(|e| expr_ready(&e.expr, a, t))
+        && h.command.cwd.as_ref().is_none_or(ready)
         && match &h.command.program {
-            HookProgram::Run(v) => v.iter().all(|x| tmpl_ready(x, a, t)),
-            HookProgram::Script { args, .. } => args.iter().all(|x| tmpl_ready(x, a, t)),
+            HookProgram::Run(v) => v.iter().all(ready),
+            HookProgram::Script { args, .. } => args.iter().all(ready),
         }
 }
 fn question_ready(q: &Question, a: &Answers, t: &Template, seed: &Seed) -> bool {
@@ -634,10 +658,10 @@ impl Advance<'_> {
                         .transpose()?
                         .unwrap_or(true);
                     if active {
-                        self.hooks.push(
-                            render_hook(h, &ctx)
-                                .map_err(|e| eval_error(&Id::parse("hook").unwrap(), "hook", e))?,
-                        );
+                        self.hooks
+                            .extend(render_hooks(h, &ctx).map_err(|(field, e)| {
+                                eval_error(&Id::parse("hook").unwrap(), field, e)
+                            })?);
                     }
                 }
                 Node::Message(m) => {

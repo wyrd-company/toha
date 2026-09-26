@@ -81,6 +81,10 @@ $defs:
       - $ref: "#/$defs/expression"
   when:
     $ref: "#/$defs/expression"
+  each:
+    description: "`<expression> as <name>`."
+    type: string
+    pattern: '^.+ as [a-z_][a-z0-9_]*$'
   nodes:
     type: array
     items:
@@ -183,6 +187,9 @@ $defs:
       cwd:
         description: Working directory relative to the target directory.
         $ref: "#/$defs/template"
+      each:
+        description: Runs the hook once for each item.
+        $ref: "#/$defs/each"
       when:
         $ref: "#/$defs/when"
   hook-node:
@@ -210,6 +217,8 @@ $defs:
               $ref: "#/$defs/template"
           cwd:
             $ref: "#/$defs/template"
+          each:
+            $ref: "#/$defs/each"
       when:
         $ref: "#/$defs/when"
   message-node:
@@ -227,9 +236,7 @@ $defs:
     required: [ each, source, path ]
     properties:
       each:
-        description: "`<expression> as <name>`."
-        type: string
-        pattern: '^.+ as [a-z_][a-z0-9_]*$'
+        $ref: "#/$defs/each"
       source:
         description: Support file relative to the template root.
         type: string

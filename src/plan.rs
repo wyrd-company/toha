@@ -208,29 +208,11 @@ impl Plan {
                     continue;
                 }
             }
-            let values = rule.each.eval(&ctx).map_err(|e| PlanError::Render {
+            let contexts = rule.each.contexts(&ctx).map_err(|e| PlanError::Render {
                 path: origin.clone(),
                 message: format!("files[{i}].each: {e}"),
             })?;
-            let values = serde_json::to_value(values).map_err(|e| PlanError::Render {
-                path: origin.clone(),
-                message: e.to_string(),
-            })?;
-            let Some(items) = values.as_array() else {
-                return Err(PlanError::Render {
-                    path: origin,
-                    message: format!("files[{i}].each: expected array"),
-                });
-            };
-            for item in items {
-                let mut local = ctx.clone();
-                local.insert(
-                    rule.binding.as_str().into(),
-                    serde_json::to_value(item).map_err(|e| PlanError::Render {
-                        path: origin.clone(),
-                        message: e.to_string(),
-                    })?,
-                );
+            for local in contexts {
                 let path_text = rule.path.render(&local).map_err(|e| PlanError::Render {
                     path: origin.clone(),
                     message: e.to_string(),
@@ -257,11 +239,18 @@ impl Plan {
                 }
             }
             let rendered =
-                crate::interview::render_hook(hook, &ctx).map_err(|message| PlanError::Render {
-                    path: template.root.clone(),
-                    message,
+                crate::interview::render_hooks(hook, &ctx).map_err(|(field, message)| {
+                    PlanError::Render {
+                        path: template.root.clone(),
+                        message: match field {
+                            "each" => format!("hooks[{i}].each: {message}"),
+                            _ => message,
+                        },
+                    }
                 })?;
-            plan.hooks.push(plan_hook(&rendered, template)?);
+            for hook in &rendered {
+                plan.hooks.push(plan_hook(hook, template)?);
+            }
         }
         for (source, target_message) in [
             (&template.messages.before_apply, &mut plan.before_apply),
