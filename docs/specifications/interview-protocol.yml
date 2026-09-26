@@ -44,7 +44,12 @@ description: >-
   answer from that document is recorded. When the interview is complete, the
   result has `status: complete` and holds the full flat answers object.
 
-  Headless answers files. `stage` and `apply` accept an answers document with
+  Modality. The modality is chosen by each call. `continue` with an answers
+  file, or `-` for standard input, answers the current batch. `continue`
+  without an answers argument prompts in the terminal for every remaining
+  question. An interview started in one modality continues in either.
+
+  Headless answers files. `apply` accepts an answers document with
   `--answers`. Toha answers each question from the document, then from
   configured defaults, then from the question `default`. When a required
   question has no answer, the run stops, stages the interview, and emits the
@@ -56,8 +61,7 @@ description: >-
   on macOS; and `%LOCALAPPDATA%\toha\staged\` on Windows. The file name is the
   lowercase hexadecimal SHA-256 of the canonical absolute target path with a
   `.json` suffix. The staged record holds the target path, the formal name and
-  resolved commit of the template, the modality (`interactive` or `async`),
-  the answers recorded so far, and the interview position.
+  resolved commit of the template, the answers recorded so far, and the interview position.
 format: json-schema
 validation-criteria: >-
   Every batch and result document that toha emits validates against

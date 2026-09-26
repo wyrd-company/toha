@@ -56,9 +56,12 @@ properties:
   layered-config: >-
     System, user, and local configuration files. Local values take precedence
     over user values, and user values over system values.
+  template-registry: >-
+    A record of installed templates for each layer, holding each template's
+    formal name, short name, source, ref, commit, location, aliases, and trust.
   trust: >-
     Hooks run only for trusted templates. Trust comes from the user or system
-    configuration, or from the `--trust` flag on a single run. Trust in an
+    template registry, or from the `--trust` flag on a single run. Trust in an
     installed template carries over when the template is updated.
   staged-interviews: >-
     An interview in progress is saved in the user's state directory, keyed by
@@ -99,7 +102,8 @@ features:
   answer-asynchronously: >-
     Emits the next batch of questions as a JSON Schema and accepts a JSON
     answers document, so a script or agent answers an interview across several
-    processes.
+    processes. A person and an agent share one interview, because each call
+    chooses between an answers document and terminal prompts.
   install-templates: >-
     Adds every template in a git repository, or a single template addressed by
     path, to the user's template library, pinned to a ref when one is given.

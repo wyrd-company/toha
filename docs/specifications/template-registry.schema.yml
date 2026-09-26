@@ -1,0 +1,61 @@
+# ---
+# relationships:
+#   realizes: template-registry
+# ---
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://wyrd.foo/toha/schemas/template-registry
+title: Toha Template Registry
+description: The `templates.yml` registry of one configuration layer.
+$defs:
+  alias:
+    type: string
+    pattern: '^[a-z0-9]+(-[a-z0-9]+)*$'
+  aliases:
+    type: array
+    uniqueItems: true
+    items:
+      $ref: "#/$defs/alias"
+  entry:
+    type: object
+    additionalProperties: false
+    required: [ name, source, path ]
+    properties:
+      name:
+        type: string
+        pattern: '^[a-z0-9]+(-[a-z0-9]+)*$'
+      source:
+        type: string
+      ref:
+        type: string
+      commit:
+        type: string
+        pattern: '^[0-9a-f]{40}([0-9a-f]{24})?$'
+      path:
+        type: string
+      aliases:
+        $ref: "#/$defs/aliases"
+      trusted:
+        type: boolean
+        default: false
+  registry:
+    type: object
+    additionalProperties: false
+    properties:
+      templates:
+        type: object
+        description: Entries keyed by formal template name.
+        additionalProperties:
+          $ref: "#/$defs/entry"
+  local-registry:
+    type: object
+    additionalProperties: false
+    properties:
+      templates:
+        type: object
+        description: Aliases keyed by formal template name.
+        additionalProperties:
+          type: object
+          additionalProperties: false
+          properties:
+            aliases:
+              $ref: "#/$defs/aliases"

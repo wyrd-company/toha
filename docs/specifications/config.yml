@@ -18,7 +18,7 @@ description: >-
   user layer over the system layer.
 
   Merging. `templates-paths` lists from every layer are concatenated, local
-  first. `defaults`, `hosts`, and `templates` maps are merged key by key, and
+  first. `defaults` and `hosts` maps are merged key by key, and
   the value from the layer with higher precedence wins. `local-config-name` and
   `hosts` are read from the user and system layers only, so a formal name
   always resolves to the same source.
@@ -26,17 +26,13 @@ description: >-
   Template paths. Each templates path is a directory scanned for templates:
   every directory in it with a `template.yml` is a template. The system layer
   defaults to `/usr/local/share/toha/`, the user layer to
-  `~/.local/share/toha/`, and the local layer to `.templates`. Templates
-  installed with `templates add` are stored under the user templates path.
+  `~/.local/share/toha/`, and the local layer to `.templates`. Installed
+  templates, their aliases, and their trust are recorded in the template
+  registry defined by `docs/specifications/template-registry.yml`.
 
   Defaults. `defaults` maps a question id to a value. A configured default
   replaces the question `default` of every template that defines that id, and
   follows the same type rules.
-
-  Templates. `templates` maps a formal template name to its settings.
-  `aliases` lists alias names for the template; an alias is unique across all
-  templates in the merged configuration. `trusted: true` lets the hooks of the
-  template run without `--trust`. The local layer does not carry `trusted`.
 
   Hosts. `hosts` maps a git host shorthand prefix to a base URL. The built-in
   prefixes are `gh` (`https://github.com`), `gl` (`https://gitlab.com`), `bb`
@@ -47,6 +43,4 @@ format: json-schema
 validation-criteria: >-
   Each system and user configuration file validates against
   `#/$defs/shared-config` in `docs/specifications/config.schema.yml`, and each
-  local configuration file validates against `#/$defs/local-config`. Toha
-  rejects a merged configuration in which one alias names two templates, and
-  it rejects an alias that equals a formal template name.
+  local configuration file validates against `#/$defs/local-config`.

@@ -10,9 +10,6 @@ $defs:
   identifier:
     type: string
     pattern: '^[a-z_][a-z0-9_]*$'
-  alias:
-    type: string
-    pattern: '^[a-z0-9]+(-[a-z0-9]+)*$'
   prefix:
     type: string
     pattern: '^[a-z][a-z0-9]*$'
@@ -31,11 +28,6 @@ $defs:
     additionalProperties:
       type: string
       format: uri
-  aliases:
-    type: array
-    uniqueItems: true
-    items:
-      $ref: "#/$defs/alias"
   shared-config:
     type: object
     additionalProperties: false
@@ -49,18 +41,6 @@ $defs:
         $ref: "#/$defs/defaults"
       hosts:
         $ref: "#/$defs/hosts"
-      templates:
-        type: object
-        description: Settings keyed by formal template name.
-        additionalProperties:
-          type: object
-          additionalProperties: false
-          properties:
-            aliases:
-              $ref: "#/$defs/aliases"
-            trusted:
-              type: boolean
-              default: false
   local-config:
     type: object
     additionalProperties: false
@@ -69,12 +49,3 @@ $defs:
         $ref: "#/$defs/templates-paths"
       defaults:
         $ref: "#/$defs/defaults"
-      templates:
-        type: object
-        description: Settings keyed by formal template name.
-        additionalProperties:
-          type: object
-          additionalProperties: false
-          properties:
-            aliases:
-              $ref: "#/$defs/aliases"

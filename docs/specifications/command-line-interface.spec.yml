@@ -34,12 +34,6 @@ commands:
           given file, or to standard output when no file is given.
         value:
           type: path
-      - name: answers
-        flags: [ -A, --answers ]
-        kind: option
-        description: Answers document; `-` reads standard input.
-        value:
-          type: path
     output:
       modes:
         - name: human-readable
@@ -60,8 +54,8 @@ commands:
         - code: 5
           meaning: The template name is ambiguous.
   - name: continue
-    summary: Answer the current question batch of a staged interview.
-    mode: non-interactive
+    summary: Continue a staged interview with an answers document or terminal prompts.
+    mode: interactive
     positional-arguments:
       - name: path
         position: 0
@@ -72,18 +66,19 @@ commands:
       - name: answers
         position: 1
         required: false
-        default: "-"
-        description: Answers document; `-` reads standard input.
+        description: >-
+          Answers document for the current batch; `-` reads standard input.
+          When absent, toha prompts in the terminal for every remaining
+          question.
         value:
           type: path
-    notes:
-      - >-
-        An interview staged interactively continues with interactive prompts,
-        and the answers argument is not accepted.
     output:
       modes:
+        - name: human-readable
+          description: Interactive prompts and messages, when no answers document is given.
+          machine-readable: false
         - name: result
-          description: The interview protocol result document.
+          description: The interview protocol result document, when an answers document is given.
           machine-readable: true
       exit-codes:
         - code: 0
@@ -182,7 +177,7 @@ commands:
           - name: trust
             flags: [ --trust ]
             kind: flag
-            description: Record the added templates as trusted in the user configuration.
+            description: Record the added templates as trusted in the user registry.
         output:
           exit-codes:
             - code: 0
@@ -240,7 +235,7 @@ commands:
             - code: 5
               meaning: The template name is ambiguous.
       - name: remove
-        summary: Uninstall a template and delete its settings from the user configuration.
+        summary: Uninstall a template and delete its entry from the user registry.
         mode: non-interactive
         positional-arguments:
           - name: template
@@ -257,7 +252,7 @@ commands:
             - code: 5
               meaning: The template name is ambiguous.
       - name: alias
-        summary: Add or remove an alias in the user configuration.
+        summary: Add or remove an alias in the user registry.
         mode: non-interactive
         positional-arguments:
           - name: template

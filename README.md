@@ -77,6 +77,7 @@ and exits with code 3.
 | [Template format](docs/specifications/template-format.yml) | `template.yml`, the interview, files, hooks, and messages |
 | [Interview protocol](docs/specifications/interview-protocol.yml) | Question batches, answers, and staged state |
 | [Configuration](docs/specifications/config.yml) | System, user, and local configuration |
+| [Template registry](docs/specifications/template-registry.yml) | Installed templates, aliases, and trust |
 | [Command-line interface](docs/specifications/command-line-interface.yml) | Commands, addresses, names, and exit codes |
 
 ## License

@@ -31,7 +31,7 @@ description: >-
   the add.
 
   Trust. The hooks of a template run when the template is trusted in the user
-  or system configuration or when `--trust` is given. Templates from a local
+  or system template registry or when `--trust` is given. Templates from a local
   templates path and templates given by address or folder to `stage` or
   `apply` are trusted only through `--trust`. When the template has hooks and
   is not trusted, `apply` performs a dry run, lists the hooks, states that
