@@ -127,6 +127,33 @@ pub fn staged_dir(root: &Path) -> PathBuf {
     }
 }
 
+#[test]
+fn every_platform_directory_input_is_isolated() {
+    let mut command = Command::new("toha");
+    let root = Path::new("isolated");
+    isolate(&mut command, root);
+    let actual: std::collections::HashMap<_, _> = command.get_envs().collect();
+    for key in [
+        "HOME",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "PROGRAMDATA",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_STATE_HOME",
+        "TOHA_USER_CONFIG",
+        "TOHA_CONFIG",
+    ] {
+        let value = actual
+            .get(std::ffi::OsStr::new(key))
+            .and_then(|value| *value)
+            .unwrap_or_else(|| panic!("{key} is not isolated"));
+        assert!(Path::new(value).starts_with(root), "{key}: {value:?}");
+    }
+}
+
 pub fn expectation(fixture: &Path) -> Expect {
     serde_norway::from_str(&fs::read_to_string(fixture.join("expect.yml")).unwrap()).unwrap()
 }
