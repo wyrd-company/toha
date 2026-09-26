@@ -42,7 +42,7 @@ fn repo(root: &TempDir) -> String {
     }
     git(&path, &["add", "."]);
     git(&path, &["commit", "-m", "initial"]);
-    format!("file://{}", path.display())
+    support::file_url(&path)
 }
 fn assert_exit(output: &std::process::Output, code: i32) -> String {
     assert_eq!(
@@ -121,7 +121,7 @@ fn readd_sparse_entry_persists_alias_and_trust() {
     let url = repo(&root);
     let address = format!("{url}#one");
     assert_exit(&run(&root, &["templates", "add", &address]), 0);
-    let registry_path = root.path().join("data/toha/templates.yml");
+    let registry_path = support::user_data_dir(root.path()).join("templates.yml");
     let mut sparse: serde_json::Value =
         serde_norway::from_str(&fs::read_to_string(&registry_path).unwrap()).unwrap();
     let entry = sparse["templates"][&address].as_object_mut().unwrap();
@@ -234,7 +234,7 @@ fn configured_file_host_shorthand_installs_and_round_trips() {
     fs::create_dir_all(config.parent().unwrap()).unwrap();
     fs::write(
         &config,
-        format!("hosts:\n  local: 'file://{}'\n", root.path().display()),
+        format!("hosts:\n  local: '{}'\n", support::file_url(root.path())),
     )
     .unwrap();
     assert_exit(
@@ -294,7 +294,7 @@ fn layer_lists_and_local_aliases_of_discovered_templates() {
         "name: sample\ninterview: []\n",
     )
     .unwrap();
-    fs::write(local.join("templates.yml"), format!("templates:\n  '{}#one':\n    aliases: [local-name]\n  '{}':\n    aliases: [found-name]\n", url, discovered.display())).unwrap();
+    fs::write(local.join("templates.yml"), format!("templates:\n  '{}#one':\n    aliases: [local-name]\n  '{}':\n    aliases: [found-name]\n", url, discovered.canonicalize().unwrap().display())).unwrap();
     let merged: serde_json::Value = serde_json::from_str(&assert_exit(
         &run(&root, &["templates", "list", "--json"]),
         0,
@@ -398,7 +398,7 @@ fn failed_update_keeps_prior_clones_and_registry() {
     .unwrap();
     git(&second_source, &["add", "."]);
     git(&second_source, &["commit", "-m", "initial"]);
-    let second_url = format!("file://{}", second_source.display());
+    let second_url = support::file_url(&second_source);
     assert_exit(
         &run(&root, &["templates", "add", &format!("{first_url}#one")]),
         0,
@@ -502,7 +502,7 @@ fn update_two_dotted_install_keys() {
         .unwrap();
         git(&dir, &["add", "."]);
         git(&dir, &["commit", "-m", "initial"]);
-        let address = format!("file://{}", dir.display());
+        let address = support::file_url(&dir);
         assert_exit(&run(&root, &["templates", "add", &address]), 0);
         addresses.push((dir, address));
     }

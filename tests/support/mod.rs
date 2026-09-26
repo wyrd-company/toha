@@ -127,6 +127,23 @@ pub fn staged_dir(root: &Path) -> PathBuf {
     }
 }
 
+pub fn user_data_dir(root: &Path) -> PathBuf {
+    if cfg!(target_os = "macos") {
+        root.join("home/Library/Application Support/toha")
+    } else {
+        root.join("data/toha")
+    }
+}
+
+pub fn file_url(path: &Path) -> String {
+    let path = path.to_string_lossy().replace('\\', "/");
+    if cfg!(windows) {
+        format!("file:///{path}")
+    } else {
+        format!("file://{path}")
+    }
+}
+
 #[test]
 fn every_platform_directory_input_is_isolated() {
     let mut command = Command::new("toha");

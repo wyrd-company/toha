@@ -226,7 +226,7 @@ fn reference_kind(repo: &str, reference: Option<&str>) -> Result<RefKind, Source
     let Some(reference) = reference else {
         return Ok(RefKind::DefaultBranch);
     };
-    if let Some(local) = repo.strip_prefix("file://") {
+    if let Some(local) = local_git_path(repo) {
         let remote = gix::open(local).map_err(|e| SourceError::Git(e.to_string()))?;
         if remote
             .find_reference(&format!("refs/tags/{reference}"))
@@ -247,11 +247,19 @@ fn reference_kind(repo: &str, reference: Option<&str>) -> Result<RefKind, Source
         Ok(RefKind::Branch)
     }
 }
+fn local_git_path(repo: &str) -> Option<&str> {
+    let local = repo.strip_prefix("file://")?;
+    if cfg!(windows) && local.starts_with('/') && local.as_bytes().get(2) == Some(&b':') {
+        Some(&local[1..])
+    } else {
+        Some(local)
+    }
+}
 fn expand_commit(repo: &str, short: &str, dest: &Path) -> Result<String, SourceError> {
     if short.len() == 40 {
         return Ok(short.into());
     }
-    let local = repo.strip_prefix("file://").unwrap_or(repo);
+    let local = local_git_path(repo).unwrap_or(repo);
     if repo.starts_with("file://") {
         return gix::open(local)
             .map_err(|e| SourceError::Git(e.to_string()))?
