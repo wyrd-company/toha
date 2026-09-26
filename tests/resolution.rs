@@ -402,7 +402,7 @@ fn registry_trust_runs_hooks_but_discovery_and_local_registry_do_not() {
         ],
         0,
     );
-    let record_path = fs::read_dir(root.path().join("state/toha/staged"))
+    let record_path = fs::read_dir(support::staged_dir(root.path()))
         .unwrap()
         .next()
         .unwrap()
@@ -474,7 +474,7 @@ fn registry_trust_runs_hooks_but_discovery_and_local_registry_do_not() {
         &["stage", "hooked", named_staged.to_str().unwrap(), "--async"],
         0,
     );
-    let record_path = fs::read_dir(root.path().join("state/toha/staged"))
+    let record_path = fs::read_dir(support::staged_dir(root.path()))
         .unwrap()
         .next()
         .unwrap()

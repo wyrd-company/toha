@@ -227,13 +227,6 @@ fn documented_protocol_exchange() {
             .env("TOHA_BIN", assert_cmd::cargo::cargo_bin!("toha"))
             .env("TOHA_TEMPLATE", &template)
             .env("TOHA_TARGET", &target)
-            .env("HOME", target.join("home"))
-            .env("XDG_CONFIG_HOME", target.join("config"))
-            .env("XDG_DATA_HOME", target.join("data"))
-            .env("XDG_CACHE_HOME", target.join("cache"))
-            .env("XDG_STATE_HOME", target.join("state"))
-            .env("TOHA_USER_CONFIG", target.join("config/toha/config.yml"))
-            .env("TOHA_CONFIG", target.join("local.yml"))
             .output()
             .unwrap();
         assert!(
