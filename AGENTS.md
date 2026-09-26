@@ -13,6 +13,7 @@ Toha generates files from reusable templates and lets people, scripts, and agent
 - Keep the interview engine pure and make plans before applying them.
 - Treat specifications and schemas as the contract.
 - Exercise the full path with fixtures.
+- When a command refuses a valid request made at the wrong time or in the wrong form, and nothing is faulty, the message names the command or commands that do what the caller meant.
 
 ## Glossary
 
