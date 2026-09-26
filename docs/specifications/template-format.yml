@@ -109,8 +109,8 @@ description: >-
   Messages. A message node shows its rendered text when the interview reaches
   it. The top-level `messages` map has two optional keys, each a template:
   `before-apply` is shown before any file is written, and `after-apply` is
-  shown after the last hook. A message that renders to an empty or
-  whitespace-only string is not shown.
+  shown after the last hook. A dry run does not show `after-apply`. A message
+  that renders to an empty or whitespace-only string is not shown.
 format: json-schema
 validation-criteria: >-
   A conforming `template.yml` validates against

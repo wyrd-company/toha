@@ -282,9 +282,6 @@ fn plan_lines(plan: &Plan, force: bool) -> Vec<String> {
                 .unwrap_or_else(|| ".".into())
         ));
     }
-    if let Some(message) = &plan.after_apply {
-        lines.push(message.clone());
-    }
     lines
 }
 
