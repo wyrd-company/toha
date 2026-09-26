@@ -12,6 +12,8 @@ use std::{
     path::{Path, PathBuf},
     process::ExitCode,
 };
+#[path = "cli/skills.rs"]
+mod skills;
 #[path = "cli/terminal.rs"]
 mod terminal;
 
@@ -33,6 +35,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     Templates(cli::templates::TemplatesArgs),
+    /// Read the agent skills embedded in toha.
+    Skills {
+        #[command(subcommand)]
+        command: skills::Command,
+    },
     /// Interview a template and save its answers. Multiline input uses an editor, or lines ending with . when no editor is available.
     Stage {
         template: String,
@@ -691,6 +698,7 @@ fn main() -> ExitCode {
         Err(e) => return Outcome::Error(e).finish(),
     };
     match Cli::parse().command {
+        Command::Skills { command } => skills::run(command).finish(),
         Command::Stage {
             template,
             path,
