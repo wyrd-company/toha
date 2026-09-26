@@ -35,6 +35,7 @@ pub fn environment() -> Environment<'static> {
     env.add_filter("pascal", |s: String| s.to_upper_camel_case());
     env.add_filter("constant", |s: String| s.to_shouty_snake_case());
     env.add_filter("title", |s: String| s.to_title_case());
+    env.add_filter("toyaml", toyaml);
     env.add_function("now", |state: &State| {
         state.lookup("__toha_now").unwrap_or(Value::UNDEFINED)
     });
@@ -50,6 +51,18 @@ pub fn environment() -> Environment<'static> {
         },
     );
     env
+}
+
+/// Serializes a value as a YAML document body: no leading `---` and no
+/// trailing newline, so the result composes with `indent`.
+fn toyaml(value: &Value) -> Result<Value, Error> {
+    let yaml = serde_norway::to_string(value).map_err(|err| {
+        Error::new(ErrorKind::InvalidOperation, "cannot serialize to YAML").with_source(err)
+    })?;
+    let body = yaml.strip_prefix("---\n").unwrap_or(&yaml);
+    Ok(Value::from_safe_string(
+        body.trim_end_matches('\n').to_owned(),
+    ))
 }
 
 static GLOBALS: LazyLock<HashSet<String>> = LazyLock::new(|| {
