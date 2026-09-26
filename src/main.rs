@@ -1136,6 +1136,9 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod dirs_tests {
     use super::{Dirs, Platform};
+
+    const HOME_UNAVAILABLE: &str =
+        "home directory unavailable: set HOME (or USERPROFILE on Windows) to an absolute path";
     use std::{collections::HashMap, ffi::OsString, path::PathBuf};
 
     /// An absolute path on the host, so that `Path::is_absolute` accepts it
@@ -1281,6 +1284,42 @@ mod dirs_tests {
     }
 
     #[test]
+    fn toha_user_config_is_used_unless_empty() {
+        let actual = dirs(Platform::Unix, &[("TOHA_USER_CONFIG", "")]).unwrap();
+        assert_eq!(
+            actual.user_config,
+            absolute("home").join(".config/toha/config.yml")
+        );
+        let actual = dirs(Platform::Unix, &[("TOHA_USER_CONFIG", "relative.yml")]).unwrap();
+        assert_eq!(actual.user_config, PathBuf::from("relative.yml"));
+        let file = text(&absolute("user.yml"));
+        let actual = dirs(Platform::Unix, &[("TOHA_USER_CONFIG", &file)]).unwrap();
+        assert_eq!(actual.user_config, absolute("user.yml"));
+    }
+
+    #[test]
+    fn toha_config_is_used_unless_empty() {
+        let actual = dirs(Platform::Unix, &[("TOHA_CONFIG", "")]).unwrap();
+        assert_eq!(actual.local_config_override, None);
+        let actual = dirs(Platform::Unix, &[("TOHA_CONFIG", "relative.yml")]).unwrap();
+        assert_eq!(
+            actual.local_config_override,
+            Some(PathBuf::from("relative.yml"))
+        );
+        let file = text(&absolute("local.yml"));
+        let actual = dirs(Platform::Unix, &[("TOHA_CONFIG", &file)]).unwrap();
+        assert_eq!(actual.local_config_override, Some(absolute("local.yml")));
+    }
+
+    #[test]
+    fn missing_home_names_the_variables() {
+        let error = dirs_without(Platform::Unix, &[], &["HOME", "USERPROFILE"])
+            .err()
+            .expect("no home directory");
+        assert_eq!(error, HOME_UNAVAILABLE);
+    }
+
+    #[test]
     fn home_is_used_only_when_absolute() {
         let profile = text(&absolute("profile"));
         for value in ["", "relative"] {
@@ -1306,7 +1345,7 @@ mod dirs_tests {
             let error = dirs_without(Platform::Windows, &[("USERPROFILE", value)], &["HOME"])
                 .err()
                 .unwrap_or_else(|| panic!("USERPROFILE {value:?} was used"));
-            assert_eq!(error, "home directory unavailable");
+            assert_eq!(error, HOME_UNAVAILABLE);
         }
         let profile = text(&absolute("profile"));
         let actual =
