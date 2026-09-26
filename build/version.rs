@@ -49,7 +49,8 @@ fn repository(root: &Path) -> Option<tagver::Repository> {
     (work_tree == root.canonicalize().ok()?).then_some(repository)
 }
 
-/// HEAD, the ref HEAD names, the tags, and the packed refs. A ref that has no file yet is watched through its nearest
+/// HEAD, the ref HEAD names, the tags, the packed refs, and the shallow
+/// boundary. A ref that has no file yet is watched through its nearest
 /// existing directory, so that creating it reruns the script.
 fn watched_paths(repository: &tagver::Repository) -> Vec<PathBuf> {
     let git = repository.inner();
@@ -57,6 +58,7 @@ fn watched_paths(repository: &tagver::Repository) -> Vec<PathBuf> {
     let mut paths = vec![
         canonical(git.git_dir()).join("HEAD"),
         common.join("packed-refs"),
+        common.join("shallow"),
     ];
     let mut refs = vec![common.join("refs/tags")];
     if let Ok(Some(name)) = git.head_name() {
