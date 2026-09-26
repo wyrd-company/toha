@@ -1,3 +1,6 @@
+mod cli {
+    pub mod templates;
+}
 // ---
 // relationships:
 //   implements: architecture
@@ -27,6 +30,7 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Command {
+    Templates(cli::templates::TemplatesArgs),
     /// Interview a template and save its answers. Multiline input uses an editor, or lines ending with . when no editor is available.
     Stage {
         template: String,
@@ -57,12 +61,125 @@ enum Command {
     },
 }
 
+#[derive(Clone)]
+pub(crate) struct Dirs {
+    system_config: PathBuf,
+    user_config: PathBuf,
+    local_config_override: Option<PathBuf>,
+    system_data: PathBuf,
+    user_data: PathBuf,
+    cache: PathBuf,
+    state: PathBuf,
+    home: PathBuf,
+}
+impl Dirs {
+    fn resolve() -> Result<Self, String> {
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
+            .ok_or("home directory unavailable")?;
+        let system_root = if cfg!(windows) {
+            std::env::var_os("PROGRAMDATA")
+                .map(PathBuf::from)
+                .ok_or("PROGRAMDATA unavailable")?
+                .join("toha")
+        } else {
+            PathBuf::from("/usr/local/share/toha")
+        };
+        let system_config = if cfg!(windows) {
+            system_root.join("config.yml")
+        } else {
+            PathBuf::from("/etc/toha/config.yml")
+        };
+        let app_data = if cfg!(windows) {
+            Some(
+                std::env::var_os("APPDATA")
+                    .map(PathBuf::from)
+                    .ok_or("APPDATA unavailable")?,
+            )
+        } else {
+            None
+        };
+        let user_config = if let Some(override_path) = std::env::var_os("TOHA_USER_CONFIG") {
+            PathBuf::from(override_path)
+        } else if let Some(app_data) = &app_data {
+            app_data.join("toha/config.yml")
+        } else {
+            std::env::var_os("XDG_CONFIG_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(".config"))
+                .join("toha/config.yml")
+        };
+        let user_data = if let Some(app_data) = &app_data {
+            app_data.join("toha")
+        } else if cfg!(target_os = "macos") {
+            home.join("Library/Application Support/toha")
+        } else {
+            std::env::var_os("XDG_DATA_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(".local/share"))
+                .join("toha")
+        };
+        let local_app_data = if cfg!(windows) {
+            Some(
+                std::env::var_os("LOCALAPPDATA")
+                    .map(PathBuf::from)
+                    .ok_or("LOCALAPPDATA unavailable")?,
+            )
+        } else {
+            None
+        };
+        let cache = if let Some(base) = &local_app_data {
+            base.join("toha/cache")
+        } else if cfg!(target_os = "macos") {
+            home.join("Library/Caches/toha")
+        } else {
+            std::env::var_os("XDG_CACHE_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(".cache"))
+                .join("toha")
+        };
+        let state = if let Some(base) = &local_app_data {
+            base.join("toha/staged")
+        } else if cfg!(target_os = "macos") {
+            home.join("Library/Application Support/toha/staged")
+        } else {
+            std::env::var_os("XDG_STATE_HOME")
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(".local/state"))
+                .join("toha/staged")
+        };
+        Ok(Self {
+            system_config,
+            user_config,
+            local_config_override: std::env::var_os("TOHA_CONFIG").map(PathBuf::from),
+            system_data: system_root,
+            user_data,
+            cache,
+            state,
+            home,
+        })
+    }
+    fn config_paths(&self) -> toha::config::ConfigPaths {
+        toha::config::ConfigPaths {
+            system_config: self.system_config.clone(),
+            user_config: self.user_config.clone(),
+            local_config_override: self.local_config_override.clone(),
+            system_data: self.system_data.clone(),
+            user_data: self.user_data.clone(),
+            cache: self.cache.clone(),
+            home: self.home.clone(),
+        }
+    }
+}
 enum Outcome {
     Written(Vec<String>),
     Error(String),
     Document(serde_json::Value, u8),
     Saved(u8),
     NeedsTrust(String),
+    Ambiguous { name: String, matches: Vec<String> },
 }
 impl Outcome {
     fn finish(self) -> ExitCode {
@@ -84,6 +201,13 @@ impl Outcome {
                     serde_json::to_string_pretty(&value).expect("JSON value")
                 );
                 ExitCode::from(code)
+            }
+            Self::Ambiguous { name, matches } => {
+                eprintln!("ambiguous template name: {name}");
+                for formal in matches {
+                    eprintln!("toha templates alias {formal} <alias>");
+                }
+                ExitCode::from(5)
             }
             Self::NeedsTrust(message) => {
                 eprintln!("{message}");
@@ -157,31 +281,6 @@ fn seed() -> Result<Seed, String> {
         now,
         defaults: indexmap::IndexMap::new(),
     })
-}
-struct Dirs {
-    state: PathBuf,
-}
-impl Dirs {
-    fn resolve() -> Result<Self, String> {
-        #[cfg(windows)]
-        let base = std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .ok_or("LOCALAPPDATA is unavailable")?;
-        #[cfg(target_os = "macos")]
-        let base = std::env::var_os("HOME")
-            .map(|v| PathBuf::from(v).join("Library/Application Support"))
-            .ok_or("HOME is unavailable")?;
-        #[cfg(all(unix, not(target_os = "macos")))]
-        let base = match std::env::var_os("XDG_STATE_HOME") {
-            Some(value) if !value.is_empty() => PathBuf::from(value),
-            _ => std::env::var_os("HOME")
-                .map(|v| PathBuf::from(v).join(".local/state"))
-                .ok_or("HOME is unavailable")?,
-        };
-        Ok(Self {
-            state: base.join("toha/staged"),
-        })
-    }
 }
 fn setup(path: &Path, dirs: &Dirs) -> Result<(PathBuf, Store), String> {
     let target = staging::canonical_target(path).map_err(|e| e.to_string())?;
@@ -549,6 +648,21 @@ fn main() -> ExitCode {
         } => stage(template, path, r#async, &dirs).finish(),
         Command::Continue { path, answers } => continue_run(path, answers, &dirs).finish(),
         Command::Abort { path } => abort(path, &dirs).finish(),
+        Command::Templates(args) => {
+            let cwd = match std::env::current_dir() {
+                Ok(cwd) => cwd,
+                Err(error) => return Outcome::Error(error.to_string()).finish(),
+            };
+            match cli::templates::run(args, dirs, &cwd) {
+                Ok(lines) => Outcome::Written(lines).finish(),
+                Err(cli::templates::CommandError::Error(message)) => {
+                    Outcome::Error(message).finish()
+                }
+                Err(cli::templates::CommandError::Ambiguous { name, matches }) => {
+                    Outcome::Ambiguous { name, matches }.finish()
+                }
+            }
+        }
         Command::Apply {
             paths,
             answers,

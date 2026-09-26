@@ -3,11 +3,14 @@
 //   implements: architecture
 // ---
 pub mod apply;
+pub mod config;
 pub mod hook;
 pub mod interview;
 mod jinja;
 pub mod plan;
 pub mod protocol;
+pub mod registry;
+pub mod source;
 pub mod staging;
 pub mod template;
 
