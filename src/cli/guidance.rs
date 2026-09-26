@@ -14,10 +14,36 @@ pub enum Progress {
     Unknown,
 }
 
-/// `value` as one shell word.
+/// The shell a suggested command is written for.
+#[derive(Clone, Copy)]
+enum Shell {
+    /// A POSIX shell such as sh, bash, or zsh.
+    Posix,
+    /// cmd.exe or PowerShell.
+    Windows,
+}
+const SHELL: Shell = if cfg!(windows) {
+    Shell::Windows
+} else {
+    Shell::Posix
+};
+
+/// `value` as one shell word for the shell of this platform.
 pub fn word(value: &str) -> String {
-    // Characters a POSIX shell leaves unchanged anywhere in a word; `=` only
-    // after the first character.
+    word_for(value, SHELL)
+}
+
+fn word_for(value: &str, shell: Shell) -> String {
+    match shell {
+        Shell::Posix => posix_word(value),
+        Shell::Windows => windows_word(value),
+    }
+}
+
+/// A POSIX shell leaves these characters unchanged anywhere in a word, and
+/// `=` after the first character. Any other word is single-quoted, which a
+/// POSIX shell passes through unchanged.
+fn posix_word(value: &str) -> String {
     let plain = !value.is_empty()
         && !value.starts_with('=')
         && value
@@ -28,6 +54,45 @@ pub fn word(value: &str) -> String {
     } else {
         format!("'{}'", value.replace('\'', r"'\''"))
     }
+}
+
+/// Paths keep `\`, `:`, and `~` plain, as cmd.exe and PowerShell do; `~` and
+/// `=` only after the first character. Any other word is double-quoted, the
+/// form both shells accept, with `"` and the backslashes before it escaped by
+/// the rules Windows programs use to split a command line.
+///
+/// Limits: inside double quotes cmd.exe still expands `%NAME%`, and PowerShell
+/// still expands `$` and backtick escapes. A word with those characters is
+/// quoted but not protected from expansion in every shell.
+fn windows_word(value: &str) -> String {
+    let plain = !value.is_empty()
+        && !value.starts_with(['=', '~'])
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-\\~".contains(c));
+    if plain {
+        return value.into();
+    }
+    let mut quoted = String::from('"');
+    let mut backslashes = 0;
+    for c in value.chars() {
+        match c {
+            '\\' => backslashes += 1,
+            '"' => {
+                quoted.extend(std::iter::repeat_n('\\', backslashes * 2 + 1));
+                quoted.push('"');
+                backslashes = 0;
+            }
+            c => {
+                quoted.extend(std::iter::repeat_n('\\', backslashes));
+                quoted.push(c);
+                backslashes = 0;
+            }
+        }
+    }
+    quoted.extend(std::iter::repeat_n('\\', backslashes * 2));
+    quoted.push('"');
+    quoted
 }
 
 fn target(path: &Path) -> String {
