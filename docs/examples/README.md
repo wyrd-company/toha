@@ -10,6 +10,15 @@ These examples are the seed for the fixture suite.
 | [branching](branching/template.yml) | `when`, groups, computed values, options from an expression, static data |
 | [generated-files](generated-files/template.yml) | `each` file generation, ignore and static globs, messages, hooks |
 
+## Hooks
+
+Hooks run after all files are written. Hook nodes in the interview run first,
+in interview order, when their `when` is true. A hook runs once, also in the
+scope of a looped question. The template-level `hooks` list runs last.
+
+A template must be trusted before its hooks run. Without trust, `apply` acts as
+a dry run, lists the hooks, and exits non-zero.
+
 ## Jinja rules
 
 All logic is Jinja. A field is either a template or an expression, by the type

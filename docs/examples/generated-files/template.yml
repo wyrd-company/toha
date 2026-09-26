@@ -15,6 +15,15 @@ interview:
     validate:
       regex: '^[a-z][a-z0-9-]*$'
 
+  - id: init_git
+    type: confirm
+    prompt: Make a git repository?
+    default: true
+
+  - hook:                                        # joins the hook list here, in interview order
+      run: [ git, init ]
+    when: init_git
+
   - message: "Generating {{ tasks | length }} task file(s) for {{ project }}"
     at: before-apply
 
@@ -30,9 +39,9 @@ ignore:
 static:
   - "assets/**"                                  # copied, not rendered
 
-hooks:
-  after-apply:
-    - run: [ git, init ]
+hooks:                                           # run after the interview hooks
+  - run: [ git, add, "." ]
+    when: init_git
 
 messages:
   - at: after-apply
