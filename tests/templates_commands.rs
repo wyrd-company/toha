@@ -624,3 +624,18 @@ fn add_of_a_name_names_list_and_the_address_forms() {
     assert_exit(&output, 1);
     assert_stderr_names(&output, &["toha templates add ./sample".into()]);
 }
+
+#[test]
+fn alias_for_several_templates_names_one_add_per_template() {
+    let root = TempDir::new().unwrap();
+    let url = repo(&root);
+    let output = run(&root, &["templates", "add", &url, "--alias", "mine"]);
+    assert_exit(&output, 1);
+    assert_stderr_names(
+        &output,
+        &[
+            format!("toha templates add --alias mine {url}#one"),
+            format!("toha templates add --alias mine {url}#two"),
+        ],
+    );
+}
