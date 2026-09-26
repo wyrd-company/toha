@@ -16,22 +16,23 @@ jobs:
   credential-preflight:
     name: Verify publication credentials are configured
     runs-on: ubuntu-latest
-    env:
-      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      FORMULAE_PUBLISH_KEY: ${{ secrets.FORMULAE_PUBLISH_KEY }}
-      REPO_WYRD_FOO_PUBLISHER_APP_ID: ${{ secrets.REPO_WYRD_FOO_PUBLISHER_APP_ID }}
-      REPO_WYRD_FOO_PUBLISHER_PRIVATE_KEY: ${{ secrets.REPO_WYRD_FOO_PUBLISHER_PRIVATE_KEY }}
-      WYRD_TOOLS_DOCS_PUBLISHER_APP_ID: ${{ secrets.WYRD_TOOLS_DOCS_PUBLISHER_APP_ID }}
-      WYRD_TOOLS_DOCS_PUBLISHER_PRIVATE_KEY: ${{ secrets.WYRD_TOOLS_DOCS_PUBLISHER_PRIVATE_KEY }}
+    permissions: {}
     steps:
+      - name: Build-only run
+        if: github.event_name != 'push'
+        run: echo "Build-only run; publication credentials are not required."
       - name: Require every publication credential for a release
+        if: github.event_name == 'push'
         shell: bash
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          FORMULAE_PUBLISH_KEY: ${{ secrets.FORMULAE_PUBLISH_KEY }}
+          REPO_WYRD_FOO_PUBLISHER_APP_ID: ${{ secrets.REPO_WYRD_FOO_PUBLISHER_APP_ID }}
+          REPO_WYRD_FOO_PUBLISHER_PRIVATE_KEY: ${{ secrets.REPO_WYRD_FOO_PUBLISHER_PRIVATE_KEY }}
+          WYRD_TOOLS_DOCS_PUBLISHER_APP_ID: ${{ secrets.WYRD_TOOLS_DOCS_PUBLISHER_APP_ID }}
+          WYRD_TOOLS_DOCS_PUBLISHER_PRIVATE_KEY: ${{ secrets.WYRD_TOOLS_DOCS_PUBLISHER_PRIVATE_KEY }}
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_EVENT_NAME" != push ]]; then
-            echo "Build-only run; publication credentials are not required."
-            exit 0
-          fi
           missing=0
           for variable in CARGO_REGISTRY_TOKEN FORMULAE_PUBLISH_KEY \
             REPO_WYRD_FOO_PUBLISHER_APP_ID REPO_WYRD_FOO_PUBLISHER_PRIVATE_KEY \
