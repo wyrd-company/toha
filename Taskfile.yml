@@ -1,0 +1,18 @@
+# ---
+# relationships:
+#   implements: architecture
+# ---
+version: "3"
+tasks:
+  build:
+    cmds: [cargo build]
+  test:
+    cmds: [cargo test]
+  lint:
+    cmds: ["cargo clippy --all-targets -- -D warnings"]
+  fmt:
+    cmds: [cargo fmt --all]
+  fmt-check:
+    cmds: ["cargo fmt --all -- --check"]
+  ci:
+    deps: [fmt-check, lint, test]
