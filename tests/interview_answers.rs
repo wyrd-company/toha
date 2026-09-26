@@ -374,3 +374,161 @@ fn headless_answer_replaces_an_answer_held_from_continue() {
             .contains(" slow-rich "),
     );
 }
+
+fn submissions(state: &Path, target: &Path) -> usize {
+    let store = toha::staging::Store::new(support::staged_dir(state));
+    store
+        .load(&toha::staging::canonical_target(target).unwrap())
+        .unwrap()
+        .unwrap()
+        .submissions
+        .len()
+}
+
+#[test]
+fn invalid_early_answer_rejects_the_document_when_submitted() {
+    let cases = [
+        (
+            json!({"mode": "medium"}),
+            "mode",
+            "must be one of: fast, slow",
+        ),
+        (json!({"code": "ABC"}), "code", "must match ^[a-z]+$"),
+        (
+            json!({"enabled": "yes"}),
+            "enabled",
+            "must be true or false",
+        ),
+        (json!({"label": 3}), "label", "must be a string"),
+        (json!({"label": ""}), "label", "is required"),
+        (
+            json!({"items": ["a", "b", "c"]}),
+            "items",
+            "must have at most 2 items",
+        ),
+        (
+            json!({"items": ["a", "B"]}),
+            "items",
+            "each item must match ^[a-z]+$",
+        ),
+        (
+            json!({"extras": ["one", "two"]}),
+            "extras",
+            "must have at most 1 item",
+        ),
+        (
+            json!({"extras": ["three"]}),
+            "extras",
+            "each item must be one of: one, two",
+        ),
+    ];
+    for (early, id, message) in cases {
+        let state = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        stage(state.path(), target.path(), &early_template());
+        let mut document = early.clone();
+        document["name"] = json!("Alpha");
+        let (code, result) = continue_with(state.path(), target.path(), document);
+        assert_eq!(code, 4, "{early}: {result}");
+        assert_eq!(result["errors"], json!({ id: [message] }), "{early}");
+        assert_eq!(questions(&result), ["name"], "{early}");
+        assert_eq!(submissions(state.path(), target.path()), 0, "{early}");
+    }
+}
+
+#[test]
+fn basic_example_invalid_early_select_is_rejected_with_its_own_document() {
+    let state = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    let template = Path::new("docs/examples/basic").canonicalize().unwrap();
+    stage(state.path(), target.path(), &template);
+    let (code, _) = continue_with(state.path(), target.path(), json!({"title": "Early"}));
+    assert_eq!(code, 4);
+    let (code, result) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"slug": "probe-x", "tags": [], "status": "podman"}),
+    );
+    assert_eq!(code, 4, "{result}");
+    assert_eq!(
+        result["errors"],
+        json!({"status": ["must be one of: draft, review, final"]})
+    );
+    assert_eq!(questions(&result), ["slug", "tags"]);
+    assert_eq!(submissions(state.path(), target.path()), 1);
+}
+
+#[test]
+fn early_answer_checked_when_reached_is_asked_with_an_error_that_names_its_origin() {
+    let state = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    stage(state.path(), target.path(), &early_template());
+    let (code, result) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"name": "Alpha", "flavor": "odd"}),
+    );
+    assert_eq!(code, 4, "{result}");
+    assert!(result.get("errors").is_none(), "{result}");
+    assert_eq!(questions(&result), ["code", "enabled", "label", "mode"]);
+    let (code, result) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"label": "First", "mode": "fast"}),
+    );
+    assert_eq!(code, 4, "{result}");
+    assert_eq!(questions(&result), ["extras", "flavor", "items"]);
+    assert_eq!(
+        result["errors"],
+        json!({"flavor": ["value recorded earlier is not allowed: must be one of: fast-plain, fast-rich"]})
+    );
+    assert_eq!(submissions(state.path(), target.path()), 2);
+    let (code, result) = continue_with(state.path(), target.path(), json!({"flavor": "odd"}));
+    assert_eq!(code, 4, "{result}");
+    assert_eq!(
+        result["errors"],
+        json!({"flavor": ["must be one of: fast-plain, fast-rich"]})
+    );
+    let (code, result) = continue_with(state.path(), target.path(), json!({"flavor": "fast-rich"}));
+    assert_eq!(code, 0, "{result}");
+    assert_eq!(result["answers"]["flavor"], json!("fast-rich"));
+}
+
+#[test]
+fn headless_apply_stops_at_an_early_answer_that_fails_when_reached() {
+    let state = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    stage(state.path(), target.path(), &early_template());
+    let (code, _) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"name": "Alpha", "flavor": "odd"}),
+    );
+    assert_eq!(code, 4);
+    let answers = state.path().join("answers.json");
+    fs::write(
+        &answers,
+        json!({"label": "First", "mode": "fast", "items": [], "extras": []}).to_string(),
+    )
+    .unwrap();
+    let output = support::isolated_command(state.path())
+        .arg("apply")
+        .arg(support::folder_address(&early_template()))
+        .args([target.path().to_str().unwrap(), "--answers"])
+        .arg(&answers)
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(4),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(questions(&document), ["extras", "flavor", "items"]);
+    assert_eq!(
+        document["errors"],
+        json!({"flavor": ["value recorded earlier is not allowed: must be one of: fast-plain, fast-rich"]})
+    );
+    assert!(!target.path().join("out.txt").exists());
+}
