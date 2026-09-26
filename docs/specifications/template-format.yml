@@ -30,10 +30,17 @@ description: >-
   `computed`, and `format` values are always expressions. The evaluation
   context holds every top-level key of `data`, every answer given so far, and
   every computed value evaluated so far. Toha registers the case filters
-  `kebab`, `snake`, `camel`, `pascal`, `constant`, and `title`, and the date
-  function `now()` with the `dateformat` filter, in addition to the minijinja
-  built-ins. `now()` returns the interview seed instant; `dateformat` uses
-  jiff strftime syntax, defaults to `%Y-%m-%d`, and formats in the seed time zone.
+  `kebab`, `snake`, `camel`, `pascal`, `constant`, and `title`, the `toyaml`
+  filter, and the date function `now()` with the `dateformat` filter, in
+  addition to the minijinja built-ins, the `tojson` filter, macros
+  (`{% macro %}` and `{% call %}`), and the loop controls `{% break %}` and
+  `{% continue %}`. `now()` returns the interview seed instant; `dateformat`
+  uses jiff strftime syntax, defaults to `%Y-%m-%d`, and formats in the seed
+  time zone. `tojson` serializes a value as compact JSON and accepts an
+  optional indent. `toyaml` serializes a value as YAML with no leading `---`
+  and no trailing newline, so it composes with `indent`. Object keys serialize
+  in sorted order. A macro is visible only in the value that defines it;
+  `import`, `include`, and `extends` are not available.
 
   Identifiers. Question ids, computed ids, and top-level `data` keys are Jinja
   identifiers matching `^[a-z_][a-z0-9_]*$`. They share one namespace; a

@@ -100,8 +100,8 @@ proposed-design:
     and `format` become `Expr`. Each compiled value records the ids it
     references, taken from minijinja's undeclared-variable analysis, which
     drives both the reference-order check and the batch boundary. The
-    `jinja::environment()` function registers the case filters, `now()`, and
-    `dateformat` for every compiled value.
+    `jinja::environment()` function registers the case filters, `toyaml`,
+    `now()`, and `dateformat` for every compiled value.
 
   interview-engine: >-
     The engine is a state machine whose states are values:
