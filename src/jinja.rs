@@ -105,6 +105,9 @@ impl Tmpl {
     pub fn references(&self) -> &HashSet<String> {
         &self.referenced_ids
     }
+    pub fn source(&self) -> &str {
+        &self.source
+    }
     pub fn render<S: Serialize>(&self, ctx: S) -> Result<String, RenderError> {
         self.env.get_template("value")?.render(ctx)
     }
@@ -133,6 +136,9 @@ impl Expr {
     pub fn references(&self) -> &HashSet<String> {
         &self.referenced_ids
     }
+    pub fn source(&self) -> &str {
+        &self.source
+    }
     pub fn eval<S: Serialize>(&self, ctx: S) -> Result<Value, Error> {
         environment().compile_expression(&self.source)?.eval(ctx)
     }
@@ -159,6 +165,13 @@ impl<T: Clone + DeserializeOwned> Typed<T> {
                     )
                 })
             }
+        }
+    }
+    /// The expression source, or `None` for a literal.
+    pub fn source(&self) -> Option<&str> {
+        match self {
+            Self::Literal(_) => None,
+            Self::Expr(expr) => Some(expr.source()),
         }
     }
     /// The value when it is a literal, known before evaluation.

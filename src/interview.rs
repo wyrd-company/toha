@@ -158,13 +158,28 @@ pub struct Rejection {
     pub message: String,
 }
 pub type Rejections = Vec<Rejection>;
-#[derive(Debug, thiserror::Error)]
-#[error("{id}.{field}: {message}")]
+/// A failure to evaluate the interview. When `expression` is set, the fault
+/// is in that template expression at `id`.`field`.
+#[derive(Debug)]
 pub struct EvalError {
     pub id: Id,
     pub field: &'static str,
     pub message: String,
+    pub expression: Option<String>,
 }
+impl fmt::Display for EvalError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.expression {
+            Some(source) => write!(
+                f,
+                "template error in {}.{} `{}`: {}",
+                self.id, self.field, source, self.message
+            ),
+            None => write!(f, "{}.{}: {}", self.id, self.field, self.message),
+        }
+    }
+}
+impl std::error::Error for EvalError {}
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum AnswerError<'a> {
@@ -184,6 +199,14 @@ fn eval_error(id: &Id, field: &'static str, error: impl ToString) -> EvalError {
         id: id.clone(),
         field,
         message: error.to_string(),
+        expression: None,
+    }
+}
+/// A fault in the template expression `source` at `id`.`field`.
+fn fault(id: &Id, field: &'static str, source: Option<&str>, error: impl ToString) -> EvalError {
+    EvalError {
+        expression: source.map(str::to_owned),
+        ..eval_error(id, field, error)
     }
 }
 fn context(
@@ -275,7 +298,7 @@ fn eval_typed<T: Clone + serde::de::DeserializeOwned>(
     id: &Id,
     field: &'static str,
 ) -> Result<T, EvalError> {
-    v.eval(ctx).map_err(|e| eval_error(id, field, e))
+    v.eval(ctx).map_err(|e| fault(id, field, v.source(), e))
 }
 fn default_ready(q: &Question, a: &Answers, t: &Template, seed: &Seed) -> bool {
     if seed.defaults.contains_key(&q.id) {
@@ -315,7 +338,7 @@ fn render_default(
             .map(|v| {
                 v.render(&ctx)
                     .map(Answer::Text)
-                    .map_err(|e| eval_error(id, "default", e))
+                    .map_err(|e| fault(id, "default", Some(v.source()), e))
             })
             .transpose(),
         QuestionKind::Confirm { default } => default
@@ -336,16 +359,22 @@ fn make_prompt(q: &Question, t: &Template, a: &Answers, seed: &Seed) -> Result<P
     let title = q
         .prompt
         .render(&ctx)
-        .map_err(|e| eval_error(id, "prompt", e))?;
+        .map_err(|e| fault(id, "prompt", Some(q.prompt.source()), e))?;
     let description = q
         .description
         .as_ref()
-        .map(|v| v.render(&ctx).map_err(|e| eval_error(id, "description", e)))
+        .map(|v| {
+            v.render(&ctx)
+                .map_err(|e| fault(id, "description", Some(v.source()), e))
+        })
         .transpose()?;
     let placeholder = q
         .placeholder
         .as_ref()
-        .map(|v| v.render(&ctx).map_err(|e| eval_error(id, "placeholder", e)))
+        .map(|v| {
+            v.render(&ctx)
+                .map_err(|e| fault(id, "placeholder", Some(v.source()), e))
+        })
         .transpose()?;
     let required = eval_typed(&q.required, &ctx, id, "required")?;
     let min = q
@@ -428,6 +457,14 @@ fn parse_kind(id: &Id, kind: PromptKind, value: Value) -> Result<Answer, Rejecti
             .ok_or_else(|| fail("must be an array of strings")),
     }
 }
+/// The answer of a question left empty with no default: `[]` for a list
+/// answer, `none` otherwise.
+fn empty_answer(kind: PromptKind) -> Answer {
+    match kind {
+        PromptKind::MultiSelect | PromptKind::TextLoop => Answer::List(vec![]),
+        _ => Answer::None,
+    }
+}
 fn count(n: u32, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
@@ -501,7 +538,7 @@ fn validate(id: &Id, rules: &Rules, value: Value) -> Result<Answer, Rejection> {
         if rules.required == Some(true) {
             return fail("is required".into());
         }
-        return Ok(Answer::None);
+        return Ok(empty_answer(rules.kind));
     }
     let answer = parse_kind(id, rules.kind, value)?;
     if rules.required == Some(true)
@@ -584,6 +621,7 @@ pub fn configured_defaults(
             id: id.clone(),
             field: "configured default",
             message: error.message,
+            expression: None,
         })?;
         defaults.insert(id.clone(), RawAnswer(value.clone()));
     }
@@ -644,8 +682,9 @@ fn check_answer(
 ) -> Result<Answer, CheckError> {
     let id = &prompt.id;
     let q = question_by_id(&template.interview, id).expect("prompt has question");
+    let empty = raw.0.is_null();
     let mut answer = validate(id, &Rules::of_prompt(prompt, q), raw.0)?;
-    if answer == Answer::None {
+    if empty {
         return Ok(answer);
     }
     if let Some(expr) = &q.format {
@@ -659,26 +698,26 @@ fn check_answer(
                         minijinja::Error::new(minijinja::ErrorKind::InvalidOperation, e.to_string())
                     })
                 })
-                .map_err(|e| eval_error(id, "format", e).into())
+                .map_err(|e| fault(id, "format", Some(expr.source()), e).into())
         };
         answer = match answer {
             Answer::Text(v) => Answer::Text(
                 serde_json::from_value(apply(Value::String(v))?)
-                    .map_err(|e| eval_error(id, "format", e))?,
+                    .map_err(|e| fault(id, "format", Some(expr.source()), e))?,
             ),
             Answer::Bool(v) => Answer::Bool(
                 serde_json::from_value(apply(Value::Bool(v))?)
-                    .map_err(|e| eval_error(id, "format", e))?,
+                    .map_err(|e| fault(id, "format", Some(expr.source()), e))?,
             ),
             Answer::List(v) if prompt.kind == PromptKind::MultiSelect => Answer::List(
                 serde_json::from_value(apply(serde_json::json!(v))?)
-                    .map_err(|e| eval_error(id, "format", e))?,
+                    .map_err(|e| fault(id, "format", Some(expr.source()), e))?,
             ),
             Answer::List(v) => Answer::List(
                 v.into_iter()
                     .map(|s| {
                         serde_json::from_value(apply(Value::String(s))?)
-                            .map_err(|e| eval_error(id, "format", e).into())
+                            .map_err(|e| fault(id, "format", Some(expr.source()), e).into())
                     })
                     .collect::<Result<Vec<_>, CheckError>>()?,
             ),
@@ -711,8 +750,10 @@ impl Advance<'_> {
                             return Ok(false);
                         }
                         let default = render_default(q, self.template, &self.answers, &self.seed)?;
-                        self.answers
-                            .insert(q.id.clone(), default.unwrap_or(Answer::None));
+                        self.answers.insert(
+                            q.id.clone(),
+                            default.unwrap_or_else(|| empty_answer(prompt_kind(q))),
+                        );
                         continue;
                     }
                     if !question_ready(q, &self.answers, self.template, &self.seed) {
@@ -725,7 +766,7 @@ impl Advance<'_> {
                             .map(|w| {
                                 w.eval(&ctx)
                                     .map(|v| v.is_true())
-                                    .map_err(|e| eval_error(&q.id, "when", e))
+                                    .map_err(|e| fault(&q.id, "when", Some(w.source()), e))
                             })
                             .transpose()?
                             .unwrap_or(true);
@@ -761,8 +802,10 @@ impl Advance<'_> {
                             return Ok(false);
                         }
                         let default = render_default(q, self.template, &self.answers, &self.seed)?;
-                        self.answers
-                            .insert(q.id.clone(), default.unwrap_or(Answer::None));
+                        self.answers.insert(
+                            q.id.clone(),
+                            default.unwrap_or_else(|| empty_answer(prompt_kind(q))),
+                        );
                     }
                 }
                 Node::Computed(c) => {
@@ -784,7 +827,7 @@ impl Advance<'_> {
                             .map(|w| {
                                 w.eval(&ctx)
                                     .map(|v| v.is_true())
-                                    .map_err(|e| eval_error(&c.id, "when", e))
+                                    .map_err(|e| fault(&c.id, "when", Some(w.source()), e))
                             })
                             .transpose()?
                             .unwrap_or(true);
@@ -792,10 +835,10 @@ impl Advance<'_> {
                         let value = c
                             .expr
                             .eval(&ctx)
-                            .map_err(|e| eval_error(&c.id, "computed", e))?;
+                            .map_err(|e| fault(&c.id, "computed", Some(c.expr.source()), e))?;
                         serde_json::to_value(value)
                             .map(Answer::Value)
-                            .map_err(|e| eval_error(&c.id, "computed", e))?
+                            .map_err(|e| fault(&c.id, "computed", Some(c.expr.source()), e))?
                     } else {
                         Answer::None
                     };
@@ -816,7 +859,7 @@ impl Advance<'_> {
                             .map(|w| {
                                 w.eval(&ctx)
                                     .map(|v| v.is_true())
-                                    .map_err(|e| eval_error(&g.name, "when", e))
+                                    .map_err(|e| fault(&g.name, "when", Some(w.source()), e))
                             })
                             .transpose()?
                             .unwrap_or(true);
@@ -856,9 +899,9 @@ impl Advance<'_> {
                         .when
                         .as_ref()
                         .map(|w| {
-                            w.eval(&ctx)
-                                .map(|v| v.is_true())
-                                .map_err(|e| eval_error(&Id::parse("hook").unwrap(), "when", e))
+                            w.eval(&ctx).map(|v| v.is_true()).map_err(|e| {
+                                fault(&Id::parse("hook").unwrap(), "when", Some(w.source()), e)
+                            })
                         })
                         .transpose()?
                         .unwrap_or(true);
@@ -890,15 +933,20 @@ impl Advance<'_> {
                         .when
                         .as_ref()
                         .map(|w| {
-                            w.eval(&ctx)
-                                .map(|v| v.is_true())
-                                .map_err(|e| eval_error(&Id::parse("message").unwrap(), "when", e))
+                            w.eval(&ctx).map(|v| v.is_true()).map_err(|e| {
+                                fault(&Id::parse("message").unwrap(), "when", Some(w.source()), e)
+                            })
                         })
                         .transpose()?
                         .unwrap_or(true);
                     if active {
                         let text = m.text.render(&ctx).map_err(|e| {
-                            eval_error(&Id::parse("message").unwrap(), "message", e)
+                            fault(
+                                &Id::parse("message").unwrap(),
+                                "message",
+                                Some(m.text.source()),
+                                e,
+                            )
                         })?;
                         if !text.trim().is_empty() {
                             self.batch.items.push(Item::Message(text.clone()));
@@ -1062,7 +1110,7 @@ impl<'a> Pending<'a> {
                 Some(raw) => self.check_inner(&p.id, raw),
                 None => match &p.default {
                     Some(v) => self.check_inner(&p.id, RawAnswer(v.to_json())),
-                    None if !p.constraints.required => Ok(Answer::None),
+                    None if !p.constraints.required => Ok(empty_answer(p.kind)),
                     None => Err(rejection(&p.id, "is required").into()),
                 },
             };

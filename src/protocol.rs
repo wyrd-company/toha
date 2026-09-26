@@ -210,6 +210,7 @@ pub fn answer_headless<'a>(
                     id: id.clone(),
                     field: "answer",
                     message: "is not a question in this template".into(),
+                    expression: None,
                 });
             }
             return Ok(Headless::Completed {
