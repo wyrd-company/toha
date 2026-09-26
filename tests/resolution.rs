@@ -648,3 +648,49 @@ fn named_template_resumes_its_staged_interview_by_formal_name() {
         "{error}"
     );
 }
+
+#[test]
+fn ambiguous_name_names_the_same_command_with_each_formal_name() {
+    let root = TempDir::new().unwrap();
+    let (url, _) = repository(&root);
+    write_config(
+        &root,
+        &format!("hosts:\n  local: {}\n", support::file_url(root.path())),
+    );
+    run(&root, &["templates", "add", &url], 0);
+    let answers = root.path().join("answers.json");
+    fs::write(&answers, "{}").unwrap();
+    let answers = answers.to_str().unwrap();
+    let target = root.path().join("target");
+    let target = target.to_str().unwrap();
+    let formal = ["local:owner/repo#one", "local:owner/repo#two"];
+    let cases: [(Vec<&str>, Box<dyn Fn(&str) -> String>); 4] = [
+        (
+            vec!["apply", "--answers", answers, "same", target],
+            Box::new(|formal| format!("toha apply --answers {answers} {formal} {target}")),
+        ),
+        (
+            vec!["stage", "same", target, "--async"],
+            Box::new(|formal| format!("toha stage {formal} {target} --async")),
+        ),
+        (
+            vec!["templates", "remove", "same"],
+            Box::new(|formal| format!("toha templates remove {formal}")),
+        ),
+        (
+            vec!["templates", "update", "same"],
+            Box::new(|formal| format!("toha templates update {formal}")),
+        ),
+    ];
+    for (args, retry) in cases {
+        let output = run(&root, &args, 5);
+        let error = String::from_utf8_lossy(&output.stderr);
+        for formal in formal {
+            let command = retry(formal);
+            assert!(
+                error.contains(&command),
+                "{args:?}: stderr does not name `{command}`:\n{error}"
+            );
+        }
+    }
+}
