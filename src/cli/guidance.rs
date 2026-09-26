@@ -124,6 +124,38 @@ pub fn incomplete(path: &Path) -> String {
     .join("\n")
 }
 
+/// The command line of this process without `--dry-run`.
+fn this_command_without_dry_run() -> String {
+    std::iter::once("toha".to_string())
+        .chain(
+            std::env::args()
+                .skip(1)
+                .filter(|arg| arg != "--dry-run" && arg != "-d")
+                .map(|arg| word(&arg)),
+        )
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// `apply --answers --dry-run` left questions remaining.
+pub fn dry_run_incomplete(path: &Path) -> String {
+    [
+        format!(
+            "questions remain for the interview at {}; a dry run records nothing",
+            target(path)
+        ),
+        format!(
+            "to preview the files: add answers for the batch to the answers document, then {}",
+            this_command()
+        ),
+        format!(
+            "to record these answers: {}",
+            this_command_without_dry_run()
+        ),
+    ]
+    .join("\n")
+}
+
 /// `continue` found the staged interview complete.
 pub fn complete(path: &Path) -> String {
     format!(

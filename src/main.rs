@@ -731,10 +731,13 @@ fn run(
                             &context(&saved),
                             Some(&rejections),
                         );
-                        if !dry_run {
+                        if dry_run {
+                            eprintln!("{}", guidance::dry_run_incomplete(path));
+                        } else {
                             if let Err(e) = store.save(&saved) {
                                 return Outcome::Error(e.to_string());
                             }
+                            eprintln!("{}", guidance::incomplete(path));
                         }
                         return Outcome::Document(document, 4);
                     }
@@ -811,10 +814,13 @@ fn run(
                             accepted,
                         } => {
                             saved.submissions.extend(accepted);
-                            if !dry_run {
+                            if dry_run {
+                                eprintln!("{}", guidance::dry_run_incomplete(path));
+                            } else {
                                 if let Err(e) = store.save(&saved) {
                                     return Outcome::Error(e.to_string());
                                 }
+                                eprintln!("{}", guidance::incomplete(path));
                             }
                             return Outcome::Document(
                                 protocol::batch_document(
