@@ -16,7 +16,7 @@ An omitted key in `--answers` or `continue` uses the configured default, then th
 
 Hooks need registry trust through a name or `--trust` for this run. A folder or address supplied directly needs `--trust`, even when it matches a trusted registry entry. Inspect the dry run before granting trust: a `--dry-run` of untrusted hooks exits 0, lists each hook, and names on standard error the `--trust` command that runs them. `--force` permits overwriting target files; without it a conflict writes nothing.
 
-Configuration files are `$TOHA_CONFIG` (local) and `$TOHA_USER_CONFIG` (user) when set. `toha skills view toha --path references/environment.md` lists every environment variable and directory toha reads; `toha --help` lists them too. `toha skills view toha --path references/protocol.md` prints a tested staged exchange.
+Configuration files are `$TOHA_CONFIG` (local) and `$TOHA_USER_CONFIG` (user) when set and not empty; an empty value counts as unset. `toha skills view toha --path references/environment.md` lists every environment variable and directory toha reads; `toha --help` lists them too. `toha skills view toha --path references/protocol.md` prints a tested staged exchange.
 
 | Exit | Action |
 | --- | --- |
