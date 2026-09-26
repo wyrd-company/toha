@@ -22,7 +22,9 @@ fn every_fixture_through_cli() {
         let mut command = support::isolated_command(isolation.path());
         command
             .arg("apply")
-            .arg(fixture.join("template").canonicalize().unwrap())
+            .arg(support::folder_address(
+                &fixture.join("template").canonicalize().unwrap(),
+            ))
             .arg(target.path())
             .arg("--answers")
             .arg(fixture.join("answers.json"))
@@ -92,13 +94,13 @@ fn commands_without_documents_require_a_terminal() {
     for args in [
         vec![
             "stage".to_string(),
-            template.display().to_string(),
+            support::folder_address(&template),
             target.path().display().to_string(),
         ],
         vec!["continue".to_string(), target.path().display().to_string()],
         vec![
             "apply".to_string(),
-            template.display().to_string(),
+            support::folder_address(&template),
             target.path().display().to_string(),
         ],
     ] {
@@ -228,7 +230,9 @@ fn default_render_failure_exits_one_without_writing() {
     let isolation = tempfile::tempdir().unwrap();
     let output = support::isolated_command(isolation.path())
         .arg("apply")
-        .arg(fixture.join("template").canonicalize().unwrap())
+        .arg(support::folder_address(
+            &fixture.join("template").canonicalize().unwrap(),
+        ))
         .arg(target.path())
         .arg("--answers")
         .arg(fixture.join("answers.json"))

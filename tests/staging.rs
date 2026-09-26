@@ -173,7 +173,7 @@ fn every_success_fixture_through_staged_cli() {
         let initial = command(state.path())
             .args([
                 "stage",
-                template.to_str().unwrap(),
+                support::folder_address(&template).as_str(),
                 target.path().to_str().unwrap(),
                 "--async",
             ])
@@ -335,7 +335,7 @@ fn rejected_continue_preserves_record_and_abort_is_idempotent() {
     let initial = command(state.path())
         .args([
             "stage",
-            template.to_str().unwrap(),
+            support::folder_address(&template).as_str(),
             target.path().to_str().unwrap(),
             "--async",
         ])
@@ -375,7 +375,7 @@ fn missing_required_stages_then_continues_and_applies() {
     let output = command(state.path())
         .args([
             "apply",
-            template.to_str().unwrap(),
+            support::folder_address(&template).as_str(),
             target.path().to_str().unwrap(),
             "--answers",
             empty.to_str().unwrap(),
@@ -413,9 +413,10 @@ fn duplicate_stage_and_missing_staged_apply() {
     let template = Path::new("tests/fixtures/text-basic/template")
         .canonicalize()
         .unwrap();
+    let template_address = support::folder_address(&template);
     let args = [
         "stage",
-        template.to_str().unwrap(),
+        template_address.as_str(),
         target.path().to_str().unwrap(),
         "--async",
     ];
@@ -441,7 +442,7 @@ fn duplicate_stage_and_missing_staged_apply() {
         command(state.path())
             .args([
                 "apply",
-                template.to_str().unwrap(),
+                support::folder_address(&template).as_str(),
                 target.path().to_str().unwrap()
             ])
             .output()
@@ -519,7 +520,7 @@ fn explicit_null_differs_from_missing_in_one_shot_and_staged() {
         let initial = command(state.path())
             .args([
                 "stage",
-                template_path.to_str().unwrap(),
+                support::folder_address(&template_path).as_str(),
                 target.path().to_str().unwrap(),
                 "--async",
             ])
@@ -578,7 +579,7 @@ fn skipped_group_has_same_batch_boundary_after_replay() {
     let initial = command(state.path())
         .args([
             "stage",
-            template_path.to_str().unwrap(),
+            support::folder_address(&template_path).as_str(),
             target.path().to_str().unwrap(),
             "--async",
         ])
@@ -620,7 +621,7 @@ fn evaluation_failure_exits_one_and_preserves_staged_bytes() {
     let initial = command(state.path())
         .args([
             "stage",
-            template.to_str().unwrap(),
+            support::folder_address(&template).as_str(),
             target.path().to_str().unwrap(),
             "--async",
         ])
@@ -648,7 +649,7 @@ fn async_file_pending_apply_and_invalid_answers_codes() {
     let stage = command(state.path())
         .args([
             "stage",
-            template.to_str().unwrap(),
+            support::folder_address(&template).as_str(),
             target.path().to_str().unwrap(),
             "--async",
             batch_file.to_str().unwrap(),
@@ -702,7 +703,7 @@ fn staged_dry_run_and_needs_trust_keep_record() {
     let stage = command(state.path())
         .args([
             "stage",
-            template.to_str().unwrap(),
+            support::folder_address(&template).as_str(),
             target.path().to_str().unwrap(),
             "--async",
         ])

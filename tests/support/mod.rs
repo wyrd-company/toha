@@ -130,6 +130,24 @@ pub fn file_url(path: &Path) -> String {
     }
 }
 
+pub fn folder_address(path: &Path) -> String {
+    let value = path.to_string_lossy();
+    #[cfg(windows)]
+    if let Some(drive_path) = value.strip_prefix(r"\\?\") {
+        assert!(
+            drive_path
+                .as_bytes()
+                .get(0..3)
+                .is_some_and(|prefix| prefix[0].is_ascii_alphabetic()
+                    && prefix[1] == b':'
+                    && prefix[2] == b'\\'),
+            "expected a drive-letter folder path: {value}"
+        );
+        return drive_path.to_owned();
+    }
+    value.into_owned()
+}
+
 #[test]
 fn every_platform_directory_input_is_isolated() {
     let mut command = Command::new("toha");
