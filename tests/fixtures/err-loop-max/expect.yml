@@ -1,3 +1,4 @@
 exit: 4
 error_contains:
-  - "loop.max"
+  - "test"
+  - "must have at most 1 item"

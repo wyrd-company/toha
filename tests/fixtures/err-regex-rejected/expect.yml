@@ -1,3 +1,4 @@
 exit: 4
 error_contains:
-  - "validate.regex"
+  - "test"
+  - "must match ^[A-Z]+$"

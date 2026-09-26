@@ -1,3 +1,4 @@
 exit: 4
 error_contains:
-  - "select option"
+  - "test"
+  - "must be one of: a, b"

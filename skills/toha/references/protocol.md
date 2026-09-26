@@ -112,7 +112,7 @@ jq -cS '{status,answers}' "$TOHA_TARGET/result.json"
 ```
 
 ```text
-{"errors":{"slug":["validate.regex"]},"questions":["slug","tags"],"status":"questions"}
+{"errors":{"slug":["must match ^[a-z0-9-]+$"]},"questions":["slug","tags"],"status":"questions"}
 {"slug":"sample-note","tags":["One"]}
 {"questions":["has_summary"],"status":"questions"}
 {"questions":["status","summary"],"status":"questions"}
