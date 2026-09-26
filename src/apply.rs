@@ -59,6 +59,17 @@ impl Plan {
         options: ApplyOptions,
         runner: &dyn HookRunner,
     ) -> Result<Applied, ApplyError> {
+        self.apply_reporting(target, options, runner, &mut |_| {})
+    }
+    /// `apply`, calling `on_written` with each file path as soon as the file
+    /// is written, so that a caller can report the files before any hook runs.
+    pub fn apply_reporting(
+        self,
+        target: &Path,
+        options: ApplyOptions,
+        runner: &dyn HookRunner,
+        on_written: &mut dyn FnMut(&TargetPath),
+    ) -> Result<Applied, ApplyError> {
         let mut conflicts = self.conflicts.clone();
         for file in &self.files {
             if target.join(file.path.as_path()).exists() && !conflicts.contains(&file.path) {
@@ -137,6 +148,7 @@ impl Plan {
                     })?;
                 }
             }
+            on_written(&file.path);
             written.push(file.path.clone());
         }
         for (index, hook) in self.hooks.iter().enumerate() {

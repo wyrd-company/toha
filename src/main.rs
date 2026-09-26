@@ -1018,22 +1018,19 @@ fn run(
     if let Some(message) = &before {
         println!("{message}");
     }
-    match plan.apply(
+    // Each file line is printed as the file is written, so that the lines
+    // precede the output of every hook.
+    match plan.apply_reporting(
         path,
         ApplyOptions {
             force,
             trusted: registry_trusted || trust,
         },
         &ProcessRunner,
+        &mut |file| println!("{file}"),
     ) {
-        Ok(Applied::Written {
-            files, after_apply, ..
-        }) => {
-            let mut lines = Vec::new();
-            lines.extend(files.into_iter().map(|p| p.to_string()));
-            if let Some(message) = after_apply {
-                lines.push(message);
-            }
+        Ok(Applied::Written { after_apply, .. }) => {
+            let lines = Vec::from_iter(after_apply);
             if saved.is_some() {
                 if let Err(e) = store.remove(&target) {
                     return Outcome::Error(e.to_string());
