@@ -8,20 +8,6 @@ use std::{
     process::Command,
 };
 
-#[allow(dead_code)]
-pub fn isolated_command(root: &Path) -> Command {
-    let mut command = Command::new(assert_cmd::cargo::cargo_bin("toha"));
-    command
-        .env("HOME", root.join("home"))
-        .env("XDG_CONFIG_HOME", root.join("config"))
-        .env("XDG_DATA_HOME", root.join("data"))
-        .env("XDG_CACHE_HOME", root.join("cache"))
-        .env("XDG_STATE_HOME", root.join("state"))
-        .env("TOHA_USER_CONFIG", root.join("config/toha/config.yml"))
-        .env("TOHA_CONFIG", root.join("local.yml"));
-    command
-}
-
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
