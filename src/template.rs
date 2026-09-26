@@ -671,6 +671,9 @@ impl Template {
             serde_json::from_value(doc).map_err(|e| error("template.yml", e.to_string()))?;
         let source = raw.source.as_deref().unwrap_or("template");
         let source_dir = root.join(source);
+        if !source_dir.is_dir() {
+            problem(&mut problems, "source", "source directory does not exist");
+        }
         if Path::new(source).is_absolute()
             || Path::new(source)
                 .components()

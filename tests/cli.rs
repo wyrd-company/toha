@@ -4,8 +4,6 @@
 // ---
 mod support;
 
-use std::process::Command;
-
 #[test]
 fn every_fixture_through_cli() {
     for fixture in support::fixtures() {
@@ -18,8 +16,9 @@ fn every_fixture_through_cli() {
             continue;
         }
         let target = tempfile::tempdir().unwrap();
+        let isolation = tempfile::tempdir().unwrap();
         support::copy_tree(&fixture.join("existing"), target.path());
-        let mut command = Command::new(assert_cmd::cargo::cargo_bin!("toha"));
+        let mut command = support::isolated_command(isolation.path());
         command
             .arg("apply")
             .arg(fixture.join("template").canonicalize().unwrap())
@@ -59,7 +58,7 @@ fn every_fixture_through_cli() {
             );
         }
         if fixture.join("expected").exists() {
-            support::assert_tree(target.path(), &fixture.join("expected"));
+            support::assert_tree(target.path(), &fixture.join("expected"), &fixture);
             let stdout = String::from_utf8_lossy(&output.stdout);
             for part in &expect.stdout_contains {
                 assert!(stdout.contains(part), "{}: {stdout}", fixture.display());
@@ -73,7 +72,11 @@ fn every_fixture_through_cli() {
                 fixture.display()
             );
         } else {
-            assert!(std::fs::read_dir(target.path()).unwrap().next().is_none());
+            assert!(
+                std::fs::read_dir(target.path()).unwrap().next().is_none(),
+                "{}",
+                fixture.display()
+            );
         }
     }
 }
@@ -81,6 +84,7 @@ fn every_fixture_through_cli() {
 #[test]
 fn commands_without_documents_require_a_terminal() {
     let target = tempfile::tempdir().unwrap();
+    let isolation = tempfile::tempdir().unwrap();
     let template = std::path::Path::new("tests/fixtures/text-basic/template")
         .canonicalize()
         .unwrap();
@@ -97,7 +101,7 @@ fn commands_without_documents_require_a_terminal() {
             target.path().display().to_string(),
         ],
     ] {
-        let output = Command::new(assert_cmd::cargo::cargo_bin!("toha"))
+        let output = support::isolated_command(isolation.path())
             .args(args)
             .output()
             .unwrap();
@@ -115,6 +119,7 @@ fn terminal_text_and_confirm_write_rendered_file() {
     use expectrl::{Expect, Session};
     let folder = tempfile::tempdir().unwrap();
     let target = tempfile::tempdir().unwrap();
+    let isolation = tempfile::tempdir().unwrap();
     std::fs::create_dir(folder.path().join("template")).unwrap();
     std::fs::write(folder.path().join("template.yml"), "name: sample\nsource: template\ninterview:\n  - id: label\n    type: text\n    prompt: Label?\n    required: true\n  - id: enabled\n    type: confirm\n    prompt: Enabled?\n").unwrap();
     std::fs::write(
@@ -122,7 +127,7 @@ fn terminal_text_and_confirm_write_rendered_file() {
         "{{ label }} {{ enabled }}",
     )
     .unwrap();
-    let mut command = Command::new(assert_cmd::cargo::cargo_bin!("toha"));
+    let mut command = support::isolated_command(isolation.path());
     command.arg("apply").arg(folder.path()).arg(target.path());
     let mut session = Session::spawn(command).unwrap();
     session.expect("Label?").unwrap();
@@ -144,8 +149,9 @@ fn cancel_during_continue_preserves_staged_record() {
         .canonicalize()
         .unwrap();
     let target = tempfile::tempdir().unwrap();
+    let isolation = tempfile::tempdir().unwrap();
     let state = tempfile::tempdir().unwrap();
-    let stage = Command::new(assert_cmd::cargo::cargo_bin!("toha"))
+    let stage = support::isolated_command(isolation.path())
         .arg("stage")
         .arg(&fixture)
         .arg(target.path())
@@ -161,7 +167,7 @@ fn cancel_during_continue_preserves_staged_record() {
         .unwrap()
         .path();
     let before = std::fs::read(&record).unwrap();
-    let mut command = Command::new(assert_cmd::cargo::cargo_bin!("toha"));
+    let mut command = support::isolated_command(isolation.path());
     command
         .arg("continue")
         .arg(target.path())
@@ -179,9 +185,11 @@ fn continue_prints_prior_batch_messages_once() {
     use expectrl::{Expect, Session};
     let folder = tempfile::tempdir().unwrap();
     let target = tempfile::tempdir().unwrap();
+    let isolation = tempfile::tempdir().unwrap();
     let state = tempfile::tempdir().unwrap();
+    std::fs::create_dir(folder.path().join("template")).unwrap();
     std::fs::write(folder.path().join("template.yml"), "name: sample\ninterview:\n  - message: Start\n  - { id: first, type: text, prompt: First? }\n  - message: 'Thanks {{ first }}'\n  - { id: second, type: text, prompt: Second? }\n  - message: 'Done {{ second }}'\n").unwrap();
-    let stage = Command::new(assert_cmd::cargo::cargo_bin!("toha"))
+    let stage = support::isolated_command(isolation.path())
         .arg("stage")
         .arg(folder.path())
         .arg(target.path())
@@ -192,7 +200,7 @@ fn continue_prints_prior_batch_messages_once() {
     assert_eq!(stage.status.code(), Some(4));
     let answers = folder.path().join("answers.json");
     std::fs::write(&answers, "{\"first\":\"Ada\"}").unwrap();
-    let first = Command::new(assert_cmd::cargo::cargo_bin!("toha"))
+    let first = support::isolated_command(isolation.path())
         .arg("continue")
         .arg(target.path())
         .arg(&answers)
@@ -201,7 +209,7 @@ fn continue_prints_prior_batch_messages_once() {
         .unwrap();
     assert_eq!(first.status.code(), Some(4));
 
-    let mut command = Command::new(assert_cmd::cargo::cargo_bin!("toha"));
+    let mut command = support::isolated_command(isolation.path());
     command
         .arg("continue")
         .arg(target.path())
@@ -218,7 +226,8 @@ fn continue_prints_prior_batch_messages_once() {
 fn default_render_failure_exits_one_without_writing() {
     let fixture = std::path::Path::new("tests/fixtures/err-default-render");
     let target = tempfile::tempdir().unwrap();
-    let output = Command::new(assert_cmd::cargo::cargo_bin!("toha"))
+    let isolation = tempfile::tempdir().unwrap();
+    let output = support::isolated_command(isolation.path())
         .arg("apply")
         .arg(fixture.join("template").canonicalize().unwrap())
         .arg(target.path())
@@ -250,7 +259,8 @@ fn trusted_script_runs_in_target() {
     let answers = folder.path().join("answers.json");
     std::fs::write(&answers, "{}").unwrap();
     let target = tempfile::tempdir().unwrap();
-    let output = Command::new(assert_cmd::cargo::cargo_bin!("toha"))
+    let isolation = tempfile::tempdir().unwrap();
+    let output = support::isolated_command(isolation.path())
         .args([
             "apply",
             folder.path().to_str().unwrap(),

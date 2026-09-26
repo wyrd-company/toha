@@ -124,18 +124,19 @@ impl Store {
 
 impl StagedRecord {
     pub fn replay<'a>(&self, template: &'a Template) -> Result<Interview<'a>, StagingError> {
+        self.replay_with_defaults(template, IndexMap::new())
+    }
+    pub fn replay_with_defaults<'a>(
+        &self,
+        template: &'a Template,
+        defaults: IndexMap<crate::Id, RawAnswer>,
+    ) -> Result<Interview<'a>, StagingError> {
         let now = self
             .now
             .parse()
             .map_err(|e: jiff::Error| StagingError::Replay(e.to_string()))?;
-        let mut interview = Interview::start(
-            template,
-            Seed {
-                now,
-                defaults: IndexMap::new(),
-            },
-        )
-        .map_err(|e| StagingError::Replay(e.to_string()))?;
+        let mut interview = Interview::start(template, Seed { now, defaults })
+            .map_err(|e| StagingError::Replay(e.to_string()))?;
         for submission in &self.submissions {
             let Interview::Asking(pending) = interview else {
                 return Err(StagingError::Replay(

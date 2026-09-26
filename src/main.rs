@@ -1,4 +1,5 @@
 mod cli {
+    pub mod resolve;
     pub mod templates;
 }
 // ---
@@ -15,6 +16,7 @@ use std::{
 mod terminal;
 
 use clap::{Parser, Subcommand};
+use cli::resolve::{ResolveError, ResolvedTemplate};
 use toha::{
     AnswerError, Applied, ApplyOptions, Interview, Plan, Seed, Template,
     hook::ProcessRunner,
@@ -245,20 +247,6 @@ fn plan_lines(plan: &Plan, force: bool) -> Vec<String> {
     lines
 }
 
-fn local_folder(value: &str) -> Result<PathBuf, String> {
-    if !(value.starts_with('.') || value.starts_with('/') || value.starts_with('~')) {
-        return Err("only local folder templates are supported yet".into());
-    }
-    if let Some(rest) = value.strip_prefix('~') {
-        if rest.is_empty() || rest.starts_with('/') {
-            return std::env::var_os("HOME")
-                .map(|home| PathBuf::from(home).join(rest.trim_start_matches('/')))
-                .ok_or_else(|| "home directory is unavailable".into());
-        }
-    }
-    Ok(PathBuf::from(value))
-}
-
 fn read_answers(path: &str) -> Result<toha::RawAnswers, String> {
     let text = if path == "-" {
         let mut text = String::new();
@@ -271,7 +259,7 @@ fn read_answers(path: &str) -> Result<toha::RawAnswers, String> {
     };
     protocol::parse_answers(&text).map_err(|e| e.to_string())
 }
-fn seed() -> Result<Seed, String> {
+fn seed(template: &Template, config: &toha::config::Config) -> Result<Seed, String> {
     let now = match std::env::var("TOHA_NOW") {
         Ok(value) => value.parse().map_err(|e: jiff::Error| e.to_string())?,
         Err(std::env::VarError::NotPresent) => jiff::Zoned::now(),
@@ -279,7 +267,8 @@ fn seed() -> Result<Seed, String> {
     };
     Ok(Seed {
         now,
-        defaults: indexmap::IndexMap::new(),
+        defaults: toha::interview::configured_defaults(template, &config.defaults)
+            .map_err(|e| e.to_string())?,
     })
 }
 fn setup(path: &Path, dirs: &Dirs) -> Result<(PathBuf, Store), String> {
@@ -293,20 +282,27 @@ fn context(record: &StagedRecord) -> Context {
         commit: record.commit.clone(),
     }
 }
-fn load_template(folder: &str) -> Result<(Template, String), String> {
-    let path = local_folder(folder)?;
-    let formal = path
-        .canonicalize()
-        .map_err(|e| e.to_string())?
-        .to_string_lossy()
-        .into_owned();
-    Ok((Template::load(&path).map_err(|e| e.to_string())?, formal))
+fn load_template(resolved: &ResolvedTemplate) -> Result<Template, String> {
+    Template::load(&resolved.folder).map_err(|e| e.to_string())
 }
-fn record(target: PathBuf, template: String, now: &jiff::Zoned) -> StagedRecord {
+fn environment(
+    dirs: &Dirs,
+) -> Result<(toha::config::Config, toha::registry::Registry, PathBuf), Outcome> {
+    let cwd = std::env::current_dir().map_err(|e| Outcome::Error(e.to_string()))?;
+    let (config, registry) = cli::resolve::load_context(dirs, &cwd).map_err(resolve_error)?;
+    Ok((config, registry, cwd))
+}
+fn resolve_error(error: ResolveError) -> Outcome {
+    match error {
+        ResolveError::Error(message) => Outcome::Error(message),
+        ResolveError::Ambiguous { name, matches } => Outcome::Ambiguous { name, matches },
+    }
+}
+fn record(target: PathBuf, resolved: &ResolvedTemplate, now: &jiff::Zoned) -> StagedRecord {
     StagedRecord {
         target,
-        template,
-        commit: String::new(),
+        template: resolved.formal_name.clone(),
+        commit: resolved.commit.clone(),
         now: now.to_string(),
         submissions: vec![],
     }
@@ -326,15 +322,23 @@ fn stage(template: String, path: PathBuf, output: Option<Option<String>>, dirs: 
         Ok(None) => {}
         Err(e) => return Outcome::Error(e.to_string()),
     }
-    let (template, formal) = match load_template(&template) {
+    let (config, registry, cwd) = match environment(dirs) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let resolved = match cli::resolve::resolve_template(&template, &config, &registry, dirs, &cwd) {
+        Ok(v) => v,
+        Err(e) => return resolve_error(e),
+    };
+    let template = match load_template(&resolved) {
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
     };
-    let seed = match seed() {
+    let seed = match seed(&template, &config) {
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
     };
-    let saved = record(target, formal, &seed.now);
+    let saved = record(target, &resolved, &seed.now);
     let interview = match Interview::start(&template, seed) {
         Ok(v) => v,
         Err(e) => return Outcome::Error(e.to_string()),
@@ -397,11 +401,30 @@ fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome 
         Ok(None) => return Outcome::Error("no staged interview".into()),
         Err(e) => return Outcome::Error(e.to_string()),
     };
-    let (template, _) = match load_template(&saved.template) {
+    let (config, registry, cwd) = match environment(dirs) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let resolved = match cli::resolve::resume_template(
+        &saved.template,
+        &saved.commit,
+        &config,
+        &registry,
+        dirs,
+        &cwd,
+    ) {
+        Ok(v) => v,
+        Err(e) => return resolve_error(e),
+    };
+    let template = match load_template(&resolved) {
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
     };
-    let interview = match saved.replay(&template) {
+    let defaults = match toha::interview::configured_defaults(&template, &config.defaults) {
+        Ok(v) => v,
+        Err(e) => return Outcome::Error(e.to_string()),
+    };
+    let interview = match saved.replay_with_defaults(&template, defaults) {
         Ok(v) => v,
         Err(e) => return Outcome::Error(e.to_string()),
     };
@@ -494,20 +517,31 @@ fn run(
     if template.is_none() && answers.is_some() {
         return Outcome::Error("--answers requires a template".into());
     }
+    let (config, registry, cwd) = match environment(dirs) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let registry_trusted;
     let (template, interview, saved) = match (template, existing) {
         (Some(folder), None) => {
             if answers.is_none() && !io::stdin().is_terminal() {
                 return no_terminal();
             }
-            let (template, formal) = match load_template(&folder) {
+            let resolved =
+                match cli::resolve::resolve_template(&folder, &config, &registry, dirs, &cwd) {
+                    Ok(v) => v,
+                    Err(e) => return resolve_error(e),
+                };
+            registry_trusted = resolved.trusted;
+            let template = match load_template(&resolved) {
                 Ok(v) => v,
                 Err(e) => return Outcome::Error(e),
             };
-            let seed = match seed() {
+            let seed = match seed(&template, &config) {
                 Ok(v) => v,
                 Err(e) => return Outcome::Error(e),
             };
-            let saved = record(target.clone(), formal, &seed.now);
+            let saved = record(target.clone(), &resolved, &seed.now);
             let interview = match Interview::start(&template, seed) {
                 Ok(v) => v,
                 Err(e) => return Outcome::Error(e.to_string()),
@@ -551,11 +585,27 @@ fn run(
             }
         }
         (None, Some(saved)) => {
-            let (template, _) = match load_template(&saved.template) {
+            let resolved = match cli::resolve::resume_template(
+                &saved.template,
+                &saved.commit,
+                &config,
+                &registry,
+                dirs,
+                &cwd,
+            ) {
+                Ok(v) => v,
+                Err(e) => return resolve_error(e),
+            };
+            registry_trusted = resolved.trusted;
+            let template = match load_template(&resolved) {
                 Ok(v) => v,
                 Err(e) => return Outcome::Error(e),
             };
-            let interview = match saved.replay(&template) {
+            let defaults = match toha::interview::configured_defaults(&template, &config.defaults) {
+                Ok(v) => v,
+                Err(e) => return Outcome::Error(e.to_string()),
+            };
+            let interview = match saved.replay_with_defaults(&template, defaults) {
                 Ok(v) => v,
                 Err(e) => return Outcome::Error(e.to_string()),
             };
@@ -606,7 +656,7 @@ fn run(
         path,
         ApplyOptions {
             force,
-            trusted: trust,
+            trusted: registry_trusted || trust,
         },
         &ProcessRunner,
     ) {

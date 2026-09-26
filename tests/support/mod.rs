@@ -5,7 +5,22 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    process::Command,
 };
+
+#[allow(dead_code)]
+pub fn isolated_command(root: &Path) -> Command {
+    let mut command = Command::new(assert_cmd::cargo::cargo_bin("toha"));
+    command
+        .env("HOME", root.join("home"))
+        .env("XDG_CONFIG_HOME", root.join("config"))
+        .env("XDG_DATA_HOME", root.join("data"))
+        .env("XDG_CACHE_HOME", root.join("cache"))
+        .env("XDG_STATE_HOME", root.join("state"))
+        .env("TOHA_USER_CONFIG", root.join("config/toha/config.yml"))
+        .env("TOHA_CONFIG", root.join("local.yml"));
+    command
+}
 
 use serde::Deserialize;
 
@@ -84,7 +99,7 @@ pub fn expectation(fixture: &Path) -> Expect {
     serde_norway::from_str(&fs::read_to_string(fixture.join("expect.yml")).unwrap()).unwrap()
 }
 
-pub fn assert_tree(actual: &Path, expected: &Path) {
+pub fn assert_tree(actual: &Path, expected: &Path, fixture: &Path) {
     fn files(root: &Path) -> Vec<PathBuf> {
         fn walk(root: &Path, dir: &Path, result: &mut Vec<PathBuf>) {
             let mut entries: Vec<_> = fs::read_dir(dir)
@@ -116,7 +131,8 @@ pub fn assert_tree(actual: &Path, expected: &Path) {
         .collect();
     assert!(
         missing.is_empty() && extra.is_empty(),
-        "missing: {missing:?}; extra: {extra:?}"
+        "{}: missing: {missing:?}; extra: {extra:?}",
+        fixture.display()
     );
     for path in expected_files {
         let actual_bytes = fs::read(actual.join(&path)).unwrap();
@@ -124,7 +140,8 @@ pub fn assert_tree(actual: &Path, expected: &Path) {
         assert_eq!(
             actual_bytes,
             expected_bytes,
-            "different file: {}",
+            "{}: different file: {}",
+            fixture.display(),
             path.display()
         );
     }

@@ -149,6 +149,8 @@ fn fetches_https_git_repository() {
     git(&source, &["config", "user.email", "test@example.invalid"]);
     git(&source, &["config", "user.name", "Test"]);
     fs::write(source.join("template.yml"), "name: sample\ninterview: []\n").unwrap();
+    fs::create_dir(source.join("template")).unwrap();
+    fs::write(source.join("template/.gitkeep"), "").unwrap();
     git(&source, &["add", "."]);
     git(&source, &["commit", "-m", "initial"]);
     git(
@@ -229,10 +231,12 @@ fn fetches_https_git_repository() {
         std::env::set_var("XDG_CONFIG_HOME", root.path().join("config"));
         std::env::set_var("XDG_DATA_HOME", root.path().join("data"));
         std::env::set_var("XDG_CACHE_HOME", root.path().join("cache"));
+        std::env::set_var("XDG_STATE_HOME", root.path().join("state"));
         std::env::set_var(
             "TOHA_USER_CONFIG",
             root.path().join("config/toha/config.yml"),
         );
+        std::env::set_var("TOHA_CONFIG", root.path().join("local.yml"));
         std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
         std::env::set_var("GIT_SSL_CAINFO", &cert);
         std::env::set_var("CURL_CA_BUNDLE", &cert);
@@ -247,6 +251,7 @@ fn fetches_https_git_repository() {
         .env("XDG_CONFIG_HOME", root.path().join("config"))
         .env("XDG_DATA_HOME", root.path().join("data"))
         .env("XDG_CACHE_HOME", root.path().join("cache"))
+        .env("XDG_STATE_HOME", root.path().join("state"))
         .env(
             "TOHA_USER_CONFIG",
             root.path().join("config/toha/config.yml"),
@@ -280,6 +285,7 @@ fn fetches_https_git_repository() {
         .env("XDG_CONFIG_HOME", root.path().join("config"))
         .env("XDG_DATA_HOME", root.path().join("data"))
         .env("XDG_CACHE_HOME", root.path().join("cache"))
+        .env("XDG_STATE_HOME", root.path().join("state"))
         .env(
             "TOHA_USER_CONFIG",
             root.path().join("config/toha/config.yml"),
@@ -297,7 +303,9 @@ fn fetches_https_git_repository() {
             "XDG_CONFIG_HOME",
             "XDG_DATA_HOME",
             "XDG_CACHE_HOME",
+            "XDG_STATE_HOME",
             "TOHA_USER_CONFIG",
+            "TOHA_CONFIG",
             "GIT_CONFIG_NOSYSTEM",
             "GIT_SSL_CAINFO",
             "CURL_CA_BUNDLE",

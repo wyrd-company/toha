@@ -91,6 +91,13 @@ fn prompt_schema(prompt: &Prompt) -> Value {
             }
         }
     }
+    if !prompt.constraints.required {
+        let kind = property.get("type").cloned().unwrap();
+        property.insert("type".into(), json!([kind, "null"]));
+        if let Some(Value::Array(options)) = property.get_mut("enum") {
+            options.push(Value::Null);
+        }
+    }
     Value::Object(property)
 }
 pub fn batch_document(batch: &Batch, context: &Context, errors: Option<&Rejections>) -> Value {

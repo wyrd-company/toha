@@ -23,6 +23,38 @@ fn schema_validator() -> jsonschema::Validator {
         .build(protocol::protocol_schema())
         .unwrap()
 }
+#[test]
+fn optional_null_validates_against_batch_schema() {
+    let folder = tempfile::tempdir().unwrap();
+    fs::create_dir(folder.path().join("template")).unwrap();
+    fs::write(folder.path().join("template.yml"), "name: sample\ninterview:\n  - { id: text, type: text, prompt: Text? }\n  - { id: confirm, type: confirm, prompt: Confirm? }\n  - { id: choices, type: multiselect, prompt: Choices?, options: [one] }\n  - { id: select, type: select, prompt: Select?, options: [one] }\n").unwrap();
+    let template = Template::load(folder.path()).unwrap();
+    let Interview::Asking(pending) = Interview::start(
+        &template,
+        Seed {
+            now: "2026-01-02T03:04:05+00:00[UTC]".parse().unwrap(),
+            defaults: Default::default(),
+        },
+    )
+    .unwrap() else {
+        panic!("expected questions")
+    };
+    let batch = protocol::batch_document(
+        pending.batch(),
+        &Context {
+            target: "target".into(),
+            template: "sample".into(),
+            commit: String::new(),
+        },
+        None,
+    );
+    let validator = jsonschema::options()
+        .with_draft(jsonschema::Draft::Draft202012)
+        .build(&batch["schema"])
+        .unwrap();
+    let answers = json!({"text": null, "confirm": null, "choices": null, "select": null});
+    assert!(validator.is_valid(&answers), "{batch}");
+}
 fn valid(document: &Value, validator: &jsonschema::Validator) {
     if let Err(error) = validator.validate(document) {
         panic!("invalid protocol document: {error}: {document}");
@@ -35,7 +67,7 @@ fn valid(document: &Value, validator: &jsonschema::Validator) {
     }
 }
 fn command(state: &Path) -> Command {
-    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("toha"));
+    let mut cmd = support::isolated_command(state);
     cmd.env("XDG_STATE_HOME", state);
     cmd
 }
@@ -204,14 +236,16 @@ fn every_success_fixture_through_staged_cli() {
             fixture.display(),
             String::from_utf8_lossy(&output.stderr)
         );
-        support::assert_tree(target.path(), &fixture.join("expected"));
+        support::assert_tree(target.path(), &fixture.join("expected"), &fixture);
         assert!(
             !state
                 .path()
                 .join("toha/staged")
                 .read_dir()
                 .unwrap()
-                .any(|e| e.unwrap().path().extension().is_some_and(|x| x == "json"))
+                .any(|e| e.unwrap().path().extension().is_some_and(|x| x == "json")),
+            "{}",
+            fixture.display()
         );
     }
 }
@@ -260,7 +294,7 @@ fn every_success_fixture_through_library_replay() {
             .replay(&template)
             .unwrap()
         else {
-            panic!("replay incomplete");
+            panic!("replay incomplete: {}", fixture.display());
         };
         let ctx = Context {
             target: record.target.to_string_lossy().into_owned(),
@@ -269,7 +303,9 @@ fn every_success_fixture_through_library_replay() {
         };
         assert_eq!(
             protocol::complete_document(&replayed.answers, &ctx),
-            protocol::complete_document(&completed.answers, &ctx)
+            protocol::complete_document(&completed.answers, &ctx),
+            "{}",
+            fixture.display()
         );
         let plan = Plan::build(&template, &replayed, target.path()).unwrap();
         let runner = RecordingRunner::default();
@@ -283,8 +319,12 @@ fn every_success_fixture_through_library_replay() {
                 &runner,
             )
             .unwrap();
-        assert!(matches!(result, Applied::Written { .. }));
-        support::assert_tree(target.path(), &fixture.join("expected"));
+        assert!(
+            matches!(result, Applied::Written { .. }),
+            "{}",
+            fixture.display()
+        );
+        support::assert_tree(target.path(), &fixture.join("expected"), &fixture);
     }
 }
 #[test]
@@ -366,7 +406,7 @@ fn missing_required_stages_then_continues_and_applies() {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(0));
-    support::assert_tree(target.path(), &fixture.join("expected"));
+    support::assert_tree(target.path(), &fixture.join("expected"), fixture);
 }
 #[test]
 fn duplicate_stage_and_missing_staged_apply() {
@@ -726,6 +766,7 @@ fn stage_with_no_questions_emits_complete_and_saves() {
 #[test]
 fn headless_ignores_defined_skipped_id_but_rejects_unknown_id() {
     let folder = tempfile::tempdir().unwrap();
+    fs::create_dir(folder.path().join("template")).unwrap();
     fs::write(folder.path().join("template.yml"), "name: sample\ninterview:\n  - id: enabled\n    type: confirm\n    prompt: Enabled?\n  - id: hidden\n    type: text\n    prompt: Hidden?\n    when: enabled\n").unwrap();
     let template = Template::load(folder.path()).unwrap();
     let seed = || Seed {
@@ -778,6 +819,7 @@ fn headless_ignores_defined_skipped_id_but_rejects_unknown_id() {
 #[test]
 fn replay_stores_raw_answer_before_non_idempotent_format() {
     let folder = tempfile::tempdir().unwrap();
+    fs::create_dir(folder.path().join("template")).unwrap();
     fs::write(folder.path().join("template.yml"), "name: sample\ninterview:\n  - id: value\n    type: text\n    prompt: Value?\n    format: value ~ 'x'\n").unwrap();
     let template = Template::load(folder.path()).unwrap();
     let state = tempfile::tempdir().unwrap();

@@ -30,6 +30,7 @@ description: >-
   and `minItems` and `maxItems` from `validate`. Required questions are listed
   in `required`. Each property carries `x-toha-type` with the question type and
   `x-toha-multiline: true` for `multiline`.
+  A question that is not required also accepts explicit `null`.
 
   Answers. An answers document is a JSON object keyed by question id. `continue`
   reads it from a file or from standard input. Answers for questions outside

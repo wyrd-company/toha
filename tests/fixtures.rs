@@ -51,8 +51,18 @@ fn run(fixture: &Path, target: &Path) -> Result<Vec<String>, (u8, String)> {
     let expect = support::expectation(fixture);
     let plan =
         Plan::build(&template, &completed, target).map_err(|error| (1, error.to_string()))?;
-    assert_eq!(plan.before_apply, expect.before_apply);
-    assert_eq!(plan.after_apply, expect.after_apply);
+    assert_eq!(
+        plan.before_apply,
+        expect.before_apply,
+        "{}",
+        fixture.display()
+    );
+    assert_eq!(
+        plan.after_apply,
+        expect.after_apply,
+        "{}",
+        fixture.display()
+    );
     let runner = expect
         .fail_hook
         .map(RecordingRunner::fail_at)
@@ -99,7 +109,7 @@ fn every_fixture_through_library() {
             Ok(messages) => {
                 assert_eq!(expect.exit, 0, "{name}");
                 assert_eq!(messages, expect.messages, "{name}");
-                support::assert_tree(target.path(), &fixture.join("expected"));
+                support::assert_tree(target.path(), &fixture.join("expected"), &fixture);
             }
             Err((exit, text)) => {
                 assert_eq!(exit, expect.exit, "{name}: {text}");
@@ -107,7 +117,7 @@ fn every_fixture_through_library() {
                     assert!(text.contains(&part), "{name}: missing {part:?} in {text:?}");
                 }
                 if fixture.join("expected").exists() {
-                    support::assert_tree(target.path(), &fixture.join("expected"));
+                    support::assert_tree(target.path(), &fixture.join("expected"), &fixture);
                 } else {
                     assert!(
                         fs::read_dir(target.path()).unwrap().next().is_none(),

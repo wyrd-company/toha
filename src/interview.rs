@@ -411,6 +411,32 @@ fn parse_kind(id: &Id, kind: PromptKind, value: Value) -> Result<Answer, Rejecti
             .ok_or_else(|| fail("expected array of strings")),
     }
 }
+pub fn configured_defaults(
+    template: &Template,
+    values: &IndexMap<Id, Value>,
+) -> Result<IndexMap<Id, RawAnswer>, EvalError> {
+    let mut defaults = IndexMap::new();
+    for (id, value) in values {
+        let Some(question) = question_by_id(&template.interview, id) else {
+            continue;
+        };
+        let kind = match question.kind {
+            QuestionKind::Text { .. } => PromptKind::Text,
+            QuestionKind::Multiline { .. } => PromptKind::Multiline,
+            QuestionKind::Confirm { .. } => PromptKind::Confirm,
+            QuestionKind::Select { .. } => PromptKind::Select,
+            QuestionKind::MultiSelect { .. } => PromptKind::MultiSelect,
+            QuestionKind::TextLoop { .. } => PromptKind::TextLoop,
+        };
+        parse_kind(id, kind, value.clone()).map_err(|error| EvalError {
+            id: id.clone(),
+            field: "configured default",
+            message: error.message,
+        })?;
+        defaults.insert(id.clone(), RawAnswer(value.clone()));
+    }
+    Ok(defaults)
+}
 fn question_by_id<'a>(nodes: &'a [Node], id: &Id) -> Option<&'a Question> {
     for n in nodes {
         match n {

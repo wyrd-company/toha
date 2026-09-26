@@ -1,5 +1,6 @@
 name: files-each
 source: template
+ignore: [".gitkeep"]
 interview:
   - id: items
     type: text

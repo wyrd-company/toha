@@ -347,6 +347,7 @@ mod tests {
 
     fn template(yaml: &str) -> (tempfile::TempDir, Template) {
         let folder = tempfile::tempdir().unwrap();
+        fs::create_dir(folder.path().join("template")).unwrap();
         fs::write(folder.path().join("template.yml"), yaml).unwrap();
         let template = Template::load(folder.path()).unwrap();
         (folder, template)
@@ -562,7 +563,7 @@ mod tests {
                 .unwrap();
             }
             if fixture.join("expected").exists() {
-                support::assert_tree(target.path(), &fixture.join("expected"));
+                support::assert_tree(target.path(), &fixture.join("expected"), &fixture);
             }
         }
     }

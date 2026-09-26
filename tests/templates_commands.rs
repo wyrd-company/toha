@@ -10,6 +10,7 @@ fn run(root: &TempDir, args: &[&str]) -> std::process::Output {
         .env("XDG_CONFIG_HOME", root.path().join("config"))
         .env("XDG_DATA_HOME", root.path().join("data"))
         .env("XDG_CACHE_HOME", root.path().join("cache"))
+        .env("XDG_STATE_HOME", root.path().join("state"))
         .env(
             "TOHA_USER_CONFIG",
             root.path().join("config/toha/config.yml"),
@@ -41,6 +42,7 @@ fn repo(root: &TempDir) -> String {
     git(&path, &["config", "user.name", "Test"]);
     for (dir, name) in [("one", "common"), ("two", "other")] {
         fs::create_dir_all(path.join(dir).join("template")).unwrap();
+        fs::write(path.join(dir).join("template/.gitkeep"), "").unwrap();
         fs::write(
             path.join(dir).join("template.yml"),
             format!("name: {name}\ninterview: []\n"),
@@ -397,6 +399,7 @@ fn failed_update_keeps_prior_clones_and_registry() {
     );
     git(&second_source, &["config", "user.name", "Test"]);
     fs::create_dir(second_source.join("template")).unwrap();
+    fs::write(second_source.join("template/.gitkeep"), "").unwrap();
     fs::write(
         second_source.join("template.yml"),
         "name: second\ninterview: []\n",
@@ -497,6 +500,7 @@ fn update_two_dotted_install_keys() {
     for suffix in ["one", "two"] {
         let dir = root.path().join(format!("repo.{suffix}"));
         fs::create_dir_all(dir.join("template")).unwrap();
+        fs::write(dir.join("template/.gitkeep"), "").unwrap();
         git(&dir, &["init", "-b", "main"]);
         git(&dir, &["config", "user.email", "test@example.invalid"]);
         git(&dir, &["config", "user.name", "Test"]);
