@@ -1,0 +1,10 @@
+name: err-hook-each-syntax
+data:
+  items: [ a ]
+interview:
+  - hook:
+      each: "items as Item"
+      run: [ tool ]
+hooks:
+  - each: "items"
+    run: [ tool ]

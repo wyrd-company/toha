@@ -1,0 +1,10 @@
+name: hooks-each-empty
+data:
+  items: []
+interview:
+  - hook:
+      each: "items as item"
+      run: [ tool, "{{ item }}" ]
+hooks:
+  - each: "items as item"
+    run: [ tool, "{{ item }}" ]

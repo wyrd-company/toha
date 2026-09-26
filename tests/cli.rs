@@ -285,3 +285,62 @@ fn trusted_script_runs_in_target() {
         "marker"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn trusted_hook_runs_once_per_item() {
+    use std::os::unix::fs::PermissionsExt;
+    let folder = tempfile::tempdir().unwrap();
+    std::fs::write(
+        folder.path().join("template.yml"),
+        concat!(
+            "name: script-each\n",
+            "source: .\n",
+            "ignore: [append.sh, answers.json]\n",
+            "data:\n",
+            "  items:\n",
+            "    - { name: alpha, value: one }\n",
+            "    - { name: beta, value: two }\n",
+            "    - { name: gamma, value: three }\n",
+            "hooks:\n",
+            "  - each: \"items as item\"\n",
+            "    script: append.sh\n",
+            "    args: [ \"{{ item.name }}\", \"{{ item.value }}\" ]\n",
+        ),
+    )
+    .unwrap();
+    let script = folder.path().join("append.sh");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nprintf '%s=%s\\n' \"$1\" \"$2\" >> log.txt\n",
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&script, permissions).unwrap();
+    let answers = folder.path().join("answers.json");
+    std::fs::write(&answers, "{}").unwrap();
+    let target = tempfile::tempdir().unwrap();
+    let isolation = tempfile::tempdir().unwrap();
+    let output = support::isolated_command(isolation.path())
+        .args([
+            "apply",
+            folder.path().to_str().unwrap(),
+            target.path().to_str().unwrap(),
+            "--answers",
+            answers.to_str().unwrap(),
+            "--trust",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(target.path().join("log.txt")).unwrap(),
+        "alpha=one\nbeta=two\ngamma=three\n"
+    );
+}

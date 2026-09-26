@@ -1,0 +1,10 @@
+exit: 0
+options:
+  dry_run: true
+stdout_contains:
+- |-
+  create file.txt
+  hook ["tool", "alpha"] cwd lib/alpha
+  hook ["tool", "beta"] cwd lib/beta
+  hook ["tool", "last", "alpha"] cwd .
+  hook ["tool", "last", "beta"] cwd .

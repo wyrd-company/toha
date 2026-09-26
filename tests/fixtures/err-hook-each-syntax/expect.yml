@@ -1,0 +1,4 @@
+exit: 1
+error_contains:
+- "template.yml/hooks/0/each: \"items\" does not match"
+- "template.yml/interview/0: {\"hook\":{\"each\":\"items as Item\""

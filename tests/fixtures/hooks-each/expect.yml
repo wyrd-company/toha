@@ -1,0 +1,17 @@
+exit: 0
+options:
+  trust: true
+cli: false
+hooks:
+- argv: [ tool, alpha, sam ]
+  cwd: lib/alpha
+- argv: [ tool, beta, sam ]
+  cwd: lib/beta
+- argv: [ tool, between ]
+  cwd: ''
+- argv: [ scripts/go.sh, alpha ]
+  cwd: ''
+- argv: [ scripts/go.sh, beta ]
+  cwd: ''
+- argv: [ tool, last ]
+  cwd: ''

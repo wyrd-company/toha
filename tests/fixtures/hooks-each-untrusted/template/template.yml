@@ -1,0 +1,13 @@
+name: hooks-each-untrusted
+data:
+  items:
+    - { name: alpha, dir: lib/alpha }
+    - { name: beta, dir: lib/beta }
+interview:
+  - hook:
+      each: "items as item"
+      run: [ tool, "{{ item.name }}" ]
+      cwd: "{{ item.dir }}"
+hooks:
+  - each: "items as item"
+    run: [ tool, last, "{{ item.name }}" ]
