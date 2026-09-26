@@ -4,6 +4,23 @@ version = "0.0.0"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"
+description = "Generate projects and files from templates through one interview for people, scripts, agents, and Rust callers."
+homepage = "https://wyrd.tools/docs/toha"
+documentation = "https://docs.rs/toha"
+repository = "https://github.com/wyrd-company/toha"
+readme = "README.md"
+keywords = ["scaffolding", "template", "generator", "jinja", "interview"]
+categories = ["command-line-utilities", "development-tools", "template-engine"]
+include = [
+    "/src/**",
+    "/build.rs",
+    "/build/**",
+    "/skills/**",
+    "/docs/specifications/*.schema.yml",
+    "/docs/examples/demo/**",
+    "/README.md",
+    "/LICENSE",
+]
 
 [features]
 default = ["cli"]

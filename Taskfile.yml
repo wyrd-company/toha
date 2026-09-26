@@ -18,13 +18,14 @@ tasks:
   fmt-check:
     cmds: [ "cargo fmt --all -- --check" ]
   release:check:
-    desc: Validate release configuration and workflows
+    desc: Validate release configuration, workflows, and the crates.io package
     cmds:
       - actionlint .github/workflows/*.yml
       - >-
         ryl check -c .ryl.yml .github/workflows/*.yml Taskfile.yml
         .intentional/config.yml docs/docs.yml scripts/release/nfpm.yml
       - intentional check
+      - cargo publish --dry-run --locked --allow-dirty
   ci:
     deps: [ fmt-check, lint, test, release:check ]
   demo:
