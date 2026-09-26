@@ -215,13 +215,13 @@ pub fn resume_template(
     cwd: &Path,
 ) -> Result<ResolvedTemplate, ResolveError> {
     if commit.is_empty() {
-        let address =
-            source::parse(formal, &config.hosts, cwd, &dirs.home).map_err(ResolveError::text)?;
-        let Address::Folder(folder) = address else {
+        let path = Path::new(formal);
+        if !path.is_absolute() {
             return Err(ResolveError::text(
                 "staged folder template has invalid formal name",
             ));
-        };
+        }
+        let folder = path.canonicalize().map_err(ResolveError::text)?;
         return Ok(ResolvedTemplate {
             formal_name: formal.into(),
             commit: String::new(),
