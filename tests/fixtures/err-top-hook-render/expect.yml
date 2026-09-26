@@ -1,2 +1,3 @@
 exit: 1
-error_contains: ["invalid operation"]
+error_contains:
+- "template error in hooks[0].run `{{ 'bad' | dateformat }}`: "

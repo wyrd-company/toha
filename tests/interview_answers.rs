@@ -816,3 +816,41 @@ fn configured_default_that_fails_a_constraint_is_attributed_to_configuration() {
         ]
     );
 }
+
+#[test]
+fn interview_hook_fault_names_the_field_and_the_expression() {
+    let cases = [
+        (
+            "{ hook: { run: [tool, \"{{ 'bad' | dateformat }}\"] } }",
+            "template error in hook.run `{{ 'bad' | dateformat }}`: ",
+        ),
+        (
+            "{ hook: { run: [tool], cwd: \"{{ 'bad' | dateformat }}\" } }",
+            "template error in hook.cwd `{{ 'bad' | dateformat }}`: ",
+        ),
+        (
+            "{ hook: { each: '42 as item', run: [tool, '{{ item }}'] } }",
+            "template error in hook.each `42`: expected array",
+        ),
+    ];
+    for (node, expected) in cases {
+        let (_folder, template) = inline(&format!("name: sample\ninterview: [{node}]\n"));
+        let error = Interview::start(&template, seed()).unwrap_err().to_string();
+        assert!(error.starts_with(expected), "{node}: {error}");
+    }
+}
+
+#[test]
+fn unresolved_dependency_names_the_node_field_and_expression() {
+    let (_folder, mut template) = inline(
+        "name: sample\ninterview:\n  - { id: first, type: text, prompt: First? }\n  - { id: second, type: text, prompt: 'After {{ first }}' }\n",
+    );
+    // A loaded template has no forward reference; reordering the nodes makes
+    // `second` wait for an answer that no batch can ask for.
+    template.interview.swap(0, 1);
+    let error = Interview::start(&template, seed()).unwrap_err().to_string();
+    assert_eq!(
+        error,
+        "template error in second.prompt `After {{ first }}`: first has no answer when this node is reached"
+    );
+}
