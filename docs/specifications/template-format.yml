@@ -85,11 +85,18 @@ description: >-
   directory as its working directory unless `cwd` names a path relative to it.
   `run` is an argument vector; each argument is a template, and the program is
   executed directly without a shell. `script` names an executable file
-  relative to the template root, with optional `args`. Hook nodes in the
-  interview run first, in interview order, when their position is reached and
-  their `when` is true. A hook runs once, including a hook inside the scope of
-  a looped question. The top-level `hooks` list runs after them, in list order.
-  A failing hook stops the remaining hooks and fails the apply.
+  relative to the template root, with optional `args`. A hook with `each` runs
+  once for each item of the `each` expression, in item order. `each` has the
+  form of the `files` entry `each`, `<expression> as <name>`; the item is bound
+  to `<name>` while `run`, `args`, and `cwd` are rendered. `when` is evaluated
+  once, before `each`, and does not see the item. An empty sequence runs
+  nothing. Hook nodes in the interview run first, in interview order, when
+  their position is reached and their `when` is true. A hook node runs once, or
+  once per item with `each`, including a hook node inside the scope of a looped
+  question. The top-level `hooks` list runs after them, in list order. A
+  failing hook stops the remaining hooks and fails the apply. Every listing of
+  hooks, including `--dry-run` output and the listing shown when hooks need
+  trust, shows each invocation with its rendered arguments.
 
   Messages. A message node shows its rendered text when the interview reaches
   it. The top-level `messages` map has two optional keys, each a template:

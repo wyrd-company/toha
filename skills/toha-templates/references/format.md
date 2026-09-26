@@ -44,6 +44,6 @@ Each `interview[]` node is exactly one of these shapes:
 | `hook` | hook command object | Schedule an interview hook. |
 | `message` | template string | Show text during interview. |
 
-A hook command has exactly one of `run` or `script`. `run` is a nonempty array of template strings (argument vector). `script` is a path string relative to the template root. `args` is an array of template strings. `cwd` is a template string relative to the target directory. Top-level hooks also accept `when` (expression); interview hook nodes accept `when` on the node.
+A hook command has exactly one of `run` or `script`. `run` is a nonempty array of template strings (argument vector). `script` is a path string relative to the template root. `args` is an array of template strings. `cwd` is a template string relative to the target directory. Optional `each` (`<expression> as <identifier>`) runs the hook once per item, in item order, with the item bound while `run`, `args`, and `cwd` render; an empty sequence runs nothing. Top-level hooks also accept `when` (expression), evaluated once before `each`; interview hook nodes accept `each` inside `hook` and `when` on the node.
 
 Each `files[]` rule has `each` (`<expression> as <identifier>`), `source` (support file path relative to the template root), and `path` (template string relative to target), all required. Optional `when` is an expression.
