@@ -34,6 +34,13 @@ pub struct Entry {
 pub struct RegistryFile {
     #[serde(default)]
     pub templates: IndexMap<String, Entry>,
+    #[serde(skip)]
+    presence: IndexMap<String, FieldPresence>,
+}
+#[derive(Debug, Clone, Copy, Default)]
+struct FieldPresence {
+    aliases: bool,
+    trusted: bool,
 }
 #[derive(Debug, Clone)]
 pub struct Listed {
@@ -125,6 +132,20 @@ impl RegistryFile {
                 message: e.to_string(),
             });
         }
+        let presence: IndexMap<String, FieldPresence> = value["templates"]
+            .as_object()
+            .into_iter()
+            .flat_map(|templates| templates.iter())
+            .map(|(formal, entry)| {
+                (
+                    formal.clone(),
+                    FieldPresence {
+                        aliases: entry.get("aliases").is_some(),
+                        trusted: entry.get("trusted").is_some(),
+                    },
+                )
+            })
+            .collect();
         if layer == Layer::Local {
             let aliases: LocalRegistry =
                 serde_json::from_value(value).map_err(|e| RegistryError::Parse {
@@ -145,12 +166,16 @@ impl RegistryFile {
                         )
                     })
                     .collect(),
+                presence,
             })
         } else {
-            serde_json::from_value(value).map_err(|e| RegistryError::Parse {
-                path: path.into(),
-                message: e.to_string(),
-            })
+            let mut file: Self =
+                serde_json::from_value(value).map_err(|e| RegistryError::Parse {
+                    path: path.into(),
+                    message: e.to_string(),
+                })?;
+            file.presence = presence;
+            Ok(file)
         }
     }
     pub fn add(&self, entries: impl IntoIterator<Item = (String, Entry)>) -> Self {
@@ -164,6 +189,7 @@ impl RegistryFile {
                 }
                 entry.trusted |= old.trusted;
             }
+            next.presence.shift_remove(&formal);
             next.templates.insert(formal, entry);
         }
         next
@@ -181,6 +207,7 @@ impl RegistryFile {
         next.templates
             .shift_remove(formal)
             .ok_or_else(|| RegistryError::NotFound(formal.into()))?;
+        next.presence.shift_remove(formal);
         Ok(next)
     }
     pub fn add_alias(&self, formal: &str, alias: &str) -> Result<Self, RegistryError> {
@@ -192,23 +219,47 @@ impl RegistryFile {
         if !entry.aliases.iter().any(|v| v == alias) {
             entry.aliases.push(alias.into());
         }
+        next.presence
+            .entry(formal.into())
+            .or_insert(FieldPresence {
+                aliases: true,
+                trusted: true,
+            })
+            .aliases = true;
         Ok(next)
     }
     pub fn remove_alias(&self, alias: &str) -> Result<Self, RegistryError> {
         let mut next = self.clone();
-        let entry = next
+        let (formal, entry) = next
             .templates
-            .values_mut()
-            .find(|e| e.aliases.iter().any(|a| a == alias))
+            .iter_mut()
+            .find(|(_, e)| e.aliases.iter().any(|a| a == alias))
             .ok_or_else(|| RegistryError::NotFound(alias.into()))?;
         entry.aliases.retain(|a| a != alias);
+        next.presence
+            .entry(formal.clone())
+            .or_insert(FieldPresence {
+                aliases: true,
+                trusted: true,
+            })
+            .aliases = true;
         Ok(next)
     }
     pub fn write_atomic(&self, path: &Path) -> Result<(), RegistryError> {
-        let value = serde_json::to_value(self).map_err(|e| RegistryError::Parse {
+        let mut value = serde_json::to_value(self).map_err(|e| RegistryError::Parse {
             path: path.into(),
             message: e.to_string(),
         })?;
+        for (formal, fields) in &self.presence {
+            if let Some(entry) = value["templates"][formal].as_object_mut() {
+                if !fields.aliases {
+                    entry.remove("aliases");
+                }
+                if !fields.trusted {
+                    entry.remove("trusted");
+                }
+            }
+        }
         let mut schema = SCHEMA.clone();
         schema["$ref"] = Value::String("#/$defs/registry".into());
         let validator = jsonschema::options()
@@ -232,7 +283,7 @@ impl RegistryFile {
                 path: parent.into(),
                 source,
             })?;
-        serde_norway::to_writer(&mut temp, self).map_err(|e| RegistryError::Parse {
+        serde_norway::to_writer(&mut temp, &value).map_err(|e| RegistryError::Parse {
             path: path.into(),
             message: e.to_string(),
         })?;
@@ -270,8 +321,15 @@ impl Registry {
                     if merged.commit.is_none() {
                         merged.commit = old.entry.commit.clone();
                     }
-                    if merged.aliases.is_empty() {
+                    let presence = file.presence.get(formal).copied().unwrap_or(FieldPresence {
+                        aliases: true,
+                        trusted: true,
+                    });
+                    if !presence.aliases {
                         merged.aliases = old.entry.aliases.clone();
+                    }
+                    if !presence.trusted {
+                        merged.trusted = old.entry.trusted;
                     }
                 }
                 entries.insert(
@@ -287,6 +345,9 @@ impl Registry {
         }
         for (formal, local_entry) in &local.templates {
             if let Some(merged) = entries.get_mut(formal) {
+                if !local.presence.get(formal).is_none_or(|p| p.aliases) {
+                    continue;
+                }
                 merged.entry.aliases = local_entry.aliases.clone();
                 merged.layer = Layer::Local;
             }
@@ -295,18 +356,31 @@ impl Registry {
         result.check_aliases()?;
         Ok(result)
     }
-    pub fn apply_local_aliases(&mut self, local: &RegistryFile) -> Result<(), RegistryError> {
+    pub fn apply_local_aliases(
+        &mut self,
+        local: &RegistryFile,
+    ) -> Result<Vec<(String, String)>, RegistryError> {
+        let mut missing = Vec::new();
         for (formal, entry) in &local.templates {
-            let listed = self
-                .entries
-                .get_mut(formal)
-                .ok_or_else(|| RegistryError::NotFound(formal.clone()))?;
+            let Some(listed) = self.entries.get_mut(formal) else {
+                missing.extend(
+                    entry
+                        .aliases
+                        .iter()
+                        .map(|alias| (alias.clone(), formal.clone())),
+                );
+                continue;
+            };
+            if !local.presence.get(formal).is_none_or(|p| p.aliases) {
+                continue;
+            }
             listed.entry.aliases = entry.aliases.clone();
             if listed.layer != Layer::Discovered {
                 listed.layer = Layer::Local;
             }
         }
-        self.check_aliases()
+        self.check_aliases()?;
+        Ok(missing)
     }
     pub fn check_aliases(&self) -> Result<(), RegistryError> {
         let mut used = IndexMap::new();
@@ -473,6 +547,47 @@ mod tests {
             Registry::merge(&system, &user, &RegistryFile::default()),
             Err(RegistryError::AliasConflict { .. })
         ));
+    }
+    #[test]
+    fn higher_fields_override_only_when_present() {
+        let root = tempfile::tempdir().unwrap();
+        let lower_path = root.path().join("lower.yml");
+        let higher_path = root.path().join("higher.yml");
+        fs::write(
+            &lower_path,
+            "templates:\n  formal:\n    name: sample\n    source: file:///sample\n    path: /sample\n    ref: main\n    commit: 0000000000000000000000000000000000000000\n    aliases: [lower]\n    trusted: true\n",
+        )
+        .unwrap();
+        fs::write(
+            &higher_path,
+            "templates:\n  formal:\n    name: sample\n    source: file:///sample\n    path: /sample\n    aliases: []\n",
+        )
+        .unwrap();
+        let lower = RegistryFile::load(&lower_path, Layer::System).unwrap();
+        let higher = RegistryFile::load(&higher_path, Layer::User).unwrap();
+        let merged = Registry::merge(&lower, &higher, &RegistryFile::default()).unwrap();
+        let entry = &merged.entries["formal"].entry;
+        assert!(entry.aliases.is_empty());
+        assert_eq!(entry.reference.as_deref(), Some("main"));
+        assert_eq!(
+            entry.commit.as_deref(),
+            Some("0000000000000000000000000000000000000000")
+        );
+        assert!(entry.trusted);
+        let rewritten_path = root.path().join("rewritten.yml");
+        higher.write_atomic(&rewritten_path).unwrap();
+        let rewritten = RegistryFile::load(&rewritten_path, Layer::User).unwrap();
+        let merged = Registry::merge(&lower, &rewritten, &RegistryFile::default()).unwrap();
+        assert!(merged.entries["formal"].entry.trusted);
+        assert_eq!(
+            merged.entries["formal"].entry.reference.as_deref(),
+            Some("main")
+        );
+        fs::write(&higher_path, "templates:\n  formal:\n    name: sample\n    source: file:///sample\n    path: /sample\n    trusted: false\n").unwrap();
+        let higher = RegistryFile::load(&higher_path, Layer::User).unwrap();
+        let merged = Registry::merge(&lower, &higher, &RegistryFile::default()).unwrap();
+        assert_eq!(merged.entries["formal"].entry.aliases, ["lower"]);
+        assert!(!merged.entries["formal"].entry.trusted);
     }
     #[test]
     fn local_aliases_do_not_grant_trust() {

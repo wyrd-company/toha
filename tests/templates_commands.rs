@@ -308,6 +308,30 @@ fn layer_lists_and_local_aliases_of_discovered_templates() {
             .any(|entry| entry["aliases"] == serde_json::json!(["local-name"]))
     );
 }
+#[test]
+fn unknown_local_alias_warns_once_and_commands_continue() {
+    let root = TempDir::new().unwrap();
+    let local = root.path().join(".templates");
+    fs::create_dir_all(&local).unwrap();
+    fs::write(
+        local.join("templates.yml"),
+        "templates:\n  absent:\n    aliases: [spare]\n",
+    )
+    .unwrap();
+    let list = run(&root, &["templates", "list", "--json"]);
+    assert_exit(&list, 0);
+    assert_eq!(
+        String::from_utf8_lossy(&list.stderr),
+        "warning: local alias spare names absent, which is not installed\n"
+    );
+    let url = repo(&root);
+    let add = run(&root, &["templates", "add", &url]);
+    assert_exit(&add, 0);
+    assert_eq!(
+        String::from_utf8_lossy(&add.stderr),
+        "warning: local alias spare names absent, which is not installed\n"
+    );
+}
 #[cfg(unix)]
 #[test]
 fn add_rejects_template_symlink_outside_source() {
@@ -437,4 +461,65 @@ fn explicit_branch_ref_moves_on_update() {
     .unwrap();
     assert_ne!(rows[0]["commit"], old);
     assert_eq!(rows[0]["ref"], "main");
+}
+#[test]
+fn update_two_dotted_install_keys() {
+    let root = TempDir::new().unwrap();
+    let mut addresses = Vec::new();
+    for suffix in ["one", "two"] {
+        let dir = root.path().join(format!("repo.{suffix}"));
+        fs::create_dir_all(dir.join("template")).unwrap();
+        git(&dir, &["init", "-b", "main"]);
+        git(&dir, &["config", "user.email", "test@example.invalid"]);
+        git(&dir, &["config", "user.name", "Test"]);
+        fs::write(
+            dir.join("template.yml"),
+            format!("name: {suffix}\ninterview: []\n"),
+        )
+        .unwrap();
+        git(&dir, &["add", "."]);
+        git(&dir, &["commit", "-m", "initial"]);
+        let address = format!("file://{}", dir.display());
+        assert_exit(&run(&root, &["templates", "add", &address]), 0);
+        addresses.push((dir, address));
+    }
+    let before: serde_json::Value = serde_json::from_str(&assert_exit(
+        &run(&root, &["templates", "list", "-u", "--json"]),
+        0,
+    ))
+    .unwrap();
+    for (dir, _) in &addresses {
+        fs::write(
+            dir.join("template.yml"),
+            format!(
+                "name: {}\ninterview: []\ndescription: moved\n",
+                dir.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .trim_start_matches("repo.")
+            ),
+        )
+        .unwrap();
+        git(dir, &["add", "."]);
+        git(dir, &["commit", "-m", "move"]);
+    }
+    assert_exit(&run(&root, &["templates", "update"]), 0);
+    let after: serde_json::Value = serde_json::from_str(&assert_exit(
+        &run(&root, &["templates", "list", "-u", "--json"]),
+        0,
+    ))
+    .unwrap();
+    for (old, new) in before
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(after.as_array().unwrap())
+    {
+        assert_ne!(old["commit"], new["commit"]);
+        assert!(
+            fs::read_to_string(new["path"].as_str().unwrap().to_string() + "/template.yml")
+                .unwrap()
+                .contains("moved")
+        );
+    }
 }

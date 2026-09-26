@@ -238,6 +238,59 @@ fn fetches_https_git_repository() {
         std::env::set_var("CURL_CA_BUNDLE", &cert);
     }
     let fetched = fetch(&address, &root.path().join("fetched"));
+    let token = "sample-secret";
+    let url = format!("https://user:{token}@localhost:{port}/remote.git");
+    let add = Command::new(assert_cmd::cargo::cargo_bin!("toha"))
+        .args(["templates", "add", &url])
+        .current_dir(root.path())
+        .env("HOME", root.path().join("home"))
+        .env("XDG_CONFIG_HOME", root.path().join("config"))
+        .env("XDG_DATA_HOME", root.path().join("data"))
+        .env("XDG_CACHE_HOME", root.path().join("cache"))
+        .env(
+            "TOHA_USER_CONFIG",
+            root.path().join("config/toha/config.yml"),
+        )
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_SSL_CAINFO", &cert)
+        .env("CURL_CA_BUNDLE", &cert)
+        .output()
+        .unwrap();
+    assert!(
+        add.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    let registry = fs::read_to_string(root.path().join("data/toha/templates.yml")).unwrap();
+    assert!(!registry.contains(token));
+    let installs = fs::read_dir(root.path().join("data/toha/repos")).unwrap();
+    for install in installs {
+        assert!(
+            !install
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(token)
+        );
+    }
+    let failed = Command::new(assert_cmd::cargo::cargo_bin!("toha"))
+        .args(["templates", "add", &format!("{url}@absent")])
+        .current_dir(root.path())
+        .env("HOME", root.path().join("home"))
+        .env("XDG_CONFIG_HOME", root.path().join("config"))
+        .env("XDG_DATA_HOME", root.path().join("data"))
+        .env("XDG_CACHE_HOME", root.path().join("cache"))
+        .env(
+            "TOHA_USER_CONFIG",
+            root.path().join("config/toha/config.yml"),
+        )
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_SSL_CAINFO", &cert)
+        .env("CURL_CA_BUNDLE", &cert)
+        .output()
+        .unwrap();
+    assert!(!failed.status.success());
+    assert!(!String::from_utf8_lossy(&failed.stderr).contains(token));
     unsafe {
         for key in [
             "HOME",

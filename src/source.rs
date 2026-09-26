@@ -41,12 +41,17 @@ fn split_git(value: &str) -> Result<(&str, Option<String>, Option<String>), Sour
         .split_once('#')
         .map_or((value, None), |(a, b)| (a, Some(b.to_string())));
     if path.as_deref() == Some("") {
-        return Err(SourceError::Address(value.into()));
+        return Err(SourceError::Address("empty template path".into()));
     }
     let start = if before_path.starts_with("git@") {
         before_path.find(':').map_or(0, |p| p + 1)
     } else {
-        before_path.find("://").map_or(0, |p| p + 3)
+        before_path.find("://").map_or(0, |p| {
+            let authority = p + 3;
+            before_path[authority..]
+                .find('/')
+                .map_or(before_path.len(), |slash| authority + slash + 1)
+        })
     };
     let (repo, reference) = before_path[start..]
         .rfind('@')
@@ -57,7 +62,7 @@ fn split_git(value: &str) -> Result<(&str, Option<String>, Option<String>), Sour
             )
         });
     if repo.is_empty() || reference.as_deref() == Some("") {
-        return Err(SourceError::Address(value.into()));
+        return Err(SourceError::Address("invalid repository or ref".into()));
     }
     Ok((repo, reference, path))
 }
@@ -74,7 +79,9 @@ pub fn parse(arg: &str, hosts: &Hosts, cwd: &Path, home: &Path) -> Result<Addres
         if let Some(base) = hosts.get(prefix) {
             let (repo, reference, path) = split_git(rest)?;
             if !repo.contains('/') {
-                return Err(SourceError::Address(arg.into()));
+                return Err(SourceError::Address(
+                    "host address requires owner/repository".into(),
+                ));
             }
             return Ok(Address::Git {
                 repo: format!("{}/{}", base.trim_end_matches('/'), repo),
@@ -118,10 +125,11 @@ impl Address {
                 reference,
                 path,
             } => {
+                let safe_repo = without_userinfo(repo);
                 let mut name = hosts
                     .iter()
                     .find_map(|(prefix, base)| {
-                        let remainder = repo
+                        let remainder = safe_repo
                             .strip_prefix(base.trim_end_matches('/'))?
                             .strip_prefix('/')?;
                         if remainder.is_empty() || !remainder.contains('/') {
@@ -139,7 +147,7 @@ impl Address {
                             Some(format!("{prefix}:{remainder}"))
                         })
                     })
-                    .unwrap_or_else(|| repo.clone());
+                    .unwrap_or(safe_repo);
                 if name.ends_with(".git") {
                     name.truncate(name.len() - 4);
                 }
@@ -155,6 +163,43 @@ impl Address {
             }
         }
     }
+}
+/// A source suitable for durable registry and cache identifiers.
+pub fn without_userinfo(repo: &str) -> String {
+    if let Some(scheme) = repo.find("://") {
+        let authority_start = scheme + 3;
+        let authority_end = repo[authority_start..]
+            .find('/')
+            .map_or(repo.len(), |slash| authority_start + slash);
+        if let Some(at) = repo[authority_start..authority_end].rfind('@') {
+            return format!(
+                "{}{}",
+                &repo[..authority_start],
+                &repo[authority_start + at + 1..]
+            );
+        }
+    }
+    if let Some(rest) = repo.strip_prefix("git@") {
+        if let Some((host, path)) = rest.split_once(':') {
+            return format!("ssh://{host}/{path}");
+        }
+        return format!("ssh://{rest}");
+    }
+    repo.to_string()
+}
+fn git_error(error: impl std::fmt::Display, repo: &str) -> SourceError {
+    let safe = without_userinfo(repo);
+    let mut message = error.to_string().replace(repo, &safe);
+    if let Some(scheme) = repo.find("://") {
+        let start = scheme + 3;
+        let end = repo[start..]
+            .find('/')
+            .map_or(repo.len(), |slash| start + slash);
+        if let Some(at) = repo[start..end].rfind('@') {
+            message = message.replace(&repo[start..start + at + 1], "");
+        }
+    }
+    SourceError::Git(message)
 }
 pub fn cache_path(cache: &Path, address: &Address, hosts: &Hosts, commit: &str) -> PathBuf {
     cache
@@ -252,35 +297,36 @@ pub fn fetch(address: &Address, dest: &Path) -> Result<Fetched, SourceError> {
     } else {
         None
     };
-    let mut clone =
-        gix::prepare_clone(repo.as_str(), dest).map_err(|e| SourceError::Git(e.to_string()))?;
+    let mut clone = gix::prepare_clone(repo.as_str(), dest).map_err(|e| git_error(e, repo))?;
     if let Some(reference) = reference {
         clone = if kind == RefKind::Commit {
             clone
                 .with_revision(Some(resolved_commit.as_deref().unwrap()))
-                .map_err(|e| SourceError::Git(e.to_string()))?
+                .map_err(|e| git_error(e, repo))?
         } else {
             clone
                 .with_ref_name(Some(reference.as_str()))
-                .map_err(|e| SourceError::Git(e.to_string()))?
+                .map_err(|e| git_error(e, repo))?
         };
     }
     let (mut checkout, _) = clone
         .fetch_then_checkout(gix::progress::Discard, &AtomicBool::new(false))
-        .map_err(|e| SourceError::Git(e.to_string()))?;
-    let (repo, _) = checkout
+        .map_err(|e| git_error(e, repo))?;
+    let (checkout_repo, _) = checkout
         .main_worktree(gix::progress::Discard, &AtomicBool::new(false))
-        .map_err(|e| SourceError::Git(e.to_string()))?;
+        .map_err(|e| git_error(e, repo))?;
     if kind == RefKind::Branch
-        && reference
-            .as_ref()
-            .is_some_and(|r| repo.find_reference(&format!("refs/tags/{r}")).is_ok())
+        && reference.as_ref().is_some_and(|r| {
+            checkout_repo
+                .find_reference(&format!("refs/tags/{r}"))
+                .is_ok()
+        })
     {
         kind = RefKind::Tag;
     }
-    let commit = repo
+    let commit = checkout_repo
         .head_id()
-        .map_err(|e| SourceError::Git(e.to_string()))?
+        .map_err(|e| git_error(e, repo))?
         .to_string();
     Ok(Fetched {
         commit,
@@ -303,6 +349,13 @@ mod tests {
         let table = [
             ("https://github.com/a/b.git@main#sub", "gh:a/b@main#sub"),
             ("git@github.com:a/b.git@main#sub", "gh:a/b@main#sub"),
+            ("https://user@github.com/a/b", "gh:a/b"),
+            ("https://user@github.com/a/b@v1#p", "gh:a/b@v1#p"),
+            ("git@github.com:a/b@main", "gh:a/b@main"),
+            (
+                "https://user:token@else.invalid/a/b",
+                "https://else.invalid/a/b",
+            ),
             ("gh:a/b@main#sub", "gh:a/b@main#sub"),
             ("local:a/b#sub", "local:a/b#sub"),
             ("https://else.invalid/a/b.git", "https://else.invalid/a/b"),
@@ -314,6 +367,20 @@ mod tests {
         for (input, formal) in table {
             let address = parse(input, &hosts, cwd, cwd).unwrap();
             assert_eq!(address.formal_name(&hosts), formal, "{input}");
+            if let Address::Git {
+                repo, reference, ..
+            } = &address
+            {
+                assert!(!without_userinfo(repo).contains("token"));
+                assert!(
+                    !cache_path(cwd, &address, &hosts, "abc")
+                        .to_string_lossy()
+                        .contains("token")
+                );
+                if input.contains("@v1") {
+                    assert_eq!(reference.as_deref(), Some("v1"));
+                }
+            }
         }
         assert!(matches!(
             parse("./folder", &hosts, cwd, cwd).unwrap(),
@@ -329,5 +396,9 @@ mod tests {
             cache_path(cwd, &address, &hosts, "abc"),
             cwd.join("sources/gh_a_b/abc")
         );
+        let repo = "https://user:token@host.invalid/o/r";
+        let error = git_error(format!("clone failed for {repo}"), repo).to_string();
+        assert!(!error.contains("token"));
+        assert!(error.contains("https://host.invalid/o/r"));
     }
 }

@@ -92,9 +92,12 @@ impl Context {
         registry
             .discover(&config.templates_paths, &dirs.user_data)
             .map_err(CommandError::text)?;
-        registry
+        let missing = registry
             .apply_local_aliases(&local)
             .map_err(CommandError::text)?;
+        for (alias, formal) in missing {
+            eprintln!("warning: local alias {alias} names {formal}, which is not installed");
+        }
         Ok(Self {
             dirs,
             config,
@@ -190,46 +193,47 @@ fn clone_sibling(
 }
 struct SwappedClone {
     install: PathBuf,
-    old: PathBuf,
-    had_old: bool,
+    backup: Option<tempfile::TempDir>,
 }
 impl SwappedClone {
     fn rollback(self) -> Result<(), CommandError> {
         fs::remove_dir_all(&self.install).map_err(CommandError::text)?;
-        if self.had_old {
-            fs::rename(&self.old, &self.install).map_err(CommandError::text)?;
+        if let Some(backup) = self.backup {
+            fs::rename(backup.path().join("repo"), &self.install).map_err(CommandError::text)?;
+            backup.close().map_err(CommandError::text)?;
         }
         Ok(())
     }
     fn finish(self) -> Result<(), CommandError> {
-        if self.had_old {
-            fs::remove_dir_all(self.old).map_err(CommandError::text)?;
+        if let Some(backup) = self.backup {
+            backup.close().map_err(CommandError::text)?;
         }
         Ok(())
     }
 }
 fn swap_clone(temp: &Path, install: &Path) -> Result<SwappedClone, CommandError> {
-    let old = install.with_extension("toha-old");
-    if old.exists() {
-        return Err(CommandError::text(format!(
-            "old clone backup exists: {}",
-            old.display()
-        )));
-    }
-    let had_old = install.exists();
-    if had_old {
-        fs::rename(install, &old).map_err(CommandError::text)?;
-    }
+    let backup = if install.exists() {
+        let parent = install
+            .parent()
+            .ok_or_else(|| CommandError::text("install path has no parent"))?;
+        let holder = tempfile::Builder::new()
+            .prefix(".toha-backup-")
+            .tempdir_in(parent)
+            .map_err(CommandError::text)?;
+        fs::rename(install, holder.path().join("repo")).map_err(CommandError::text)?;
+        Some(holder)
+    } else {
+        None
+    };
     if let Err(error) = fs::rename(temp, install) {
-        if had_old {
-            fs::rename(&old, install).map_err(CommandError::text)?;
+        if let Some(holder) = backup.as_ref() {
+            fs::rename(holder.path().join("repo"), install).map_err(CommandError::text)?;
         }
         return Err(CommandError::text(error));
     }
     Ok(SwappedClone {
         install: install.into(),
-        old,
-        had_old,
+        backup,
     })
 }
 fn install_staged(
@@ -333,7 +337,7 @@ fn add(
         let mut entry = Entry {
             name: name.clone(),
             source: match &parsed {
-                Address::Git { repo, .. } => repo.clone(),
+                Address::Git { repo, .. } => source::without_userinfo(repo),
                 Address::Folder(folder) => folder.to_string_lossy().into_owned(),
                 _ => unreachable!(),
             },
