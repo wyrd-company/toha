@@ -62,7 +62,7 @@ fn entries(text: &str) -> Vec<(String, String)> {
 }
 
 fn commands(text: &str) -> Vec<String> {
-    entries(&text[text.find("Commands:").map_or(text.len(), |at| at)..])
+    entries(&text[text.find("Commands:").unwrap_or(text.len())..])
         .into_iter()
         .map(|(name, _)| name)
         .take_while(|name| !name.starts_with('-'))
