@@ -378,6 +378,14 @@ impl Builder {
         }
     }
     fn confined_file(&mut self, value: &str, path: &str, executable: bool) -> Option<PathBuf> {
+        if Path::new(value).is_absolute() {
+            problem(
+                &mut self.problems,
+                path,
+                "file path must be relative to template root",
+            );
+            return None;
+        }
         let candidate = self.root.join(value);
         let actual = match candidate.canonicalize() {
             Ok(path) => path,
@@ -732,6 +740,13 @@ impl Template {
             };
             let inserted = b.seen.insert(binding.as_str().into());
             let target = b.tmpl(map.get("path"), &format!("{path}.path"));
+            match fs::read_to_string(root.join(&source)) {
+                Ok(content) => {
+                    b.tmpl(Some(&Value::String(content)), &format!("{path}.source"));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {}
+                Err(error) => problem(&mut b.problems, format!("{path}.source"), error.to_string()),
+            }
             if inserted {
                 b.seen.remove(binding.as_str());
             }
