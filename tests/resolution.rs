@@ -182,6 +182,57 @@ fn alias_short_ambiguous_and_address_forms() {
         1,
     );
     assert!(!missing_repo.stderr.is_empty());
+    let escaped = run(
+        &root,
+        &[
+            "stage",
+            &format!("{url}#{}", root.path().join("owner/repo/one").display()),
+            target.to_str().unwrap(),
+            "--async",
+        ],
+        1,
+    );
+    assert!(String::from_utf8_lossy(&escaped.stderr).contains("leaves repository"));
+}
+
+#[test]
+fn cached_commit_survives_source_disappearance() {
+    let root = TempDir::new().unwrap();
+    let (url, commit) = repository(&root);
+    let address = format!("{url}@{commit}#one");
+    let answers = root.path().join("answers.json");
+    fs::write(&answers, r#"{"label":"Cached"}"#).unwrap();
+    run(
+        &root,
+        &[
+            "apply",
+            &address,
+            root.path().join("first").to_str().unwrap(),
+            "--answers",
+            answers.to_str().unwrap(),
+        ],
+        0,
+    );
+    fs::rename(
+        root.path().join("owner/repo"),
+        root.path().join("owner/removed"),
+    )
+    .unwrap();
+    run(
+        &root,
+        &[
+            "apply",
+            &address,
+            root.path().join("second").to_str().unwrap(),
+            "--answers",
+            answers.to_str().unwrap(),
+        ],
+        0,
+    );
+    assert_eq!(
+        fs::read_to_string(root.path().join("second/result.txt")).unwrap(),
+        "old Cached"
+    );
 }
 
 #[test]

@@ -135,6 +135,23 @@ fn fetch_new(
         .cache
         .join("sources")
         .join(source::install_key(&formal_name));
+    if let Address::Git {
+        reference: Some(commit),
+        ..
+    } = address
+    {
+        if commit.len() == 40 && commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            let root = parent.join(commit);
+            if root.is_dir() {
+                return Ok(ResolvedTemplate {
+                    formal_name,
+                    commit: commit.clone(),
+                    folder: selected_folder(&root, address)?,
+                    trusted: false,
+                });
+            }
+        }
+    }
     fs::create_dir_all(&parent).map_err(ResolveError::text)?;
     let temporary = tempfile::tempdir_in(&parent).map_err(ResolveError::text)?;
     let clone = temporary.path().join("repo");
@@ -220,4 +237,90 @@ pub fn resume_template(
         folder,
         trusted: entry(formal.into(), registry).is_some_and(|v| v.trusted),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+
+    #[test]
+    fn fetched_cache_commit_must_match_record() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = root.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        let git = |args: Vec<&str>| {
+            Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .env("HOME", root.path().join("home"))
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .unwrap()
+                .status
+                .success()
+        };
+        for args in [
+            vec!["init", "-b", "main"],
+            vec!["config", "user.name", "Sample"],
+            vec!["config", "user.email", "sample@example.invalid"],
+        ] {
+            assert!(git(args));
+        }
+        fs::write(repo.join("file.txt"), "content").unwrap();
+        for args in [vec!["add", "."], vec!["commit", "-m", "initial"]] {
+            assert!(git(args));
+        }
+        let dirs = Dirs {
+            system_config: root.path().join("system-config"),
+            user_config: root.path().join("user-config"),
+            local_config_override: None,
+            system_data: root.path().join("system-data"),
+            user_data: root.path().join("user-data"),
+            cache: root.path().join("cache"),
+            state: root.path().join("state"),
+            home: root.path().join("home"),
+        };
+        let address = Address::Git {
+            repo: format!("file://{}", repo.display()),
+            reference: None,
+            path: None,
+        };
+        let recorded = "0000000000000000000000000000000000000000";
+        let overrides = [
+            ("HOME", root.path().join("home")),
+            ("XDG_CONFIG_HOME", root.path().join("config")),
+            ("XDG_DATA_HOME", root.path().join("data")),
+            ("XDG_CACHE_HOME", root.path().join("cache")),
+            ("XDG_STATE_HOME", root.path().join("state")),
+            (
+                "TOHA_USER_CONFIG",
+                root.path().join("config/toha/config.yml"),
+            ),
+            ("TOHA_CONFIG", root.path().join("local.yml")),
+        ];
+        let prior: Vec<_> = overrides
+            .iter()
+            .map(|(key, _)| std::env::var_os(key))
+            .collect();
+        unsafe {
+            for (key, value) in &overrides {
+                std::env::set_var(key, value);
+            }
+        }
+        let error = cached(&address, "sample", &dirs, recorded).unwrap_err();
+        unsafe {
+            for ((key, _), value) in overrides.iter().zip(prior) {
+                if let Some(value) = value {
+                    std::env::set_var(key, value);
+                } else {
+                    std::env::remove_var(key);
+                }
+            }
+        }
+        assert!(
+            matches!(error, ResolveError::Error(message) if message.contains("differs from recorded commit"))
+        );
+    }
 }
