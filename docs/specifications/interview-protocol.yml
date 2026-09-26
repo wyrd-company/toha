@@ -61,7 +61,9 @@ description: >-
   on macOS; and `%LOCALAPPDATA%\toha\staged\` on Windows. The file name is the
   lowercase hexadecimal SHA-256 of the canonical absolute target path with a
   `.json` suffix. The staged record holds the target path, the formal name and
-  resolved commit of the template, the answers recorded so far, and the interview position.
+  resolved commit of the template, the instant that `now()` returns for this
+  interview, and the answers recorded so far. Resuming replays the recorded
+  answers, so the interview position is derived, not stored.
 format: json-schema
 validation-criteria: >-
   Every batch and result document that toha emits validates against
