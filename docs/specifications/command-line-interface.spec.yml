@@ -18,6 +18,8 @@ commands:
   - name: stage
     summary: Run the interview for a template and save the answers without writing files.
     mode: interactive
+    notes:
+      - Multiline input uses an editor, or lines ending with . when no editor is available.
     positional-arguments:
       - name: template
         position: 0
@@ -63,6 +65,8 @@ commands:
   - name: continue
     summary: Continue a staged interview with an answers document or terminal prompts.
     mode: interactive
+    notes:
+      - Multiline input uses an editor, or lines ending with . when no editor is available.
     positional-arguments:
       - name: path
         position: 0
@@ -97,6 +101,8 @@ commands:
   - name: apply
     summary: Write the files of a staged or new interview and run its hooks.
     mode: interactive
+    notes:
+      - Multiline input uses an editor, or lines ending with . when no editor is available.
     positional-arguments:
       - name: template
         position: 0
