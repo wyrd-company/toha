@@ -731,8 +731,10 @@ fn run(
                             &context(&saved),
                             Some(&rejections),
                         );
-                        if let Err(e) = store.save(&saved) {
-                            return Outcome::Error(e.to_string());
+                        if !dry_run {
+                            if let Err(e) = store.save(&saved) {
+                                return Outcome::Error(e.to_string());
+                            }
                         }
                         return Outcome::Document(document, 4);
                     }
@@ -809,8 +811,10 @@ fn run(
                             accepted,
                         } => {
                             saved.submissions.extend(accepted);
-                            if let Err(e) = store.save(&saved) {
-                                return Outcome::Error(e.to_string());
+                            if !dry_run {
+                                if let Err(e) = store.save(&saved) {
+                                    return Outcome::Error(e.to_string());
+                                }
                             }
                             return Outcome::Document(
                                 protocol::batch_document(
