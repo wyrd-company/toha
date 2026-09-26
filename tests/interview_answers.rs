@@ -691,7 +691,7 @@ fn same_outcome_through_apply_and_continue(template: &Path, prior: &[Value], doc
     let target = tempfile::tempdir().unwrap();
     staged(state.path(), target.path());
     let (code, result) = continue_with(state.path(), target.path(), document.clone());
-    let through_continue = outcome(code, &result, state.path(), target.path());
+    let mut through_continue = outcome(code, &result, state.path(), target.path());
 
     let state = tempfile::tempdir().unwrap();
     let target = tempfile::tempdir().unwrap();
@@ -713,11 +713,14 @@ fn same_outcome_through_apply_and_continue(template: &Path, prior: &[Value], doc
         target.path(),
     );
     // A headless run also answers the next batch from defaults and states
-    // which required questions the document leaves unanswered.
-    if let Some(errors) = through_apply["errors"].as_object_mut() {
-        errors.retain(|id, e| document.get(id).is_some() || e != &json!(["is required"]));
-        if errors.is_empty() {
-            through_apply["errors"] = Value::Null;
+    // which required questions the document leaves unanswered; `continue`
+    // states that only for the batch it answers. Neither is compared.
+    for outcome in [&mut through_apply, &mut through_continue] {
+        if let Some(errors) = outcome["errors"].as_object_mut() {
+            errors.retain(|id, e| document.get(id).is_some() || e != &json!(["is required"]));
+            if errors.is_empty() {
+                outcome["errors"] = Value::Null;
+            }
         }
     }
     assert_eq!(through_apply, through_continue, "{prior:?} then {document}");
@@ -759,6 +762,183 @@ fn one_answers_document_has_the_same_outcome_through_apply_and_continue() {
     for (prior, document) in cases {
         same_outcome_through_apply_and_continue(skips, &prior, &document);
     }
+    // A held answer that fails a constraint is not an error when this
+    // document skips its question, and is one when the question stays active.
+    for document in [
+        json!({"kind": "plain", "style": 1}),
+        json!({"kind": "fancy", "style": 1}),
+    ] {
+        same_outcome_through_apply_and_continue(skips, &[], &document);
+    }
+    // A repeated answer is compared after format, which need not be a fixed
+    // point.
+    let (folder, _template) = inline(SUFFIX);
+    let prior = [json!({"word": "a"})];
+    for document in [json!({"word": "ax"}), json!({"word": "a"})] {
+        same_outcome_through_apply_and_continue(folder.path(), &prior, &document);
+    }
+    // Warnings follow interview order, before a message reached after them.
+    let (folder, _template) = inline(ORDERED);
+    same_outcome_through_apply_and_continue(
+        folder.path(),
+        &[json!({"flag": false})],
+        &json!({"alpha": "a", "zeta": "z", "mid": "m"}),
+    );
+}
+
+/// A template whose `format` appends to the answer.
+const SUFFIX: &str = "name: suffix\ninterview:\n  - { id: word, type: text, prompt: Word?, format: \"value ~ 'x'\" }\n  - { id: next, type: text, prompt: 'Next after {{ word }}?', required: true }\n";
+
+/// A template with two skippable questions whose ids sort against interview
+/// order, then a message that waits for a later answer.
+const ORDERED: &str = "name: ordered\ninterview:\n  - { id: flag, type: confirm, prompt: Flag? }\n  - { id: zeta, type: text, prompt: Zeta?, when: flag }\n  - { id: alpha, type: text, prompt: Alpha?, when: flag }\n  - { id: mid, type: text, prompt: Mid?, required: true }\n  - message: 'Got {{ mid }}'\n  - { id: last, type: text, prompt: Last?, required: true }\n";
+
+#[test]
+fn repeated_answer_is_compared_after_format() {
+    let (folder, _template) = inline(SUFFIX);
+    let state = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    stage(state.path(), target.path(), folder.path());
+    let (code, _) = continue_with(state.path(), target.path(), json!({"word": "a"}));
+    assert_eq!(code, 4);
+    // "ax" formats to "axx", which differs from the recorded "ax".
+    let (code, result) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"word": "ax", "next": "n"}),
+    );
+    assert_eq!(code, 4, "{result}");
+    let error = result["errors"]["word"][0].as_str().unwrap_or_default();
+    assert!(
+        error.starts_with("is already answered with \"ax\";"),
+        "{result}"
+    );
+    assert_eq!(submissions(state.path(), target.path()), 1);
+    let (code, result) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"word": "a", "next": "n"}),
+    );
+    assert_eq!(code, 0, "{result}");
+    assert_eq!(result["answers"]["word"], json!("ax"));
+}
+
+#[test]
+fn repeated_list_answer_is_compared_in_order() {
+    let (_folder, template) = inline(
+        "name: sample\ninterview:\n  - { id: picks, type: multiselect, prompt: P?, options: [a, b] }\n  - { id: next, type: text, prompt: 'N {{ picks }}?' }\n",
+    );
+    let Interview::Asking(pending) = Interview::start(&template, seed()).unwrap() else {
+        panic!()
+    };
+    let raw = protocol::parse_answers(r#"{"picks": ["a", "b"]}"#).unwrap();
+    let Interview::Asking(pending) = pending.answer(raw).unwrap() else {
+        panic!()
+    };
+    let raw = protocol::parse_answers(r#"{"picks": ["b", "a"]}"#).unwrap();
+    let Err(AnswerError::Rejected { rejections, .. }) = pending.answer(raw) else {
+        panic!("expected a rejection")
+    };
+    assert_eq!(
+        rejections[0].message,
+        r#"is already answered with ["a","b"]"#
+    );
+}
+
+#[test]
+fn format_fault_on_a_repeated_answer_is_a_template_error() {
+    let (_folder, template) = inline(
+        "name: sample\ninterview:\n  - { id: word, type: text, prompt: W?, format: \"(value ~ 'x') if value == 'a' else (value | dateformat)\" }\n  - { id: next, type: text, prompt: 'N {{ word }}?' }\n",
+    );
+    let Interview::Asking(pending) = Interview::start(&template, seed()).unwrap() else {
+        panic!()
+    };
+    let raw = protocol::parse_answers(r#"{"word": "a"}"#).unwrap();
+    let Interview::Asking(pending) = pending.answer(raw).unwrap() else {
+        panic!()
+    };
+    let raw = protocol::parse_answers(r#"{"word": "b"}"#).unwrap();
+    let Err(AnswerError::Eval(error)) = pending.answer(raw) else {
+        panic!("expected a template error")
+    };
+    assert!(
+        error
+            .to_string()
+            .starts_with("template error in word.format "),
+        "{error}"
+    );
+}
+
+#[test]
+fn invalid_answer_for_a_question_this_document_skips_is_a_warning() {
+    let (folder, _template) = inline(SKIPS);
+    let state = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    stage(state.path(), target.path(), folder.path());
+    let (code, result) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"kind": "plain", "style": 1}),
+    );
+    assert_eq!(code, 4, "{result}");
+    assert!(result.get("errors").is_none(), "{result}");
+    assert_eq!(questions(&result), ["title"]);
+    assert_eq!(result["messages"], json!([skipped_warning("style")]));
+
+    let state = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    stage(state.path(), target.path(), folder.path());
+    let (code, result) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"kind": "fancy", "style": 1}),
+    );
+    assert_eq!(code, 4, "{result}");
+    assert_eq!(result["errors"], json!({"style": ["must be a string"]}));
+    assert_eq!(questions(&result), ["kind"]);
+    assert_eq!(submissions(state.path(), target.path()), 0);
+}
+
+#[test]
+fn skipped_answer_warnings_follow_interview_order() {
+    let (folder, _template) = inline(ORDERED);
+    let state = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    stage(state.path(), target.path(), folder.path());
+    let (code, _) = continue_with(state.path(), target.path(), json!({"flag": false}));
+    assert_eq!(code, 4);
+    let (code, result) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"alpha": "a", "zeta": "z", "mid": "m"}),
+    );
+    assert_eq!(code, 4, "{result}");
+    assert_eq!(
+        result["messages"],
+        json!([skipped_warning("zeta"), skipped_warning("alpha"), "Got m"])
+    );
+}
+
+#[test]
+fn warnings_for_an_interview_complete_at_start_follow_interview_order() {
+    let (_folder, template) = inline(
+        "name: sample\ninterview:\n  - { id: zeta, type: text, prompt: Z?, when: 'false' }\n  - message: Hello\n  - { id: alpha, type: text, prompt: A?, when: 'false' }\n",
+    );
+    let document = protocol::parse_answers(r#"{"alpha": "a", "zeta": "z"}"#).unwrap();
+    let Ok(protocol::Headless::Completed { completed, .. }) = protocol::answer_headless(
+        &template,
+        Interview::start(&template, seed()).unwrap(),
+        document,
+    ) else {
+        panic!("expected a complete interview")
+    };
+    let expected = [
+        skipped_warning("zeta"),
+        "Hello".into(),
+        skipped_warning("alpha"),
+    ];
+    assert_eq!(completed.messages, expected);
+    assert_eq!(completed.last_messages, expected);
 }
 
 fn skipped_warning(id: &str) -> String {
