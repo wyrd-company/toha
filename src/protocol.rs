@@ -225,7 +225,7 @@ pub fn answer_headless<'a>(
         if first {
             let unknown: Vec<Id> = remaining
                 .keys()
-                .filter(|id| !pending.accepts_id(id))
+                .filter(|id| !pending.accepts_id(id) || pending.holds(id))
                 .cloned()
                 .collect();
             for id in unknown {

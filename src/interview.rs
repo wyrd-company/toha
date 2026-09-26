@@ -612,6 +612,59 @@ fn skipped_descendants_ready(
     }
     visit(nodes, &mut available, template, seed)
 }
+/// Validates `raw` against `prompt` and applies the question's `format`.
+fn check_answer(
+    template: &Template,
+    answers: &Answers,
+    seed: &Seed,
+    prompt: &Prompt,
+    raw: RawAnswer,
+) -> Result<Answer, CheckError> {
+    let id = &prompt.id;
+    let q = question_by_id(&template.interview, id).expect("prompt has question");
+    let mut answer = validate(id, &Rules::of_prompt(prompt, q), raw.0)?;
+    if answer == Answer::None {
+        return Ok(answer);
+    }
+    if let Some(expr) = &q.format {
+        let ctx = context(template, answers, seed);
+        let apply = |value: Value| -> Result<Value, CheckError> {
+            let mut c = ctx.clone();
+            c.insert("value".into(), value);
+            expr.eval(c)
+                .and_then(|v| {
+                    serde_json::to_value(v).map_err(|e| {
+                        minijinja::Error::new(minijinja::ErrorKind::InvalidOperation, e.to_string())
+                    })
+                })
+                .map_err(|e| eval_error(id, "format", e).into())
+        };
+        answer = match answer {
+            Answer::Text(v) => Answer::Text(
+                serde_json::from_value(apply(Value::String(v))?)
+                    .map_err(|e| eval_error(id, "format", e))?,
+            ),
+            Answer::Bool(v) => Answer::Bool(
+                serde_json::from_value(apply(Value::Bool(v))?)
+                    .map_err(|e| eval_error(id, "format", e))?,
+            ),
+            Answer::List(v) if prompt.kind == PromptKind::MultiSelect => Answer::List(
+                serde_json::from_value(apply(serde_json::json!(v))?)
+                    .map_err(|e| eval_error(id, "format", e))?,
+            ),
+            Answer::List(v) => Answer::List(
+                v.into_iter()
+                    .map(|s| {
+                        serde_json::from_value(apply(Value::String(s))?)
+                            .map_err(|e| eval_error(id, "format", e).into())
+                    })
+                    .collect::<Result<Vec<_>, CheckError>>()?,
+            ),
+            a => a,
+        };
+    }
+    Ok(answer)
+}
 struct Advance<'a> {
     template: &'a Template,
     seed: Seed,
@@ -656,6 +709,24 @@ impl Advance<'_> {
                             .unwrap_or(true);
                     if active {
                         let prompt = make_prompt(q, self.template, &self.answers, &self.seed)?;
+                        if let Some(raw) = self.held.shift_remove(&q.id) {
+                            match check_answer(
+                                self.template,
+                                &self.answers,
+                                &self.seed,
+                                &prompt,
+                                raw.clone(),
+                            ) {
+                                Ok(answer) => {
+                                    self.answers.insert(q.id.clone(), answer);
+                                    continue;
+                                }
+                                Err(CheckError::Rejected(_)) => {
+                                    self.held.insert(q.id.clone(), raw);
+                                }
+                                Err(CheckError::Eval(e)) => return Err(e),
+                            }
+                        }
                         self.batch.items.push(Item::Prompt(prompt));
                     } else {
                         if !default_ready(q, &self.answers, self.template, &self.seed) {
@@ -903,52 +974,11 @@ impl Pending<'_> {
                 _ => None,
             })
             .ok_or_else(|| rejection(id, "is not in the current batch"))?;
-        let q = question_by_id(&self.template.interview, id).expect("prompt has question");
-        let mut answer = validate(id, &Rules::of_prompt(prompt, q), raw.0)?;
-        if answer == Answer::None {
-            return Ok(answer);
-        }
-        if let Some(expr) = &q.format {
-            let ctx = context(self.template, &self.answers, &self.seed);
-            let apply = |value: Value| -> Result<Value, CheckError> {
-                let mut c = ctx.clone();
-                c.insert("value".into(), value);
-                expr.eval(c)
-                    .and_then(|v| {
-                        serde_json::to_value(v).map_err(|e| {
-                            minijinja::Error::new(
-                                minijinja::ErrorKind::InvalidOperation,
-                                e.to_string(),
-                            )
-                        })
-                    })
-                    .map_err(|e| eval_error(id, "format", e).into())
-            };
-            answer = match answer {
-                Answer::Text(v) => Answer::Text(
-                    serde_json::from_value(apply(Value::String(v))?)
-                        .map_err(|e| eval_error(id, "format", e))?,
-                ),
-                Answer::Bool(v) => Answer::Bool(
-                    serde_json::from_value(apply(Value::Bool(v))?)
-                        .map_err(|e| eval_error(id, "format", e))?,
-                ),
-                Answer::List(v) if prompt.kind == PromptKind::MultiSelect => Answer::List(
-                    serde_json::from_value(apply(serde_json::json!(v))?)
-                        .map_err(|e| eval_error(id, "format", e))?,
-                ),
-                Answer::List(v) => Answer::List(
-                    v.into_iter()
-                        .map(|s| {
-                            serde_json::from_value(apply(Value::String(s))?)
-                                .map_err(|e| eval_error(id, "format", e).into())
-                        })
-                        .collect::<Result<Vec<_>, CheckError>>()?,
-                ),
-                a => a,
-            };
-        }
-        Ok(answer)
+        check_answer(self.template, &self.answers, &self.seed, prompt, raw)
+    }
+    /// Whether an answer is held for a question that has not been reached.
+    pub fn holds(&self, id: &Id) -> bool {
+        self.held.contains_key(id)
     }
     pub fn check(&self, id: &Id, raw: RawAnswer) -> Result<Answer, CheckError> {
         self.check_inner(id, raw)
