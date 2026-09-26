@@ -5,14 +5,22 @@
 version: "3"
 tasks:
   build:
-    cmds: [cargo build]
+    cmds: [ cargo build ]
   test:
-    cmds: [cargo test]
+    cmds: [ cargo test ]
   lint:
-    cmds: ["cargo clippy --all-targets -- -D warnings"]
+    cmds: [ "cargo clippy --all-targets -- -D warnings" ]
   fmt:
-    cmds: [cargo fmt --all]
+    cmds: [ cargo fmt --all ]
   fmt-check:
-    cmds: ["cargo fmt --all -- --check"]
+    cmds: [ "cargo fmt --all -- --check" ]
+  release:check:
+    desc: Validate release configuration and workflows
+    cmds:
+      - actionlint .github/workflows/*.yml
+      - >-
+        ryl check -c .ryl.yml .github/workflows/*.yml Taskfile.yml
+        .intentional/config.yml docs/docs.yml scripts/release/nfpm.yml
+      - intentional check
   ci:
-    deps: [fmt-check, lint, test]
+    deps: [ fmt-check, lint, test, release:check ]

@@ -1,0 +1,18 @@
+# ---
+# relationships:
+#   implements: architecture
+# ---
+name: toha
+arch: ${PACKAGE_ARCH}
+platform: linux
+version: ${RELEASE_VERSION}
+maintainer: Wyrd Company <support@wyrd.company>
+description: Generate projects and files from templates
+vendor: Wyrd Company
+homepage: https://github.com/wyrd-company/toha
+license: Apache-2.0
+contents:
+  - src: ./toha
+    dst: /usr/bin/toha
+  - src: ./LICENSE
+    dst: /usr/share/licenses/toha/LICENSE
