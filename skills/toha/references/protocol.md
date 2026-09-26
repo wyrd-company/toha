@@ -64,7 +64,7 @@ Tags: {{ tags | join(', ') }}
 {% endif %}
 ```
 
-The JSON lines below show selected fields from real toha output and the submitted answer document; each shell block prints exactly the following `text` block. The full batch also has `context` (canonical target and template paths, plus commit), `protocol: 1`, and `messages`.
+The JSON lines below show selected fields from real toha output and the submitted answer document; each shell block prints exactly the following `text` block. The full batch also has `context` (canonical target and template paths, and the commit of a git template or `null` for a folder), `protocol: 1`, and `messages`.
 
 The first call exits 4 and emits a batch with a required title. The second call submits one answers document on standard input. The next batch has a slug default and a looped array of tags.
 
@@ -88,7 +88,7 @@ jq -cS '{status,questions:(.schema.properties|keys),slug_default:.schema.propert
 {"questions":["slug","tags"],"slug_default":"sample-note","status":"questions","tags_type":["array","null"]}
 ```
 
-A rejected answer returns the same batch with per-id `errors` and records none of that document. Resubmit the whole batch: both `slug` and `tags` appear in the corrected document below. Then follow the remaining batches. `format` lowercases the tag in the complete answers.
+A rejected answer returns the same batch with per-id `errors` and records none of that document. Resubmit the whole batch: both `slug` and `tags` appear in the corrected document below. Then follow the remaining batches. The optional `status` select lists its options in `anyOf`, beside `null`. `format` lowercases the tag in the complete answers.
 
 ```sh
 # test
@@ -105,7 +105,7 @@ printf '%s\n' '{"slug":"sample-note","tags":["One"]}'
 if printf '%s' '{"slug":"sample-note","tags":["One"]}' | "$TOHA_BIN" continue "$TOHA_TARGET" - > "$TOHA_TARGET/result.json"; then exit 1; else test "$?" -eq 4; fi
 jq -cS '{status,questions:(.schema.properties|keys)}' "$TOHA_TARGET/result.json"
 if printf '%s' '{"has_summary":true}' | "$TOHA_BIN" continue "$TOHA_TARGET" - > "$TOHA_TARGET/result.json"; then exit 1; else test "$?" -eq 4; fi
-jq -cS '{status,questions:(.schema.properties|keys)}' "$TOHA_TARGET/result.json"
+jq -cS '{status,questions:(.schema.properties|keys),status_options:.schema.properties.status.anyOf}' "$TOHA_TARGET/result.json"
 printf '%s' '{"summary":"Short text","status":"draft"}' | "$TOHA_BIN" continue "$TOHA_TARGET" - > "$TOHA_TARGET/result.json"
 jq -cS '{status,answers}' "$TOHA_TARGET/result.json"
 "$TOHA_BIN" apply "$TOHA_TARGET" --dry-run
@@ -115,7 +115,7 @@ jq -cS '{status,answers}' "$TOHA_TARGET/result.json"
 {"errors":{"slug":["must match ^[a-z0-9-]+$"]},"questions":["slug","tags"],"status":"questions"}
 {"slug":"sample-note","tags":["One"]}
 {"questions":["has_summary"],"status":"questions"}
-{"questions":["status","summary"],"status":"questions"}
+{"questions":["status","summary"],"status":"questions","status_options":[{"enum":["draft","review","final"]},{"type":"null"}]}
 {"answers":{"has_summary":true,"slug":"sample-note","status":"draft","summary":"Short text","tags":["one"],"title":"Sample Note"},"status":"complete"}
 create sample-note.txt
 ```

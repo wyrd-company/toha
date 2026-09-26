@@ -15,8 +15,14 @@ description: >-
   id when its `when`, any of its templates, or any of its expressions uses that
   id. Computed nodes, message nodes, and hook nodes between the questions are
   evaluated as soon as their references are answered, so a batch never holds
-  them. Messages reached while building a batch are included in its
-  `messages` array in interview order.
+  them.
+
+  Messages. Each batch and complete result carries a `messages` array: the
+  messages reached by the step that produced it, in interview order. A step
+  is the start of the interview or the submission of one accepted answers
+  document. Each entry is a string: the rendered text of a message node, or a
+  warning from toha, which starts with `warning: `. A result for a rejected
+  document holds the batch it answered, with that batch's messages.
 
   Question schema. A batch carries a JSON Schema 2020-12 object schema in
   `schema`. Each pending question is one property keyed by its id. `prompt` is
@@ -31,7 +37,10 @@ description: >-
   and `minItems` and `maxItems` from `validate`. Required questions are listed
   in `required`. Each property carries `x-toha-type` with the question type and
   `x-toha-multiline: true` for `multiline`.
-  A question that is not required also accepts explicit `null`.
+  A question that is not required also accepts explicit `null`: its `type`
+  lists `null` beside its JSON type, and a `select` that is not required puts
+  its options in `anyOf: [{enum: [...]}, {type: null}]` instead of `enum`, so
+  the enum lists only the options.
 
   Answers. An answers document is a JSON object keyed by question id. `continue`
   reads it from a file or from standard input. Answers for questions outside
@@ -47,14 +56,31 @@ description: >-
   question, also in the result of a rejected document, until a document
   answers the question; a document that leaves the question out is rejected
   with that error. An answer for an id that the
-  template does not define is an error. Toha treats explicit `null` as an
+  template does not define is an error. An answer for a question that
+  already has an answer is compared with the recorded answer after the same
+  parsing and `format` that recorded it: an equal answer is ignored, and a
+  different answer is an error, `is already answered with <recorded JSON
+  value>`, followed by the commands that change it: abort the staged
+  interview, then stage it again. An answer for a question skipped by a
+  `when`, of the question or of a group that holds it, is not used and is
+  not an error: the step that skips the question, or that receives the
+  answer when the question is already skipped, adds the warning `warning:
+  answer for "<id>" was not used: the question was skipped` to `messages`
+  once. Toha treats explicit `null` as an
   empty answer that does not take a default; a required question rejects it.
   The empty answer of a looped `text` or `multiselect` question is `[]`, and
   of any other question `null`; a question left out of a document for its
   batch takes its default, or that empty answer when it has none, except a
-  question with an error for a value recorded earlier. Toha
+  question with an error for a value recorded earlier. A configured default
+  is validated as an answer when its question takes it; when it fails, the
+  error names the configuration key: `default <JSON value> from configuration
+  key defaults.<id> is not allowed:` followed by the failed constraint. Toha
   validates each answer and applies its `format` expression before it records
   the answer.
+
+  Context. Each batch and result document carries `context`: the canonical
+  absolute target path, the formal name of the template, and the resolved
+  commit of a git template, or `null` for a local folder.
 
   Results. `continue` emits a result document. When every answer is accepted
   and questions remain, the result holds the next batch. When answers fail
@@ -63,10 +89,12 @@ description: >-
   of sentences; each sentence states the constraint that the answer fails,
   such as `must match ^[a-z0-9-]+$`, `must be one of: draft, review, final`,
   `must have at least 1 item`, `must be at most 80 characters`,
-  `is required`, or `is not a question in this template`. A next batch holds
+  `is required`, `is not a question in this template`, or `is already
+  answered with "draft"`. A next batch holds
   errors only for held answers that failed when their questions were
   reached. When the interview is complete, the
-  result has `status: complete` and holds the full flat answers object.
+  result has `status: complete`, holds the full flat answers object, and
+  holds the messages of the step that completed the interview.
   `continue` without an answers argument on a complete interview emits that
   complete result.
 
@@ -86,8 +114,9 @@ description: >-
   remaining batch from configured defaults, then from the question `default`.
   When the document is rejected, or a required question has no answer, or a
   question has an error for a value recorded earlier, the run stops, stages
-  the interview, and emits the batch that holds the question with its errors. With `--dry-run`, the run emits that batch
-  and leaves the staged state unchanged.
+  the interview, and emits the batch that holds the question with its
+  errors. With `--dry-run`, the run emits that batch and leaves the staged
+  state unchanged.
 
   Staged state. A staged interview is stored in the user state directory:
   `$XDG_STATE_HOME/toha/staged/` on Linux, with `~/.local/state` in place of
