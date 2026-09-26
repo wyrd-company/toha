@@ -338,32 +338,34 @@ fn two_batch_template(root: &Path) -> String {
     support::folder_address(&folder.canonicalize().unwrap())
 }
 
-/// Runs `apply <template> <target> --answers {"first":"One"} --dry-run` and
-/// checks that it emits the second batch.
-fn dry_run_partial(case: &Case, template: &str) {
+/// Runs `apply <template> <target> --answers {"first":"One"}` with `extra`
+/// flags and checks that it emits the second batch.
+fn partial(case: &Case, template: &str, extra: &[&str]) -> Output {
     let answers = case.state.path().join("answers.json");
     std::fs::write(&answers, r#"{"first":"One"}"#).unwrap();
-    let output = case.run(&[
+    let mut args = vec![
         "apply",
         template,
         case.target(),
         "--answers",
         answers.to_str().unwrap(),
-        "--dry-run",
-    ]);
+    ];
+    args.extend(extra);
+    let output = case.run(&args);
     assert_code(&output, 4);
     let batch: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert!(
         batch["schema"]["properties"].get("second").is_some(),
         "{batch}"
     );
+    output
 }
 
 #[test]
 fn dry_run_with_partial_answers_stages_nothing() {
     let case = Case::new();
     let template = two_batch_template(case.state.path());
-    dry_run_partial(&case, &template);
+    partial(&case, &template, &["--dry-run"]);
     assert!(!case.staged(), "a dry run stages nothing");
 }
 
@@ -372,7 +374,7 @@ fn dry_run_with_partial_answers_records_nothing_in_staged_interview() {
     let case = Case::new();
     let template = two_batch_template(case.state.path());
     case.stage_incomplete(&template);
-    dry_run_partial(&case, &template);
+    partial(&case, &template, &["--dry-run"]);
     let record = Store::new(support::staged_dir(case.state.path()))
         .load(&canonical_target(case.target.path()).unwrap())
         .unwrap()
@@ -382,4 +384,58 @@ fn dry_run_with_partial_answers_records_nothing_in_staged_interview() {
         "a dry run records no answers: {:?}",
         record.submissions
     );
+}
+
+fn answers_path(case: &Case) -> String {
+    case.state
+        .path()
+        .join("answers.json")
+        .to_str()
+        .unwrap()
+        .to_string()
+}
+
+#[test]
+fn partial_answers_name_the_commands_that_finish_the_interview() {
+    for staged in [false, true] {
+        let case = Case::new();
+        let template = two_batch_template(case.state.path());
+        if staged {
+            case.stage_incomplete(&template);
+        }
+        let output = partial(&case, &template, &[]);
+        assert_stderr_names(
+            &output,
+            &[
+                format!("toha continue {}", case.target()),
+                format!("toha apply {}", case.target()),
+            ],
+        );
+    }
+}
+
+#[test]
+fn dry_run_with_partial_answers_names_the_command_that_records_them() {
+    for staged in [false, true] {
+        let case = Case::new();
+        let template = two_batch_template(case.state.path());
+        if staged {
+            case.stage_incomplete(&template);
+        }
+        let output = partial(&case, &template, &["--dry-run"]);
+        let record = format!(
+            "toha apply {template} {} --answers {}",
+            case.target(),
+            answers_path(&case)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.lines().any(|line| line.ends_with(&record)),
+            "stderr does not name `{record}`:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("records nothing"),
+            "stderr does not say the dry run records nothing:\n{stderr}"
+        );
+    }
 }
