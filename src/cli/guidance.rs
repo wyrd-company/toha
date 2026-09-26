@@ -508,3 +508,17 @@ pub fn add_needs_address(name: &str, folder_exists: bool) -> String {
     ));
     lines.join("\n")
 }
+
+/// `templates add --alias` found more than one template at the address.
+pub fn alias_needs_one_template(alias: &str, addresses: &[String]) -> String {
+    let options = [format!("--alias {}", word(alias))];
+    std::iter::once("--alias requires exactly one template".to_string())
+        .chain(addresses.iter().map(|address| {
+            format!(
+                "to add {address} as {alias}: {}",
+                toha("templates add", &options, &[value(address)])
+            )
+        }))
+        .collect::<Vec<_>>()
+        .join("\n")
+}

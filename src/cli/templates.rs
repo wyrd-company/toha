@@ -323,8 +323,21 @@ fn add(
         None
     };
     let folders = find_templates(&root, selected)?;
-    if alias.is_some() && folders.len() != 1 {
-        return Err(CommandError::text("--alias requires exactly one template"));
+    if let Some(name) = alias.as_deref().filter(|_| folders.len() != 1) {
+        let addresses: Vec<String> = folders
+            .iter()
+            .map(|folder| match &parsed {
+                Address::Git { .. } => {
+                    let base = address.split_once('#').map_or(address, |(base, _)| base);
+                    let path = folder.strip_prefix(&root).unwrap_or(folder);
+                    format!("{base}#{}", path.to_string_lossy().replace('\\', "/"))
+                }
+                _ => folder.to_string_lossy().into_owned(),
+            })
+            .collect();
+        return Err(CommandError::text(guidance::alias_needs_one_template(
+            name, &addresses,
+        )));
     }
     let mut additions = Vec::new();
     let mut names = Vec::new();
