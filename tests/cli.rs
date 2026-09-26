@@ -108,10 +108,18 @@ fn commands_without_documents_require_a_terminal() {
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(1));
-        assert!(
-            String::from_utf8_lossy(&output.stderr)
-                .contains("no terminal: use --async, an answers document, or --answers")
-        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let template = support::folder_address(&template);
+        let target = target.path().display();
+        for command in [
+            format!("toha stage {template} {target} --async"),
+            format!("toha apply --answers <FILE> {template} {target}"),
+        ] {
+            assert!(
+                stderr.contains(&command),
+                "stderr does not name `{command}`:\n{stderr}"
+            );
+        }
     }
     let staged = support::isolated_command(isolation.path())
         .args(["stage", &support::folder_address(&template)])
