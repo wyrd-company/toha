@@ -424,9 +424,9 @@ fn dry_run_with_partial_answers_names_the_command_that_records_them() {
         }
         let output = partial(&case, &template, &["--dry-run"]);
         let record = format!(
-            "toha apply {template} {} --answers {}",
-            case.target(),
-            answers_path(&case)
+            "toha apply --answers {} {template} {}",
+            answers_path(&case),
+            case.target()
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
@@ -438,4 +438,75 @@ fn dry_run_with_partial_answers_names_the_command_that_records_them() {
             "stderr does not say the dry run records nothing:\n{stderr}"
         );
     }
+}
+
+/// The last stderr line of a partial dry run names this command to record the answers.
+fn assert_records_with(output: &Output, record: &str) {
+    assert_code(output, 4);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let last = stderr.lines().last().unwrap_or_default();
+    assert_eq!(
+        last,
+        format!("to record these answers: {record}"),
+        "stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn dry_run_hint_is_built_from_parsed_flags() {
+    let case = Case::new();
+    let template = two_batch_template(case.state.path());
+    let answers = case.state.path().join("answers.json");
+    std::fs::write(&answers, r#"{"first":"One"}"#).unwrap();
+    let answers = answers.to_str().unwrap();
+    let attached = format!("-dA{answers}");
+    let forced = format!(
+        "toha apply --answers {answers} --force {template} {}",
+        case.target()
+    );
+    for flags in [
+        vec!["-fd", "--answers", answers],
+        vec!["-df", "--answers", answers],
+    ] {
+        let mut args = vec!["apply"];
+        args.extend(flags);
+        args.extend([template.as_str(), case.target()]);
+        assert_records_with(&case.run(&args), &forced);
+    }
+    let output = case.run(&["apply", &attached, &template, case.target()]);
+    assert_records_with(
+        &output,
+        &format!(
+            "toha apply --answers {answers} {template} {}",
+            case.target()
+        ),
+    );
+    assert!(!case.staged());
+}
+
+#[test]
+fn dry_run_hint_keeps_a_target_spelled_like_a_flag() {
+    let case = Case::new();
+    let template = two_batch_template(case.state.path());
+    let answers = case.state.path().join("answers.json");
+    std::fs::write(&answers, r#"{"first":"One"}"#).unwrap();
+    let answers = answers.to_str().unwrap();
+    let output = support::isolated_command(case.state.path())
+        .current_dir(case.target.path())
+        .args([
+            "apply",
+            "--answers",
+            answers,
+            "--dry-run",
+            "--",
+            &template,
+            "-d",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_records_with(
+        &output,
+        &format!("toha apply --answers {answers} -- {template} -d"),
+    );
 }
