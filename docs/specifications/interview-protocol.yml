@@ -43,12 +43,16 @@ description: >-
   `options`, `validate.regex`, and literal `validate` and `loop` bounds. It
   checks the remaining constraints when the question is reached. When a held
   answer fails then, the question is part of that batch, and its error starts
-  with `value recorded earlier is not allowed:`. An answer for an id that the
+  with `value recorded earlier is not allowed:`. That error stays on the
+  question, also in the result of a rejected document, until a document
+  answers the question; a document that leaves the question out is rejected
+  with that error. An answer for an id that the
   template does not define is an error. Toha treats explicit `null` as an
   empty answer that does not take a default; a required question rejects it.
   The empty answer of a looped `text` or `multiselect` question is `[]`, and
   of any other question `null`; a question left out of a document for its
-  batch takes its default, or that empty answer when it has none. Toha
+  batch takes its default, or that empty answer when it has none, except a
+  question with an error for a value recorded earlier. Toha
   validates each answer and applies its `format` expression before it records
   the answer.
 
@@ -76,11 +80,13 @@ description: >-
 
   Headless answers files. `apply` accepts an answers document with
   `--answers`, for a new interview or for the interview staged at the target
-  for the same template. Toha answers each question from the document, then from
-  configured defaults, then from the question `default`. When a required
-  question has no answer, or a held answer fails when its question is reached
-  and the document does not answer that question, the run stops, stages the
-  interview, and emits the batch that holds the question. With `--dry-run`, the run emits that batch
+  for the same template. Toha submits the document as one answers document,
+  as `continue` does, so the same document records the same answers and
+  reports the same errors through either command. It then answers each
+  remaining batch from configured defaults, then from the question `default`.
+  When the document is rejected, or a required question has no answer, or a
+  question has an error for a value recorded earlier, the run stops, stages
+  the interview, and emits the batch that holds the question with its errors. With `--dry-run`, the run emits that batch
   and leaves the staged state unchanged.
 
   Staged state. A staged interview is stored in the user state directory:
