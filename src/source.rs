@@ -94,7 +94,12 @@ pub fn parse(arg: &str, hosts: &Hosts, cwd: &Path, home: &Path) -> Result<Addres
         .as_bytes()
         .get(0..2)
         .is_some_and(|v| v[0].is_ascii_alphabetic() && v[1] == b':');
-    if arg.starts_with('.') || arg.starts_with('/') || arg.starts_with('~') || drive {
+    if arg.starts_with('.')
+        || arg.starts_with('/')
+        || arg.starts_with('~')
+        || drive
+        || Path::new(arg).is_absolute()
+    {
         let value = if arg == "~" {
             home.to_path_buf()
         } else if let Some(rest) = arg.strip_prefix("~/") {
@@ -407,6 +412,11 @@ mod tests {
         assert!(matches!(
             parse("./folder", &hosts, cwd, cwd).unwrap(),
             Address::Folder(_)
+        ));
+        let canonical = folder.canonicalize().unwrap();
+        assert!(matches!(
+            parse(canonical.to_str().unwrap(), &hosts, cwd, cwd).unwrap(),
+            Address::Folder(path) if path == canonical
         ));
         assert_eq!(
             parse("plain", &hosts, cwd, cwd).unwrap(),

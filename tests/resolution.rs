@@ -61,7 +61,7 @@ fn repository(root: &TempDir) -> (String, String) {
     git(&repo, &["add", "."]);
     git(&repo, &["commit", "-m", "initial"]);
     let commit = git(&repo, &["rev-parse", "HEAD"]);
-    (format!("file://{}", repo.display()), commit)
+    (support::file_url(&repo), commit)
 }
 fn write_config(root: &TempDir, content: &str) {
     let path = root.path().join("config/toha/config.yml");
@@ -78,7 +78,7 @@ fn alias_short_ambiguous_and_address_forms() {
     let (url, commit) = repository(&root);
     write_config(
         &root,
-        &format!("hosts:\n  local: file://{}\n", root.path().display()),
+        &format!("hosts:\n  local: {}\n", support::file_url(root.path())),
     );
     let first = "local:owner/repo#one";
     run(
@@ -175,7 +175,7 @@ fn alias_short_ambiguous_and_address_forms() {
         &root,
         &[
             "stage",
-            &format!("file://{}/absent", root.path().display()),
+            &format!("{}/absent", support::file_url(root.path())),
             target.to_str().unwrap(),
             "--async",
         ],
@@ -507,7 +507,7 @@ fn registry_trust_runs_hooks_but_discovery_and_local_registry_do_not() {
         root.path().join(".templates/templates.yml"),
         format!(
             "templates:\n  {}:\n    aliases: [local-name]\n",
-            discovered.display()
+            discovered.canonicalize().unwrap().display()
         ),
     )
     .unwrap();
