@@ -83,7 +83,8 @@ impl HookRunner for RecordingRunner {
                 .strip_prefix(&hook.template_root)
                 .unwrap_or(path)
                 .display()
-                .to_string();
+                .to_string()
+                .replace('\\', "/");
         }
         let cwd = hook
             .cwd

@@ -237,9 +237,7 @@ fn every_success_fixture_through_staged_cli() {
         );
         support::assert_tree(target.path(), &fixture.join("expected"), &fixture);
         assert!(
-            !state
-                .path()
-                .join("toha/staged")
+            !support::staged_dir(state.path())
                 .read_dir()
                 .unwrap()
                 .any(|e| e.unwrap().path().extension().is_some_and(|x| x == "json")),
