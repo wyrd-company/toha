@@ -855,3 +855,23 @@ fn replay_stores_raw_answer_before_non_idempotent_format() {
         json!("a")
     );
 }
+#[test]
+fn folder_template_context_has_null_commit() {
+    let validator = schema_validator();
+    let state = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    let template = Path::new("tests/fixtures/text-basic/template")
+        .canonicalize()
+        .unwrap();
+    let output = command(state.path())
+        .args([
+            "stage",
+            support::folder_address(&template).as_str(),
+            target.path().to_str().unwrap(),
+            "--async",
+        ])
+        .output()
+        .unwrap();
+    let document = output_document(&output, 4, &validator);
+    assert_eq!(document["context"]["commit"], Value::Null, "{document}");
+}
