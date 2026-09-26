@@ -1269,6 +1269,17 @@ fn skipped_invalid_answer_is_dropped_beside_another_failing_answer() {
     );
     assert_eq!(code, 4, "{result}");
     assert_eq!(result["errors"], json!({"title": ["must match ^[a-z]+$"]}));
+    // The other failure is not an early answer: an unknown id.
+    let (code, result) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"kind": "plain", "style": 1, "nope": "x"}),
+    );
+    assert_eq!(code, 4, "{result}");
+    assert_eq!(
+        result["errors"],
+        json!({"nope": ["is not a question in this template"]})
+    );
     let (code, result) = continue_with(
         state.path(),
         target.path(),
