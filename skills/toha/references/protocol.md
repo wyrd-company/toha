@@ -19,7 +19,7 @@ jq -cS '{status,questions:(.schema.properties|keys),slug_default:.schema.propert
 
 ```text
 {"messages":[],"questions":["title"],"required":["title"],"status":"questions"}
-{"questions":["slug","tags"],"slug_default":"sample-note","status":"questions","tags_type":"array"}
+{"questions":["slug","tags"],"slug_default":"sample-note","status":"questions","tags_type":["array","null"]}
 ```
 
 A rejected answer returns the same batch with per-id `errors` and records none of that document. Resubmit the whole batch: both `slug` and `tags` appear in the corrected document below. Then follow the remaining batches. `format` lowercases the tag in the complete answers.
