@@ -32,11 +32,11 @@ fn target(path: &Path) -> String {
 }
 
 /// One operand of a suggested command: its value and how it is written.
-struct Operand {
+pub struct Operand {
     value: String,
     written: String,
 }
-fn value(value: &str) -> Operand {
+pub fn value(value: &str) -> Operand {
     Operand {
         value: value.into(),
         written: word(value),
@@ -46,7 +46,7 @@ fn path_operand(path: &Path) -> Operand {
     value(&path.to_string_lossy())
 }
 /// A placeholder such as `<TEMPLATE>`, written as is.
-fn placeholder(name: &str) -> Operand {
+pub fn placeholder(name: &str) -> Operand {
     Operand {
         value: name.into(),
         written: name.into(),
@@ -59,7 +59,7 @@ fn needs_separator(operands: &[Operand]) -> bool {
         .any(|operand| operand.value.starts_with('-'))
 }
 /// `toha <command> <options> [--] <operands>`.
-fn toha(command: &str, options: &[String], operands: &[Operand]) -> String {
+pub fn toha(command: &str, options: &[String], operands: &[Operand]) -> String {
     let mut words = vec!["toha".to_string(), command.to_string()];
     words.extend(options.iter().cloned());
     if needs_separator(operands) {
@@ -485,4 +485,26 @@ pub fn conflicts(invocation: &Invocation) -> String {
         *force = true;
     }
     format!("to overwrite them: {}", forced.command())
+}
+
+/// `templates add` was given a name, which is not an address.
+pub fn add_needs_address(name: &str, folder_exists: bool) -> String {
+    let mut lines = vec![
+        "add requires a git address or folder".to_string(),
+        format!(
+            "to see installed templates: {}",
+            toha("templates list", &[], &[])
+        ),
+    ];
+    if folder_exists {
+        lines.push(format!(
+            "to add the folder {name}: {}",
+            toha("templates add", &[], &[value(&format!("./{name}"))])
+        ));
+    }
+    lines.push(format!(
+        "to add from a git address or folder: {}",
+        toha("templates add", &[], &[placeholder("<ADDRESS>")])
+    ));
+    lines.join("\n")
 }

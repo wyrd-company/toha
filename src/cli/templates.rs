@@ -1,4 +1,4 @@
-use crate::Dirs;
+use crate::{Dirs, cli::guidance};
 use clap::{Args, Subcommand};
 use std::{
     fs,
@@ -309,7 +309,12 @@ fn add(
             )
         }
         Address::Folder(folder) => (folder.clone(), None, None),
-        Address::Name(_) => return Err(CommandError::text("add requires a git address or folder")),
+        Address::Name(name) => {
+            return Err(CommandError::text(guidance::add_needs_address(
+                name,
+                cwd.join(name).is_dir(),
+            )));
+        }
     };
     let root = root.canonicalize().map_err(CommandError::text)?;
     let selected = if let Address::Git { path, .. } = &parsed {
