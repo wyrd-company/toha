@@ -598,3 +598,48 @@ fn answers_without_template_name_the_commands_that_take_them() {
         ],
     );
 }
+
+#[test]
+fn suggested_commands_quote_words_a_shell_would_change() {
+    let case = Case::new();
+    let mut targets = vec![("~/notes", "'~/notes'")];
+    if cfg!(unix) {
+        targets.push((r"foo\bar", r"'foo\bar'"));
+    }
+    for (target, quoted) in targets {
+        let output = support::isolated_command(case.state.path())
+            .current_dir(case.target.path())
+            .args(["continue", target])
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert_code(&output, 1);
+        assert_stderr_names(
+            &output,
+            &[
+                format!("toha stage <TEMPLATE> {quoted}"),
+                format!("toha apply <TEMPLATE> {quoted}"),
+            ],
+        );
+    }
+
+    let template = two_batch_template(case.state.path());
+    std::fs::write(case.target.path().join("#a.json"), r#"{"first":"One"}"#).unwrap();
+    let output = support::isolated_command(case.state.path())
+        .current_dir(case.target.path())
+        .args([
+            "apply",
+            "--answers",
+            "#a.json",
+            "--dry-run",
+            &template,
+            "out",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_records_with(
+        &output,
+        &format!("toha apply --answers '#a.json' {template} out"),
+    );
+}

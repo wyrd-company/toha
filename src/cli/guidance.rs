@@ -579,3 +579,33 @@ pub fn ambiguous(name: &str, matches: &[String], retry: &[String]) -> String {
     }
     lines.join("\n")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::word;
+
+    #[test]
+    fn words_a_shell_would_change_are_quoted() {
+        for plain in [
+            "notes",
+            "a/b.json",
+            "x=y",
+            "gh:org/repo@main",
+            "-",
+            "a,b%c+d",
+        ] {
+            assert_eq!(word(plain), plain);
+        }
+        for special in [
+            "", "~/x", "#x", r"a\b", "$x", "`x`", "a*", "a?", "[a]", "a!", "a&b", "a;b", "a|b",
+            "<a>", "(a)", "{a}", "a'b", "a\"b", "=x", "a b",
+        ] {
+            let quoted = word(special);
+            assert!(
+                quoted.starts_with('\'') && quoted.ends_with('\''),
+                "{special}: {quoted}"
+            );
+        }
+        assert_eq!(word("a'b"), r"'a'\''b'");
+    }
+}
