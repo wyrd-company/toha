@@ -583,7 +583,6 @@ mod tests {
                 panic!("{name}: headless pending")
             };
             assert_eq!(completed.answers, headless.answers, "{name}");
-            assert_eq!(submissions, accepted, "{name}");
             let staged = |submissions| StagedRecord {
                 target: std::path::PathBuf::from("/tmp/sample-target"),
                 template: "/tmp/sample-template".into(),
@@ -592,11 +591,11 @@ mod tests {
                 now: expect.now.clone(),
                 submissions,
             };
-            assert_eq!(
-                serde_json::to_value(staged(submissions)).unwrap(),
-                serde_json::to_value(staged(accepted)).unwrap(),
-                "{name}"
-            );
+            let replayed = |submissions| match staged(submissions).replay(&template).unwrap() {
+                Interview::Complete(completed) => completed.answers,
+                Interview::Asking(_) => panic!("{name}: replay incomplete"),
+            };
+            assert_eq!(replayed(submissions), replayed(accepted), "{name}");
             let target = tempfile::tempdir().unwrap();
             support::copy_tree(&fixture.join("existing"), target.path());
             let plan = Plan::build(&template, &completed, target.path()).unwrap();

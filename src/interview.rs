@@ -1077,10 +1077,9 @@ impl From<EvalError> for CheckError {
 }
 impl<'a> Pending<'a> {
     #[allow(clippy::result_large_err)]
-    pub fn answer(mut self, incoming: RawAnswers) -> Result<Interview<'a>, AnswerError<'a>> {
+    pub fn answer(self, incoming: RawAnswers) -> Result<Interview<'a>, AnswerError<'a>> {
         let mut held = self.held.clone();
         let mut rejections = vec![];
-        let submitted: HashSet<Id> = incoming.keys().cloned().collect();
         for (id, raw) in incoming {
             let Some(q) = question_by_id(&self.template.interview, &id) else {
                 rejections.push(rejection(&id, "is not a question in this template"));
@@ -1106,9 +1105,13 @@ impl<'a> Pending<'a> {
         for item in &self.batch.items {
             let Item::Prompt(p) = item else { continue };
             let raw = held.get(&p.id).cloned();
-            let checked = match raw {
-                Some(raw) => self.check_inner(&p.id, raw),
-                None => match &p.default {
+            let carried = self.batch.errors.iter().find(|e| e.id == p.id);
+            let checked = match (raw, carried) {
+                (Some(raw), _) => self.check_inner(&p.id, raw),
+                // A value recorded earlier that failed stays an error until
+                // a document answers its question.
+                (None, Some(error)) => Err(error.clone().into()),
+                (None, None) => match &p.default {
                     Some(v) => self.check_inner(&p.id, RawAnswer(v.to_json())),
                     None if !p.constraints.required => Ok(empty_answer(p.kind)),
                     None => Err(rejection(&p.id, "is required").into()),
@@ -1123,8 +1126,6 @@ impl<'a> Pending<'a> {
             }
         }
         if !rejections.is_empty() {
-            // A resubmitted answer replaces the error of the value it replaces.
-            self.batch.errors.retain(|e| !submitted.contains(&e.id));
             return Err(AnswerError::Rejected {
                 pending: self,
                 rejections,

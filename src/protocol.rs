@@ -201,13 +201,16 @@ pub fn answer_headless<'a>(
     document: RawAnswers,
 ) -> Result<Headless<'a>, EvalError> {
     let mut accepted = Vec::new();
+    // The whole document is one submission, as through `continue`: answers
+    // for later questions are validated and held, then applied when their
+    // questions are reached. Later batches take their defaults.
     let mut remaining = document;
-    let mut first = true;
     loop {
         let Interview::Asking(pending) = interview else {
             let Interview::Complete(completed) = interview else {
                 unreachable!()
             };
+            // Only an interview complete before any submission leaves answers.
             if let Some(id) = remaining.keys().find(|id| !template.has_question_id(id)) {
                 return Err(EvalError {
                     id: id.clone(),
@@ -221,46 +224,7 @@ pub fn answer_headless<'a>(
                 accepted,
             });
         };
-        let ids: Vec<Id> = pending
-            .batch()
-            .items
-            .iter()
-            .filter_map(|item| match item {
-                Item::Prompt(p) => Some(p.id.clone()),
-                _ => None,
-            })
-            .collect();
-        // An answer held from an earlier document that failed when its
-        // question was reached is not replaced silently by a default.
-        if pending
-            .batch()
-            .errors
-            .iter()
-            .any(|e| !remaining.contains_key(&e.id))
-        {
-            return Ok(Headless::Pending {
-                pending: Box::new(pending),
-                rejections: vec![],
-                accepted,
-            });
-        }
-        let mut submission = RawAnswers::new();
-        if first {
-            let unknown: Vec<Id> = remaining
-                .keys()
-                .filter(|id| !pending.accepts_id(id) || pending.holds(id))
-                .cloned()
-                .collect();
-            for id in unknown {
-                submission.insert(id.clone(), remaining.shift_remove(&id).unwrap());
-            }
-            first = false;
-        }
-        for id in ids {
-            if let Some(value) = remaining.shift_remove(&id) {
-                submission.insert(id, value);
-            }
-        }
+        let submission = std::mem::take(&mut remaining);
         let raw: IndexMap<String, Value> = submission
             .iter()
             .map(|(id, value)| (id.to_string(), value.0.clone()))
