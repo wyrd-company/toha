@@ -753,3 +753,66 @@ fn rejected_document_keeps_the_error_of_an_answer_recorded_earlier() {
     assert_eq!(code, 0, "{result}");
     assert_eq!(result["answers"]["flavor"], json!("fast-rich"));
 }
+
+fn configured(values: Value) -> indexmap::IndexMap<toha::Id, Value> {
+    values
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(id, value)| (toha::Id::parse(id).unwrap(), value.clone()))
+        .collect()
+}
+
+#[test]
+fn invalid_configured_default_names_its_configuration_key() {
+    let template = Template::load(&early_template()).unwrap();
+    let error = toha::interview::configured_defaults(&template, &configured(json!({"enabled": 3})))
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "configuration key defaults.enabled: must be true or false"
+    );
+    let (_folder, template) =
+        inline("name: sample\ninterview: [{ id: word, type: text, prompt: W? }]\n");
+    let seed = Seed {
+        defaults: [(toha::Id::parse("word").unwrap(), toha::RawAnswer(json!(3)))].into(),
+        ..seed()
+    };
+    let error = Interview::start(&template, seed).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "configuration key defaults.word: must be a string"
+    );
+}
+
+#[test]
+fn configured_default_that_fails_a_constraint_is_attributed_to_configuration() {
+    let template = Template::load(&early_template()).unwrap();
+    let seed = Seed {
+        defaults: toha::interview::configured_defaults(
+            &template,
+            &configured(json!({"mode": "medium"})),
+        )
+        .unwrap(),
+        ..seed()
+    };
+    let Interview::Asking(pending) = Interview::start(&template, seed).unwrap() else {
+        panic!("expected questions")
+    };
+    let raw = protocol::parse_answers(r#"{"name": "Alpha", "label": "First"}"#).unwrap();
+    let Interview::Asking(pending) = pending.answer(raw).unwrap() else {
+        panic!("expected questions")
+    };
+    let Err(AnswerError::Rejected { rejections, .. }) =
+        pending.answer(protocol::parse_answers("{}").unwrap())
+    else {
+        panic!("expected a rejection")
+    };
+    let messages: Vec<_> = rejections.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        messages,
+        [
+            "mode: default \"medium\" from configuration key defaults.mode is not allowed: must be one of: fast, slow"
+        ]
+    );
+}
