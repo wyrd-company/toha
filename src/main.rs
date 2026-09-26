@@ -195,19 +195,27 @@ impl Dirs {
         Self::from_env(Platform::host(), |key| std::env::var_os(key))
     }
     /// The directories of `platform`, with `var` as the environment.
+    ///
+    /// A directory variable counts only when it holds an absolute path. An
+    /// empty or relative value counts as unset, as the XDG Base Directory
+    /// Specification requires for its variables, so that no toha directory
+    /// depends on the current directory.
     fn from_env(
         platform: Platform,
         var: impl Fn(&str) -> Option<OsString>,
     ) -> Result<Self, String> {
+        let dir = |key: &str| {
+            var(key)
+                .map(PathBuf::from)
+                .filter(|path| path.is_absolute())
+        };
         let windows = platform == Platform::Windows;
         let macos = platform == Platform::MacOs;
-        let home = var("HOME")
-            .map(PathBuf::from)
-            .or_else(|| var("USERPROFILE").map(PathBuf::from))
+        let home = dir("HOME")
+            .or_else(|| dir("USERPROFILE"))
             .ok_or("home directory unavailable")?;
         let system_root = if windows {
-            var("PROGRAMDATA")
-                .map(PathBuf::from)
+            dir("PROGRAMDATA")
                 .ok_or("PROGRAMDATA unavailable")?
                 .join("toha")
         } else {
@@ -219,11 +227,7 @@ impl Dirs {
             PathBuf::from("/etc/toha/config.yml")
         };
         let app_data = if windows {
-            Some(
-                var("APPDATA")
-                    .map(PathBuf::from)
-                    .ok_or("APPDATA unavailable")?,
-            )
+            Some(dir("APPDATA").ok_or("APPDATA unavailable")?)
         } else {
             None
         };
@@ -232,8 +236,7 @@ impl Dirs {
         } else if let Some(app_data) = &app_data {
             app_data.join("toha/config.yml")
         } else {
-            var("XDG_CONFIG_HOME")
-                .map(PathBuf::from)
+            dir("XDG_CONFIG_HOME")
                 .unwrap_or_else(|| home.join(".config"))
                 .join("toha/config.yml")
         };
@@ -242,17 +245,12 @@ impl Dirs {
         } else if macos {
             home.join("Library/Application Support/toha")
         } else {
-            var("XDG_DATA_HOME")
-                .map(PathBuf::from)
+            dir("XDG_DATA_HOME")
                 .unwrap_or_else(|| home.join(".local/share"))
                 .join("toha")
         };
         let local_app_data = if windows {
-            Some(
-                var("LOCALAPPDATA")
-                    .map(PathBuf::from)
-                    .ok_or("LOCALAPPDATA unavailable")?,
-            )
+            Some(dir("LOCALAPPDATA").ok_or("LOCALAPPDATA unavailable")?)
         } else {
             None
         };
@@ -261,8 +259,7 @@ impl Dirs {
         } else if macos {
             home.join("Library/Caches/toha")
         } else {
-            var("XDG_CACHE_HOME")
-                .map(PathBuf::from)
+            dir("XDG_CACHE_HOME")
                 .unwrap_or_else(|| home.join(".cache"))
                 .join("toha")
         };
@@ -271,9 +268,7 @@ impl Dirs {
         } else if macos {
             home.join("Library/Application Support/toha/staged")
         } else {
-            var("XDG_STATE_HOME")
-                .filter(|v| !v.is_empty())
-                .map(PathBuf::from)
+            dir("XDG_STATE_HOME")
                 .unwrap_or_else(|| home.join(".local/state"))
                 .join("toha/staged")
         };
