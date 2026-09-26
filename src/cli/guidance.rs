@@ -547,3 +547,16 @@ pub fn alias_in_use(template: &str, alias: &str, removable: bool) -> String {
     ));
     lines.join("\n")
 }
+
+/// A `templates` command that changes the user registry named a template from
+/// another layer.
+pub fn not_in_user_registry(name: &str) -> String {
+    [
+        format!("not installed in user registry: {name}"),
+        format!(
+            "to see the layer of each template: {}",
+            toha("templates list", &[], &[])
+        ),
+    ]
+    .join("\n")
+}

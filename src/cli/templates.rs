@@ -135,7 +135,7 @@ impl Context {
             .get(&resolved.formal_name)
             .cloned()
             .map(|entry| (resolved.formal_name, entry))
-            .ok_or_else(|| CommandError::text(format!("not installed in user registry: {name}")))
+            .ok_or_else(|| CommandError::text(guidance::not_in_user_registry(name)))
     }
 }
 fn find_templates(root: &Path, selected: Option<&str>) -> Result<Vec<PathBuf>, CommandError> {
