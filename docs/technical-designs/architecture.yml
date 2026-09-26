@@ -155,9 +155,9 @@ proposed-design:
   staging: >-
     A staged interview is stored as its inputs, not as engine internals: the
     target path, the template formal name and resolved commit, the frozen
-    `now()` instant, and every answer recorded so far. Resuming loads the
+    `now()` instant, and every accepted answers submission, in order. Resuming loads the
     template at the recorded commit, starts a new interview with the same
-    `Seed`, and replays the recorded answers through `answer`. Because the
+    `Seed`, and replays the raw submissions through `answer`. Because the
     engine is pure, replay reaches the same pending batch as the original
     process, in either modality. A template whose content changed so that
     replay rejects a recorded answer fails with that rejection, and `abort`

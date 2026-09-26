@@ -411,13 +411,6 @@ fn parse_kind(id: &Id, kind: PromptKind, value: Value) -> Result<Answer, Rejecti
             .ok_or_else(|| fail("expected array of strings")),
     }
 }
-fn nodes_have_id(nodes: &[Node], id: &Id) -> bool {
-    nodes.iter().any(|n| match n {
-        Node::Question(q) => &q.id == id,
-        Node::Group(g) => nodes_have_id(&g.nodes, id),
-        _ => false,
-    })
-}
 fn question_by_id<'a>(nodes: &'a [Node], id: &Id) -> Option<&'a Question> {
     for n in nodes {
         match n {
@@ -738,6 +731,9 @@ impl Pending<'_> {
     pub fn batch(&self) -> &Batch {
         &self.batch
     }
+    pub fn accepts_id(&self, id: &Id) -> bool {
+        self.template.has_question_id(id)
+    }
     fn check_inner(&self, id: &Id, raw: RawAnswer) -> Result<Answer, CheckError> {
         let prompt = self
             .batch
@@ -749,6 +745,13 @@ impl Pending<'_> {
             })
             .ok_or_else(|| rejection(id, "not in current batch"))?;
         let q = question_by_id(&self.template.interview, id).expect("prompt has question");
+        if raw.0.is_null() {
+            return if prompt.constraints.required {
+                Err(rejection(id, "required answer is missing").into())
+            } else {
+                Ok(Answer::None)
+            };
+        }
         let mut answer = parse_kind(id, prompt.kind, raw.0)?;
         let c = &prompt.constraints;
         if c.required
@@ -874,7 +877,7 @@ impl<'a> Pending<'a> {
         let mut held = self.held.clone();
         let mut rejections = vec![];
         for (id, raw) in incoming {
-            if !nodes_have_id(&self.template.interview, &id) {
+            if !self.template.has_question_id(&id) {
                 rejections.push(rejection(&id, "unknown answer id"))
             } else {
                 held.insert(id, raw);

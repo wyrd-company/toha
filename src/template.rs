@@ -52,6 +52,18 @@ pub struct Template {
     pub hooks: Vec<HookNode>,
     pub messages: ApplyMessages,
 }
+impl Template {
+    pub fn has_question_id(&self, id: &Id) -> bool {
+        fn contains(nodes: &[Node], id: &Id) -> bool {
+            nodes.iter().any(|node| match node {
+                Node::Question(question) => &question.id == id,
+                Node::Group(group) => contains(&group.nodes, id),
+                _ => false,
+            })
+        }
+        contains(&self.interview, id)
+    }
+}
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum Node {

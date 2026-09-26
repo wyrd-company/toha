@@ -7,6 +7,8 @@ pub mod hook;
 pub mod interview;
 mod jinja;
 pub mod plan;
+pub mod protocol;
+pub mod staging;
 pub mod template;
 
 pub use apply::{Applied, ApplyError, ApplyOptions};

@@ -35,7 +35,8 @@ description: >-
   reads it from a file or from standard input. Answers for questions outside
   the current batch are held and applied when their questions are reached.
   An answer for an id that the template does not define is an error. Toha
-  validates each answer and applies its `format` expression before it records
+  treats explicit `null` as an empty answer that does not take a default; a
+  required question rejects it. Toha validates each answer and applies its `format` expression before it records
   the answer.
 
   Results. `continue` emits a result document. When every answer is accepted
@@ -62,8 +63,8 @@ description: >-
   lowercase hexadecimal SHA-256 of the canonical absolute target path with a
   `.json` suffix. The staged record holds the target path, the formal name and
   resolved commit of the template, the instant that `now()` returns for this
-  interview, and the answers recorded so far. Resuming replays the recorded
-  answers, so the interview position is derived, not stored.
+  interview, and every accepted answers submission, in order. Resuming replays
+  those submissions, so the interview position is derived, not stored.
 format: json-schema
 validation-criteria: >-
   Every batch and result document that toha emits validates against

@@ -46,8 +46,17 @@ fn every_fixture_through_cli() {
             String::from_utf8_lossy(&output.stderr)
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
+        let error_output = if expect.exit == 4 {
+            String::from_utf8_lossy(&output.stdout)
+        } else {
+            stderr.clone()
+        };
         for part in &expect.error_contains {
-            assert!(stderr.contains(part), "{}: {stderr}", fixture.display());
+            assert!(
+                error_output.contains(part),
+                "{}: {error_output}",
+                fixture.display()
+            );
         }
         if fixture.join("expected").exists() {
             support::assert_tree(target.path(), &fixture.join("expected"));
