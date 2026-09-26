@@ -231,7 +231,10 @@ impl Plan {
                     .eval(&ctx)
                     .map_err(|e| PlanError::Render {
                         path: template.root.clone(),
-                        message: format!("hooks[{i}].when: {e}"),
+                        message: format!(
+                            "template error in hooks[{i}].when `{}`: {e}",
+                            when.source()
+                        ),
                     })?
                     .is_true()
                 {
@@ -239,14 +242,12 @@ impl Plan {
                 }
             }
             let rendered =
-                crate::interview::render_hooks(hook, &ctx).map_err(|(field, message)| {
-                    PlanError::Render {
-                        path: template.root.clone(),
-                        message: match field {
-                            "each" => format!("hooks[{i}].each: {message}"),
-                            _ => message,
-                        },
-                    }
+                crate::interview::render_hooks(hook, &ctx).map_err(|f| PlanError::Render {
+                    path: template.root.clone(),
+                    message: format!(
+                        "template error in hooks[{i}].{} `{}`: {}",
+                        f.field, f.source, f.message
+                    ),
                 })?;
             for hook in &rendered {
                 plan.hooks.push(plan_hook(hook, template)?);

@@ -75,39 +75,57 @@ pub enum RenderedProgram {
         args: Vec<String>,
     },
 }
-pub(crate) fn render_hook(
+/// A fault in the template expression `source` of a hook's `field`.
+#[derive(Debug)]
+pub(crate) struct HookFault {
+    pub field: &'static str,
+    pub source: String,
+    pub message: String,
+}
+fn render_hook(
     hook: &crate::template::HookNode,
     ctx: &impl serde::Serialize,
-) -> Result<RenderedHook, String> {
+) -> Result<RenderedHook, HookFault> {
     use crate::template::HookProgram;
-    let render = |t: &crate::jinja::Tmpl| t.render(ctx).map_err(|e| e.to_string());
+    let render = |field: &'static str| {
+        move |t: &crate::jinja::Tmpl| {
+            t.render(ctx).map_err(|e| HookFault {
+                field,
+                source: t.source().into(),
+                message: e.to_string(),
+            })
+        }
+    };
     let program = match &hook.command.program {
         HookProgram::Run(args) => {
-            RenderedProgram::Run(args.iter().map(render).collect::<Result<_, _>>()?)
+            RenderedProgram::Run(args.iter().map(render("run")).collect::<Result<_, _>>()?)
         }
         HookProgram::Script { path, args } => RenderedProgram::Script {
             path: path.clone(),
-            args: args.iter().map(render).collect::<Result<_, _>>()?,
+            args: args.iter().map(render("args")).collect::<Result<_, _>>()?,
         },
     };
     Ok(RenderedHook {
         program,
-        cwd: hook.command.cwd.as_ref().map(render).transpose()?,
+        cwd: hook.command.cwd.as_ref().map(render("cwd")).transpose()?,
     })
 }
-/// Renders a hook once, or once per item of its `each`. The error names the
-/// failing field: `each` or `hook`.
+/// Renders a hook once, or once per item of its `each`.
 pub(crate) fn render_hooks(
     hook: &crate::template::HookNode,
     ctx: &std::collections::BTreeMap<String, Value>,
-) -> Result<Vec<RenderedHook>, (&'static str, String)> {
+) -> Result<Vec<RenderedHook>, HookFault> {
     match &hook.each {
-        None => Ok(vec![render_hook(hook, ctx).map_err(|e| ("hook", e))?]),
+        None => Ok(vec![render_hook(hook, ctx)?]),
         Some(each) => each
             .contexts(ctx)
-            .map_err(|e| ("each", e))?
+            .map_err(|message| HookFault {
+                field: "each",
+                source: each.expr.source().into(),
+                message,
+            })?
             .iter()
-            .map(|local| render_hook(hook, local).map_err(|e| ("hook", e)))
+            .map(|local| render_hook(hook, local))
             .collect(),
     }
 }
@@ -732,6 +750,143 @@ fn check_answer(
     }
     Ok(answer)
 }
+/// A template expression of a node: its field, source, and the ids it
+/// references.
+type Expression<'n> = (&'static str, &'n str, HashSet<String>);
+/// The id that names `node` in errors, and its template expressions.
+fn expressions(node: &Node) -> (Id, Vec<Expression<'_>>) {
+    use crate::template::HookProgram;
+    fn tmpl<'n>(field: &'static str, v: &'n crate::jinja::Tmpl) -> Expression<'n> {
+        (field, v.source(), v.references().clone())
+    }
+    fn expr<'n>(field: &'static str, v: &'n Expr) -> Expression<'n> {
+        (field, v.source(), v.references().clone())
+    }
+    fn typed<'n, T: Clone + serde::de::DeserializeOwned>(
+        field: &'static str,
+        v: &'n Typed<T>,
+    ) -> Option<Expression<'n>> {
+        v.source().map(|source| (field, source, v.references()))
+    }
+    let mut out = Vec::new();
+    let id = match node {
+        Node::Question(q) => {
+            out.push(tmpl("prompt", &q.prompt));
+            out.extend(q.description.as_ref().map(|v| tmpl("description", v)));
+            out.extend(q.placeholder.as_ref().map(|v| tmpl("placeholder", v)));
+            out.extend(typed("required", &q.required));
+            out.extend(q.when.as_ref().map(|v| expr("when", v)));
+            out.extend(
+                q.validate
+                    .min
+                    .as_ref()
+                    .and_then(|v| typed("validate.min", v)),
+            );
+            out.extend(
+                q.validate
+                    .max
+                    .as_ref()
+                    .and_then(|v| typed("validate.max", v)),
+            );
+            if let Some(v) = &q.format {
+                let (field, source, mut refs) = expr("format", v);
+                refs.remove("value");
+                out.push((field, source, refs));
+            }
+            match &q.kind {
+                QuestionKind::Text { default } | QuestionKind::Multiline { default } => {
+                    out.extend(default.as_ref().map(|v| tmpl("default", v)));
+                }
+                QuestionKind::Confirm { default } => {
+                    out.extend(default.as_ref().and_then(|v| typed("default", v)));
+                }
+                QuestionKind::Select { options, default } => {
+                    out.extend(typed("options", options));
+                    out.extend(default.as_ref().map(|v| tmpl("default", v)));
+                }
+                QuestionKind::MultiSelect { options, default } => {
+                    out.extend(typed("options", options));
+                    out.extend(default.as_ref().and_then(|v| typed("default", v)));
+                }
+                QuestionKind::TextLoop { default, min, max } => {
+                    out.extend(default.as_ref().and_then(|v| typed("default", v)));
+                    out.extend(min.as_ref().and_then(|v| typed("loop.min", v)));
+                    out.extend(max.as_ref().and_then(|v| typed("loop.max", v)));
+                }
+            }
+            q.id.clone()
+        }
+        Node::Computed(c) => {
+            out.extend(c.when.as_ref().map(|v| expr("when", v)));
+            out.push(expr("computed", &c.expr));
+            c.id.clone()
+        }
+        Node::Group(g) => {
+            out.extend(g.when.as_ref().map(|v| expr("when", v)));
+            g.name.clone()
+        }
+        Node::Hook(h) => {
+            out.extend(h.when.as_ref().map(|v| expr("when", v)));
+            out.extend(h.each.as_ref().map(|e| expr("each", &e.expr)));
+            let binding = h.each.as_ref().map(|e| e.binding.as_str());
+            let mut command = match &h.command.program {
+                HookProgram::Run(v) => v.iter().map(|v| tmpl("run", v)).collect::<Vec<_>>(),
+                HookProgram::Script { args, .. } => args.iter().map(|v| tmpl("args", v)).collect(),
+            };
+            command.extend(h.command.cwd.as_ref().map(|v| tmpl("cwd", v)));
+            for (field, source, mut refs) in command {
+                if let Some(binding) = binding {
+                    refs.remove(binding);
+                }
+                out.push((field, source, refs));
+            }
+            Id::parse("hook").unwrap()
+        }
+        Node::Message(m) => {
+            out.extend(m.when.as_ref().map(|v| expr("when", v)));
+            out.push(tmpl("message", &m.text));
+            Id::parse("message").unwrap()
+        }
+    };
+    (id, out)
+}
+/// The fault behind unresolved question dependencies: the first expression,
+/// in `nodes` and their descendants, that references an id with no answer.
+fn unresolved(nodes: &[Node], available: &mut HashSet<String>, t: &Template) -> Option<EvalError> {
+    for node in nodes {
+        let (id, fields) = expressions(node);
+        for (field, source, refs) in fields {
+            let mut missing: Vec<_> = refs
+                .iter()
+                .filter(|r| {
+                    !available.contains(*r)
+                        && !t.data.keys().any(|d| d.as_str() == r.as_str())
+                        && !is_global(r)
+                })
+                .collect();
+            missing.sort();
+            if let Some(name) = missing.first() {
+                return Some(fault(
+                    &id,
+                    field,
+                    Some(source),
+                    format!("{name} has no answer when this node is reached"),
+                ));
+            }
+        }
+        if let Node::Group(g) = node {
+            if let Some(error) = unresolved(&g.nodes, available, t) {
+                return Some(error);
+            }
+        }
+        if let Node::Question(Question { id, .. })
+        | Node::Computed(crate::template::Computed { id, .. }) = node
+        {
+            available.insert(id.to_string());
+        }
+    }
+    None
+}
 struct Advance<'a> {
     template: &'a Template,
     seed: Seed,
@@ -741,9 +896,16 @@ struct Advance<'a> {
     hooks: Vec<RenderedHook>,
     visited: HashSet<String>,
     batch: Batch,
+    /// The node that stopped the walk before its references had answers.
+    blocked: Option<&'a Node>,
 }
-impl Advance<'_> {
-    fn walk(&mut self, nodes: &[Node], prefix: &str, skip: bool) -> Result<bool, EvalError> {
+impl<'a> Advance<'a> {
+    /// Stops the walk at `node`, which waits for an answer.
+    fn block(&mut self, node: &'a Node) -> Result<bool, EvalError> {
+        self.blocked = Some(node);
+        Ok(false)
+    }
+    fn walk(&mut self, nodes: &'a [Node], prefix: &str, skip: bool) -> Result<bool, EvalError> {
         for (i, node) in nodes.iter().enumerate() {
             let key = format!("{prefix}/{i}");
             match node {
@@ -753,7 +915,7 @@ impl Advance<'_> {
                     }
                     if skip {
                         if !default_ready(q, &self.answers, self.template, &self.seed) {
-                            return Ok(false);
+                            return self.block(node);
                         }
                         let default = render_default(q, self.template, &self.answers, &self.seed)?;
                         self.answers.insert(
@@ -763,7 +925,7 @@ impl Advance<'_> {
                         continue;
                     }
                     if !question_ready(q, &self.answers, self.template, &self.seed) {
-                        return Ok(false);
+                        return self.block(node);
                     }
                     let ctx = context(self.template, &self.answers, &self.seed);
                     let active = !skip
@@ -805,7 +967,7 @@ impl Advance<'_> {
                         self.batch.items.push(Item::Prompt(prompt));
                     } else {
                         if !default_ready(q, &self.answers, self.template, &self.seed) {
-                            return Ok(false);
+                            return self.block(node);
                         }
                         let default = render_default(q, self.template, &self.answers, &self.seed)?;
                         self.answers.insert(
@@ -824,7 +986,7 @@ impl Advance<'_> {
                                 .as_ref()
                                 .is_some_and(|w| !expr_ready(w, &self.answers, self.template)))
                     {
-                        return Ok(false);
+                        return self.block(node);
                     }
                     let ctx = context(self.template, &self.answers, &self.seed);
                     let active = !skip
@@ -856,7 +1018,7 @@ impl Advance<'_> {
                             .as_ref()
                             .is_some_and(|w| !expr_ready(w, &self.answers, self.template))
                     {
-                        return Ok(false);
+                        return self.block(node);
                     }
                     let ctx = context(self.template, &self.answers, &self.seed);
                     let active = !skip
@@ -877,7 +1039,7 @@ impl Advance<'_> {
                             &self.seed,
                         )
                     {
-                        return Ok(false);
+                        return self.block(node);
                     }
                     if !self.walk(&g.nodes, &key, !active)? {
                         return Ok(false);
@@ -894,7 +1056,7 @@ impl Advance<'_> {
                             .is_some_and(|w| !expr_ready(w, &self.answers, self.template))
                             || !hook_ready(h, &self.answers, self.template))
                     {
-                        return Ok(false);
+                        return self.block(node);
                     }
                     self.visited.insert(key);
                     if skip {
@@ -912,10 +1074,14 @@ impl Advance<'_> {
                         .transpose()?
                         .unwrap_or(true);
                     if active {
-                        self.hooks
-                            .extend(render_hooks(h, &ctx).map_err(|(field, e)| {
-                                eval_error(&Id::parse("hook").unwrap(), field, e)
-                            })?);
+                        self.hooks.extend(render_hooks(h, &ctx).map_err(|f| {
+                            fault(
+                                &Id::parse("hook").unwrap(),
+                                f.field,
+                                Some(&f.source),
+                                f.message,
+                            )
+                        })?);
                     }
                 }
                 Node::Message(m) => {
@@ -928,7 +1094,7 @@ impl Advance<'_> {
                                 .as_ref()
                                 .is_some_and(|w| !expr_ready(w, &self.answers, self.template)))
                     {
-                        return Ok(false);
+                        return self.block(node);
                     }
                     self.visited.insert(key);
                     if skip {
@@ -983,6 +1149,7 @@ fn advance<'a>(
         hooks,
         visited,
         batch: Batch::default(),
+        blocked: None,
     };
     let complete = state.walk(&template.interview, "", false)?;
     let has_prompt = state
@@ -991,11 +1158,17 @@ fn advance<'a>(
         .iter()
         .any(|i| matches!(i, Item::Prompt(_)));
     if !complete && !has_prompt {
-        return Err(eval_error(
-            &Id::parse("interview").unwrap(),
-            "batch",
-            "unresolved question dependencies",
-        ));
+        let mut available = state.answers.keys().map(Id::to_string).collect();
+        return Err(state
+            .blocked
+            .and_then(|node| unresolved(std::slice::from_ref(node), &mut available, template))
+            .unwrap_or_else(|| {
+                eval_error(
+                    &Id::parse("interview").unwrap(),
+                    "batch",
+                    "unresolved question dependencies",
+                )
+            }));
     }
     if complete && !has_prompt {
         Ok(Interview::Complete(Completed {
