@@ -1385,6 +1385,7 @@ impl<'a> Pending<'a> {
             }
             held.insert(id, raw);
         }
+        let answered_early = rejections.len();
         let mut next = Answers::new();
         for item in &self.batch.items {
             let Item::Prompt(p) = item else { continue };
@@ -1424,11 +1425,19 @@ impl<'a> Pending<'a> {
                 Err(CheckError::Eval(e)) => return Err(AnswerError::Eval(e)),
             }
         }
-        if rejections.len() > unless_skipped.len() {
-            return Err(AnswerError::Rejected {
-                pending: self,
+        let other_failures = rejections.len() > unless_skipped.len();
+        let batch_failed = rejections.len() > answered_early;
+        let rejected = |pending, rejections| {
+            Err(AnswerError::Rejected {
+                pending,
                 rejections,
-            });
+            })
+        };
+        // An answer that fails a constraint before its question is reached
+        // is classified from one tentative step with this document. A batch
+        // that fails cannot take the step, so each such error stands.
+        if batch_failed || (other_failures && unless_skipped.is_empty()) {
+            return rejected(self, rejections);
         }
         for id in next.keys() {
             held.shift_remove(id);
@@ -1448,26 +1457,25 @@ impl<'a> Pending<'a> {
             batch: Batch::default(),
             blocked: None,
         });
-        if unless_skipped.is_empty() {
-            return advanced.map_err(AnswerError::Eval);
-        }
-        // An answer that fails a constraint is not used, and is not an
-        // error, only when this document skips its question. A complete
-        // interview reached every question, so it skipped each of them.
-        let skipped = match &advanced {
-            Ok(Interview::Complete(_)) => true,
-            Ok(Interview::Asking(next)) => unless_skipped
-                .iter()
-                .all(|id| next.skipped.contains_key(id)),
-            Err(_) => false,
+        // The error stands only when the step stops with the question
+        // active or not reached. A complete interview reached and skipped
+        // it; a template fault in the step is the error instead.
+        let stands = |id: &Id| match &advanced {
+            Ok(Interview::Asking(next)) => !next.skipped.contains_key(id),
+            _ => false,
         };
-        if skipped {
-            advanced.map_err(AnswerError::Eval)
-        } else {
-            Err(AnswerError::Rejected {
-                pending: self,
-                rejections,
-            })
+        let dropped: Vec<Id> = unless_skipped
+            .into_iter()
+            .filter(|id| !stands(id))
+            .collect();
+        rejections.retain(|r| !dropped.contains(&r.id));
+        match advanced {
+            // A rejected document never takes the step, so its fault is
+            // not reached.
+            Err(_) if !rejections.is_empty() => rejected(self, rejections),
+            Err(error) => Err(AnswerError::Eval(error)),
+            Ok(_) if !rejections.is_empty() => rejected(self, rejections),
+            Ok(next) => Ok(next),
         }
     }
 }
