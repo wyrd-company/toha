@@ -639,3 +639,23 @@ fn alias_for_several_templates_names_one_add_per_template() {
         ],
     );
 }
+
+#[test]
+fn alias_in_use_names_the_remove_command() {
+    let root = TempDir::new().unwrap();
+    let url = repo(&root);
+    assert_exit(&run(&root, &["templates", "add", &url]), 0);
+    let first = format!("{url}#one");
+    let second = format!("{url}#two");
+    assert_exit(&run(&root, &["templates", "alias", &first, "mine"]), 0);
+    let output = run(&root, &["templates", "alias", &second, "mine"]);
+    assert_exit(&output, 1);
+    assert_stderr_names(
+        &output,
+        &[
+            "alias is in use".into(),
+            "toha templates alias --remove mine".into(),
+            format!("toha templates alias {second} mine"),
+        ],
+    );
+}
