@@ -16,7 +16,7 @@ checksums = {}
 for line in (args.directory / "SHA256SUMS").read_text().splitlines():
     digest, name = line.split(maxsplit=1)
     checksums[name.lstrip("*")] = digest
-base = f"https://github.com/wyrd-company/toha/releases/download/toha@{args.version}"
+base = f"https://github.com/wyrd-company/toha/releases/download/{args.version}"
 lines = ["class Toha < Formula", '  desc "Generate projects and files from templates"',
          '  homepage "https://github.com/wyrd-company/toha"', f'  version "{args.version}"',
          '  license "Apache-2.0"']

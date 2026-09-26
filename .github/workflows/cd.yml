@@ -5,7 +5,7 @@
 name: CD
 on:
   push:
-    tags: [ "toha@*" ]
+    tags: [ "[0-9]+.[0-9]+.[0-9]+" ]
   workflow_dispatch:
 permissions:
   contents: read
@@ -47,8 +47,8 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$GITHUB_EVENT_NAME" == push ]]; then
-            [[ "$GITHUB_REF_NAME" =~ ^toha@(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
-            version="${GITHUB_REF_NAME#toha@}"
+            [[ "$GITHUB_REF_NAME" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+            version="$GITHUB_REF_NAME"
             manifest_version="$(sed -nE 's/^version = "([^"]+)"/\1/p' Cargo.toml | head -1)"
             [[ "$version" == "$manifest_version" ]]
           fi
@@ -168,7 +168,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#toha@}"
+          version="$GITHUB_REF_NAME"
           python3 scripts/release/render-formula.py dist "$version" \
             "$RUNNER_TEMP/toha.rb"
           formula=homebrew-tools/Formula/toha.rb
@@ -211,7 +211,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#toha@}"
+          version="$GITHUB_REF_NAME"
           python3 scripts/release/create-manifest.py dist "$version" \
             "$(git rev-parse HEAD)" release-manifest.json
       - name: Submit package release

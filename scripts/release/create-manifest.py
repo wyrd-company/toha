@@ -15,7 +15,7 @@ parser.add_argument("version")
 parser.add_argument("commit")
 parser.add_argument("output", type=Path)
 args = parser.parse_args()
-tag = f"toha@{args.version}"
+tag = args.version
 formats = [("archive", "tar.gz"), ("package", "deb"), ("package", "rpm")]
 artifacts = []
 for kind, fmt in formats:

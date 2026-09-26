@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Released toha tag whose docs should publish
+        description: Released stable SemVer tag whose docs should publish
         required: true
         type: string
 permissions:
@@ -23,7 +23,7 @@ jobs:
         env:
           DOCS_TAG: ${{ github.event.release.tag_name || inputs.tag }}
         run: |
-          [[ "$DOCS_TAG" =~ ^toha@(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          [[ "$DOCS_TAG" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ github.event.release.tag_name || inputs.tag }}
