@@ -418,3 +418,43 @@ pub fn no_terminal(template: &str, path: &Path) -> String {
     ]
     .join("\n")
 }
+
+/// `apply <path> --answers <file>` names no template.
+pub fn answers_without_template(
+    path: &Path,
+    answers: &str,
+    staged: Option<(&str, Progress)>,
+) -> String {
+    let apply_new = |template| Invocation::Apply {
+        template: Some(template),
+        path,
+        answers: Some(Arg::Given(answers)),
+        force: false,
+        dry_run: false,
+        trust: false,
+    };
+    let mut lines = vec!["--answers requires a template".to_string()];
+    match staged {
+        Some((_, Progress::Complete)) => lines.push(format!(
+            "the staged interview at {} is complete; to write its files: {}",
+            target(path),
+            apply_staged(path)
+        )),
+        Some((staged, _)) => {
+            lines.push(format!(
+                "to answer the staged interview: {}, then {}",
+                toha("continue", &[], &[path_operand(path), value(answers)]),
+                apply_staged(path)
+            ));
+            lines.push(format!(
+                "to answer it and write its files in one command: {}",
+                apply_new(Arg::Given(staged)).command()
+            ));
+        }
+        None => lines.push(format!(
+            "to answer a new interview and write its files: {}",
+            apply_new(Arg::Placeholder("<TEMPLATE>")).command()
+        )),
+    }
+    lines.join("\n")
+}

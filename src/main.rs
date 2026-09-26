@@ -663,8 +663,25 @@ fn run(
         Ok(v) => v,
         Err(e) => return Outcome::Error(e.to_string()),
     };
+    let (config, registry, cwd) = match environment(dirs) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let scope = Scope {
+        config: &config,
+        registry: &registry,
+        dirs,
+        cwd: &cwd,
+    };
     if template.is_none() && answers.is_some() {
-        return Outcome::Error("--answers requires a template".into());
+        let staged = existing
+            .as_ref()
+            .map(|saved| (saved.template.as_str(), progress(saved, &scope)));
+        return Outcome::Error(guidance::answers_without_template(
+            path,
+            answers.as_deref().unwrap_or_default(),
+            staged,
+        ));
     }
     let (requested_template, requested_answers) = (template.clone(), answers.clone());
     let invocation = Invocation::Apply {
@@ -675,23 +692,8 @@ fn run(
         dry_run,
         trust,
     };
-    let (config, registry, cwd) = match environment(dirs) {
-        Ok(v) => v,
-        Err(e) => return e,
-    };
     if let (Some(arg), Some(saved)) = (&template, &existing) {
-        if let Some(refusal) = staged_refusal(
-            &invocation,
-            arg,
-            path,
-            saved,
-            &Scope {
-                config: &config,
-                registry: &registry,
-                dirs,
-                cwd: &cwd,
-            },
-        ) {
+        if let Some(refusal) = staged_refusal(&invocation, arg, path, saved, &scope) {
             return refusal;
         }
     }
