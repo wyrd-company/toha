@@ -748,6 +748,10 @@ fn one_answers_document_has_the_same_outcome_through_apply_and_continue() {
     }
 }
 
+fn skipped_warning(id: &str) -> String {
+    format!("warning: answer for \"{id}\" was not used: the question was skipped")
+}
+
 #[test]
 fn repeated_answer_equal_to_the_recorded_answer_is_ignored() {
     let (folder, _template) = inline(SKIPS);
@@ -770,6 +774,7 @@ fn repeated_answer_equal_to_the_recorded_answer_is_ignored() {
     );
     assert_eq!(code, 0, "{result}");
     assert_eq!(result["answers"]["style"], json!("bold"));
+    assert_eq!(result["messages"], json!([]), "{result}");
 }
 
 #[test]
@@ -798,6 +803,67 @@ fn repeated_answer_that_differs_rejects_the_document_and_names_the_commands() {
         )]})
     );
     assert_eq!(submissions(state.path(), target.path()), 1);
+}
+
+#[test]
+fn held_answer_for_a_skipped_question_is_a_warning_reported_once() {
+    let (folder, _template) = inline(SKIPS);
+    let state = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    stage(state.path(), target.path(), folder.path());
+    let (code, result) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"kind": "plain", "style": "Bold"}),
+    );
+    assert_eq!(code, 4, "{result}");
+    assert_eq!(questions(&result), ["title"]);
+    assert_eq!(result["messages"], json!([skipped_warning("style")]));
+    let (code, result) = continue_with(state.path(), target.path(), json!({"title": "First"}));
+    assert_eq!(code, 4, "{result}");
+    assert_eq!(result["messages"], json!([]), "{result}");
+    let (code, result) = continue_with(state.path(), target.path(), json!({"extra": "x"}));
+    assert_eq!(code, 0, "{result}");
+    assert_eq!(result["messages"], json!([]), "{result}");
+    assert_eq!(result["answers"]["style"], Value::Null);
+}
+
+#[test]
+fn complete_result_carries_the_messages_of_its_last_step() {
+    let (folder, _template) = inline(SKIPS);
+    let state = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    stage(state.path(), target.path(), folder.path());
+    let (code, _) = continue_with(state.path(), target.path(), json!({"kind": "plain"}));
+    assert_eq!(code, 4);
+    let (code, result) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"title": "First", "extra": "x", "style": "Bold"}),
+    );
+    assert_eq!(code, 0, "{result}");
+    assert_eq!(result["messages"], json!([skipped_warning("style")]));
+    assert_eq!(result["answers"]["style"], Value::Null);
+}
+
+#[test]
+fn headless_answer_for_a_question_skipped_at_start_is_a_warning() {
+    let (_folder, template) = inline(
+        "name: sample\ninterview:\n  - { id: never, type: text, prompt: N?, when: 'false' }\n",
+    );
+    let document = protocol::parse_answers(r#"{"never": "x"}"#).unwrap();
+    let Ok(protocol::Headless::Completed { completed, .. }) = protocol::answer_headless(
+        &template,
+        Interview::start(&template, seed()).unwrap(),
+        document,
+    ) else {
+        panic!("expected a complete interview")
+    };
+    assert_eq!(completed.messages, [skipped_warning("never")]);
+    assert_eq!(
+        completed.answers[&toha::Id::parse("never").unwrap()],
+        toha::Answer::None
+    );
 }
 
 #[test]
