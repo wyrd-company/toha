@@ -97,7 +97,6 @@ fn commands_without_documents_require_a_terminal() {
             support::folder_address(&template),
             target.path().display().to_string(),
         ],
-        vec!["continue".to_string(), target.path().display().to_string()],
         vec![
             "apply".to_string(),
             support::folder_address(&template),
@@ -114,6 +113,23 @@ fn commands_without_documents_require_a_terminal() {
                 .contains("no terminal: use --async, an answers document, or --answers")
         );
     }
+    let staged = support::isolated_command(isolation.path())
+        .args(["stage", &support::folder_address(&template)])
+        .arg(target.path())
+        .arg("--async")
+        .output()
+        .unwrap();
+    assert_eq!(staged.status.code(), Some(4));
+    let output = support::isolated_command(isolation.path())
+        .arg("continue")
+        .arg(target.path())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains(&format!(
+        "toha continue {} <ANSWERS>",
+        target.path().display()
+    )));
 }
 
 #[cfg(unix)]

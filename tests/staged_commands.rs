@@ -266,3 +266,56 @@ fn commands_on_unstaged_target_name_the_commands_that_start_an_interview() {
     assert_code(&output, 0);
     assert_stderr_names(&output, &start);
 }
+
+#[test]
+fn answers_for_complete_staged_interview_are_refused_with_next_step() {
+    let case = Case::new();
+    case.stage_complete();
+    let answers = case.state.path().join("answers.json");
+    std::fs::write(&answers, r#"{"name":"Other"}"#).unwrap();
+    for args in [
+        vec!["continue", case.target(), answers.to_str().unwrap()],
+        vec![
+            "apply",
+            &text_basic(),
+            case.target(),
+            "--answers",
+            answers.to_str().unwrap(),
+        ],
+    ] {
+        let output = case.run(&args);
+        assert_code(&output, 1);
+        assert_stderr_names(
+            &output,
+            &[
+                format!("toha apply {}", case.target()),
+                format!("toha abort {}", case.target()),
+            ],
+        );
+        assert!(case.staged());
+    }
+}
+
+#[test]
+fn apply_with_template_dry_runs_staged_interview_without_changes() {
+    let case = Case::new();
+    case.stage_incomplete(&text_basic());
+    let answers = case.state.path().join("answers.json");
+    std::fs::write(&answers, r#"{"name":"Item"}"#).unwrap();
+    let output = case.run(&[
+        "apply",
+        &text_basic(),
+        case.target(),
+        "--answers",
+        answers.to_str().unwrap(),
+        "--dry-run",
+    ]);
+    assert_code(&output, 0);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("create Item.txt"));
+    assert_eq!(std::fs::read_dir(case.target.path()).unwrap().count(), 0);
+    let record = Store::new(support::staged_dir(case.state.path()))
+        .load(&canonical_target(case.target.path()).unwrap())
+        .unwrap()
+        .unwrap();
+    assert!(record.submissions.is_empty());
+}

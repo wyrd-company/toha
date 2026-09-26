@@ -598,3 +598,53 @@ fn trusted_git_address_requires_explicit_trust_even_when_registered() {
     );
     run(&root, &["apply", named.to_str().unwrap()], 0);
 }
+
+#[test]
+fn named_template_resumes_its_staged_interview_by_formal_name() {
+    let root = TempDir::new().unwrap();
+    let (url, _) = repository(&root);
+    write_config(
+        &root,
+        &format!("hosts:\n  local: {}\n", support::file_url(root.path())),
+    );
+    run(
+        &root,
+        &[
+            "templates",
+            "add",
+            &format!("{url}#one"),
+            "--alias",
+            "chosen",
+        ],
+        0,
+    );
+    let answers = root.path().join("answers.json");
+    fs::write(&answers, r#"{"label":"Staged"}"#).unwrap();
+    let complete = root.path().join("complete");
+    let complete = complete.to_str().unwrap();
+    run(&root, &["stage", "chosen", complete, "--async"], 4);
+    run(&root, &["continue", complete, answers.to_str().unwrap()], 0);
+    run(&root, &["apply", "local:owner/repo#one", complete], 0);
+    assert_eq!(
+        fs::read_to_string(root.path().join("complete/result.txt")).unwrap(),
+        "old Staged"
+    );
+
+    let incomplete = root.path().join("incomplete");
+    let incomplete = incomplete.to_str().unwrap();
+    run(
+        &root,
+        &["stage", "local:owner/repo#one", incomplete, "--async"],
+        4,
+    );
+    run(&root, &["apply", "chosen", incomplete], 4);
+    let other = format!("{url}#two");
+    let refused = run(&root, &["apply", &other, incomplete], 1);
+    let error = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        error.contains("local:owner/repo#one")
+            && error.contains("local:owner/repo#two")
+            && error.contains(&format!("toha apply {other} {incomplete}")),
+        "{error}"
+    );
+}

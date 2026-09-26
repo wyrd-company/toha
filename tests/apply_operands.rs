@@ -82,10 +82,7 @@ fn only_operand_after_double_dash_is_the_path() {
     let root = tempfile::tempdir().unwrap();
     let output = apply(root.path(), &["--", "out"]);
     assert_eq!(output.status.code(), Some(1));
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("no staged interview; template folder is required")
-    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no interview is staged at out"));
 }
 
 #[test]
