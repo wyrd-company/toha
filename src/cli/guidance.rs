@@ -474,6 +474,36 @@ pub fn complete_answers_unused(path: &Path, staged: &str) -> String {
     .join("\n")
 }
 
+/// The rejections of an answers document for the interview at `path`, each
+/// rejection of a different answer for an answered question followed by the
+/// commands that change it.
+pub fn explain_rejections(
+    rejections: &toha::Rejections,
+    path: &Path,
+    staged: &str,
+) -> toha::Rejections {
+    let restage = Invocation::Stage {
+        template: Arg::Given(formal_for("stage", staged)),
+        path,
+        output: Some(None),
+    };
+    rejections
+        .iter()
+        .cloned()
+        .map(|mut rejection| {
+            if rejection.kind == toha::RejectionKind::Answered {
+                rejection.message = format!(
+                    "{}; to change it: {}, then {}",
+                    rejection.message,
+                    abort(path),
+                    restage.command()
+                );
+            }
+            rejection
+        })
+        .collect()
+}
+
 /// `continue` without an answers document has no terminal to prompt in.
 pub fn continue_no_terminal(path: &Path) -> String {
     [

@@ -174,6 +174,16 @@ pub struct Constraints {
 pub struct Rejection {
     pub id: Id,
     pub message: String,
+    pub kind: RejectionKind,
+}
+/// Why an answer is rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RejectionKind {
+    /// The answer fails a constraint of its question.
+    Invalid,
+    /// The question already has a different answer. A driver adds how to
+    /// change it.
+    Answered,
 }
 pub type Rejections = Vec<Rejection>;
 /// A failure to evaluate the interview. When `expression` is set, the fault
@@ -707,48 +717,84 @@ fn check_answer(
     let id = &prompt.id;
     let q = question_by_id(&template.interview, id).expect("prompt has question");
     let empty = raw.0.is_null();
-    let mut answer = validate(id, &Rules::of_prompt(prompt, q), raw.0)?;
+    let answer = validate(id, &Rules::of_prompt(prompt, q), raw.0)?;
     if empty {
         return Ok(answer);
     }
-    if let Some(expr) = &q.format {
-        let ctx = context(template, answers, seed);
-        let apply = |value: Value| -> Result<Value, CheckError> {
-            let mut c = ctx.clone();
-            c.insert("value".into(), value);
-            expr.eval(c)
-                .and_then(|v| {
-                    serde_json::to_value(v).map_err(|e| {
-                        minijinja::Error::new(minijinja::ErrorKind::InvalidOperation, e.to_string())
-                    })
+    Ok(format_answer(
+        template,
+        answers,
+        seed,
+        q,
+        prompt.kind,
+        answer,
+    )?)
+}
+/// Applies the `format` expression of `q` to a non-empty `answer`.
+fn format_answer(
+    template: &Template,
+    answers: &Answers,
+    seed: &Seed,
+    q: &Question,
+    kind: PromptKind,
+    answer: Answer,
+) -> Result<Answer, EvalError> {
+    let id = &q.id;
+    let Some(expr) = &q.format else {
+        return Ok(answer);
+    };
+    let ctx = context(template, answers, seed);
+    let fail = |e: &dyn fmt::Display| fault(id, "format", Some(expr.source()), e);
+    let apply = |value: Value| -> Result<Value, EvalError> {
+        let mut c = ctx.clone();
+        c.insert("value".into(), value);
+        expr.eval(c)
+            .and_then(|v| {
+                serde_json::to_value(v).map_err(|e| {
+                    minijinja::Error::new(minijinja::ErrorKind::InvalidOperation, e.to_string())
                 })
-                .map_err(|e| fault(id, "format", Some(expr.source()), e).into())
-        };
-        answer = match answer {
-            Answer::Text(v) => Answer::Text(
-                serde_json::from_value(apply(Value::String(v))?)
-                    .map_err(|e| fault(id, "format", Some(expr.source()), e))?,
-            ),
-            Answer::Bool(v) => Answer::Bool(
-                serde_json::from_value(apply(Value::Bool(v))?)
-                    .map_err(|e| fault(id, "format", Some(expr.source()), e))?,
-            ),
-            Answer::List(v) if prompt.kind == PromptKind::MultiSelect => Answer::List(
-                serde_json::from_value(apply(serde_json::json!(v))?)
-                    .map_err(|e| fault(id, "format", Some(expr.source()), e))?,
-            ),
-            Answer::List(v) => Answer::List(
-                v.into_iter()
-                    .map(|s| {
-                        serde_json::from_value(apply(Value::String(s))?)
-                            .map_err(|e| fault(id, "format", Some(expr.source()), e).into())
-                    })
-                    .collect::<Result<Vec<_>, CheckError>>()?,
-            ),
-            a => a,
-        };
+            })
+            .map_err(|e| fail(&e))
+    };
+    Ok(match answer {
+        Answer::Text(v) => {
+            Answer::Text(serde_json::from_value(apply(Value::String(v))?).map_err(|e| fail(&e))?)
+        }
+        Answer::Bool(v) => {
+            Answer::Bool(serde_json::from_value(apply(Value::Bool(v))?).map_err(|e| fail(&e))?)
+        }
+        Answer::List(v) if kind == PromptKind::MultiSelect => Answer::List(
+            serde_json::from_value(apply(serde_json::json!(v))?).map_err(|e| fail(&e))?,
+        ),
+        Answer::List(v) => Answer::List(
+            v.into_iter()
+                .map(|s| serde_json::from_value(apply(Value::String(s))?).map_err(|e| fail(&e)))
+                .collect::<Result<Vec<_>, EvalError>>()?,
+        ),
+        a => a,
+    })
+}
+/// Whether `raw`, parsed and formatted as the engine records an answer to
+/// `q`, equals `recorded`.
+fn same_answer(
+    template: &Template,
+    answers: &Answers,
+    seed: &Seed,
+    q: &Question,
+    raw: &Value,
+    recorded: &Answer,
+) -> bool {
+    if *raw == recorded.to_json() {
+        return true;
     }
-    Ok(answer)
+    let kind = prompt_kind(q);
+    if raw.is_null() {
+        return empty_answer(kind) == *recorded;
+    }
+    parse_kind(&q.id, kind, raw.clone())
+        .ok()
+        .and_then(|answer| format_answer(template, answers, seed, q, kind, answer).ok())
+        .is_some_and(|answer| answer == *recorded)
 }
 /// A template expression of a node: its field, source, and the ids it
 /// references.
@@ -1207,6 +1253,7 @@ fn rejection(id: &Id, message: impl Into<String>) -> Rejection {
     Rejection {
         id: id.clone(),
         message: message.into(),
+        kind: RejectionKind::Invalid,
     }
 }
 impl Pending<'_> {
@@ -1264,6 +1311,25 @@ impl<'a> Pending<'a> {
                 rejections.push(rejection(&id, "is not a question in this template"));
                 continue;
             };
+            if let Some(recorded) = self.answers.get(&id) {
+                if !same_answer(
+                    self.template,
+                    &self.answers,
+                    &self.seed,
+                    q,
+                    &raw.0,
+                    recorded,
+                ) {
+                    rejections.push(Rejection {
+                        kind: RejectionKind::Answered,
+                        ..rejection(
+                            &id,
+                            format!("is already answered with {}", recorded.to_json()),
+                        )
+                    });
+                }
+                continue;
+            }
             let early = !self.answers.contains_key(&id)
                 && !self
                     .batch

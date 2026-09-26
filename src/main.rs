@@ -724,7 +724,15 @@ fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome 
             pending,
             rejections,
         }) => Outcome::Document(
-            protocol::batch_document(pending.batch(), &context(&saved), Some(&rejections)),
+            protocol::batch_document(
+                pending.batch(),
+                &context(&saved),
+                Some(&guidance::explain_rejections(
+                    &rejections,
+                    &path,
+                    &saved.template,
+                )),
+            ),
             4,
         ),
         Err(AnswerError::Eval(e)) => Outcome::Error(e.to_string()),
@@ -946,7 +954,11 @@ fn run(
                                 protocol::batch_document(
                                     pending.batch(),
                                     &context(&saved),
-                                    Some(&rejections),
+                                    Some(&guidance::explain_rejections(
+                                        &rejections,
+                                        path,
+                                        &saved.template,
+                                    )),
                                 ),
                                 4,
                             );
