@@ -193,27 +193,36 @@ fn ask_value(ask: &mut impl Ask, prompt: &Prompt) -> Result<Value, String> {
 }
 
 pub(crate) fn drive<'a>(
+    interview: Interview<'a>,
+    ask: &mut impl Ask,
+    accepted: impl FnMut(IndexMap<String, Value>) -> Result<(), String>,
+) -> Result<Completed, String> {
+    drive_to(interview, ask, accepted, &mut std::io::stdout())
+}
+
+fn drive_to<'a>(
     mut interview: Interview<'a>,
     ask: &mut impl Ask,
     mut accepted: impl FnMut(IndexMap<String, Value>) -> Result<(), String>,
+    output: &mut impl std::io::Write,
 ) -> Result<Completed, String> {
-    let mut shown_messages = 0;
+    let mut reached_before = 0;
     loop {
         let pending = match interview {
             Interview::Complete(completed) => {
-                for message in completed.messages.iter().skip(shown_messages) {
-                    print_line(message)?;
+                for message in completed.messages.iter().skip(reached_before) {
+                    writeln!(output, "{message}").map_err(|e| e.to_string())?;
                 }
                 return Ok(completed);
             }
             Interview::Asking(pending) => pending,
         };
+        reached_before = pending.messages_reached();
         let mut submission = RawAnswers::new();
         for item in &pending.batch().items {
             match item {
                 Item::Message(message) => {
-                    print_line(message)?;
-                    shown_messages += 1;
+                    writeln!(output, "{message}").map_err(|e| e.to_string())?;
                 }
                 Item::Prompt(prompt) => loop {
                     let value = ask_value(ask, prompt)?;
@@ -443,6 +452,40 @@ mod tests {
         let error =
             drive(start(&template), &mut script, |_| Err("save failed".into())).unwrap_err();
         assert_eq!(error, "save failed");
+    }
+
+    #[test]
+    fn continue_prints_each_reached_message_once() {
+        let (_folder, template) = template(
+            "name: sample\ninterview:\n  - message: Start\n  - { id: first, type: text, prompt: First? }\n  - message: 'Thanks {{ first }}'\n  - { id: second, type: text, prompt: Second? }\n  - message: 'Done {{ second }}'\n",
+        );
+        let mut full_output = Vec::new();
+        let mut script = Script::new(json!({"first":"Ada", "second":"yes"}));
+        drive_to(start(&template), &mut script, |_| Ok(()), &mut full_output).unwrap();
+
+        let saved = StagedRecord {
+            target: std::path::PathBuf::from("/tmp/sample-target"),
+            template: "/tmp/sample-template".into(),
+            commit: String::new(),
+            now: "2026-01-02T03:04:05+00:00[UTC]".into(),
+            submissions: vec![IndexMap::from([("first".into(), json!("Ada"))])],
+        };
+        let resumed = saved.replay(&template).unwrap();
+        let Interview::Asking(pending) = &resumed else {
+            panic!("expected remaining batch")
+        };
+        assert_eq!(pending.messages_reached(), 2);
+        let mut resumed_output = Vec::new();
+        let mut script = Script::new(json!({"second":"yes"}));
+        drive_to(resumed, &mut script, |_| Ok(()), &mut resumed_output).unwrap();
+        assert_eq!(
+            String::from_utf8(full_output).unwrap(),
+            "Start\nThanks Ada\nDone yes\n"
+        );
+        assert_eq!(
+            String::from_utf8(resumed_output).unwrap(),
+            "Thanks Ada\nDone yes\n"
+        );
     }
 
     #[test]

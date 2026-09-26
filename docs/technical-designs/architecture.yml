@@ -110,6 +110,8 @@ proposed-design:
     `enum Interview { Asking(Pending), Complete(Completed) }`. `Seed` holds the
     configured defaults and the frozen instant that `now()` returns.
     `Pending::batch(&self) -> &Batch` exposes the current batch.
+    `Pending::messages_reached(&self) -> usize` counts messages reached through
+    that batch in `Completed.messages` order.
     `Pending::check(&self, id, RawAnswer) -> Result<Answer, CheckError>`
     validates and formats one answer without recording it. It returns
     `CheckError::Rejected` for answer rules and `CheckError::Eval` for

@@ -173,6 +173,47 @@ fn cancel_during_continue_preserves_staged_record() {
     assert_eq!(std::fs::read(record).unwrap(), before);
 }
 
+#[cfg(unix)]
+#[test]
+fn continue_prints_prior_batch_messages_once() {
+    use expectrl::{Expect, Session};
+    let folder = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    std::fs::write(folder.path().join("template.yml"), "name: sample\ninterview:\n  - message: Start\n  - { id: first, type: text, prompt: First? }\n  - message: 'Thanks {{ first }}'\n  - { id: second, type: text, prompt: Second? }\n  - message: 'Done {{ second }}'\n").unwrap();
+    let stage = Command::new(assert_cmd::cargo::cargo_bin!("toha"))
+        .arg("stage")
+        .arg(folder.path())
+        .arg(target.path())
+        .arg("--async")
+        .env("XDG_STATE_HOME", state.path())
+        .output()
+        .unwrap();
+    assert_eq!(stage.status.code(), Some(4));
+    let answers = folder.path().join("answers.json");
+    std::fs::write(&answers, "{\"first\":\"Ada\"}").unwrap();
+    let first = Command::new(assert_cmd::cargo::cargo_bin!("toha"))
+        .arg("continue")
+        .arg(target.path())
+        .arg(&answers)
+        .env("XDG_STATE_HOME", state.path())
+        .output()
+        .unwrap();
+    assert_eq!(first.status.code(), Some(4));
+
+    let mut command = Command::new(assert_cmd::cargo::cargo_bin!("toha"));
+    command
+        .arg("continue")
+        .arg(target.path())
+        .env("XDG_STATE_HOME", state.path());
+    let mut session = Session::spawn(command).unwrap();
+    session.expect("Thanks Ada").unwrap();
+    session.expect("Second?").unwrap();
+    session.send_line("yes").unwrap();
+    let final_message = session.expect("Done yes").unwrap();
+    assert!(!String::from_utf8_lossy(final_message.before()).contains("Thanks Ada"));
+}
+
 #[test]
 fn default_render_failure_exits_one_without_writing() {
     let fixture = std::path::Path::new("tests/fixtures/err-default-render");

@@ -731,6 +731,9 @@ impl Pending<'_> {
     pub fn batch(&self) -> &Batch {
         &self.batch
     }
+    pub fn messages_reached(&self) -> usize {
+        self.messages.len()
+    }
     pub fn accepts_id(&self, id: &Id) -> bool {
         self.template.has_question_id(id)
     }
