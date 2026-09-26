@@ -522,3 +522,28 @@ pub fn alias_needs_one_template(alias: &str, addresses: &[String]) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
+
+/// `templates alias` was given an alias that names another template.
+pub fn alias_in_use(template: &str, alias: &str, removable: bool) -> String {
+    let mut lines = vec!["alias is in use".to_string()];
+    if removable {
+        lines.push(format!(
+            "to move it to {template}: {}, then {}",
+            toha(
+                "templates alias",
+                &[format!("--remove {}", word(alias))],
+                &[]
+            ),
+            toha("templates alias", &[], &[value(template), value(alias)])
+        ));
+    }
+    lines.push(format!(
+        "to choose another alias: {}",
+        toha(
+            "templates alias",
+            &[],
+            &[value(template), placeholder("<ALIAS>")]
+        )
+    ));
+    lines.join("\n")
+}

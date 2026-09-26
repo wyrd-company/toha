@@ -622,7 +622,14 @@ fn alias(
             .values()
             .any(|e| e.entry.aliases.contains(&alias))
     {
-        return Err(CommandError::text("alias is in use"));
+        let removable = ctx
+            .user
+            .templates
+            .values()
+            .any(|entry| entry.aliases.contains(&alias));
+        return Err(CommandError::text(guidance::alias_in_use(
+            &template, &alias, removable,
+        )));
     }
     let next = ctx
         .user
