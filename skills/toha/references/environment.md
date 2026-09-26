@@ -28,4 +28,12 @@ On macOS, the user registry and installed templates are in `~/Library/Applicatio
 
 Configuration layers merge local over user over system; a missing file is an empty layer. `local-config-name` and `hosts` come from the user and system layers only. The local registry, `.templates/templates.yml` unless configured, holds aliases only, so trust never comes from a project.
 
-To isolate a run from the caller's configuration, registry, and staged interviews, set `HOME`, the four `XDG_*` variables, `TOHA_USER_CONFIG`, and `TOHA_CONFIG` to paths inside one scratch directory; on Windows, also set `APPDATA` and `LOCALAPPDATA`. The system files have no variable except `PROGRAMDATA` on Windows.
+To isolate a run from the caller's configuration, registry, and staged interviews, point these at paths inside one scratch directory:
+
+- Every platform: `HOME` (and `USERPROFILE` on Windows), `TOHA_USER_CONFIG`, and `TOHA_CONFIG`.
+- Linux and macOS: `XDG_CONFIG_HOME` matters only when `TOHA_USER_CONFIG` is unset.
+- Linux: also `XDG_DATA_HOME`, `XDG_CACHE_HOME`, and `XDG_STATE_HOME`.
+- macOS: `HOME` alone moves the registry, cache, and staged interviews, which live under `~/Library`; the `XDG_DATA_HOME`, `XDG_CACHE_HOME`, and `XDG_STATE_HOME` variables are not read.
+- Windows: also `APPDATA`, `LOCALAPPDATA`, and `PROGRAMDATA`. `PROGRAMDATA` holds the system configuration and registry, so a system trusted entry applies unless it is set.
+
+On Linux and macOS the system files (`/etc/toha/config.yml`, `/usr/local/share/toha/templates.yml`) have no variable and always apply.
