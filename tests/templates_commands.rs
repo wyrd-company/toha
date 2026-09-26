@@ -659,3 +659,20 @@ fn alias_in_use_names_the_remove_command() {
         ],
     );
 }
+
+#[test]
+fn remove_of_a_template_outside_the_user_registry_names_list() {
+    let root = TempDir::new().unwrap();
+    let discovered = root.path().join(".templates/discovered");
+    fs::create_dir_all(discovered.join("template")).unwrap();
+    fs::write(discovered.join("template.yml"), "name: discovered\n").unwrap();
+    let output = run(&root, &["templates", "remove", "discovered"]);
+    assert_exit(&output, 1);
+    assert_stderr_names(
+        &output,
+        &[
+            "not installed in user registry: discovered".into(),
+            "toha templates list".into(),
+        ],
+    );
+}
