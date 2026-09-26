@@ -596,3 +596,31 @@ fn update_two_dotted_install_keys() {
         );
     }
 }
+
+fn assert_stderr_names(output: &std::process::Output, commands: &[String]) {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for command in commands {
+        assert!(
+            stderr.contains(command.as_str()),
+            "stderr does not name `{command}`:\n{stderr}"
+        );
+    }
+}
+
+#[test]
+fn add_of_a_name_names_list_and_the_address_forms() {
+    let root = TempDir::new().unwrap();
+    let output = run(&root, &["templates", "add", "sample"]);
+    assert_exit(&output, 1);
+    assert_stderr_names(
+        &output,
+        &[
+            "toha templates list".into(),
+            "toha templates add <ADDRESS>".into(),
+        ],
+    );
+    fs::create_dir(root.path().join("sample")).unwrap();
+    let output = run(&root, &["templates", "add", "sample"]);
+    assert_exit(&output, 1);
+    assert_stderr_names(&output, &["toha templates add ./sample".into()]);
+}
