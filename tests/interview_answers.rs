@@ -532,3 +532,86 @@ fn headless_apply_stops_at_an_early_answer_that_fails_when_reached() {
     );
     assert!(!target.path().join("out.txt").exists());
 }
+
+#[test]
+fn basic_example_empty_tags_batch_completes_with_an_empty_list() {
+    let state = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    let template = Path::new("docs/examples/basic").canonicalize().unwrap();
+    stage(state.path(), target.path(), &template);
+    let (code, _) = continue_with(state.path(), target.path(), json!({"title": "Sample"}));
+    assert_eq!(code, 4);
+    let (code, result) = continue_with(state.path(), target.path(), json!({}));
+    assert_eq!(code, 4, "{result}");
+    assert_eq!(questions(&result), ["has_summary"]);
+    assert_eq!(
+        result["schema"]["properties"]["has_summary"]["default"],
+        json!(false)
+    );
+    let (code, result) = continue_with(state.path(), target.path(), json!({}));
+    assert_eq!(code, 4, "{result}");
+    let (code, result) = continue_with(state.path(), target.path(), json!({}));
+    assert_eq!(code, 0, "{result}");
+    assert_eq!(result["answers"]["tags"], json!([]));
+    assert_eq!(result["answers"]["has_summary"], json!(false));
+}
+
+#[test]
+fn unanswered_list_questions_are_empty_lists_and_others_are_null() {
+    let (_folder, template) = inline(
+        "name: sample\ninterview:\n  - { id: flag, type: confirm, prompt: F? }\n  - { id: picks, type: multiselect, prompt: P?, options: [a], when: flag }\n  - { id: lines, type: text, prompt: L?, loop: { max: 2 }, when: flag }\n  - { id: more, type: text, prompt: M?, loop: { max: 2 } }\n  - { id: others, type: multiselect, prompt: O?, options: [a] }\n  - { id: word, type: text, prompt: W? }\n  - { id: skipped, type: text, prompt: S?, when: flag }\n",
+    );
+    let mut interview = Interview::start(&template, seed()).unwrap();
+    let mut document = protocol::parse_answers(r#"{"flag": false, "others": null}"#).unwrap();
+    let completed = loop {
+        match interview {
+            Interview::Complete(completed) => break completed,
+            Interview::Asking(pending) => {
+                interview = pending.answer(std::mem::take(&mut document)).unwrap()
+            }
+        }
+    };
+    let answers: serde_json::Map<String, Value> = completed
+        .answers
+        .iter()
+        .map(|(id, answer)| (id.to_string(), answer.to_json()))
+        .collect();
+    assert_eq!(
+        Value::Object(answers),
+        json!({"flag": false, "picks": [], "lines": [], "more": [], "others": [],
+            "word": null, "skipped": null})
+    );
+}
+
+#[test]
+fn template_fault_names_the_field_and_the_expression() {
+    let state = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    let template = Path::new("tests/fixtures/err-default-render/template")
+        .canonicalize()
+        .unwrap();
+    stage(state.path(), target.path(), &template);
+    let (code, result) = continue_with(state.path(), target.path(), json!({"first": "value"}));
+    assert_eq!(code, 1, "{result}");
+    let stderr = result["stderr"].as_str().unwrap();
+    assert!(
+        stderr.contains("template error in second.default `{{ first | nope }}`: "),
+        "{stderr}"
+    );
+    let (_folder, template) = inline(
+        "name: sample\ninterview:\n  - { id: word, type: text, prompt: W? }\n  - { id: long, type: confirm, prompt: L?, default: 'word | length > 3' }\n",
+    );
+    let Interview::Asking(pending) = Interview::start(&template, seed()).unwrap() else {
+        panic!()
+    };
+    let raw = protocol::parse_answers(r#"{"word": null}"#).unwrap();
+    let Err(AnswerError::Eval(error)) = pending.answer(raw) else {
+        panic!("expected a template fault")
+    };
+    assert!(
+        error
+            .to_string()
+            .starts_with("template error in long.default `word | length > 3`: "),
+        "{error}"
+    );
+}
