@@ -644,7 +644,7 @@ fn named_template_resumes_its_staged_interview_by_formal_name() {
     assert!(
         error.contains("local:owner/repo#one")
             && error.contains("local:owner/repo#two")
-            && error.contains(&format!("toha apply {other} {incomplete}")),
+            && error.contains(&format!("toha apply '{other}' {incomplete}")),
         "{error}"
     );
 }
@@ -668,19 +668,19 @@ fn ambiguous_name_names_the_same_command_with_each_formal_name() {
     let cases: [(Vec<&str>, Retry); 4] = [
         (
             vec!["apply", "--answers", answers, "same", target],
-            Box::new(|formal| format!("toha apply --answers {answers} {formal} {target}")),
+            Box::new(|formal| format!("toha apply --answers {answers} '{formal}' {target}")),
         ),
         (
             vec!["stage", "same", target, "--async"],
-            Box::new(|formal| format!("toha stage {formal} {target} --async")),
+            Box::new(|formal| format!("toha stage '{formal}' {target} --async")),
         ),
         (
             vec!["templates", "remove", "same"],
-            Box::new(|formal| format!("toha templates remove {formal}")),
+            Box::new(|formal| format!("toha templates remove '{formal}'")),
         ),
         (
             vec!["templates", "update", "same"],
-            Box::new(|formal| format!("toha templates update {formal}")),
+            Box::new(|formal| format!("toha templates update '{formal}'")),
         ),
     ];
     for (args, retry) in cases {

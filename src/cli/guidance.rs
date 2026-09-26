@@ -16,10 +16,13 @@ pub enum Progress {
 
 /// `value` as one shell word.
 pub fn word(value: &str) -> String {
+    // Characters a POSIX shell leaves unchanged anywhere in a word; `=` only
+    // after the first character.
     let plain = !value.is_empty()
+        && !value.starts_with('=')
         && value
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-~\\#".contains(c));
+            .all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c));
     if plain {
         value.into()
     } else {
