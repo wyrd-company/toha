@@ -585,14 +585,31 @@ pub fn answers_without_template(
 
 /// `apply` did not run hooks of an untrusted template.
 pub fn needs_trust(invocation: &Invocation, installed: Option<&str>) -> String {
+    trust_lines(
+        "hooks will not run without --trust\nto run them this time: ",
+        invocation,
+        installed,
+    )
+}
+
+/// `apply --dry-run` planned hooks of an untrusted template, which the same
+/// command without `--dry-run` refuses to run.
+pub fn dry_run_needs_trust(invocation: &Invocation, installed: Option<&str>) -> String {
+    trust_lines(
+        "hooks need trust; to run them: ",
+        &invocation.without_dry_run(),
+        installed,
+    )
+}
+
+/// `lead` followed by the command with `--trust`, and the `templates add
+/// --trust` command for an installed template.
+fn trust_lines(lead: &str, invocation: &Invocation, installed: Option<&str>) -> String {
     let mut trusted = *invocation;
     if let Invocation::Apply { trust, .. } = &mut trusted {
         *trust = true;
     }
-    let mut lines = vec![
-        "hooks will not run without --trust".to_string(),
-        format!("to run them this time: {}", trusted.command()),
-    ];
+    let mut lines = vec![format!("{lead}{}", trusted.command())];
     if let Some(formal) = installed {
         lines.push(format!(
             "to trust {formal} for every run: {}",

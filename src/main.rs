@@ -926,16 +926,25 @@ fn run(
         Err(error) => return Outcome::Error(error.to_string()),
     };
     if dry_run {
-        return Outcome::Written(
-            (if terminal_run {
-                vec![]
-            } else {
-                completed.messages
-            })
-            .into_iter()
-            .chain(plan_lines(&plan, force))
-            .collect(),
+        let lines = if terminal_run {
+            vec![]
+        } else {
+            completed.messages
+        }
+        .into_iter()
+        .chain(plan_lines(&plan, force));
+        if plan.hooks.is_empty() || registry_trusted || trust {
+            return Outcome::Written(lines.collect());
+        }
+        for line in lines {
+            println!("{line}");
+        }
+        // Written after the plan, so that a terminal shows it last.
+        eprintln!(
+            "{}",
+            guidance::dry_run_needs_trust(&invocation, installed.as_deref())
         );
+        return Outcome::Saved(0);
     }
     let before = plan.before_apply.clone();
     let preview = plan_lines(&plan, force);
