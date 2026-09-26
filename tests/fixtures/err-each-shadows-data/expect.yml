@@ -1,0 +1,2 @@
+exit: 1
+error_contains: ["hooks[0].each", "duplicate id: owner"]

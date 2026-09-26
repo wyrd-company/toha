@@ -1,0 +1,9 @@
+name: err-each-shadows-computed
+data:
+  items: [ a ]
+interview:
+  - id: total
+    computed: "items | length"
+  - hook:
+      each: "items as total"
+      run: [ tool, "{{ total }}" ]
