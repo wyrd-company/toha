@@ -254,10 +254,17 @@ fn reference_kind(repo: &str, reference: Option<&str>) -> Result<RefKind, Source
 }
 fn local_git_path(repo: &str) -> Option<&str> {
     let local = repo.strip_prefix("file://")?;
-    if cfg!(windows) && local.starts_with('/') && local.as_bytes().get(2) == Some(&b':') {
-        Some(&local[1..])
+    if cfg!(windows) {
+        Some(windows_local_git_path(local))
     } else {
         Some(local)
+    }
+}
+fn windows_local_git_path(local: &str) -> &str {
+    if local.starts_with('/') && local.as_bytes().get(2) == Some(&b':') {
+        &local[1..]
+    } else {
+        local
     }
 }
 fn expand_commit(repo: &str, short: &str, dest: &Path) -> Result<String, SourceError> {
@@ -351,6 +358,7 @@ mod tests {
     use super::*;
     #[test]
     fn local_file_url_uses_platform_path() {
+        assert_eq!(windows_local_git_path("/C:/sample/repo"), "C:/sample/repo");
         let expected = if cfg!(windows) {
             "C:/sample/repo"
         } else {
