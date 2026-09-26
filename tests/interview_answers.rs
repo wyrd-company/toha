@@ -643,18 +643,71 @@ fn staged_submissions(state: &Path, target: &Path) -> Vec<Value> {
         .unwrap_or_default()
 }
 
-/// The exit code, batch questions, errors, and recorded submissions after
-/// one answers document.
+/// The exit code, batch questions, messages, errors, and recorded
+/// submissions after one answers document, with the target path as `<P>`.
 fn outcome(code: i32, document: &Value, state: &Path, target: &Path) -> Value {
-    json!({
+    let outcome = json!({
         "code": code,
         "questions": document["schema"]["properties"]
             .as_object()
             .map(|p| { let mut k: Vec<_> = p.keys().cloned().collect(); k.sort(); k }),
+        "messages": document.get("messages"),
         "errors": document.get("errors"),
         "answers": document.get("answers"),
         "submissions": staged_submissions(state, target),
-    })
+    });
+    let text = outcome.to_string().replace(target.to_str().unwrap(), "<P>");
+    serde_json::from_str(&text).unwrap()
+}
+
+/// A template whose second question is skipped unless the first is `fancy`.
+const SKIPS: &str = "name: skips\ninterview:\n  - { id: kind, type: select, prompt: Kind?, options: [plain, fancy], required: true }\n  - { id: style, type: text, prompt: Style?, when: \"kind == 'fancy'\", format: value | lower }\n  - { id: title, type: text, prompt: Title?, required: true }\n  - { id: extra, type: text, prompt: 'Extra for {{ title }}?', required: true }\n";
+
+/// Asserts that `document`, after the `prior` documents through `continue`,
+/// has the same outcome through `apply --answers` and `continue`.
+fn same_outcome_through_apply_and_continue(template: &Path, prior: &[Value], document: &Value) {
+    let staged = |state: &Path, target: &Path| {
+        stage(state, target, template);
+        for earlier in prior {
+            let (code, result) = continue_with(state, target, earlier.clone());
+            assert!(result.get("errors").is_none(), "{earlier}: {result}");
+            assert!(code == 4 || code == 0, "{earlier}: {result}");
+        }
+    };
+    let state = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    staged(state.path(), target.path());
+    let (code, result) = continue_with(state.path(), target.path(), document.clone());
+    let through_continue = outcome(code, &result, state.path(), target.path());
+
+    let state = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    staged(state.path(), target.path());
+    let answers = state.path().join("answers.json");
+    fs::write(&answers, document.to_string()).unwrap();
+    let output = support::isolated_command(state.path())
+        .arg("apply")
+        .arg(support::folder_address(template))
+        .args([target.path().to_str().unwrap(), "--answers"])
+        .arg(&answers)
+        .output()
+        .unwrap();
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
+    let mut through_apply = outcome(
+        output.status.code().unwrap(),
+        &result,
+        state.path(),
+        target.path(),
+    );
+    // A headless run also answers the next batch from defaults and states
+    // which required questions the document leaves unanswered.
+    if let Some(errors) = through_apply["errors"].as_object_mut() {
+        errors.retain(|id, e| document.get(id).is_some() || e != &json!(["is required"]));
+        if errors.is_empty() {
+            through_apply["errors"] = Value::Null;
+        }
+    }
+    assert_eq!(through_apply, through_continue, "{prior:?} then {document}");
 }
 
 #[test]
@@ -666,40 +719,85 @@ fn one_answers_document_has_the_same_outcome_through_apply_and_continue() {
             "code": "abc", "flavor": "odd", "items": ["x"], "extras": ["one"]}),
     ];
     for document in documents {
-        let state = tempfile::tempdir().unwrap();
-        let target = tempfile::tempdir().unwrap();
-        stage(state.path(), target.path(), &early_template());
-        let (code, result) = continue_with(state.path(), target.path(), document.clone());
-        let through_continue = outcome(code, &result, state.path(), target.path());
-
-        let state = tempfile::tempdir().unwrap();
-        let target = tempfile::tempdir().unwrap();
-        let answers = state.path().join("answers.json");
-        fs::write(&answers, document.to_string()).unwrap();
-        let output = support::isolated_command(state.path())
-            .arg("apply")
-            .arg(support::folder_address(&early_template()))
-            .args([target.path().to_str().unwrap(), "--answers"])
-            .arg(&answers)
-            .output()
-            .unwrap();
-        let result: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
-        let mut through_apply = outcome(
-            output.status.code().unwrap(),
-            &result,
-            state.path(),
-            target.path(),
-        );
-        // A headless run also answers the next batch from defaults and states
-        // which required questions the document leaves unanswered.
-        if let Some(errors) = through_apply["errors"].as_object_mut() {
-            errors.retain(|id, e| document.get(id).is_some() || e != &json!(["is required"]));
-            if errors.is_empty() {
-                through_apply["errors"] = Value::Null;
-            }
-        }
-        assert_eq!(through_apply, through_continue, "{document}");
+        same_outcome_through_apply_and_continue(&early_template(), &[], &document);
     }
+    let (folder, _template) = inline(SKIPS);
+    let skips = folder.path();
+    let plain = json!({"kind": "plain"});
+    let cases = [
+        // An answer equal to the recorded answer is ignored.
+        (
+            vec![plain.clone()],
+            json!({"kind": "plain", "title": "First"}),
+        ),
+        // An answer that differs from the recorded answer rejects the document.
+        (
+            vec![plain.clone()],
+            json!({"kind": "fancy", "title": "First"}),
+        ),
+        // A held answer whose question is skipped is not used.
+        (vec![], json!({"kind": "plain", "style": "Bold"})),
+        // An answer for a question skipped earlier is not used.
+        (
+            vec![plain.clone()],
+            json!({"style": "Bold", "title": "First"}),
+        ),
+    ];
+    for (prior, document) in cases {
+        same_outcome_through_apply_and_continue(skips, &prior, &document);
+    }
+}
+
+#[test]
+fn repeated_answer_equal_to_the_recorded_answer_is_ignored() {
+    let (folder, _template) = inline(SKIPS);
+    let state = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    stage(state.path(), target.path(), folder.path());
+    let (code, _) = continue_with(state.path(), target.path(), json!({"kind": "fancy"}));
+    assert_eq!(code, 4);
+    let (code, result) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"style": "BOLD", "title": "First"}),
+    );
+    assert_eq!(code, 4, "{result}");
+    // `format` lowercases `style`; the same answer before formatting is equal.
+    let (code, result) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"kind": "fancy", "style": "Bold", "extra": "x"}),
+    );
+    assert_eq!(code, 0, "{result}");
+    assert_eq!(result["answers"]["style"], json!("bold"));
+}
+
+#[test]
+fn repeated_answer_that_differs_rejects_the_document_and_names_the_commands() {
+    let (folder, _template) = inline(SKIPS);
+    let state = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    stage(state.path(), target.path(), folder.path());
+    let (code, _) = continue_with(state.path(), target.path(), json!({"kind": "plain"}));
+    assert_eq!(code, 4);
+    let (code, result) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"kind": "fancy", "title": "First"}),
+    );
+    assert_eq!(code, 4, "{result}");
+    assert_eq!(questions(&result), ["title"]);
+    // Temporary paths need no shell quoting.
+    let t = target.path().to_str().unwrap();
+    let f = folder.path().canonicalize().unwrap();
+    let f = f.to_str().unwrap();
+    assert_eq!(
+        result["errors"],
+        json!({"kind": [format!(
+            "is already answered with \"plain\"; to change it: toha abort {t}, then toha stage {f} {t} --async"
+        )]})
+    );
+    assert_eq!(submissions(state.path(), target.path()), 1);
 }
 
 #[test]
