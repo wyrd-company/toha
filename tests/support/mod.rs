@@ -105,6 +105,16 @@ pub fn isolate(command: &mut Command, root: &Path) {
     command.env("TOHA_CONFIG", root.join("config/local.yml"));
 }
 
+/// `value` quoted as toha quotes a word in a suggested command: single quotes
+/// for a POSIX shell, double quotes on Windows.
+pub fn shell_quoted(value: &str) -> String {
+    if cfg!(windows) {
+        format!("\"{value}\"")
+    } else {
+        format!("'{value}'")
+    }
+}
+
 pub fn staged_dir(root: &Path) -> PathBuf {
     if cfg!(target_os = "macos") {
         root.join("home/Library/Application Support/toha/staged")

@@ -663,9 +663,9 @@ fn answers_without_template_name_the_commands_that_take_them() {
 #[test]
 fn suggested_commands_quote_words_a_shell_would_change() {
     let case = Case::new();
-    let mut targets = vec![("~/notes", "'~/notes'")];
+    let mut targets = vec![("~/notes", support::shell_quoted("~/notes"))];
     if cfg!(unix) {
-        targets.push((r"foo\bar", r"'foo\bar'"));
+        targets.push((r"foo\bar", support::shell_quoted(r"foo\bar")));
     }
     for (target, quoted) in targets {
         let output = support::isolated_command(case.state.path())
@@ -701,6 +701,9 @@ fn suggested_commands_quote_words_a_shell_would_change() {
         .unwrap();
     assert_records_with(
         &output,
-        &format!("toha apply --answers '#a.json' {template} out"),
+        &format!(
+            "toha apply --answers {} {template} out",
+            support::shell_quoted("#a.json")
+        ),
     );
 }

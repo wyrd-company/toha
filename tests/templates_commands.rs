@@ -634,8 +634,14 @@ fn alias_for_several_templates_names_one_add_per_template() {
     assert_stderr_names(
         &output,
         &[
-            format!("toha templates add --alias mine '{url}#one'"),
-            format!("toha templates add --alias mine '{url}#two'"),
+            format!(
+                "toha templates add --alias mine {}",
+                support::shell_quoted(&format!("{url}#one"))
+            ),
+            format!(
+                "toha templates add --alias mine {}",
+                support::shell_quoted(&format!("{url}#two"))
+            ),
         ],
     );
 }
@@ -655,7 +661,10 @@ fn alias_in_use_names_the_remove_command() {
         &[
             "alias is in use".into(),
             "toha templates alias --remove mine".into(),
-            format!("toha templates alias '{second}' mine"),
+            format!(
+                "toha templates alias {} mine",
+                support::shell_quoted(&second)
+            ),
         ],
     );
 }

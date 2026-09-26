@@ -585,10 +585,15 @@ pub fn ambiguous(name: &str, matches: &[String], retry: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::word;
+    use super::{Shell, word_for};
+
+    const SPECIAL: [&str; 19] = [
+        "", "#x", "$x", "`x`", "a*", "a?", "[a]", "a!", "a&b", "a;b", "a|b", "<a>", "(a)", "{a}",
+        "a'b", "a\"b", "=x", "a b", "~/x",
+    ];
 
     #[test]
-    fn words_a_shell_would_change_are_quoted() {
+    fn posix_words_a_shell_would_change_are_single_quoted() {
         for plain in [
             "notes",
             "a/b.json",
@@ -597,18 +602,42 @@ mod tests {
             "-",
             "a,b%c+d",
         ] {
-            assert_eq!(word(plain), plain);
+            assert_eq!(word_for(plain, Shell::Posix), plain);
         }
-        for special in [
-            "", "~/x", "#x", r"a\b", "$x", "`x`", "a*", "a?", "[a]", "a!", "a&b", "a;b", "a|b",
-            "<a>", "(a)", "{a}", "a'b", "a\"b", "=x", "a b",
-        ] {
-            let quoted = word(special);
+        for special in SPECIAL.into_iter().chain([r"a\b", "a~b"]) {
+            let quoted = word_for(special, Shell::Posix);
             assert!(
                 quoted.starts_with('\'') && quoted.ends_with('\''),
                 "{special}: {quoted}"
             );
         }
-        assert_eq!(word("a'b"), r"'a'\''b'");
+        assert_eq!(word_for("a'b", Shell::Posix), r"'a'\''b'");
+    }
+
+    #[test]
+    fn windows_words_keep_paths_plain_and_double_quote_the_rest() {
+        for plain in [
+            r"C:\work",
+            r"C:\Users\RUNNER~1\AppData\Local\Temp\.tmpA1",
+            r"D:\a\toha\tests\fixtures\text-basic\template",
+            "file:///C:/Users/x/remote",
+            "notes",
+            "a/b.json",
+            "x=y",
+            "-",
+        ] {
+            assert_eq!(word_for(plain, Shell::Windows), plain);
+        }
+        for special in SPECIAL {
+            let quoted = word_for(special, Shell::Windows);
+            assert!(
+                quoted.starts_with('"') && quoted.ends_with('"'),
+                "{special}: {quoted}"
+            );
+        }
+        assert_eq!(word_for(r"C:\my dir", Shell::Windows), r#""C:\my dir""#);
+        assert_eq!(word_for(r"C:\my dir\", Shell::Windows), r#""C:\my dir\\""#);
+        assert_eq!(word_for(r#"a"b"#, Shell::Windows), r#""a\"b""#);
+        assert_eq!(word_for(r#"a\"b"#, Shell::Windows), r#""a\\\"b""#);
     }
 }
