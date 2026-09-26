@@ -29,6 +29,9 @@ tempfile = "3"
 gix = { version = "0.87.1", default-features = false, features = ["blocking-network-client", "blocking-http-transport-curl-rustls", "worktree-mutation", "revision", "sha1"] }
 include_dir = { version = "0.7.4", optional = true }
 
+[build-dependencies]
+tagver = "0.1.4"
+
 [dev-dependencies]
 assert_cmd = "2"
 pretty_assertions = "1"

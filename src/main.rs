@@ -27,7 +27,7 @@ use toha::{
 };
 
 #[derive(Parser)]
-#[command(name = "toha")]
+#[command(name = "toha", version = env!("TOHA_VERSION"))]
 struct Cli {
     #[command(subcommand)]
     command: Command,
