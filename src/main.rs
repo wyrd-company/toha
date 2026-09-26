@@ -40,8 +40,9 @@ const APPLY_HELP: &str = "\
 {usage-heading} {usage}
 
 Arguments:
-  [TEMPLATE]  Template to interview when no interview is staged at the path
-  <PATH>      Target directory
+  [TEMPLATE]  Template to interview when no interview is staged at the path.
+              When given, the command runs `stage` and then applies.
+  <PATH>      Target directory.
 
 {all-args}{after-help}";
 
