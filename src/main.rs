@@ -20,7 +20,7 @@ mod terminal;
 
 use clap::{Parser, Subcommand};
 use cli::{
-    guidance::{self, Progress},
+    guidance::{self, Invocation, Progress},
     resolve::{ResolveError, ResolvedTemplate},
 };
 use toha::{
@@ -407,10 +407,10 @@ fn progress(saved: &StagedRecord, scope: &Scope) -> Progress {
         None => Progress::Unknown,
     }
 }
-/// The refusal for `verb <template> <path>` when an interview is staged at the
-/// path, or `None` when the staged interview is for the same template.
+/// The refusal for `stage` or `apply` with a template when an interview is
+/// staged at the path, or `None` when `apply` names the staged template.
 fn staged_refusal(
-    verb: &str,
+    invocation: &Invocation,
     arg: &str,
     path: &Path,
     saved: &StagedRecord,
@@ -424,16 +424,21 @@ fn staged_refusal(
     let progress = || progress(saved, scope);
     if formal != saved.template {
         return Some(Outcome::Error(guidance::other_template(
-            verb,
+            invocation,
             path,
             &saved.template,
-            arg,
             &formal,
             progress(),
         )));
     }
-    (verb == "stage")
-        .then(|| Outcome::Error(guidance::already_staged(path, &saved.template, progress())))
+    matches!(invocation, Invocation::Stage { .. }).then(|| {
+        Outcome::Error(guidance::already_staged(
+            invocation,
+            path,
+            &saved.template,
+            progress(),
+        ))
+    })
 }
 fn stage(template: String, path: PathBuf, output: Option<Option<String>>, dirs: &Dirs) -> Outcome {
     let (target, store) = match setup(&path, dirs) {
@@ -455,7 +460,12 @@ fn stage(template: String, path: PathBuf, output: Option<Option<String>>, dirs: 
             dirs,
             cwd: &cwd,
         };
-        return staged_refusal("stage", &template, &path, &saved, &scope)
+        let invocation = Invocation::Stage {
+            template: &template,
+            path: &path,
+            output: output.as_ref().map(|file| file.as_deref()),
+        };
+        return staged_refusal(&invocation, &template, &path, &saved, &scope)
             .expect("stage refuses every staged target");
     }
     if output.is_none() && !io::stdin().is_terminal() {
@@ -660,13 +670,22 @@ fn run(
     if template.is_none() && answers.is_some() {
         return Outcome::Error("--answers requires a template".into());
     }
+    let (requested_template, requested_answers) = (template.clone(), answers.clone());
+    let invocation = Invocation::Apply {
+        template: requested_template.as_deref(),
+        path,
+        answers: requested_answers.as_deref(),
+        force,
+        dry_run,
+        trust,
+    };
     let (config, registry, cwd) = match environment(dirs) {
         Ok(v) => v,
         Err(e) => return e,
     };
     if let (Some(arg), Some(saved)) = (&template, &existing) {
         if let Some(refusal) = staged_refusal(
-            "apply",
+            &invocation,
             arg,
             path,
             saved,
@@ -732,7 +751,7 @@ fn run(
                             Some(&rejections),
                         );
                         if dry_run {
-                            eprintln!("{}", guidance::dry_run_incomplete(path));
+                            eprintln!("{}", guidance::dry_run_incomplete(&invocation, path));
                         } else {
                             if let Err(e) = store.save(&saved) {
                                 return Outcome::Error(e.to_string());
@@ -815,7 +834,7 @@ fn run(
                         } => {
                             saved.submissions.extend(accepted);
                             if dry_run {
-                                eprintln!("{}", guidance::dry_run_incomplete(path));
+                                eprintln!("{}", guidance::dry_run_incomplete(&invocation, path));
                             } else {
                                 if let Err(e) = store.save(&saved) {
                                     return Outcome::Error(e.to_string());

@@ -31,55 +31,220 @@ fn target(path: &Path) -> String {
     word(&path.to_string_lossy())
 }
 
-/// The command line of this process, as the caller can run it again.
-pub fn this_command() -> String {
-    std::iter::once("toha".to_string())
-        .chain(std::env::args().skip(1).map(|arg| word(&arg)))
-        .collect::<Vec<_>>()
-        .join(" ")
+/// One operand of a suggested command: its value and how it is written.
+struct Operand {
+    value: String,
+    written: String,
+}
+fn value(value: &str) -> Operand {
+    Operand {
+        value: value.into(),
+        written: word(value),
+    }
+}
+fn path_operand(path: &Path) -> Operand {
+    value(&path.to_string_lossy())
+}
+/// A placeholder such as `<TEMPLATE>`, written as is.
+fn placeholder(name: &str) -> Operand {
+    Operand {
+        value: name.into(),
+        written: name.into(),
+    }
+}
+/// Whether operands must follow `--` to be read as operands.
+fn needs_separator(operands: &[Operand]) -> bool {
+    operands
+        .iter()
+        .any(|operand| operand.value.starts_with('-'))
+}
+/// `toha <command> <options> [--] <operands>`.
+fn toha(command: &str, options: &[String], operands: &[Operand]) -> String {
+    let mut words = vec!["toha".to_string(), command.to_string()];
+    words.extend(options.iter().cloned());
+    if needs_separator(operands) {
+        words.push("--".into());
+    }
+    words.extend(operands.iter().map(|operand| operand.written.clone()));
+    words.join(" ")
+}
+fn option_value(flag: &str, value: &str) -> String {
+    if value.starts_with('-') && value != "-" {
+        format!("{flag}={}", word(value))
+    } else {
+        format!("{flag} {}", word(value))
+    }
+}
+
+/// The parsed `stage` or `apply` request, from which suggested commands are
+/// built.
+#[derive(Clone, Copy)]
+pub enum Invocation<'a> {
+    Stage {
+        template: &'a str,
+        path: &'a Path,
+        output: Option<Option<&'a str>>,
+    },
+    Apply {
+        template: Option<&'a str>,
+        path: &'a Path,
+        answers: Option<&'a str>,
+        force: bool,
+        dry_run: bool,
+        trust: bool,
+    },
+}
+impl Invocation<'_> {
+    fn verb(&self) -> &'static str {
+        match self {
+            Self::Stage { .. } => "stage",
+            Self::Apply { .. } => "apply",
+        }
+    }
+    fn template(&self) -> Option<&str> {
+        match self {
+            Self::Stage { template, .. } => Some(template),
+            Self::Apply { template, .. } => *template,
+        }
+    }
+    fn without_dry_run(self) -> Self {
+        match self {
+            Self::Apply {
+                template,
+                path,
+                answers,
+                force,
+                trust,
+                ..
+            } => Self::Apply {
+                template,
+                path,
+                answers,
+                force,
+                dry_run: false,
+                trust,
+            },
+            stage => stage,
+        }
+    }
+    /// The request in canonical form: options first, in long form.
+    pub fn command(&self) -> String {
+        match *self {
+            Self::Stage {
+                template,
+                path,
+                output,
+            } => {
+                let operands = [value(template), path_operand(path)];
+                let option = output.map(|file| match file {
+                    Some(file) => format!("--async={}", word(file)),
+                    None => "--async".to_string(),
+                });
+                match option {
+                    // `--async` takes an optional value, so it follows the
+                    // operands unless they need `--`.
+                    Some(option) if !needs_separator(&operands) => {
+                        format!("{} {option}", toha("stage", &[], &operands))
+                    }
+                    option => toha("stage", &option.into_iter().collect::<Vec<_>>(), &operands),
+                }
+            }
+            Self::Apply {
+                template,
+                path,
+                answers,
+                force,
+                dry_run,
+                trust,
+            } => {
+                let mut options = Vec::new();
+                if let Some(answers) = answers {
+                    options.push(option_value("--answers", answers));
+                }
+                for (set, flag) in [
+                    (force, "--force"),
+                    (trust, "--trust"),
+                    (dry_run, "--dry-run"),
+                ] {
+                    if set {
+                        options.push(flag.to_string());
+                    }
+                }
+                let operands: Vec<Operand> = template
+                    .map(value)
+                    .into_iter()
+                    .chain([path_operand(path)])
+                    .collect();
+                toha("apply", &options, &operands)
+            }
+        }
+    }
+}
+
+fn abort(path: &Path) -> String {
+    toha("abort", &[], &[path_operand(path)])
+}
+fn apply_staged(path: &Path) -> String {
+    toha("apply", &[], &[path_operand(path)])
+}
+fn continue_prompting(path: &Path) -> String {
+    toha("continue", &[], &[path_operand(path)])
+}
+fn continue_answers(path: &Path) -> String {
+    toha(
+        "continue",
+        &[],
+        &[path_operand(path), placeholder("<ANSWERS>")],
+    )
 }
 
 fn finish(path: &Path, progress: Progress) -> String {
-    let p = target(path);
+    let apply = apply_staged(path);
+    let resume = continue_prompting(path);
     match progress {
-        Progress::Complete => format!("to finish the staged interview: toha apply {p}"),
+        Progress::Complete => format!("to finish the staged interview: {apply}"),
         Progress::Incomplete => {
-            format!("to finish the staged interview: toha continue {p}, then toha apply {p}")
+            format!("to finish the staged interview: {resume}, then {apply}")
         }
-        Progress::Unknown => format!(
-            "to finish the staged interview: toha continue {p} if questions remain, then toha apply {p}"
-        ),
+        Progress::Unknown => {
+            format!("to finish the staged interview: {resume} if questions remain, then {apply}")
+        }
     }
 }
 
 fn remaining(path: &Path) -> String {
-    let p = target(path);
     format!(
-        "to answer them: toha continue {p} in a terminal, or toha continue {p} <ANSWERS> with an answers document (- reads standard input)"
+        "to answer them: {} in a terminal, or {} with an answers document (- reads standard input)",
+        continue_prompting(path),
+        continue_answers(path)
     )
 }
 
 /// `stage` or `apply` named a template other than the staged one.
 pub fn other_template(
-    verb: &str,
+    invocation: &Invocation,
     path: &Path,
     staged: &str,
-    arg: &str,
     formal: &str,
     progress: Progress,
 ) -> String {
+    let arg = invocation.template().unwrap_or(formal);
     let named = if arg == formal {
         arg.to_string()
     } else {
         format!("{arg} ({formal})")
     };
-    let p = target(path);
     [
-        format!("an interview for {staged} is staged at {p}; {named} is a different template"),
         format!(
-            "to {verb} {} instead: toha abort {p}, then {}",
+            "an interview for {staged} is staged at {}; {named} is a different template",
+            target(path)
+        ),
+        format!(
+            "to {} {} instead: {}, then {}",
+            invocation.verb(),
             word(arg),
-            this_command()
+            abort(path),
+            invocation.command()
         ),
         finish(path, progress),
     ]
@@ -87,19 +252,24 @@ pub fn other_template(
 }
 
 /// `stage` named the template whose interview is already staged.
-pub fn already_staged(path: &Path, staged: &str, progress: Progress) -> String {
+pub fn already_staged(
+    invocation: &Invocation,
+    path: &Path,
+    staged: &str,
+    progress: Progress,
+) -> String {
     let p = target(path);
     let mut lines = match progress {
         Progress::Complete => vec![
             format!("an interview for {staged} is already staged at {p} and is complete"),
-            format!("to write its files: toha apply {p}"),
+            format!("to write its files: {}", apply_staged(path)),
         ],
         Progress::Incomplete => vec![
             format!(
                 "an interview for {staged} is already staged at {p} and has questions remaining"
             ),
             remaining(path),
-            format!("then write its files: toha apply {p}"),
+            format!("then write its files: {}", apply_staged(path)),
         ],
         Progress::Unknown => vec![
             format!("an interview for {staged} is already staged at {p}"),
@@ -107,38 +277,25 @@ pub fn already_staged(path: &Path, staged: &str, progress: Progress) -> String {
         ],
     };
     lines.push(format!(
-        "to start it again: toha abort {p}, then {}",
-        this_command()
+        "to start it again: {}, then {}",
+        abort(path),
+        invocation.command()
     ));
     lines.join("\n")
 }
 
 /// `apply` found the staged interview incomplete.
 pub fn incomplete(path: &Path) -> String {
-    let p = target(path);
     [
-        format!("the interview at {p} has questions remaining"),
+        format!("the interview at {} has questions remaining", target(path)),
         remaining(path),
-        format!("then write its files: toha apply {p}"),
+        format!("then write its files: {}", apply_staged(path)),
     ]
     .join("\n")
 }
 
-/// The command line of this process without `--dry-run`.
-fn this_command_without_dry_run() -> String {
-    std::iter::once("toha".to_string())
-        .chain(
-            std::env::args()
-                .skip(1)
-                .filter(|arg| arg != "--dry-run" && arg != "-d")
-                .map(|arg| word(&arg)),
-        )
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 /// `apply --answers --dry-run` left questions remaining.
-pub fn dry_run_incomplete(path: &Path) -> String {
+pub fn dry_run_incomplete(invocation: &Invocation, path: &Path) -> String {
     [
         format!(
             "questions remain for the interview at {}; a dry run records nothing",
@@ -146,11 +303,11 @@ pub fn dry_run_incomplete(path: &Path) -> String {
         ),
         format!(
             "to preview the files: add answers for the batch to the answers document, then {}",
-            this_command()
+            invocation.command()
         ),
         format!(
             "to record these answers: {}",
-            this_command_without_dry_run()
+            invocation.without_dry_run().command()
         ),
     ]
     .join("\n")
@@ -159,21 +316,29 @@ pub fn dry_run_incomplete(path: &Path) -> String {
 /// `continue` found the staged interview complete.
 pub fn complete(path: &Path) -> String {
     format!(
-        "the interview at {} is complete; to write its files: toha apply {}",
+        "the interview at {} is complete; to write its files: {}",
         target(path),
-        target(path)
+        apply_staged(path)
     )
 }
 
 /// An answers document was given for a complete staged interview.
 pub fn complete_answers_unused(path: &Path, staged: &str) -> String {
-    let p = target(path);
+    let restage = Invocation::Stage {
+        template: staged,
+        path,
+        output: None,
+    };
     [
-        format!("the interview at {p} is complete, so the answers document is not used"),
-        format!("to write its files: toha apply {p}"),
         format!(
-            "to answer it again: toha abort {p}, then toha stage {} {p}",
-            word(staged)
+            "the interview at {} is complete, so the answers document is not used",
+            target(path)
+        ),
+        format!("to write its files: {}", apply_staged(path)),
+        format!(
+            "to answer it again: {}, then {}",
+            abort(path),
+            restage.command()
         ),
     ]
     .join("\n")
@@ -181,11 +346,14 @@ pub fn complete_answers_unused(path: &Path, staged: &str) -> String {
 
 /// `continue` without an answers document has no terminal to prompt in.
 pub fn continue_no_terminal(path: &Path) -> String {
-    let p = target(path);
     [
-        format!("no terminal to prompt in for the interview at {p}"),
         format!(
-            "to answer the current batch: toha continue {p} <ANSWERS> with an answers document (- reads standard input)"
+            "no terminal to prompt in for the interview at {}",
+            target(path)
+        ),
+        format!(
+            "to answer the current batch: {} with an answers document (- reads standard input)",
+            continue_answers(path)
         ),
     ]
     .join("\n")
@@ -193,11 +361,21 @@ pub fn continue_no_terminal(path: &Path) -> String {
 
 /// `continue`, `apply`, or `abort` found no staged interview.
 pub fn nothing_staged(path: &Path) -> String {
-    let p = target(path);
+    let template = placeholder("<TEMPLATE>");
     [
-        format!("no interview is staged at {p}"),
-        format!("to start one: toha stage <TEMPLATE> {p}"),
-        format!("to start one and write its files: toha apply <TEMPLATE> {p}"),
+        format!("no interview is staged at {}", target(path)),
+        format!(
+            "to start one: {}",
+            toha(
+                "stage",
+                &[],
+                &[placeholder("<TEMPLATE>"), path_operand(path)]
+            )
+        ),
+        format!(
+            "to start one and write its files: {}",
+            toha("apply", &[], &[template, path_operand(path)])
+        ),
     ]
     .join("\n")
 }
