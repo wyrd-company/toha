@@ -5,7 +5,7 @@ relationships:
 
 # `template.yml` field map
 
-Types follow `docs/specifications/template-format.schema.yml`. Strings marked **template** render with Jinja delimiters; **expression** strings evaluate as Jinja expressions without delimiters. For a non-string value, a string can be an expression in place of the literal type. `!include` can supply any value.
+Toha validates `template.yml` against these types when it loads a template. Strings marked **template** render with Jinja delimiters; **expression** strings evaluate as Jinja expressions without delimiters. For a non-string value, a string can be an expression in place of the literal type. `!include` can supply any value.
 
 | Path | Type | Meaning |
 | --- | --- | --- |

@@ -5,7 +5,66 @@ relationships:
 
 # A staged exchange
 
-This uses a copy of `docs/examples/basic` at `$TOHA_TEMPLATE`, a fresh `$TOHA_TARGET`, and isolated configuration, data, cache, and state directories. The JSON lines below show selected fields from real toha output and the submitted answer document; each shell block prints exactly the following `text` block. The full batch also has `context` (canonical target and template paths, plus commit), `protocol: 1`, and `messages`.
+This uses a copy of the template below at `$TOHA_TEMPLATE`, a fresh `$TOHA_TARGET`, and isolated configuration, data, cache, and state directories. `TOHA_BIN`, `TOHA_TEMPLATE`, and `TOHA_TARGET` are shell variables of this exchange; toha does not read them. `toha skills view toha --path references/environment.md` explains the variables that isolate the run.
+
+`template.yml`:
+
+```yaml
+name: basic
+description: A note file with a title, tags and an optional summary
+
+interview:
+  - id: title
+    type: text
+    prompt: Title
+    required: true
+    validate:
+      min: 3
+      max: 80
+
+  - id: slug
+    type: text
+    prompt: File name
+    default: "{{ title | kebab }}"            # template: text default is a string
+    validate:
+      regex: '^[a-z0-9-]+$'
+
+  - id: tags
+    type: text
+    prompt: "Tag (empty to finish)"
+    loop:                                       # answer is an array of strings
+      min: 0
+      max: 5
+    format: value | lower                       # expression, applied to each item
+
+  - id: has_summary
+    type: confirm
+    prompt: Add a summary?
+    default: "tags | length > 0"                # expression: confirm default is a bool
+
+  - id: summary
+    type: multiline
+    prompt: Summary
+    when: has_summary
+
+  - id: status
+    type: select
+    prompt: Status
+    options: [ draft, review, final ]             # literal array
+    default: draft                              # template: select default is a string
+```
+
+`template/{{ slug }}.txt`:
+
+```jinja
+# {{ title }}
+Status: {{ status }}
+Tags: {{ tags | join(', ') }}
+{% if has_summary %}{{ summary }}
+{% endif %}
+```
+
+The JSON lines below show selected fields from real toha output and the submitted answer document; each shell block prints exactly the following `text` block. The full batch also has `context` (canonical target and template paths, plus commit), `protocol: 1`, and `messages`.
 
 The first call exits 4 and emits a batch with a required title. The second call submits one answers document on standard input. The next batch has a slug default and a looped array of tags.
 
