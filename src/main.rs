@@ -33,6 +33,18 @@ struct Cli {
     #[command(subcommand)]
     command: Command,
 }
+/// Help layout for `apply`, whose operands are one clap argument so that
+/// `[TEMPLATE] <PATH>` parses the same on either side of `--`.
+const APPLY_HELP: &str = "\
+{before-help}{about-with-newline}
+{usage-heading} {usage}
+
+Arguments:
+  [TEMPLATE]  Template to interview when no interview is staged at the path
+  <PATH>      Target directory
+
+{all-args}{after-help}";
+
 #[derive(Subcommand)]
 enum Command {
     /// Manage installed templates.
@@ -81,14 +93,14 @@ enum Command {
     /// Write the files of a staged or new interview and run its hooks.
     ///
     /// Multiline input uses an editor, or lines ending with . when no editor is available.
-    #[command(allow_missing_positional = true)]
+    #[command(
+        override_usage = "toha apply [OPTIONS] [TEMPLATE] <PATH>",
+        help_template = APPLY_HELP
+    )]
     Apply {
-        /// Template to interview when no interview is staged at the path.
-        ///
-        /// When given, the command runs stage and then applies.
-        template: Option<String>,
-        /// Target directory.
-        path: PathBuf,
+        /// One operand is the target directory; two are the template and the target directory.
+        #[arg(num_args = 1..=2, required = true, value_name = "PATH", hide = true)]
+        paths: Vec<String>,
         /// Answers document for a new interview; - reads standard input.
         #[arg(short = 'A', long, value_name = "FILE")]
         answers: Option<String>,
@@ -762,12 +774,18 @@ fn main() -> ExitCode {
             }
         }
         Command::Apply {
-            template,
-            path,
+            paths,
             answers,
             force,
             dry_run,
             trust,
-        } => run(template, &path, answers, force, dry_run, trust, &dirs).finish(),
+        } => {
+            let (template, path) = match paths.as_slice() {
+                [path] => (None, PathBuf::from(path)),
+                [template, path] => (Some(template.clone()), PathBuf::from(path)),
+                _ => unreachable!("clap requires one or two operands"),
+            };
+            run(template, &path, answers, force, dry_run, trust, &dirs).finish()
+        }
     }
 }
