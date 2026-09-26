@@ -255,16 +255,22 @@ fn plan_lines(plan: &Plan, force: bool) -> Vec<String> {
 }
 
 fn read_answers(path: &str) -> Result<toha::RawAnswers, String> {
+    let source = if path == "-" { "stdin" } else { path };
     let text = if path == "-" {
         let mut text = String::new();
-        io::stdin()
-            .read_to_string(&mut text)
-            .map_err(|e| e.to_string())?;
-        text
+        io::stdin().read_to_string(&mut text).map(|_| text)
     } else {
-        fs::read_to_string(path).map_err(|e| e.to_string())?
-    };
-    protocol::parse_answers(&text).map_err(|e| e.to_string())
+        fs::read_to_string(path)
+    }
+    .map_err(|e| format!("{source}: cannot read answers document: {e}"))?;
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| format!("{source}: not a JSON answers document: {e}"))?;
+    if !value.is_object() {
+        return Err(format!(
+            "{source}: not a JSON answers document: expected an object keyed by question id"
+        ));
+    }
+    protocol::parse_answers(&text).map_err(|e| format!("{source}: {e}"))
 }
 fn seed(template: &Template, config: &toha::config::Config) -> Result<Seed, String> {
     let now = match std::env::var("TOHA_NOW") {
