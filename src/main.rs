@@ -1,4 +1,5 @@
 mod cli {
+    pub mod guidance;
     pub mod resolve;
     pub mod templates;
 }
@@ -18,7 +19,10 @@ mod skills;
 mod terminal;
 
 use clap::{Parser, Subcommand};
-use cli::resolve::{ResolveError, ResolvedTemplate};
+use cli::{
+    guidance::{self, Progress},
+    resolve::{ResolveError, ResolvedTemplate},
+};
 use toha::{
     AnswerError, Applied, ApplyOptions, Interview, Plan, Seed, Template,
     hook::ProcessRunner,
@@ -364,25 +368,95 @@ fn record(target: PathBuf, resolved: &ResolvedTemplate, now: &jiff::Zoned) -> St
         submissions: vec![],
     }
 }
-fn stage(template: String, path: PathBuf, output: Option<Option<String>>, dirs: &Dirs) -> Outcome {
-    if output.is_none() && !io::stdin().is_terminal() {
-        return no_terminal();
+/// The configuration, registry, and directories that template names resolve against.
+struct Scope<'a> {
+    config: &'a toha::config::Config,
+    registry: &'a toha::registry::Registry,
+    dirs: &'a Dirs,
+    cwd: &'a Path,
+}
+/// Whether the staged interview has questions remaining, for guidance only.
+fn progress(saved: &StagedRecord, scope: &Scope) -> Progress {
+    let replayed = (|| {
+        let resolved = cli::resolve::resume_template(
+            &saved.template,
+            &saved.commit,
+            saved.named,
+            scope.config,
+            scope.registry,
+            scope.dirs,
+            scope.cwd,
+        )
+        .ok()?;
+        let template = load_template(&resolved).ok()?;
+        let defaults =
+            toha::interview::configured_defaults(&template, &scope.config.defaults).ok()?;
+        let complete = matches!(
+            saved.replay_with_defaults(&template, defaults).ok()?,
+            Interview::Complete(_)
+        );
+        Some(complete)
+    })();
+    match replayed {
+        Some(true) => Progress::Complete,
+        Some(false) => Progress::Incomplete,
+        None => Progress::Unknown,
     }
+}
+/// The refusal for `verb <template> <path>` when an interview is staged at the
+/// path, or `None` when the staged interview is for the same template.
+fn staged_refusal(
+    verb: &str,
+    arg: &str,
+    path: &Path,
+    saved: &StagedRecord,
+    scope: &Scope,
+) -> Option<Outcome> {
+    let formal =
+        match cli::resolve::formal_name(arg, scope.config, scope.registry, scope.dirs, scope.cwd) {
+            Ok(v) => v,
+            Err(e) => return Some(resolve_error(e)),
+        };
+    let progress = || progress(saved, scope);
+    if formal != saved.template {
+        return Some(Outcome::Error(guidance::other_template(
+            verb,
+            path,
+            &saved.template,
+            arg,
+            &formal,
+            progress(),
+        )));
+    }
+    (verb == "stage")
+        .then(|| Outcome::Error(guidance::already_staged(path, &saved.template, progress())))
+}
+fn stage(template: String, path: PathBuf, output: Option<Option<String>>, dirs: &Dirs) -> Outcome {
     let (target, store) = match setup(&path, dirs) {
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
     };
-    match store.load(&target) {
-        Ok(Some(_)) => {
-            return Outcome::Error("interview already staged; use continue or abort".into());
-        }
-        Ok(None) => {}
+    let existing = match store.load(&target) {
+        Ok(v) => v,
         Err(e) => return Outcome::Error(e.to_string()),
-    }
+    };
     let (config, registry, cwd) = match environment(dirs) {
         Ok(v) => v,
         Err(e) => return e,
     };
+    if let Some(saved) = existing {
+        let scope = Scope {
+            config: &config,
+            registry: &registry,
+            dirs,
+            cwd: &cwd,
+        };
+        return staged_refusal("stage", &template, &path, &saved, &scope)
+            .expect("stage refuses every staged target");
+    }
+    if output.is_none() && !io::stdin().is_terminal() {
+        return no_terminal();
+    }
     let resolved = match cli::resolve::resolve_template(&template, &config, &registry, dirs, &cwd) {
         Ok(v) => v,
         Err(e) => return resolve_error(e),
@@ -446,16 +520,13 @@ fn stage(template: String, path: PathBuf, output: Option<Option<String>>, dirs: 
     }
 }
 fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome {
-    if answers.is_none() && !io::stdin().is_terminal() {
-        return no_terminal();
-    }
     let (target, store) = match setup(&path, dirs) {
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
     };
     let mut saved = match store.load(&target) {
         Ok(Some(v)) => v,
-        Ok(None) => return Outcome::Error("no staged interview".into()),
+        Ok(None) => return Outcome::Error(guidance::nothing_staged(&path)),
         Err(e) => return Outcome::Error(e.to_string()),
     };
     let (config, registry, cwd) = match environment(dirs) {
@@ -486,9 +557,19 @@ fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome 
         Ok(v) => v,
         Err(e) => return Outcome::Error(e.to_string()),
     };
+    if let Interview::Complete(completed) = &interview {
+        if answers.is_some() {
+            return Outcome::Error(guidance::complete_answers_unused(&path, &saved.template));
+        }
+        eprintln!("{}", guidance::complete(&path));
+        return Outcome::Document(
+            protocol::complete_document(&completed.answers, &context(&saved)),
+            0,
+        );
+    }
     if answers.is_none() {
-        if matches!(interview, Interview::Complete(_)) {
-            return Outcome::Error("interview already complete".into());
+        if !io::stdin().is_terminal() {
+            return Outcome::Error(guidance::continue_no_terminal(&path));
         }
         return match terminal::drive(interview, &mut terminal::InquireAsk, |submission| {
             saved.submissions.push(submission);
@@ -504,7 +585,7 @@ fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome 
         Err(e) => return Outcome::Error(e),
     };
     let Interview::Asking(pending) = interview else {
-        return Outcome::Error("interview already complete".into());
+        unreachable!("a complete interview returned above");
     };
     let submission = raw
         .iter()
@@ -542,7 +623,11 @@ fn abort(path: PathBuf, dirs: &Dirs) -> Outcome {
         Err(e) => return Outcome::Error(e),
     };
     match store.remove(&target) {
-        Ok(_) => Outcome::Written(vec![]),
+        Ok(true) => Outcome::Written(vec![]),
+        Ok(false) => {
+            eprintln!("{}", guidance::nothing_staged(&path));
+            Outcome::Written(vec![])
+        }
         Err(e) => Outcome::Error(e.to_string()),
     }
 }
@@ -560,7 +645,6 @@ fn run(
     trust: bool,
     dirs: &Dirs,
 ) -> Outcome {
-    let terminal_run = template.is_some() && answers.is_none();
     let (target, store) = match setup(path, dirs) {
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
@@ -569,9 +653,6 @@ fn run(
         Ok(v) => v,
         Err(e) => return Outcome::Error(e.to_string()),
     };
-    if template.is_some() && existing.is_some() {
-        return Outcome::Error("interview already staged; use continue or abort".into());
-    }
     if template.is_none() && answers.is_some() {
         return Outcome::Error("--answers requires a template".into());
     }
@@ -579,6 +660,25 @@ fn run(
         Ok(v) => v,
         Err(e) => return e,
     };
+    if let (Some(arg), Some(saved)) = (&template, &existing) {
+        if let Some(refusal) = staged_refusal(
+            "apply",
+            arg,
+            path,
+            saved,
+            &Scope {
+                config: &config,
+                registry: &registry,
+                dirs,
+                cwd: &cwd,
+            },
+        ) {
+            return refusal;
+        }
+    }
+    // A template named for its own staged interview resumes that interview.
+    let template = template.filter(|_| existing.is_none());
+    let terminal_run = template.is_some() && answers.is_none();
     let registry_trusted;
     let (template, interview, saved) = match (template, existing) {
         (Some(folder), None) => {
@@ -642,7 +742,7 @@ fn run(
                 (template, completed, None)
             }
         }
-        (None, Some(saved)) => {
+        (None, Some(mut saved)) => {
             let resolved = match cli::resolve::resume_template(
                 &saved.template,
                 &saved.commit,
@@ -668,9 +768,62 @@ fn run(
                 Ok(v) => v,
                 Err(e) => return Outcome::Error(e.to_string()),
             };
+            let interview = match (interview, answers) {
+                (Interview::Complete(_), Some(_)) => {
+                    return Outcome::Error(guidance::complete_answers_unused(
+                        path,
+                        &saved.template,
+                    ));
+                }
+                (Interview::Asking(pending), Some(answers_file)) => {
+                    let raw = match read_answers(&answers_file) {
+                        Ok(v) => v,
+                        Err(e) => return Outcome::Error(e),
+                    };
+                    let result =
+                        match protocol::answer_headless(&template, Interview::Asking(pending), raw)
+                        {
+                            Ok(v) => v,
+                            Err(e) => return Outcome::Error(e.to_string()),
+                        };
+                    match result {
+                        Headless::Completed {
+                            completed,
+                            accepted,
+                        } => {
+                            saved.submissions.extend(accepted);
+                            if !dry_run {
+                                if let Err(e) = store.save(&saved) {
+                                    return Outcome::Error(e.to_string());
+                                }
+                            }
+                            Interview::Complete(completed)
+                        }
+                        Headless::Pending {
+                            pending,
+                            rejections,
+                            accepted,
+                        } => {
+                            saved.submissions.extend(accepted);
+                            if let Err(e) = store.save(&saved) {
+                                return Outcome::Error(e.to_string());
+                            }
+                            return Outcome::Document(
+                                protocol::batch_document(
+                                    pending.batch(),
+                                    &context(&saved),
+                                    Some(&rejections),
+                                ),
+                                4,
+                            );
+                        }
+                    }
+                }
+                (interview, None) => interview,
+            };
             match interview {
                 Interview::Asking(p) => {
-                    eprintln!("interview is incomplete; use continue or abort");
+                    eprintln!("{}", guidance::incomplete(path));
                     return Outcome::Document(
                         protocol::batch_document(p.batch(), &context(&saved), None),
                         4,
@@ -680,9 +833,9 @@ fn run(
             }
         }
         (None, None) => {
-            return Outcome::Error("no staged interview; template folder is required".into());
+            return Outcome::Error(guidance::nothing_staged(path));
         }
-        (Some(_), Some(_)) => unreachable!(),
+        (Some(_), Some(_)) => unreachable!("a named template resumes its staged interview"),
     };
     let completed = interview;
     let plan = match Plan::build(&template, &completed, path) {

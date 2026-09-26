@@ -205,6 +205,22 @@ pub fn resolve_template(
     }
 }
 
+/// The formal name a `<TEMPLATE>` argument resolves to, without fetching it.
+pub fn formal_name(
+    arg: &str,
+    config: &Config,
+    registry: &Registry,
+    dirs: &Dirs,
+    cwd: &Path,
+) -> Result<String, ResolveError> {
+    let address = source::parse(arg, &config.hosts, cwd, &dirs.home).map_err(ResolveError::text)?;
+    Ok(match &address {
+        Address::Folder(folder) => folder.to_string_lossy().into_owned(),
+        Address::Git { .. } => address.formal_name(&config.hosts),
+        Address::Name(name) => registry.resolve(name)?.formal_name,
+    })
+}
+
 pub fn resume_template(
     formal: &str,
     commit: &str,
