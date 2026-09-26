@@ -2,10 +2,13 @@
 // relationships:
 //   implements: command-line-interface
 // ---
+#[allow(dead_code)]
+mod support;
 use std::{fs, path::Path, process::Command};
 
 fn toha(args: &[&str]) -> std::process::Output {
-    Command::new(assert_cmd::cargo::cargo_bin!("toha"))
+    let isolated = tempfile::tempdir().unwrap();
+    support::isolated_command(isolated.path())
         .args(args)
         .output()
         .unwrap()
@@ -215,7 +218,9 @@ fn documented_protocol_exchange() {
                 None => panic!("missing documented output"),
             }
         };
-        let output = Command::new("sh")
+        let mut command = Command::new("sh");
+        support::isolate(&mut command, folder.path());
+        let output = command
             .arg("-eu")
             .arg("-c")
             .arg(&script)
@@ -236,7 +241,12 @@ fn documented_protocol_exchange() {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+        assert_eq!(
+            String::from_utf8(output.stdout)
+                .unwrap()
+                .replace("\r\n", "\n"),
+            expected
+        );
         count += 1;
     }
     assert_eq!(count, 2);
