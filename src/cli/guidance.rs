@@ -458,3 +458,22 @@ pub fn answers_without_template(
     }
     lines.join("\n")
 }
+
+/// `apply` did not run hooks of an untrusted template.
+pub fn needs_trust(invocation: &Invocation, installed: Option<&str>) -> String {
+    let mut trusted = *invocation;
+    if let Invocation::Apply { trust, .. } = &mut trusted {
+        *trust = true;
+    }
+    let mut lines = vec![
+        "hooks will not run without --trust".to_string(),
+        format!("to run them this time: {}", trusted.command()),
+    ];
+    if let Some(formal) = installed {
+        lines.push(format!(
+            "to trust {formal} for every run: {}",
+            toha("templates add", &["--trust".into()], &[value(formal)])
+        ));
+    }
+    lines.join("\n")
+}

@@ -346,6 +346,13 @@ fn context(record: &StagedRecord) -> Context {
         commit: record.commit.clone(),
     }
 }
+/// The formal name of a template resolved by name from the user or system
+/// registry, whose recorded trust would run its hooks.
+fn trustable(resolved: &ResolvedTemplate, registry: &toha::registry::Registry) -> Option<String> {
+    let listed = registry.entries.get(&resolved.formal_name)?;
+    (resolved.named && listed.layer != toha::registry::Layer::Local)
+        .then(|| resolved.formal_name.clone())
+}
 fn load_template(resolved: &ResolvedTemplate) -> Result<Template, String> {
     Template::load(&resolved.folder).map_err(|e| e.to_string())
 }
@@ -701,6 +708,8 @@ fn run(
     let template = template.filter(|_| existing.is_none());
     let mut terminal_run = template.is_some() && answers.is_none();
     let registry_trusted;
+    // The installed template whose registry trust would run the hooks.
+    let installed: Option<String>;
     let (template, interview, saved) = match (template, existing) {
         (Some(folder), None) => {
             if answers.is_none() && !io::stdin().is_terminal() {
@@ -712,6 +721,7 @@ fn run(
                     Err(e) => return resolve_error(e),
                 };
             registry_trusted = resolved.trusted;
+            installed = trustable(&resolved, &registry);
             let template = match load_template(&resolved) {
                 Ok(v) => v,
                 Err(e) => return Outcome::Error(e),
@@ -782,6 +792,7 @@ fn run(
                 Err(e) => return resolve_error(e),
             };
             registry_trusted = resolved.trusted;
+            installed = trustable(&resolved, &registry);
             let template = match load_template(&resolved) {
                 Ok(v) => v,
                 Err(e) => return Outcome::Error(e),
@@ -942,7 +953,7 @@ fn run(
             for line in preview.into_iter().skip(usize::from(before.is_some())) {
                 println!("{line}");
             }
-            Outcome::NeedsTrust("hooks will not run without --trust".into())
+            Outcome::NeedsTrust(guidance::needs_trust(&invocation, installed.as_deref()))
         }
         Err(error) => Outcome::Error(error.to_string()),
     }
