@@ -777,7 +777,8 @@ fn format_answer(
     })
 }
 /// Whether `raw`, parsed and formatted as the engine records an answer to
-/// `q`, equals `recorded`.
+/// `q`, equals `recorded`. `null` records the empty answer without format.
+/// A value of the wrong type differs; a fault in `format` is an error.
 fn same_answer(
     template: &Template,
     answers: &Answers,
@@ -785,18 +786,15 @@ fn same_answer(
     q: &Question,
     raw: &Value,
     recorded: &Answer,
-) -> bool {
-    if *raw == recorded.to_json() {
-        return true;
-    }
+) -> Result<bool, EvalError> {
     let kind = prompt_kind(q);
     if raw.is_null() {
-        return empty_answer(kind) == *recorded;
+        return Ok(empty_answer(kind) == *recorded);
     }
-    parse_kind(&q.id, kind, raw.clone())
-        .ok()
-        .and_then(|answer| format_answer(template, answers, seed, q, kind, answer).ok())
-        .is_some_and(|answer| answer == *recorded)
+    let Ok(answer) = parse_kind(&q.id, kind, raw.clone()) else {
+        return Ok(false);
+    };
+    Ok(format_answer(template, answers, seed, q, kind, answer)? == *recorded)
 }
 /// A template expression of a node: its field, source, and the ids it
 /// references.
@@ -1321,14 +1319,16 @@ impl<'a> Pending<'a> {
                 continue;
             }
             if let Some(recorded) = self.answers.get(&id) {
-                if !same_answer(
+                let same = same_answer(
                     self.template,
                     &self.answers,
                     &self.seed,
                     q,
                     &raw.0,
                     recorded,
-                ) {
+                )
+                .map_err(AnswerError::Eval)?;
+                if !same {
                     rejections.push(Rejection {
                         kind: RejectionKind::Answered,
                         ..rejection(
