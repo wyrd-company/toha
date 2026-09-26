@@ -8,6 +8,7 @@ mod cli {
 //   implements: architecture
 // ---
 use std::{
+    ffi::OsString,
     fs,
     io::{self, IsTerminal, Read},
     path::{Path, PathBuf},
@@ -170,57 +171,85 @@ pub(crate) struct Dirs {
     state: PathBuf,
     home: PathBuf,
 }
+/// The platform whose directory conventions `Dirs::from_env` follows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Platform {
+    /// Linux and every other platform that is not macOS or Windows.
+    Unix,
+    MacOs,
+    Windows,
+}
+impl Platform {
+    fn host() -> Self {
+        if cfg!(windows) {
+            Self::Windows
+        } else if cfg!(target_os = "macos") {
+            Self::MacOs
+        } else {
+            Self::Unix
+        }
+    }
+}
 impl Dirs {
     fn resolve() -> Result<Self, String> {
-        let home = std::env::var_os("HOME")
+        Self::from_env(Platform::host(), |key| std::env::var_os(key))
+    }
+    /// The directories of `platform`, with `var` as the environment.
+    fn from_env(
+        platform: Platform,
+        var: impl Fn(&str) -> Option<OsString>,
+    ) -> Result<Self, String> {
+        let windows = platform == Platform::Windows;
+        let macos = platform == Platform::MacOs;
+        let home = var("HOME")
             .map(PathBuf::from)
-            .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
+            .or_else(|| var("USERPROFILE").map(PathBuf::from))
             .ok_or("home directory unavailable")?;
-        let system_root = if cfg!(windows) {
-            std::env::var_os("PROGRAMDATA")
+        let system_root = if windows {
+            var("PROGRAMDATA")
                 .map(PathBuf::from)
                 .ok_or("PROGRAMDATA unavailable")?
                 .join("toha")
         } else {
             PathBuf::from("/usr/local/share/toha")
         };
-        let system_config = if cfg!(windows) {
+        let system_config = if windows {
             system_root.join("config.yml")
         } else {
             PathBuf::from("/etc/toha/config.yml")
         };
-        let app_data = if cfg!(windows) {
+        let app_data = if windows {
             Some(
-                std::env::var_os("APPDATA")
+                var("APPDATA")
                     .map(PathBuf::from)
                     .ok_or("APPDATA unavailable")?,
             )
         } else {
             None
         };
-        let user_config = if let Some(override_path) = std::env::var_os("TOHA_USER_CONFIG") {
+        let user_config = if let Some(override_path) = var("TOHA_USER_CONFIG") {
             PathBuf::from(override_path)
         } else if let Some(app_data) = &app_data {
             app_data.join("toha/config.yml")
         } else {
-            std::env::var_os("XDG_CONFIG_HOME")
+            var("XDG_CONFIG_HOME")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| home.join(".config"))
                 .join("toha/config.yml")
         };
         let user_data = if let Some(app_data) = &app_data {
             app_data.join("toha")
-        } else if cfg!(target_os = "macos") {
+        } else if macos {
             home.join("Library/Application Support/toha")
         } else {
-            std::env::var_os("XDG_DATA_HOME")
+            var("XDG_DATA_HOME")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| home.join(".local/share"))
                 .join("toha")
         };
-        let local_app_data = if cfg!(windows) {
+        let local_app_data = if windows {
             Some(
-                std::env::var_os("LOCALAPPDATA")
+                var("LOCALAPPDATA")
                     .map(PathBuf::from)
                     .ok_or("LOCALAPPDATA unavailable")?,
             )
@@ -229,20 +258,20 @@ impl Dirs {
         };
         let cache = if let Some(base) = &local_app_data {
             base.join("toha/cache")
-        } else if cfg!(target_os = "macos") {
+        } else if macos {
             home.join("Library/Caches/toha")
         } else {
-            std::env::var_os("XDG_CACHE_HOME")
+            var("XDG_CACHE_HOME")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| home.join(".cache"))
                 .join("toha")
         };
         let state = if let Some(base) = &local_app_data {
             base.join("toha/staged")
-        } else if cfg!(target_os = "macos") {
+        } else if macos {
             home.join("Library/Application Support/toha/staged")
         } else {
-            std::env::var_os("XDG_STATE_HOME")
+            var("XDG_STATE_HOME")
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from)
                 .unwrap_or_else(|| home.join(".local/state"))
@@ -251,7 +280,7 @@ impl Dirs {
         Ok(Self {
             system_config,
             user_config,
-            local_config_override: std::env::var_os("TOHA_CONFIG").map(PathBuf::from),
+            local_config_override: var("TOHA_CONFIG").map(PathBuf::from),
             system_data: system_root,
             user_data,
             cache,
