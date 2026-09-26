@@ -150,9 +150,8 @@ fn cancel_during_continue_preserves_staged_record() {
         .canonicalize()
         .unwrap();
     let target = tempfile::tempdir().unwrap();
-    let isolation = tempfile::tempdir().unwrap();
     let state = tempfile::tempdir().unwrap();
-    let stage = support::isolated_command(isolation.path())
+    let stage = support::isolated_command(state.path())
         .arg("stage")
         .arg(&fixture)
         .arg(target.path())
@@ -168,7 +167,7 @@ fn cancel_during_continue_preserves_staged_record() {
         .unwrap()
         .path();
     let before = std::fs::read(&record).unwrap();
-    let mut command = support::isolated_command(isolation.path());
+    let mut command = support::isolated_command(state.path());
     command
         .arg("continue")
         .arg(target.path())
@@ -186,11 +185,10 @@ fn continue_prints_prior_batch_messages_once() {
     use expectrl::{Expect, Session};
     let folder = tempfile::tempdir().unwrap();
     let target = tempfile::tempdir().unwrap();
-    let isolation = tempfile::tempdir().unwrap();
     let state = tempfile::tempdir().unwrap();
     std::fs::create_dir(folder.path().join("template")).unwrap();
     std::fs::write(folder.path().join("template.yml"), "name: sample\ninterview:\n  - message: Start\n  - { id: first, type: text, prompt: First? }\n  - message: 'Thanks {{ first }}'\n  - { id: second, type: text, prompt: Second? }\n  - message: 'Done {{ second }}'\n").unwrap();
-    let stage = support::isolated_command(isolation.path())
+    let stage = support::isolated_command(state.path())
         .arg("stage")
         .arg(folder.path())
         .arg(target.path())
@@ -201,7 +199,7 @@ fn continue_prints_prior_batch_messages_once() {
     assert_eq!(stage.status.code(), Some(4));
     let answers = folder.path().join("answers.json");
     std::fs::write(&answers, "{\"first\":\"Ada\"}").unwrap();
-    let first = support::isolated_command(isolation.path())
+    let first = support::isolated_command(state.path())
         .arg("continue")
         .arg(target.path())
         .arg(&answers)
@@ -210,7 +208,7 @@ fn continue_prints_prior_batch_messages_once() {
         .unwrap();
     assert_eq!(first.status.code(), Some(4));
 
-    let mut command = support::isolated_command(isolation.path());
+    let mut command = support::isolated_command(state.path());
     command
         .arg("continue")
         .arg(target.path())

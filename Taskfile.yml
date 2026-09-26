@@ -8,6 +8,9 @@ tasks:
     cmds: [ cargo build ]
   test:
     cmds: [ cargo test ]
+  test:network:
+    desc: Run the local HTTPS Git transport test with the host TLS verifier
+    cmds: [ "cargo test --locked --test source_https -- --ignored" ]
   lint:
     cmds: [ "cargo clippy --all-targets -- -D warnings" ]
   fmt:

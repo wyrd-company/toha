@@ -116,7 +116,7 @@ pub fn isolate(command: &mut Command, root: &Path) {
     ] {
         command.env(key, path);
     }
-    command.env_remove("TOHA_CONFIG");
+    command.env("TOHA_CONFIG", root.join("config/local.yml"));
 }
 
 pub fn staged_dir(root: &Path) -> PathBuf {
