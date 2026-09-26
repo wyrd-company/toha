@@ -615,3 +615,15 @@ fn template_fault_names_the_field_and_the_expression() {
         "{error}"
     );
 }
+
+#[test]
+fn placeholder_is_a_schema_example() {
+    let state = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    stage(state.path(), target.path(), &early_template());
+    let (code, result) = continue_with(state.path(), target.path(), json!({"name": "Alpha"}));
+    assert_eq!(code, 4, "{result}");
+    let properties = &result["schema"]["properties"];
+    assert_eq!(properties["code"]["examples"], json!(["alphacode"]));
+    assert!(properties["label"].get("examples").is_none(), "{result}");
+}
