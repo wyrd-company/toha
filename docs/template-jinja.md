@@ -108,8 +108,9 @@ Year: {{ now() | dateformat('%Y') }}
 ```
 
 Without an argument, `dateformat` uses `%Y-%m-%d`. Its format string uses
-strftime syntax. The same interview instant is used throughout one run, so
-several calls to `now()` agree.
+[strftime syntax](https://docs.rs/jiff/latest/jiff/fmt/strtime/index.html#conversion-specifications).
+The same interview instant is used throughout one run, so several calls to
+`now()` agree.
 
 ## Supported Jinja features
 
