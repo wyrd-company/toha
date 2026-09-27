@@ -722,3 +722,46 @@ fn empty_answers_path_is_named_as_an_empty_word() {
         )],
     );
 }
+
+/// A staged record that no longer replays (an earlier build recorded a
+/// changed answer) names the commands that start the interview over.
+#[test]
+fn staged_record_that_does_not_replay_names_abort_and_stage() {
+    let case = Case::new();
+    case.stage_complete();
+    let store = Store::new(support::staged_dir(case.state.path()));
+    let target = canonical_target(case.target.path()).unwrap();
+    let mut record = store.load(&target).unwrap().expect("staged record");
+    record.submissions.push(
+        [("name".to_string(), Value::from("Changed"))]
+            .into_iter()
+            .collect(),
+    );
+    store.save(&record).unwrap();
+    for args in [
+        vec!["continue", case.target()],
+        vec!["apply", case.target()],
+    ] {
+        let output = case.run(&args);
+        assert_code(&output, 1);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(&format!(
+                "the staged interview at {} cannot be resumed",
+                case.target()
+            )),
+            "{args:?}: {stderr}"
+        );
+        assert_stderr_names(
+            &output,
+            &[
+                format!("toha abort {}", support::shell_quoted(case.target())),
+                format!(
+                    "toha stage {} {}",
+                    support::shell_quoted(&text_basic()),
+                    support::shell_quoted(case.target())
+                ),
+            ],
+        );
+    }
+}
