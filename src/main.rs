@@ -667,7 +667,13 @@ fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome 
     };
     let interview = match saved.replay_with_defaults(&template, defaults) {
         Ok(v) => v,
-        Err(e) => return Outcome::Error(e.to_string()),
+        Err(e) => {
+            return Outcome::Error(guidance::replay_failed(
+                &path,
+                &saved.template,
+                &e.to_string(),
+            ));
+        }
     };
     if let Interview::Complete(completed) = &interview {
         if answers.is_some() {
@@ -899,7 +905,13 @@ fn run(
             };
             let interview = match saved.replay_with_defaults(&template, defaults) {
                 Ok(v) => v,
-                Err(e) => return Outcome::Error(e.to_string()),
+                Err(e) => {
+                    return Outcome::Error(guidance::replay_failed(
+                        path,
+                        &saved.template,
+                        &e.to_string(),
+                    ));
+                }
             };
             let interview = match (interview, answers) {
                 (Interview::Complete(_), Some(_)) => {

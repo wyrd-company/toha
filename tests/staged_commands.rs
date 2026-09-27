@@ -755,12 +755,8 @@ fn staged_record_that_does_not_replay_names_abort_and_stage() {
         assert_stderr_names(
             &output,
             &[
-                format!("toha abort {}", support::shell_quoted(case.target())),
-                format!(
-                    "toha stage {} {}",
-                    support::shell_quoted(&text_basic()),
-                    support::shell_quoted(case.target())
-                ),
+                format!("toha abort {}", case.target()),
+                format!("toha stage {} {}", text_basic(), case.target()),
             ],
         );
     }

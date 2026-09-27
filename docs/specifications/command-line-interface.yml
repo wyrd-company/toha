@@ -76,7 +76,10 @@ description: >-
   document, names `apply <PATH>` on standard error, and exits with code 0; an
   answers document for a complete interview fails and names `apply`.
   `continue`, `apply <PATH>`, and `abort` with no interview staged at the path
-  name `stage` and `apply` with a `<TEMPLATE>`.
+  name `stage` and `apply` with a `<TEMPLATE>`. `continue` and `apply` on a
+  staged record that no longer replays against its template fail with exit
+  code 1, state that the staged interview cannot be resumed and why, and name
+  `abort` followed by `stage` to start the interview over.
 
   Refusals. When a command refuses a valid request made at the wrong time or
   in the wrong form, and nothing is faulty, the message names the command or

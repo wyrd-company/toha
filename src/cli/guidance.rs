@@ -474,6 +474,24 @@ pub fn complete_answers_unused(path: &Path, staged: &str) -> String {
     .join("\n")
 }
 
+/// A staged record at `path` that no longer replays against its template, and
+/// the commands that start the interview over.
+pub fn replay_failed(path: &Path, staged: &str, error: &str) -> String {
+    let restage = Invocation::Stage {
+        template: Arg::Given(formal_for("stage", staged)),
+        path,
+        output: None,
+    };
+    [
+        format!(
+            "the staged interview at {} cannot be resumed: {error}",
+            target(path)
+        ),
+        format!("to start over: {}, then {}", abort(path), restage.command()),
+    ]
+    .join("\n")
+}
+
 /// The rejections of an answers document for the interview at `path`, each
 /// rejection of a different answer for an answered question followed by the
 /// commands that change it.
