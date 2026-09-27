@@ -25,7 +25,7 @@ tasks:
         ryl check -c .ryl.yml .github/workflows/*.yml Taskfile.yml
         .intentional/config.yml docs/docs.yml scripts/release/nfpm.yml
       - intentional check
-      - cargo publish --dry-run --locked --allow-dirty
+      - cargo publish --dry-run --locked --allow-dirty --target-dir target/publish-check
   ci:
     deps: [ fmt-check, lint, test, release:check ]
   demo:
