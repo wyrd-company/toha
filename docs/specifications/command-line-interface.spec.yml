@@ -102,9 +102,11 @@ commands:
           meaning: >-
             No interview is staged at the path, or an answers document was given
             for a complete interview; the message names the commands that fit.
-            Or an expression in the template failed to evaluate; the message
-            starts with `template error in` and names the field and the
-            expression.
+            Or the staged record does not replay against its template; the
+            message states that the staged interview cannot be resumed and why,
+            and names `abort` followed by `stage`. Or an expression in the
+            template failed to evaluate while answering; the message starts
+            with `template error in` and names the field and the expression.
         - code: 4
           meaning: Questions remain or answers were rejected; the result holds the batch.
   - name: apply
@@ -173,8 +175,9 @@ commands:
           meaning: >-
             A file conflict, render failure, or hook failure; no interview is
             staged at the path; an interview for another template is staged at
-            the path; or an answers document was given for a complete
-            interview.
+            the path; an answers document was given for a complete interview;
+            or the staged record does not replay against its template, and the
+            message names `abort` followed by `stage`.
         - code: 3
           meaning: The template has hooks and is not trusted; a dry run was printed.
         - code: 4

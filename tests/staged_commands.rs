@@ -747,7 +747,7 @@ fn staged_record_that_does_not_replay_names_abort_and_stage() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
             stderr.contains(&format!(
-                "the staged interview at {} cannot be resumed",
+                "the staged interview at {} cannot be resumed: submission after completed interview",
                 case.target()
             )),
             "{args:?}: {stderr}"
