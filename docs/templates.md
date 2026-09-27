@@ -11,6 +11,12 @@ A Toha template is a folder that contains `template.yml` and the files you
 want Toha to generate. `template.yml` names the template and defines any
 questions. Toha renders the files into a target directory using the answers.
 
+You can ask an agent to create one:
+
+> Create a Toha template for the files I describe. Start with `toha --help`,
+> ask me what the generated files and questions should be, and try the template
+> with a dry run before handing it back to me.
+
 ## Make a first template
 
 Create this folder:

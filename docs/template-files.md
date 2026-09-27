@@ -7,15 +7,9 @@ relationships:
   references: template-format
 ---
 
-After the interview, Toha plans the output from the template's source
-directory. A dry run shows that plan without writing files:
-
-```sh
-toha apply ./note-template ./output --dry-run
-```
-
-When you apply the template, Toha writes the planned files under `./output`.
-It does not overwrite an existing file unless you use `--force`.
+As a template author, put files under the source directory to make Toha
+generate them. Use `ignore`, `static`, and `files` in `template.yml` when a file
+needs different handling.
 
 ## Render the source directory
 

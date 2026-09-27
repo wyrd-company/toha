@@ -22,5 +22,37 @@ Toha writes anything.
 - Read the built-in agent guidance with `toha skills list` and
   `toha skills view`.
 
-Start with [Getting started](/docs/toha/getting-started). To make your own
-template, read [Authoring templates](/docs/toha/templates).
+Choose an [installation method](/docs/toha/install), then try the demo below.
+
+## Try a template
+
+The Toha repository contains a small demo template. From a directory where
+you want to create a note, preview what it will make:
+
+```sh
+toha apply gh:wyrd-company/toha#docs/examples/demo ./notes --dry-run
+```
+
+Toha asks for **Note title** and **Topic**, then shows the planned file. When
+you are ready to write it, run:
+
+```sh
+toha apply gh:wyrd-company/toha#docs/examples/demo ./notes
+```
+
+The dry run did not save answers, so answer the questions again. Toha writes
+`notes/note.txt`. It leaves existing files unchanged unless you pass
+`--force`. If a template has hooks, Toha shows them and requires trust before
+running them. Use `--trust` for a template you know and trust for one run.
+
+## Ask an agent to use a template
+
+You can give an agent a short request and let it read the installed CLI help:
+
+> Use Toha to generate files from the template I give you in the directory I
+> choose. Start with `toha --help`, ask me for the template and target if I have
+> not supplied them, and show me the planned changes before applying them.
+
+Toha also carries agent guidance. Run `toha skills list` to find it and
+`toha skills view <name>` to read a skill. To make your own template, read
+[Authoring templates](/docs/toha/templates).

@@ -1,7 +1,7 @@
 # ---
 # relationships:
-#   demonstrates: getting-started
-#   references: agents
+#   demonstrates: overview
+#   references: interview-protocol
 # ---
 Output docs/assets/demo.gif
 

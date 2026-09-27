@@ -37,7 +37,8 @@ A template can have three names:
 
 After installation, you can pass any unambiguous name to `apply`. If two
 templates share a short name, Toha lists their formal names. Use a formal name
-or give one of the templates an alias.
+or give one of the templates an alias. Two templates cannot share an alias.
+An alias can match another template's short name; Toha resolves the alias first.
 
 ## Install from a folder or Git repository
 
@@ -47,6 +48,10 @@ or give one of the templates an alias.
 toha templates add ./note-template
 toha templates add gh:example/collection#notes
 ```
+
+When you add a local folder, Toha records its absolute path. It does not copy
+the folder. Later runs use the files at that path, so edits to the folder
+affect the installed template.
 
 A repository can contain several templates. Without `#path`, Toha finds and
 installs all templates in it. Add `#path` to select one folder containing
@@ -103,7 +108,7 @@ provides trust. See [Template registries](/docs/toha/template-registries).
 
 ## Add or remove an alias
 
-An alias gives one user-installed template a distinct name:
+An alias gives one user-installed template an alternate name:
 
 ```sh
 toha templates alias note daily-note

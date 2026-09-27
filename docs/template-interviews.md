@@ -38,7 +38,8 @@ Use `text` for a short string, such as a title or file name.
 ```
 
 The answer is a string. In a file, `{{ title }}` inserts that string. If you
-need several lines, use `multiline` instead.
+need several lines, use `multiline` instead. To collect several one-line
+answers as a list, use [`loop`](#ask-for-a-list-with-loop).
 
 ### `multiline`: several lines
 

@@ -9,7 +9,7 @@ relationships:
 
 A template can run commands after Toha writes its files. These commands are
 **hooks**. A template can also show messages before and after writing. Use a
-dry run to see planned hook invocations before applying the template.
+dry run to review planned hook invocations while authoring the template.
 
 ## Run a program
 
@@ -55,7 +55,10 @@ hooks:
 ```
 
 Here `notes` means the `notes` subdirectory of the target. `cwd` can contain
-Jinja substitutions from answers or computed values.
+Jinja substitutions from answers or computed values. Toha rejects an absolute
+`cwd`, a path that climbs outside the target, or a path through a symlink when
+it applies the template. `cwd` only sets the command's starting directory;
+trusted hooks can still access files outside the target.
 
 ## Run a hook conditionally or repeatedly
 
