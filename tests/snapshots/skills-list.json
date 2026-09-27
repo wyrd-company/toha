@@ -1,0 +1,10 @@
+[
+  {
+    "description": "Use when an agent needs to find, install, interview, or apply a toha template, including a staged interview passed between an agent and a person.",
+    "name": "toha"
+  },
+  {
+    "description": "Use when authoring or checking a toha template folder, its interview, generated files, hooks, or Jinja expressions.",
+    "name": "toha-templates"
+  }
+]

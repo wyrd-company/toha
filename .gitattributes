@@ -1,0 +1,4 @@
+tests/fixtures/** -text
+docs/examples/** -text
+skills/** -text
+tests/snapshots/** -text

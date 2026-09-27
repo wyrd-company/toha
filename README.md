@@ -1,85 +1,108 @@
+<!--
 ---
 relationships:
   describes: toha
 ---
+-->
 
-# toha
+# Toha
 
-A project scaffolding tool and Rust crate.
+Generate projects and files from templates.
 
-Toha generates files and directory trees from templates. A template asks an
-interview, combines the answers with static and computed data, and renders its
-files through [Jinja](https://github.com/mitsuhiko/minijinja). People answer
-the interview in the terminal. Scripts and agents answer it with JSON, one batch
-at a time, across several processes.
+[![CI](https://github.com/wyrd-company/toha/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/wyrd-company/toha/actions/workflows/ci.yml?query=branch%3Amain)
+[![Latest release](https://img.shields.io/github/v/release/wyrd-company/toha)](https://github.com/wyrd-company/toha/releases/latest)
 
-- **One binary** for Linux, macOS, and Windows, with no runtime to install.
-- **Looped questions** collect lists without asking anyone to type YAML.
-- **Conditions, computed values, and defaults** are all Jinja.
-- **Staged interviews** separate answering from writing files.
-- **Git templates** install by address, such as `gh:org/repo@v1.2#rust-cli`,
-  with several templates in one repository.
-- **Embedded agent skills** teach agents to drive toha and to author
-  templates.
+![Toha terminal demo](docs/assets/demo.gif)
 
-## A template
+Toha is a project scaffolding tool and Rust crate. A template contains an
+interview and files to render with Jinja. Toha plans the output before it
+writes, so you can inspect a dry run and handle conflicts.
 
-```text
-rust-cli/
-├── template.yml     # name, interview, data, files, hooks, messages
-├── template/        # files rendered into the target directory
-└── parts/           # support files, rendered only when referenced
-```
+The same interview engine serves terminal users, scripts, agents, and Rust
+callers. Scripts and agents can answer one JSON Schema batch at a time and
+resume a staged interview in another process.
 
-```yaml
-name: rust-cli
-interview:
-  - id: name
-    type: text
-    prompt: Crate name
-    required: true
-  - id: commands
-    type: text
-    prompt: "Subcommand name (empty to finish)"
-    loop: { min: 1 }
-files:
-  - each: commands as cmd
-    source: parts/command.rs
-    path: "src/commands/{{ cmd | snake }}.rs"
-```
+- One interview for people, scripts, agents, and Rust callers
+- Resumable async interviews and headless answers files
+- Typed Jinja values and rendered file paths
+- `each` file generation and static files
+- Template hooks gated by trust
+- Git template sources, short names, and aliases
+- Embedded agent skills through `toha skills`
 
-More examples are in [docs/examples](docs/examples/README.md).
+Read the [Toha documentation](https://wyrd.tools/docs/toha) for guides and the
+full contract.
 
-## Usage
+## Install
+
+Homebrew:
 
 ```sh
-# Interview and write files
-toha apply gh:org/templates#rust-cli ./my-tool
-
-# Install templates and use them by name
-toha templates add gh:org/templates --trust
-toha apply rust-cli ./my-tool
-
-# Answer an interview from a script or agent
-toha stage rust-cli ./my-tool --async
-toha continue ./my-tool answers.json
-toha apply ./my-tool
+brew install wyrd-company/tools/toha
 ```
 
-Hooks run only for trusted templates. Without trust, `apply` prints a dry run
-and exits with code 3.
+APT:
 
-## Documentation
+```sh
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://repo.wyrd.foo/pubkey.asc |
+  sudo tee /etc/apt/keyrings/wyrd-company.asc >/dev/null
+echo "deb [signed-by=/etc/apt/keyrings/wyrd-company.asc] \
+https://repo.wyrd.foo/apt stable main" |
+  sudo tee /etc/apt/sources.list.d/wyrd-company.list >/dev/null
+sudo apt update
+sudo apt install toha
+```
 
-| Document | Defines |
-| --- | --- |
-| [Concept](docs/concepts/toha.yml) | What toha is and does |
-| [Template format](docs/specifications/template-format.yml) | `template.yml`, the interview, files, hooks, and messages |
-| [Interview protocol](docs/specifications/interview-protocol.yml) | Question batches, answers, and staged state |
-| [Configuration](docs/specifications/config.yml) | System, user, and local configuration |
-| [Template registry](docs/specifications/template-registry.yml) | Installed templates, aliases, and trust |
-| [Command-line interface](docs/specifications/command-line-interface.yml) | Commands, addresses, names, and exit codes |
+RPM:
 
-## License
+```sh
+sudo curl -fsSL https://repo.wyrd.foo/wyrd.repo -o /etc/yum.repos.d/wyrd.repo
+sudo dnf install toha
+```
 
-See [LICENSE](LICENSE).
+Arch Linux (AUR):
+
+```sh
+paru -S toha-bin
+```
+
+[GitHub Releases](https://github.com/wyrd-company/toha/releases/latest) also
+provides Linux and macOS tarballs, Windows zip archives, and `SHA256SUMS` for
+direct installation.
+
+## First run
+
+From a checkout of this repository, use the
+[demo template](docs/examples/demo/template.yml):
+
+```sh
+toha apply ./docs/examples/demo ./notes
+```
+
+Answer **Note title** and **Topic**. To inspect the file plan without writing
+it, use `toha apply ./docs/examples/demo ./preview --dry-run`.
+
+## Using Toha from Rust
+
+Add the library without the CLI dependencies:
+
+```sh
+cargo add toha --no-default-features
+```
+
+From this repository checkout, drive the same interview with a JSON answers
+document:
+
+```rust
+use std::path::Path;
+use toha::{Interview, Seed, Template, protocol};
+let template = Template::load(Path::new("docs/examples/demo")).unwrap();
+let seed = Seed { now: "2026-01-01T00:00:00Z[UTC]".parse().unwrap(), defaults: Default::default() };
+let Interview::Asking(pending) = Interview::start(&template, seed).unwrap() else { panic!("expected questions") };
+let answers = protocol::parse_answers(r#"{"title":"Sample note","topic":"Research"}"#).unwrap();
+let Interview::Complete(done) = pending.answer(answers).unwrap() else { panic!("expected complete interview") };
+assert_eq!(done.answers.len(), 2);
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development and changes.

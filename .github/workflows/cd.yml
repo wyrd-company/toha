@@ -1,0 +1,273 @@
+# ---
+# relationships:
+#   implements: architecture
+# ---
+name: CD
+on:
+  push:
+    tags: [ "[0-9]+.[0-9]+.[0-9]+" ]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  credential-preflight:
+    name: Verify publication credentials are configured
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Build-only run
+        if: github.event_name != 'push'
+        run: echo "Build-only run; publication credentials are not required."
+      - name: Require every publication credential for a release
+        if: github.event_name == 'push'
+        shell: bash
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          FORMULAE_PUBLISH_KEY: ${{ secrets.FORMULAE_PUBLISH_KEY }}
+          REPO_WYRD_FOO_PUBLISHER_APP_ID: ${{ secrets.REPO_WYRD_FOO_PUBLISHER_APP_ID }}
+          REPO_WYRD_FOO_PUBLISHER_PRIVATE_KEY: ${{ secrets.REPO_WYRD_FOO_PUBLISHER_PRIVATE_KEY }}
+          WYRD_TOOLS_DOCS_PUBLISHER_APP_ID: ${{ secrets.WYRD_TOOLS_DOCS_PUBLISHER_APP_ID }}
+          WYRD_TOOLS_DOCS_PUBLISHER_PRIVATE_KEY: ${{ secrets.WYRD_TOOLS_DOCS_PUBLISHER_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for variable in CARGO_REGISTRY_TOKEN FORMULAE_PUBLISH_KEY \
+            REPO_WYRD_FOO_PUBLISHER_APP_ID REPO_WYRD_FOO_PUBLISHER_PRIVATE_KEY \
+            WYRD_TOOLS_DOCS_PUBLISHER_APP_ID WYRD_TOOLS_DOCS_PUBLISHER_PRIVATE_KEY; do
+            if [[ -z "${!variable}" ]]; then
+              echo "::error::$variable is not configured for the release workflow."
+              missing=1
+            fi
+          done
+          if (( missing )); then exit 1; fi
+          echo "Required release credentials are configured."
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: credential-preflight
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            system: linux
+            arch: x86_64
+          - runner: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            system: linux
+            arch: aarch64
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+            system: macos
+            arch: aarch64
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            system: macos
+            arch: x86_64
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            system: windows
+            arch: x86_64
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Verify release identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            [[ "$GITHUB_REF_NAME" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+            version="$GITHUB_REF_NAME"
+            manifest_version="$(sed -nE 's/^version = "([^"]+)"/\1/p' Cargo.toml | head -1)"
+            [[ "$version" == "$manifest_version" ]]
+          fi
+      - uses: dtolnay/rust-toolchain@1.85.0
+        with:
+          targets: ${{ matrix.target }}
+      - name: Set up Go for Linux package builder
+        if: matrix.system == 'linux'
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.25'
+      - name: Install cross
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross@0.2.5
+      - name: Build locked release binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ '${{ matrix.target }}' == aarch64-unknown-linux-gnu ]]; then
+            cross build --release --locked --target '${{ matrix.target }}'
+          else
+            cargo build --release --locked --target '${{ matrix.target }}'
+          fi
+      - name: Assemble archive and Linux packages
+        shell: bash
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+          RELEASE_SYSTEM: ${{ matrix.system }}
+          RELEASE_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          version="$(sed -nE 's/^version = "([^"]+)"/\1/p' Cargo.toml | head -1)"
+          mkdir dist stage
+          extension=''
+          if [[ "$RELEASE_SYSTEM" == windows ]]; then extension='.exe'; fi
+          cp "target/$RELEASE_TARGET/release/toha$extension" "stage/toha$extension"
+          if [[ "$RELEASE_SYSTEM" == windows ]]; then
+            7z a "dist/toha_${version}_windows_${RELEASE_ARCH}.zip" "./stage/*"
+          else
+            if [[ "$RELEASE_SYSTEM" == linux ]]; then
+              cp LICENSE README.md stage/
+            fi
+            tar -C stage -czf "dist/toha_${version}_${RELEASE_SYSTEM}_${RELEASE_ARCH}.tar.gz" .
+          fi
+          if [[ "$RELEASE_SYSTEM" == linux ]]; then
+            cp stage/toha ./toha
+            export RELEASE_VERSION="$version"
+            if [[ "$RELEASE_ARCH" == x86_64 ]]; then
+              export PACKAGE_ARCH=amd64
+            else
+              export PACKAGE_ARCH=arm64
+            fi
+            go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0
+            for format in deb rpm; do
+              "$(go env GOPATH)/bin/nfpm" package \
+                --config scripts/release/nfpm.yml --packager "$format" \
+                --target "dist/toha_${version}_linux_${RELEASE_ARCH}.$format"
+            done
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: toha-${{ matrix.system }}-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 90
+
+  release:
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: toha-*
+          path: dist
+          merge-multiple: true
+      - name: Create checksums and package handoff from build artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd dist && sha256sum toha_* > SHA256SUMS && sha256sum -c SHA256SUMS)
+          python3 scripts/release/create-manifest.py dist "$GITHUB_REF_NAME" \
+            "$(git rev-parse HEAD)" release-manifest.json
+      - name: Retain package handoff
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: package-release-manifest
+          path: release-manifest.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Create or verify GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            mkdir published
+            gh release download "$GITHUB_REF_NAME" --dir published
+            diff -rq dist published
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* \
+              --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
+          fi
+
+  crates:
+    if: github.event_name == 'push'
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - name: Publish or verify the crate
+        shell: bash
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: scripts/release/ensure-crate.sh "$GITHUB_REF_NAME"
+
+  homebrew:
+    if: github.event_name == 'push'
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Download and verify release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir dist
+          gh release download "$GITHUB_REF_NAME" --dir dist
+          (cd dist && sha256sum -c SHA256SUMS)
+      - name: Check out Homebrew tap
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          repository: wyrd-company/homebrew-tools
+          path: homebrew-tools
+          ssh-key: ${{ secrets.FORMULAE_PUBLISH_KEY }}
+      - name: Publish formula
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$GITHUB_REF_NAME"
+          python3 scripts/release/render-formula.py dist "$version" \
+            "$RUNNER_TEMP/toha.rb"
+          formula=homebrew-tools/Formula/toha.rb
+          if [[ -f "$formula" ]]; then
+            current="$(sed -nE 's/^[[:space:]]*version "([^"]+)"/\1/p' "$formula")"
+            if [[ "$current" == "$version" ]]; then
+              cmp "$formula" "$RUNNER_TEMP/toha.rb"
+              exit 0
+            fi
+            if [[ "$(printf '%s\n%s\n' "$current" "$version" | sort -V | tail -1)" == "$current" ]]; then
+              echo "Refusing to replace newer Homebrew formula $current" >&2
+              exit 1
+            fi
+          fi
+          cp "$RUNNER_TEMP/toha.rb" "$formula"
+          cd homebrew-tools
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add Formula/toha.rb
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "toha $version"
+          git push origin HEAD
+
+  packages:
+    if: github.event_name == 'push'
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Download retained package handoff
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: package-release-manifest
+          path: handoff
+      - name: Submit package release
+        uses: wyrd-company/repo.wyrd.foo/.github/actions/submit-release@6aa63b5b47cf06dd9c037cbbd7e3acdd8ca5a6f2
+        with:
+          manifest: handoff/release-manifest.json
+          app-client-id: ${{ secrets.REPO_WYRD_FOO_PUBLISHER_APP_ID }}
+          app-private-key: ${{ secrets.REPO_WYRD_FOO_PUBLISHER_PRIVATE_KEY }}

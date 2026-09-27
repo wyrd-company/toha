@@ -1,0 +1,11 @@
+name: err-each-shadows-question
+data:
+  items: [ a ]
+interview:
+  - id: label
+    type: text
+    prompt: Label
+files:
+  - each: "items as label"
+    source: parts/a.txt
+    path: "{{ label }}.txt"

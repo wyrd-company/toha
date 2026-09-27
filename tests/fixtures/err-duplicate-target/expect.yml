@@ -1,0 +1,4 @@
+exit: 1
+error_contains:
+- duplicate target
+- file.txt

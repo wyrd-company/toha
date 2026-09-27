@@ -1,0 +1,2 @@
+name: sample
+interview: [{ id: test, type: text, prompt: Test, loop: { max: 1 } }]

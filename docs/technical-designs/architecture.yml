@@ -41,9 +41,9 @@ proposed-design:
     configuration, and staging. Each is a deep module with a small interface.
     Every file, argument, environment variable, and network response is parsed
     into domain types at the module that reads it; code behind that point
-    trusts the types. The interview engine and the planner are pure: they
-    perform no I/O and read no clock or environment, so the same inputs always
-    produce the same outputs.
+    trusts the types. The interview engine is pure: it performs no I/O and reads no clock or
+    environment. The planner reads only the template folder and the target
+    directory listing.
 
   module-map: >-
     `template` loads a template folder into a `Template`.
@@ -76,12 +76,15 @@ proposed-design:
     The domain model makes the format rules unrepresentable to violate.
     `Id` is a newtype built only by parsing an identifier. A question is
     `Question { id, prompt, description, placeholder, required, kind, validate,
-    format, when }`, where `kind` is a sum type: `Text { default, looped:
-    Option<Loop> }`, `Multiline { default }`, `Confirm { default }`,
-    `Select { options, default }`, and `MultiSelect { options, default }`.
+    format, when }`, where `kind` is a sum type: `Text { default: Option<Tmpl> }`, `TextLoop { default:
+    Option<Typed<Vec<String>>>, min: Option<Typed<u32>>, max:
+    Option<Typed<u32>> }`, `Multiline { default: Option<Tmpl> }`,
+    `Confirm { default: Option<Typed<bool>> }`, `Select { options:
+    Typed<Vec<String>>, default: Option<Tmpl> }`, and `MultiSelect { options:
+    Typed<Vec<String>>, default: Option<Typed<Vec<String>>> }`.
     A loop exists only on text, and options exist only on the two select
     kinds, because no other variant has the field. Nodes are the sum type
-    `Node::{Question, Computed, Group, Hook, Message}`, each with an optional
+    `Node::{Question, Computed, Group, Message}`, each with an optional
     `when`. File generation rules, the ignore and static glob sets, the
     top-level hooks, and the two apply messages complete the `Template`.
 
@@ -96,22 +99,30 @@ proposed-design:
     `Typed<bool>`, `Typed<u32>`, and `Typed<Vec<String>>`; `when`, `computed`,
     and `format` become `Expr`. Each compiled value records the ids it
     references, taken from minijinja's undeclared-variable analysis, which
-    drives both the reference-order check and the batch boundary. One
-    `Environment` with the case filters, `now()`, and `dateformat` is built
-    per interview and is the only place the filters are registered.
+    drives both the reference-order check and the batch boundary. The
+    `jinja::environment()` function registers the case filters, `toyaml`,
+    `now()`, and `dateformat` for every compiled value.
 
   interview-engine: >-
     The engine is a state machine whose states are values:
-    `Interview::start(template: &Template, seed: Seed) -> Interview` and
+    `Interview::start(template: &Template, seed: Seed) -> Result<Interview,
+    EvalError>` and
     `enum Interview { Asking(Pending), Complete(Completed) }`. `Seed` holds the
     configured defaults and the frozen instant that `now()` returns.
     `Pending::batch(&self) -> &Batch` exposes the current batch.
-    `Pending::check(&self, id, RawAnswer) -> Result<Answer, Rejection>`
-    validates and formats one answer without recording it, so the terminal
-    driver reports an error the moment a question is answered.
+    `Pending::messages_reached(&self) -> usize` counts messages reached through
+    that batch in `Completed.messages` order.
+    `Pending::check(&self, id, RawAnswer) -> Result<Answer, CheckError>`
+    validates and formats one answer without recording it. It returns
+    `CheckError::Rejected` for answer rules and `CheckError::Eval` for
+    evaluation failures, so the terminal driver reports an error as soon as
+    a question is answered.
     `Pending::answer(self, answers: RawAnswers) -> Result<Interview,
-    (Pending, Rejections)>` records a whole batch or nothing: on any rejection
-    the caller gets back the same pending state and the per-id errors.
+    AnswerError>` records a whole batch or nothing. `AnswerError::Rejected`
+    returns the same pending state and the per-id rejections.
+    `AnswerError::Eval` reports a Jinja evaluation failure without recording
+    answers. `EvalError` names the node id, the prompt, description, or default
+    field, and the minijinja error message.
     Answers for ids beyond the batch are held and applied when their questions
     are reached. The engine evaluates computed, message, and hook nodes as
     soon as their references are answered, applies the skipped-question
@@ -123,8 +134,8 @@ proposed-design:
     rendered interview hooks in order, and the messages shown.
 
   answers: >-
-    `Answer` is `Text(String)`, `Bool(bool)`, or `List(Vec<String>)`, and
-    `Answers` is an ordered map from `Id` to `Answer`. `RawAnswer` is the
+    `Answer` is `Text(String)`, `Bool(bool)`, `List(Vec<String>)`, `None`, or
+    `Value(serde_json::Value)`. `Answers` is an ordered map from `Id` to `Answer`. `RawAnswer` is the
     untyped input from a driver: a string typed at a prompt, or a JSON value
     from an answers document. `Pending::check` is the single parse point from
     `RawAnswer` to `Answer` for the question's kind, followed by validation
@@ -145,10 +156,12 @@ proposed-design:
 
   staging: >-
     A staged interview is stored as its inputs, not as engine internals: the
-    target path, the template formal name and resolved commit, the frozen
-    `now()` instant, and every answer recorded so far. Resuming loads the
-    template at the recorded commit, starts a new interview with the same
-    `Seed`, and replays the recorded answers through `answer`. Because the
+    target path, the template formal name and resolved commit, whether the
+    argument resolved by name, the frozen
+    `now()` instant, and every accepted answers submission, in order. Resuming loads the
+    template at the recorded commit, recomputes registry trust only when the
+    argument resolved by name, starts a new interview with the same
+    `Seed`, and replays the raw submissions through `answer`. Because the
     engine is pure, replay reaches the same pending batch as the original
     process, in either modality. A template whose content changed so that
     replay rejects a recorded answer fails with that rejection, and `abort`

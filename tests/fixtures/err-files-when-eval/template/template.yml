@@ -1,0 +1,6 @@
+name: err-files-when-eval
+files:
+  - each: "[1] as item"
+    source: part.txt
+    path: one.txt
+    when: "'bad' | dateformat"

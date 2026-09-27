@@ -1,0 +1,5 @@
+name: sample
+interview:
+  - id: blank
+    type: text
+    prompt: Blank?

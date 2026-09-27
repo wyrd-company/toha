@@ -30,13 +30,25 @@ description: >-
   `computed`, and `format` values are always expressions. The evaluation
   context holds every top-level key of `data`, every answer given so far, and
   every computed value evaluated so far. Toha registers the case filters
-  `kebab`, `snake`, `camel`, `pascal`, `constant`, and `title`, and the date
-  function `now()` with the `dateformat` filter, in addition to the minijinja
-  built-ins.
+  `kebab`, `snake`, `camel`, `pascal`, `constant`, and `title`, the `toyaml`
+  filter, and the date function `now()` with the `dateformat` filter, in
+  addition to the minijinja built-ins, the `tojson` filter, macros
+  (`{% macro %}` and `{% call %}`), and the loop controls `{% break %}` and
+  `{% continue %}`. `now()` returns the interview seed instant; `dateformat`
+  uses jiff strftime syntax, defaults to `%Y-%m-%d`, and formats in the seed
+  time zone. `tojson` serializes a value as compact JSON and accepts an
+  optional indent. `toyaml` serializes a value as YAML with no leading `---`
+  and no trailing document newline, so it composes with `indent`; a trailing
+  newline that is part of the value is kept. Object keys serialize
+  in sorted order. A macro is visible only in the value that defines it;
+  `import`, `include`, and `extends` are not available.
 
   Identifiers. Question ids, computed ids, and top-level `data` keys are Jinja
   identifiers matching `^[a-z_][a-z0-9_]*$`. They share one namespace; a
-  duplicate is a load error. Answers are one flat object keyed by id.
+  duplicate is a load error. The `<name>` bound by an `each` is a load error
+  when it equals any id in that namespace, wherever the id is defined; two
+  `each` entries may bind the same `<name>`. Answers are one flat object keyed
+  by id.
 
   Interview. `interview` is an ordered list of nodes. Every node has an
   optional `when` expression; a node whose `when` is false is skipped, with all
@@ -46,7 +58,8 @@ description: >-
   template in a node references only ids defined by earlier nodes in document
   order, so the interview is acyclic; toha rejects a template that references
   a later or unknown id. A skipped question takes its `default` as its answer
-  when it has one, and `none` otherwise.
+  when it has one; otherwise a looped `text` or a `multiselect` question takes
+  `[]`, and any other question takes `none`.
 
   Questions. `type` is one of `text`, `multiline`, `confirm`, `select`, and
   `multiselect`. `prompt` is required. `description` and `placeholder` are
@@ -84,23 +97,30 @@ description: >-
   directory as its working directory unless `cwd` names a path relative to it.
   `run` is an argument vector; each argument is a template, and the program is
   executed directly without a shell. `script` names an executable file
-  relative to the template root, with optional `args`. Hook nodes in the
-  interview run first, in interview order, when their position is reached and
-  their `when` is true. A hook runs once, including a hook inside the scope of
-  a looped question. The top-level `hooks` list runs after them, in list order.
-  A failing hook stops the remaining hooks and fails the apply.
+  relative to the template root, with optional `args`. A hook with `each` runs
+  once for each item of the `each` expression, in item order. `each` has the
+  form of the `files` entry `each`, `<expression> as <name>`; the item is bound
+  to `<name>` while `run`, `args`, and `cwd` are rendered. `when` is evaluated
+  once, before `each`, and does not see the item. An empty sequence runs
+  nothing. Hook nodes in the interview run first, in interview order, when
+  their position is reached and their `when` is true. A hook node runs once, or
+  once per item with `each`, including a hook node inside the scope of a looped
+  question. The top-level `hooks` list runs after them, in list order. A
+  failing hook stops the remaining hooks and fails the apply. Every listing of
+  hooks, including `--dry-run` output and the listing shown when hooks need
+  trust, shows each invocation with its rendered arguments.
 
   Messages. A message node shows its rendered text when the interview reaches
   it. The top-level `messages` map has two optional keys, each a template:
   `before-apply` is shown before any file is written, and `after-apply` is
-  shown after the last hook. A message that renders to an empty or
-  whitespace-only string is not shown.
+  shown after the last hook. A dry run does not show `after-apply`. A message
+  that renders to an empty or whitespace-only string is not shown.
 format: json-schema
 validation-criteria: >-
   A conforming `template.yml` validates against
   `docs/specifications/template-format.schema.yml` after every `!include` is
   resolved. Toha additionally rejects, at load time, a template with a
-  duplicate identifier, an expression or template that references an id not
+  duplicate identifier, an `each` name equal to an identifier, an expression or template that references an id not
   defined earlier in interview order, a `loop` on a question whose type is not
   `text`, `options` on a question whose type is not `select` or `multiselect`,
   an `!include` or `script` path outside the template root, and a `source`

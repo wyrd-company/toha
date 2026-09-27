@@ -1,0 +1,35 @@
+# ---
+# relationships:
+#   implements: architecture
+# ---
+version: "3"
+tasks:
+  build:
+    cmds: [ cargo build ]
+  test:
+    cmds: [ cargo test ]
+  test:network:
+    desc: Run the local HTTPS Git transport test with the host TLS verifier
+    cmds: [ "cargo test --locked --test source_https -- --ignored" ]
+  lint:
+    cmds: [ "cargo clippy --all-targets -- -D warnings" ]
+  fmt:
+    cmds: [ cargo fmt --all ]
+  fmt-check:
+    cmds: [ "cargo fmt --all -- --check" ]
+  release:check:
+    desc: Validate release configuration, workflows, and the crates.io package
+    cmds:
+      - actionlint .github/workflows/*.yml
+      - >-
+        ryl check -c .ryl.yml .github/workflows/*.yml Taskfile.yml
+        .intentional/config.yml docs/docs.yml scripts/release/nfpm.yml
+      - intentional check
+      - cargo publish --dry-run --locked --allow-dirty --target-dir target/publish-check
+  ci:
+    deps: [ fmt-check, lint, test, release:check ]
+  demo:
+    desc: Build the CLI and render the terminal demo
+    cmds:
+      - cargo build
+      - vhs docs/demo.tape

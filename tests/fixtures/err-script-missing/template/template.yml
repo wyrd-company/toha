@@ -1,0 +1,3 @@
+name: err-script-missing
+hooks:
+  - script: absent.sh

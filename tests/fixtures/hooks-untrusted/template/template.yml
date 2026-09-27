@@ -1,0 +1,3 @@
+name: hooks-untrusted
+hooks:
+  - run: [ tool, call ]

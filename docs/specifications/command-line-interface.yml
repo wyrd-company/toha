@@ -11,9 +11,11 @@ description: >-
   Template arguments. A `<TEMPLATE>` argument is read in this order: a value
   that contains `://` or starts with `git@` is a git URL; a value that starts
   with a configured or built-in host prefix followed by `:` is a git shorthand
-  address; a value that starts with `.`, `/`, or `~`, or a Windows drive
-  letter, is a local folder; any other value is an alias, then a short name,
-  then a formal name of an installed template. A git address has the form
+  address; a value that starts with `.`, `/`, or `~`, or a Windows drive prefix
+  (`<letter>:\` or `<letter>:/`), is a local folder; any other value is an alias,
+  then a short name, then a formal name of an installed template. Windows
+  extended (`\\?\...`) and UNC (`\\server\share`) values are read as names.
+  A git address has the form
   `<repository>[@<ref>][#<path>]`, where `<ref>` is a tag, branch, or commit and
   `<path>` is the template folder inside the repository.
 
@@ -21,12 +23,15 @@ description: >-
   form when a host prefix matches, including `@<ref>` when a ref was given and
   `#<path>` when the template is not at the repository root. The formal name of
   a local folder template is its canonical absolute path. Two refs of one
-  template are two installed templates with two formal names.
+  template are two installed templates with two formal names. A formal name
+  never contains user information. A staged interview resumes a local folder
+  template from its recorded formal name as a filesystem path, independently
+  of `<TEMPLATE>` argument classification.
 
   Short names. A short name that matches more than one installed template is
   ambiguous. A command given an ambiguous short name fails with exit code 5
-  and lists the formal name of every match with a `templates alias` command for
-  each. `templates add` reports every short name the new templates share with
+  and lists the formal name of every match with the same command naming that
+  formal name and a `templates alias` command for each. `templates add` reports every short name the new templates share with
   installed templates, with the same `templates alias` commands, and completes
   the add.
 
@@ -35,7 +40,14 @@ description: >-
   templates path and templates given by address or folder to `stage` or
   `apply` are trusted only through `--trust`. When the template has hooks and
   is not trusted, `apply` performs a dry run, lists the hooks, states that
-  `--trust` is required, and exits with code 3.
+  `--trust` is required, names the same command with `--trust`, and exits with
+  code 3. For a template resolved by name from the user or system template
+  registry, it also names `templates add --trust` with the formal name.
+  `apply --dry-run` of a template with hooks that is not trusted prints the
+  plan, then names on standard error the same command with `--trust` and
+  without `--dry-run`, and `templates add --trust` as `apply` does, and exits
+  with code 0. The dry run of a trusted template, or of a template without
+  hooks, names neither.
 
   Updates. `templates update` fetches every installed git template, or the
   one named, whose address has no ref or names a branch, and moves it to the
@@ -43,9 +55,96 @@ description: >-
   unchanged. The formal name, aliases, and trust of an updated template are
   unchanged.
 
+  Staged interviews. `apply <PATH>` on an incomplete staged interview prompts
+  in the terminal for the remaining questions, records each accepted batch in
+  the staged record, and applies the complete interview; with `--dry-run` it
+  records nothing. Without a terminal on standard input and standard output,
+  it emits the batch, names the commands that answer it on standard error, and
+  exits with code 4. A `<TEMPLATE>` argument names the template of a staged
+  interview when it resolves to the formal name that the staged record holds.
+  `apply <TEMPLATE> <PATH>` with an interview for that template staged at the
+  path runs as `apply <PATH>`. With `--answers`, the document answers the
+  staged interview as it answers a new headless run, and a complete result is
+  applied. `stage <TEMPLATE> <PATH>` with an interview for
+  that template staged at the path fails and names `continue` for an
+  incomplete interview, `apply` for a complete one, and `abort` followed by
+  the same `stage` command to start again. `stage` or `apply` with a
+  `<TEMPLATE>` whose formal name differs from the staged one fails, names both
+  templates, and names `abort` followed by the same command to replace the
+  staged interview and the `continue` and `apply` commands that finish it.
+  `continue <PATH>` on a complete interview emits the complete result
+  document, names `apply <PATH>` on standard error, and exits with code 0; an
+  answers document for a complete interview fails and names `apply`.
+  `continue`, `apply <PATH>`, and `abort` with no interview staged at the path
+  name `stage` and `apply` with a `<TEMPLATE>`. `continue` and `apply` on a
+  staged record that no longer replays against its template fail with exit
+  code 1, state that the staged interview cannot be resumed and why, and name
+  `abort` followed by `stage` to start the interview over.
+
+  Refusals. When a command refuses a valid request made at the wrong time or
+  in the wrong form, and nothing is faulty, the message names the command or
+  commands that do what the caller meant. A named command is built from the
+  parsed request in canonical form: options first in long form, then `--` when
+  an operand starts with `-`, then the operands. `stage` places `--async`
+  after its operands unless they follow `--`.
+
   Overwriting. `apply` writes no file over an existing file unless `--force` is
   given. When any target file exists and `--force` is absent, `apply` writes
-  nothing and lists the conflicting paths.
+  nothing, lists the conflicting paths on standard error one per line after
+  `conflicting files:`, and names the same command with `--force`.
+
+  `apply` prints each target path on standard output when it writes the
+  file, so every path precedes the output of the hooks. Printed target paths
+  use `/` separators on every platform.
+
+  Environment. `toha --help` lists every environment variable that toha
+  reads in an `Environment:` section after its options. `TOHA_CONFIG` and
+  `TOHA_USER_CONFIG` name the local and user configuration files as the
+  configuration specification defines. `XDG_CONFIG_HOME` is the base of the
+  user configuration file on Linux and macOS. On Linux, `XDG_DATA_HOME` is
+  the base of the user registry and installed templates as the template
+  registry specification defines, and `XDG_STATE_HOME` is the base of staged
+  interviews as the interview protocol specification defines. Git templates
+  fetched by address are cached in `$XDG_CACHE_HOME/toha/` on Linux,
+  `~/Library/Caches/toha/` on macOS, and `%LOCALAPPDATA%\toha\cache\` on
+  Windows. `HOME`, or `USERPROFILE` when `HOME` is unset, is the home
+  directory for `~` in folder addresses and for the default directories. On
+  Windows, `APPDATA`, `LOCALAPPDATA`, and `PROGRAMDATA` locate the user,
+  cache and state, and system directories.
+  `VISUAL`, then `EDITOR`, names the editor for multiline answers, `nano` by
+  default and `notepad` on Windows. `PATH` is searched for the editor and for
+  the program of a `run` hook. `TOHA_NOW` sets the instant that `now()`
+  returns for a new interview, an RFC 9557 timestamp such as
+  `2026-01-02T03:04:05+00:00[UTC]`; without it the instant is the current
+  time.
+
+  Directory variables. `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`,
+  `XDG_STATE_HOME`, `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, and
+  `PROGRAMDATA` count only when they hold an absolute path. An empty or
+  relative value counts as unset, as the XDG Base Directory Specification
+  requires for its variables, so that no toha directory depends on the
+  current directory. On Linux, an XDG variable that counts as unset falls
+  back to its default, `~/.config`, `~/.local/share`, `~/.cache`, and
+  `~/.local/state` respectively. On macOS, `XDG_CONFIG_HOME` falls back to
+  `~/.config`, and `XDG_DATA_HOME`, `XDG_CACHE_HOME`, and `XDG_STATE_HOME` are
+  not read: the user data, cache, and state directories are under
+  `~/Library`. Windows reads no XDG variable. When neither `HOME` nor
+  `USERPROFILE` counts, or on Windows when `APPDATA`, `LOCALAPPDATA`, or
+  `PROGRAMDATA` does not count, toha writes an error on standard error and
+  exits with code 1; the error for a missing home directory names `HOME` and
+  `USERPROFILE`. `TOHA_CONFIG` and
+  `TOHA_USER_CONFIG` name files and may be relative to the current directory;
+  an empty value counts as unset.
+
+  Version. `toha --version` and `toha -V` print `toha <VERSION>` and exit with
+  code 0. `<VERSION>` is a SemVer version fixed at build time from the git
+  repository whose work tree is the package root. A build of a commit that
+  carries a release tag prints that tag. A build of any other commit prints the
+  tagver height version, which adds the number of commits since the latest
+  reachable tag to the version of that tag; three commits after `0.1.0` it is
+  `0.1.1-alpha.0.3`. With no reachable tag, or no commit, the version starts
+  from `0.0.0-alpha.0`. A build uses the package version when no repository
+  has the package root as its work tree, or when tagver fails.
 format: cli
 validation-criteria: >-
   A conforming command line matches

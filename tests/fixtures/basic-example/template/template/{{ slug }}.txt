@@ -1,0 +1,5 @@
+{{ title }}
+{% for tag in tags %}{{ tag }}
+{% endfor %}{{ has_summary }}
+{{ summary }}
+{{ status }}

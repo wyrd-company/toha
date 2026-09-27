@@ -1,0 +1,17 @@
+name: hooks-order
+interview:
+  - id: enabled
+    type: confirm
+    prompt: Enabled?
+  - hook: { run: [ tool, first ] }
+    when: enabled
+  - hook: { run: [ tool, never ] }
+    when: "not enabled"
+  - hook:
+      run: [ tool, second ]
+      cwd: work
+  - hook:
+      script: scripts/go.sh
+      args: [ "{{ enabled }}" ]
+hooks:
+  - run: [ tool, last ]

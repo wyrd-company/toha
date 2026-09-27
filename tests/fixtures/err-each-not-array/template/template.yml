@@ -1,0 +1,5 @@
+name: err-each-not-array
+files:
+  - each: "42 as item"
+    source: part.txt
+    path: "{{ item }}.txt"

@@ -1,0 +1,2 @@
+exit: 1
+error_contains: ["files[0].when"]

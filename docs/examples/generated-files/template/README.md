@@ -1,0 +1,3 @@
+# {{ project }}
+
+Tasks: {{ tasks | join(', ') }}

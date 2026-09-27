@@ -30,8 +30,15 @@ $defs:
         description: Formal name of the template.
         type: string
       commit:
-        description: Resolved commit of a git template; empty for a local folder.
-        type: string
+        description: Resolved commit of a git template; null for a local folder.
+        type: [ string, "null" ]
+  messages:
+    description: >-
+      Messages reached by the step that produced the document, in interview
+      order. A warning from toha starts with `warning: `.
+    type: array
+    items:
+      type: string
   batch:
     type: object
     additionalProperties: false
@@ -51,11 +58,12 @@ $defs:
           type:
             const: object
       messages:
-        type: array
-        items:
-          type: string
+        $ref: "#/$defs/messages"
       errors:
-        description: Validation errors for the rejected answers, keyed by question id.
+        description: >-
+          Validation errors keyed by question id: for the answers of a rejected
+          document, or for held answers that failed when their questions were
+          reached. Each error is a sentence that states the failed constraint.
         type: object
         propertyNames:
           $ref: "#/$defs/identifier"
@@ -66,7 +74,7 @@ $defs:
   complete:
     type: object
     additionalProperties: false
-    required: [ protocol, status, context, answers ]
+    required: [ protocol, status, context, answers, messages ]
     properties:
       protocol:
         const: 1
@@ -76,3 +84,5 @@ $defs:
         $ref: "#/$defs/context"
       answers:
         $ref: "#/$defs/answers"
+      messages:
+        $ref: "#/$defs/messages"

@@ -1,0 +1,9 @@
+name: sample
+data:
+  yaml: !include data/a.yml
+  json: !include data/b.json
+  toml: !include data/c.toml
+interview:
+  - id: label
+    type: text
+    prompt: "{{ yaml.value }}?"

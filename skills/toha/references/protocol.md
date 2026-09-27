@@ -1,0 +1,123 @@
+---
+relationships:
+  exemplifies: interview-protocol
+---
+
+# A staged exchange
+
+This uses a copy of the template below at `$TOHA_TEMPLATE`, a fresh `$TOHA_TARGET`, and isolated configuration, data, cache, and state directories. `TOHA_BIN`, `TOHA_TEMPLATE`, and `TOHA_TARGET` are shell variables of this exchange; toha does not read them. `toha skills view toha --path references/environment.md` explains the variables that isolate the run.
+
+`template.yml`:
+
+```yaml
+name: basic
+description: A note file with a title, tags and an optional summary
+
+interview:
+  - id: title
+    type: text
+    prompt: Title
+    required: true
+    validate:
+      min: 3
+      max: 80
+
+  - id: slug
+    type: text
+    prompt: File name
+    default: "{{ title | kebab }}"            # template: text default is a string
+    validate:
+      regex: '^[a-z0-9-]+$'
+
+  - id: tags
+    type: text
+    prompt: "Tag (empty to finish)"
+    loop:                                       # answer is an array of strings
+      min: 0
+      max: 5
+    format: value | lower                       # expression, applied to each item
+
+  - id: has_summary
+    type: confirm
+    prompt: Add a summary?
+    default: "tags | length > 0"                # expression: confirm default is a bool
+
+  - id: summary
+    type: multiline
+    prompt: Summary
+    when: has_summary
+
+  - id: status
+    type: select
+    prompt: Status
+    options: [ draft, review, final ]             # literal array
+    default: draft                              # template: select default is a string
+```
+
+`template/{{ slug }}.txt`:
+
+```jinja
+# {{ title }}
+Status: {{ status }}
+Tags: {{ tags | join(', ') }}
+{% if has_summary %}{{ summary }}
+{% endif %}
+```
+
+The JSON lines below show selected fields from real toha output and the submitted answer document; each shell block prints exactly the following `text` block. The full batch also has `context` (canonical target and template paths, and the commit of a git template or `null` for a folder), `protocol: 1`, and `messages`.
+
+The first call exits 4 and emits a batch with a required title. The second call submits one answers document on standard input. The next batch has a slug default and a looped array of tags.
+
+```sh
+# test
+export HOME="$TOHA_TARGET/home"
+export XDG_CONFIG_HOME="$TOHA_TARGET/config"
+export XDG_DATA_HOME="$TOHA_TARGET/data"
+export XDG_CACHE_HOME="$TOHA_TARGET/cache"
+export XDG_STATE_HOME="$TOHA_TARGET/state"
+export TOHA_USER_CONFIG="$XDG_CONFIG_HOME/toha/config.yml"
+export TOHA_CONFIG="$TOHA_TARGET/local.yml"
+if "$TOHA_BIN" stage "$TOHA_TEMPLATE" "$TOHA_TARGET" --async > "$TOHA_TARGET/batch.json"; then exit 1; else test "$?" -eq 4; fi
+jq -cS '{status,questions:(.schema.properties|keys),required:.schema.required,messages}' "$TOHA_TARGET/batch.json"
+if printf '%s' '{"title":"Sample Note"}' | "$TOHA_BIN" continue "$TOHA_TARGET" - > "$TOHA_TARGET/batch.json"; then exit 1; else test "$?" -eq 4; fi
+jq -cS '{status,questions:(.schema.properties|keys),slug_default:.schema.properties.slug.default,tags_type:.schema.properties.tags.type}' "$TOHA_TARGET/batch.json"
+```
+
+```text
+{"messages":[],"questions":["title"],"required":["title"],"status":"questions"}
+{"questions":["slug","tags"],"slug_default":"sample-note","status":"questions","tags_type":["array","null"]}
+```
+
+A rejected answer returns the same batch with per-id `errors` and records none of that document. Resubmit the whole batch: both `slug` and `tags` appear in the corrected document below. Then follow the remaining batches. The optional `status` select lists its options in `anyOf`, beside `null`. `format` lowercases the tag in the complete answers.
+
+```sh
+# test
+export HOME="$TOHA_TARGET/home"
+export XDG_CONFIG_HOME="$TOHA_TARGET/config"
+export XDG_DATA_HOME="$TOHA_TARGET/data"
+export XDG_CACHE_HOME="$TOHA_TARGET/cache"
+export XDG_STATE_HOME="$TOHA_TARGET/state"
+export TOHA_USER_CONFIG="$XDG_CONFIG_HOME/toha/config.yml"
+export TOHA_CONFIG="$TOHA_TARGET/local.yml"
+if printf '%s' '{"slug":"BAD NAME","tags":["One"]}' | "$TOHA_BIN" continue "$TOHA_TARGET" - > "$TOHA_TARGET/result.json"; then exit 1; else test "$?" -eq 4; fi
+jq -cS '{status,questions:(.schema.properties|keys),errors}' "$TOHA_TARGET/result.json"
+printf '%s\n' '{"slug":"sample-note","tags":["One"]}'
+if printf '%s' '{"slug":"sample-note","tags":["One"]}' | "$TOHA_BIN" continue "$TOHA_TARGET" - > "$TOHA_TARGET/result.json"; then exit 1; else test "$?" -eq 4; fi
+jq -cS '{status,questions:(.schema.properties|keys)}' "$TOHA_TARGET/result.json"
+if printf '%s' '{"has_summary":true}' | "$TOHA_BIN" continue "$TOHA_TARGET" - > "$TOHA_TARGET/result.json"; then exit 1; else test "$?" -eq 4; fi
+jq -cS '{status,questions:(.schema.properties|keys),status_options:.schema.properties.status.anyOf}' "$TOHA_TARGET/result.json"
+printf '%s' '{"summary":"Short text","status":"draft"}' | "$TOHA_BIN" continue "$TOHA_TARGET" - > "$TOHA_TARGET/result.json"
+jq -cS '{status,answers}' "$TOHA_TARGET/result.json"
+"$TOHA_BIN" apply "$TOHA_TARGET" --dry-run
+```
+
+```text
+{"errors":{"slug":["must match ^[a-z0-9-]+$"]},"questions":["slug","tags"],"status":"questions"}
+{"slug":"sample-note","tags":["One"]}
+{"questions":["has_summary"],"status":"questions"}
+{"questions":["status","summary"],"status":"questions","status_options":[{"enum":["draft","review","final"]},{"type":"null"}]}
+{"answers":{"has_summary":true,"slug":"sample-note","status":"draft","summary":"Short text","tags":["one"],"title":"Sample Note"},"status":"complete"}
+create sample-note.txt
+```
+
+After reviewing the dry run, `toha apply "$TOHA_TARGET"` writes the file. A person can answer the remaining questions instead by running `toha continue "$TOHA_TARGET"` in a terminal.

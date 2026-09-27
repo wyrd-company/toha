@@ -1,0 +1,2 @@
+exit: 1
+error_contains: ["interview[1].hook.each", "duplicate id: total"]

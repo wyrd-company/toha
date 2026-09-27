@@ -1,0 +1,24 @@
+# ---
+# relationships:
+#   describes: toha
+# ---
+name: toha
+tagline: Generate projects and files from templates.
+blurb: >-
+  Toha uses one interview for terminal users, scripts, agents, and Rust callers.
+category: Developer Tools
+language: Rust
+status: preview
+repo: https://github.com/wyrd-company/toha
+order: 4
+install:
+  - label: Homebrew
+    command: brew install wyrd-company/tools/toha
+  - label: APT
+    command: sudo apt install toha
+  - label: RPM
+    command: sudo dnf install toha
+  - label: AUR
+    command: paru -S toha-bin
+assets:
+  - assets/demo.gif

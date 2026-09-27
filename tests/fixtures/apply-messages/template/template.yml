@@ -1,0 +1,8 @@
+name: apply-messages
+interview:
+  - id: value
+    type: text
+    prompt: Value
+messages:
+  before-apply: "Starting {{ value }}"
+  after-apply: "   "

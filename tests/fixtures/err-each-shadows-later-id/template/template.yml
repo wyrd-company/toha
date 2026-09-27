@@ -1,0 +1,12 @@
+name: err-each-shadows-later-id
+data:
+  items: [ a ]
+interview:
+  - hook:
+      each: "items as later"
+      run: [ tool, "{{ later }}" ]
+  - group: inner
+    nodes:
+      - id: later
+        type: text
+        prompt: Later

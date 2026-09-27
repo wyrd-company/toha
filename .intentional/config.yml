@@ -1,0 +1,21 @@
+# ---
+# relationships:
+#   implements: architecture
+# ---
+$schema: https://intentional.foo/schemas/config.yml
+contract: contract-1
+settings:
+  internal-dependency-bump: patch
+  pre-1-0-bump-mapping: component
+release-units:
+  toha:
+    path: .
+    projections:
+      - adapter: toml
+        file: Cargo.toml
+        pointer: /package/version
+        mode: committed
+    tags:
+      primary:
+        role: primary
+        template: "{version}"

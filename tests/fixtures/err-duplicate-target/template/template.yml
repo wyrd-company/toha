@@ -1,0 +1,5 @@
+name: err-duplicate-target
+files:
+  - each: "[1] as item"
+    source: part.txt
+    path: file.txt

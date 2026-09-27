@@ -1,0 +1,2 @@
+exit: 4
+error_contains: ["other", "is not a question in this template"]

@@ -1,0 +1,1 @@
+{"project": "Sample", "tasks": ["build", "check", "ship"], "init_git": true}

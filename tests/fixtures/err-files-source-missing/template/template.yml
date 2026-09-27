@@ -1,0 +1,5 @@
+name: err-files-source-missing
+files:
+  - each: "[] as item"
+    source: absent.txt
+    path: "{{ item }}.txt"

@@ -1,0 +1,7 @@
+name: err-each-shadows-data
+data:
+  items: [ a ]
+  owner: x
+hooks:
+  - each: "items as owner"
+    run: [ tool, "{{ owner }}" ]

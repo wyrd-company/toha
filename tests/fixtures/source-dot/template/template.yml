@@ -1,0 +1,6 @@
+name: source-dot
+source: .
+interview:
+  - id: value
+    type: text
+    prompt: Value

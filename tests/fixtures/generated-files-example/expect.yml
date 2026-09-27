@@ -1,0 +1,8 @@
+exit: 0
+options: { trust: true }
+cli: false
+messages: ["Generating 3 task file(s) for Sample"]
+after_apply: "Run `tasks/build.yml` to start"
+hooks:
+  - { argv: [ git, init ], cwd: "" }
+  - { argv: [ git, add, . ], cwd: "" }

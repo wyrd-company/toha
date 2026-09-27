@@ -1,0 +1,4 @@
+name: err-hook-each-not-array
+hooks:
+  - each: "42 as item"
+    run: [ tool, "{{ item }}" ]

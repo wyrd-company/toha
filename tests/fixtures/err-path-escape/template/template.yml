@@ -1,0 +1,6 @@
+name: sample
+interview:
+  - id: path
+    type: text
+    prompt: Path?
+    required: true

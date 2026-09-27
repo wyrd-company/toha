@@ -1,0 +1,22 @@
+name: hooks-each
+data:
+  items:
+    - { name: alpha, dir: lib/alpha }
+    - { name: beta, dir: lib/beta }
+interview:
+  - id: owner
+    type: text
+    prompt: Owner
+  - hook:
+      each: "items as item"
+      run: [ tool, "{{ item.name }}", "{{ owner }}" ]
+      cwd: "{{ item.dir }}"
+  - hook: { run: [ tool, between ] }
+hooks:
+  - each: "items as item"
+    script: scripts/go.sh
+    args: [ "{{ item.name }}" ]
+  - each: "items as item"
+    run: [ tool, never, "{{ item.name }}" ]
+    when: "false"
+  - run: [ tool, last ]

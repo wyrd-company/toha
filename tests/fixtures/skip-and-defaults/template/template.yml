@@ -1,0 +1,22 @@
+name: sample
+interview:
+  - id: enabled
+    type: confirm
+    prompt: Enabled?
+    default: false
+  - id: with_default
+    type: text
+    prompt: With default?
+    when: enabled
+    default: saved
+  - id: without_default
+    type: text
+    prompt: Without default?
+    when: enabled
+  - group: hidden
+    when: enabled
+    nodes:
+      - id: child
+        type: text
+        prompt: Child?
+        default: child-default

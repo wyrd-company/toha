@@ -1,0 +1,2 @@
+{{ label | kebab }}|{{ label | snake }}|{{ label | camel }}|{{ label | pascal }}|{{ label | constant }}|{{ label | title }}
+{{ now() | dateformat }}|{{ now() | dateformat('%Y') }}

@@ -1,0 +1,3 @@
+name: err-apply-message-render
+messages:
+  before-apply: "{{ 'bad' | dateformat }}"

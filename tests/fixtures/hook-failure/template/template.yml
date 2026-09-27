@@ -1,0 +1,5 @@
+name: hook-failure
+hooks:
+  - run: [ tool, one ]
+  - run: [ tool, two ]
+  - run: [ tool, three ]
