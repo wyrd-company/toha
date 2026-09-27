@@ -69,23 +69,24 @@ cargo add toha --no-default-features
 
 ## Try a template
 
-Clone the [Toha repository](https://github.com/wyrd-company/toha), then run
-this command from its root:
+The Toha repository contains a small demo template. From a directory where
+you want to create a note, preview what it will make:
 
 ```sh
-toha apply ./docs/examples/demo ./notes
+toha apply gh:wyrd-company/toha#docs/examples/demo ./notes --dry-run
 ```
 
-Answer **Note title** and **Topic**. Toha writes `notes/note.txt`. To see the
-planned files without writing them, run:
+Toha asks for **Note title** and **Topic**, then shows the planned file. When
+you are ready to write it, run:
 
 ```sh
-toha apply ./docs/examples/demo ./preview --dry-run
+toha apply gh:wyrd-company/toha#docs/examples/demo ./notes
 ```
 
-Toha leaves existing files unchanged unless you pass `--force`. If a template
-has hooks, Toha shows them and requires trust before running them. Use
-`--trust` for a template you know and trust for one run.
+The dry run did not save answers, so answer the questions again. Toha writes
+`notes/note.txt`. It leaves existing files unchanged unless you pass
+`--force`. If a template has hooks, Toha shows them and requires trust before
+running them. Use `--trust` for a template you know and trust for one run.
 
 ## Ask an agent
 

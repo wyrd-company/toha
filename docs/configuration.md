@@ -1,19 +1,17 @@
 ---
 docs: true
 title: Configuration
-order: 7
+order: 10
 relationships:
   describes: toha
-  references:
-    - config
-    - template-registry
+  references: config
 ---
 
-Toha reads system, user, and local configuration. This lets an administrator
-provide shared templates, a user keep personal templates, and a directory set
-its own defaults and template paths.
+Toha reads configuration at three levels: system, user, and the current
+directory. You can use it to find template folders, set default answers, and
+define Git host shortcodes. A missing file acts as an empty configuration.
 
-## Configuration files
+## Find the configuration files
 
 | Layer | Linux and macOS | Windows |
 | --- | --- | --- |
@@ -21,82 +19,89 @@ its own defaults and template paths.
 | User | `$XDG_CONFIG_HOME/toha/config.yml`, or `~/.config/toha/config.yml` | `%APPDATA%\toha\config.yml` |
 | Local | `.toha.yml` in the current directory | `.toha.yml` in the current directory |
 
-Set `TOHA_USER_CONFIG` to choose another user configuration file. Set
-`TOHA_CONFIG` to choose another local configuration file. In system or user
-configuration, `local-config-name` changes the default local filename. A
-missing file contributes no settings.
-
-A system or user file can contain all four options:
+On Linux and macOS, `XDG_CONFIG_HOME` must be an absolute path; otherwise
+Toha uses `~/.config`. Set `TOHA_USER_CONFIG` to point to another user file.
+Set `TOHA_CONFIG` to point to another local file. System or user configuration
+can change the local filename with `local-config-name`:
 
 ```yaml
-local-config-name: .toha.yml
+local-config-name: .project-toha.yml
+```
+
+The local file cannot set `local-config-name`. It can contain only
+`templates-paths` and `defaults`.
+
+## Add template search paths
+
+Use `templates-paths` to name directories Toha should scan for folders with
+`template.yml`:
+
+```yaml
 templates-paths:
   - shared-templates
+  - ~/more-templates
+```
+
+Each path is relative to the configuration file's directory unless it is
+absolute or starts with `~`. Toha scans each listed directory for templates.
+If a layer has no `templates-paths`, it uses that layer's default location:
+
+| Layer | Default template path |
+| --- | --- |
+| Local | `.templates` in the current directory |
+| User on Linux | `$XDG_DATA_HOME/toha/`, or `~/.local/share/toha/` |
+| User on macOS | `~/Library/Application Support/toha/` |
+| User on Windows | `%APPDATA%\toha\` |
+| System on Linux and macOS | `/usr/local/share/toha/` |
+| System on Windows | `%PROGRAMDATA%\toha\` |
+
+Toha combines paths from all layers in local, user, system order. One layer's
+paths do not hide another layer's paths. See
+[Template registries](/docs/toha/template-registries) for how installed
+names, aliases, and trust are recorded beside these paths.
+
+## Set default answers
+
+Use `defaults` to map a question id to an answer. For example:
+
+```yaml
 defaults:
   title: Untitled
+  include_summary: false
+```
+
+If a template asks `title`, `Untitled` replaces that question's own default.
+If it asks `include_summary`, `false` becomes the default. The value must
+match the question's answer type: a string, boolean, or list of strings as
+appropriate. The person running an interactive interview can still change
+the default.
+
+Defaults apply by id to every template that asks that question. Choose ids
+with that in mind when you set user-wide or system-wide defaults.
+
+## Define Git host shortcodes
+
+Use `hosts` in a system or user file to map a prefix to a base URL:
+
+```yaml
 hosts:
   custom: https://git.example.invalid
 ```
 
-A local file can contain only `templates-paths` and `defaults`:
+With this setting, `custom:example/collection#notes` addresses that host.
+Toha includes `gh` for GitHub, `gl` for GitLab, `bb` for Bitbucket, `cb` for
+Codeberg, and `ge` for Gitee. A configured value can replace a built-in
+prefix. Local configuration cannot set `hosts`, so a formal Git name resolves
+the same way throughout your directories.
 
-```yaml
-templates-paths:
-  - .templates
-defaults:
-  title: Untitled
-```
+## How the layers combine
 
-A relative template path resolves from its configuration file's directory.
-`~` expands to the home directory. Toha scans every directory in each template
-path for template folders containing `template.yml`.
+For `defaults` and `hosts`, Toha merges individual keys. The local value wins
+over the user value, and the user value wins over the system value when the
+same key occurs in more than one layer. For example, a local `title` default
+replaces a user `title` default without removing other user defaults.
 
-## How values combine
-
-Local values take precedence over user values, which take precedence over
-system values. `defaults` and `hosts` merge by key; a later layer replaces
-only matching keys. `templates-paths` concatenate in local, user, system
-order. `local-config-name` and `hosts` come only from system and user files, so
-a local directory cannot change how a formal Git name resolves.
-
-`defaults` maps question ids to answers. A configured default replaces the
-`default` in any template question with the same id and must have the answer's
-type. `hosts` maps a Git shorthand prefix to a base URL. The built-in prefixes
-are `gh`, `gl`, `bb`, `cb`, and `ge`.
-
-## Template paths and registries
-
-Without configuration, Toha scans `.templates` in the current directory, the
-user data directory, and the system data directory. The system data directory
-is `/usr/local/share/toha/` on Linux and macOS, or `%PROGRAMDATA%\toha\` on
-Windows. The user data directory is `$XDG_DATA_HOME/toha/` (default
-`~/.local/share/toha/`) on Linux, `~/Library/Application Support/toha/` on
-macOS, and `%APPDATA%\toha\` on Windows.
-
-Each layer also has a `templates.yml` registry. The system registry is in the
-system data directory; the user registry is in the user data directory. The
-local registry is in the first local template path, usually
-`.templates/templates.yml`. Registry entries merge by formal name, with local
-fields taking precedence over user fields, then system fields.
-
-The system registry is provisioned by an administrator. Toha commands write
-the user registry. The local registry holds aliases only; it cannot grant
-trust. A system or user registry entry records a template's short name, source,
-path, optional ref and commit, aliases, and whether its hooks are trusted.
-For example, an administrator can place a template under the system template
-path and register it in `/usr/local/share/toha/templates.yml`:
-
-```yaml
-templates:
-  /usr/local/share/toha/note:
-    name: note
-    source: /usr/local/share/toha/note
-    path: /usr/local/share/toha/note
-    aliases: [ shared-note ]
-    trusted: false
-```
-
-An unregistered template in a scanned path is still discoverable by its folder
-path and starts untrusted. Use `toha templates list --system` to see system
-registry entries, or `toha templates list --local` for local templates and
-aliases.
+`templates-paths` works differently: Toha joins the lists in local, user,
+system order. `local-config-name` uses the user value when present, then the
+system value, then `.toha.yml`. `hosts` and `local-config-name` are available
+only in the system and user layers.
