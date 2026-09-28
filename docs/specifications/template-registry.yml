@@ -29,15 +29,17 @@ description: >-
   or the folder itself for a local folder template. `aliases` lists alias
   names. `approval` is the approved executable-surface digest; it lets the
   template's hooks run without `--trust` only while the installed content still
-  matches that digest. A legacy `trusted: false` records a denial: it clears any
-  approval a lower registry layer grants for the same formal name, so the entry
-  reads as needing review. A legacy `trusted: true` is ignored and grants
-  nothing.
+  matches that digest. `trusted: false` records a denial, written by
+  `templates untrust` or carried by a legacy registry: it clears any approval a
+  lower registry layer grants for the same formal name, so the entry reads as
+  needing review. A legacy `trusted: true` is ignored and grants nothing.
 
-  Ownership. `templates add`, `templates update`, `templates remove`, and
-  `templates alias` write the user registry. The system registry is provisioned
-  by the system administrator. The local registry holds aliases only, so trust
-  never comes from a project.
+  Ownership. `templates add`, `templates update`, `templates remove`,
+  `templates alias`, `templates trust`, and `templates untrust` write the user
+  registry. `templates trust` records an approval and `templates untrust` clears
+  it and records a denial, without fetching or moving the installed commit. The
+  system registry is provisioned by the system administrator. The local registry
+  holds aliases only, so trust never comes from a project.
 
   Discovery. A template found by scanning a templates path without a registry
   entry has the canonical absolute path of its folder as its formal name, and

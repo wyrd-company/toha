@@ -61,12 +61,20 @@ description: >-
   the same command with `--trust`, and exits with code 3; when an approval
   exists but no longer matches, the listing marks the hooks changed since
   approval. For a template resolved by name from the user or system template
-  registry, it also names `templates add --trust` with the formal name.
+  registry, it also names `templates trust` with the formal name.
   `apply --dry-run` of a template with hooks that is not trusted prints the
   plan, then names on standard error the same command with `--trust` and
-  without `--dry-run`, and `templates add --trust` as `apply` does, and exits
+  without `--dry-run`, and `templates trust` as `apply` does, and exits
   with code 0. The dry run of a trusted template, or of a template without
-  hooks, names neither.
+  hooks, names neither. `templates trust <name>` approves the current
+  executable surface of an installed template, reading the installed folder
+  only and never fetching or changing the commit, and echoes the approved hooks
+  on standard error; `templates untrust <name>` revokes that approval, reads
+  nothing on disk, and records a denial so an approval from a lower registry
+  layer cannot reappear. Both write the user registry only, refuse a name that
+  is not in the user registry with exit code 1, and are idempotent: a grant
+  whose surface already matches reports it and writes nothing, as a revoke of an
+  already-untrusted template does.
 
   Updates. `templates update` fetches every installed git template, or the
   one named, whose address has no ref or names a branch, and moves it to the
@@ -74,7 +82,9 @@ description: >-
   unchanged. The formal name and aliases of an updated template are unchanged,
   and its approval continues to authorize the hooks only while the executable
   surface is unchanged; an update that changes the executable surface makes the
-  template untrusted until it is approved again.
+  template untrusted until it is approved again. `templates trust <name>`
+  re-approves the currently installed surface without fetching, so an update
+  that lapsed approval is recovered without re-adding the template.
 
   Staged interviews. `apply <PATH>` on an incomplete staged interview prompts
   in the terminal for the remaining questions, records each accepted batch in

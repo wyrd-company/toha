@@ -339,6 +339,48 @@ commands:
               meaning: The alias is in use, or the alias to remove does not exist.
             - code: 5
               meaning: The template name is ambiguous.
+      - name: trust
+        summary: Approve the installed hooks of a template so its apply runs them.
+        mode: non-interactive
+        positional-arguments:
+          - name: template
+            position: 0
+            required: true
+            description: Formal, short, or alias name of an installed template.
+            value:
+              type: string
+        output:
+          exit-codes:
+            - code: 0
+              meaning: Trust was granted, or was already granted.
+            - code: 1
+              meaning: >-
+                The template is not in the user registry, or its installed executable surface is
+                missing, unreadable, or escapes the template folder.
+            - code: 2
+              meaning: Invalid command line.
+            - code: 5
+              meaning: The template name is ambiguous.
+      - name: untrust
+        summary: Revoke approval of a template's hooks.
+        mode: non-interactive
+        positional-arguments:
+          - name: template
+            position: 0
+            required: true
+            description: Formal, short, or alias name of an installed template.
+            value:
+              type: string
+        output:
+          exit-codes:
+            - code: 0
+              meaning: Trust was revoked, or was already absent.
+            - code: 1
+              meaning: The template is not in the user registry.
+            - code: 2
+              meaning: Invalid command line.
+            - code: 5
+              meaning: The template name is ambiguous.
   - name: skills
     summary: Read the agent skills embedded in toha.
     subcommands:
