@@ -134,7 +134,9 @@ description: >-
   standard error and exits with code 1; the error for a missing home directory
   names `HOME` and `USERPROFILE`. `--version` and `--help`, at the top level and
   for every command, resolve no directory and so exit with code 0 regardless of
-  these variables. `TOHA_CONFIG` and
+  these variables. `skills list` and `skills view` read neither configuration nor
+  state, resolve no directory, and so exit with code 0 regardless of these
+  variables. `TOHA_CONFIG` and
   `TOHA_USER_CONFIG` name files and may be relative to the current directory;
   an empty value counts as unset.
 

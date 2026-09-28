@@ -2,9 +2,9 @@
 // relationships:
 //   implements: command-line-interface
 // ---
-//! `--version` and `--help` resolve no directory, so they work when neither
-//! `HOME` nor `USERPROFILE` is set. Every other command still resolves the
-//! folders and fails with the existing clear error.
+//! `--version`, `--help`, and the `skills` commands resolve no directory, so
+//! they work when neither `HOME` nor `USERPROFILE` is set. Every other command
+//! still resolves the folders and fails with the existing clear error.
 use std::process::{Command, Output};
 
 /// A `toha` invocation with `HOME` and `USERPROFILE` removed from the
@@ -81,6 +81,38 @@ fn help_flags_work_without_a_home_directory() {
     }
     // toha, 6 commands, templates with 5 subcommands, skills with 2 subcommands.
     assert_eq!(seen, 1 + 6 + 5 + 2);
+}
+
+#[test]
+fn skills_list_works_without_a_home_directory() {
+    let output = homeless(&["skills", "list"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let list: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+    let names: Vec<_> = list
+        .iter()
+        .map(|item| item["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["toha", "toha-templates"]);
+}
+
+#[test]
+fn skills_view_works_without_a_home_directory() {
+    let output = homeless(&["skills", "view", "toha"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        output.stdout,
+        std::fs::read("skills/toha/SKILL.md").unwrap()
+    );
 }
 
 #[test]

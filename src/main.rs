@@ -1084,12 +1084,17 @@ fn main() -> ExitCode {
     // Parse first so that clap handles --version, --help, and usage errors
     // without a home directory; only the commands below resolve the folders.
     let command = Cli::parse().command;
+    // Skills reads neither configuration nor state, so it resolves no directory
+    // and runs without a home directory, like --version and --help.
+    if let Command::Skills { command } = command {
+        return skills::run(command).finish();
+    }
     let dirs = match Dirs::resolve() {
         Ok(v) => v,
         Err(e) => return Outcome::Error(e).finish(),
     };
     match command {
-        Command::Skills { command } => skills::run(command).finish(),
+        Command::Skills { .. } => unreachable!("the home-free skills command returned above"),
         Command::Stage {
             template,
             path,
