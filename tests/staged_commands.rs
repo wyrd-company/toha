@@ -737,7 +737,7 @@ fn staged_record_that_does_not_replay_names_abort_and_stage() {
             .into_iter()
             .collect(),
     );
-    store.save(&record).unwrap();
+    store.save(&target, &record).unwrap();
     for args in [
         vec!["continue", case.target()],
         vec!["apply", case.target()],

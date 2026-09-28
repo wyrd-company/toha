@@ -682,8 +682,8 @@ fn normalized(value: Value, path: &str) -> Value {
 const SKIPS: &str = "name: skips\ninterview:\n  - { id: kind, type: select, prompt: Kind?, options: [plain, fancy], required: true }\n  - { id: style, type: text, prompt: Style?, when: \"kind == 'fancy'\", format: value | lower }\n  - { id: title, type: text, prompt: Title?, required: true }\n  - { id: extra, type: text, prompt: 'Extra for {{ title }}?', required: true }\n";
 
 /// Asserts that `document`, after the `prior` documents through `continue`,
-/// has the same outcome through `apply --answers` and `continue`.
-fn same_outcome_through_apply_and_continue(template: &Path, prior: &[Value], document: &Value) {
+/// has the same outcome through direct apply, staged apply, continue, and crate use.
+fn same_outcome_through_all_routes(template: &Path, prior: &[Value], document: &Value) {
     let staged = |state: &Path, target: &Path| {
         stage(state, target, template);
         for earlier in prior {
@@ -717,10 +717,74 @@ fn same_outcome_through_apply_and_continue(template: &Path, prior: &[Value], doc
         state.path(),
         target.path(),
     );
+    let mut additional = Vec::new();
+    if prior.is_empty() {
+        let state = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let answers = state.path().join("answers.json");
+        fs::write(&answers, document.to_string()).unwrap();
+        let output = support::isolated_command(state.path())
+            .arg("apply")
+            .arg(support::folder_address(template))
+            .args([target.path().to_str().unwrap(), "--answers"])
+            .arg(&answers)
+            .output()
+            .unwrap();
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
+        additional.push(outcome(
+            output.status.code().unwrap(),
+            &result,
+            state.path(),
+            target.path(),
+        ));
+
+        let loaded = Template::load(template).unwrap();
+        let canonical = toha::staging::canonical_target(target.path()).unwrap();
+        let record = toha::staging::StagedRecord {
+            target: canonical.as_path().to_owned(),
+            template: template.to_string_lossy().into_owned(),
+            commit: String::new(),
+            named: false,
+            now: seed().now.to_string(),
+            submissions: vec![],
+        };
+        let context = protocol::Context::new(&canonical, &record);
+        let raw = protocol::parse_answers(&document.to_string()).unwrap();
+        let (code, result, accepted) = match protocol::answer_headless(
+            &loaded,
+            Interview::start(&loaded, seed()).unwrap(),
+            raw,
+        ) {
+            Ok(protocol::Headless::Completed {
+                completed,
+                accepted,
+            }) => (
+                0,
+                protocol::complete_document(&completed, &context),
+                accepted,
+            ),
+            Ok(protocol::Headless::Pending {
+                pending,
+                rejections,
+                accepted,
+            }) => (
+                4,
+                protocol::batch_document(pending.batch(), &context, Some(&rejections)),
+                accepted,
+            ),
+            Err(_) => (1, Value::Null, vec![]),
+        };
+        let mut crate_result = outcome(code, &result, state.path(), target.path());
+        crate_result["submissions"] = serde_json::to_value(accepted).unwrap();
+        additional.push(crate_result);
+    }
     // A headless run also answers the next batch from defaults and states
     // which required questions the document leaves unanswered; `continue`
     // states that only for the batch it answers. Neither is compared.
-    for outcome in [&mut through_apply, &mut through_continue] {
+    for outcome in std::iter::once(&mut through_apply)
+        .chain(std::iter::once(&mut through_continue))
+        .chain(additional.iter_mut())
+    {
         if let Some(errors) = outcome["errors"].as_object_mut() {
             errors.retain(|id, e| document.get(id).is_some() || e != &json!(["is required"]));
             if errors.is_empty() {
@@ -729,10 +793,13 @@ fn same_outcome_through_apply_and_continue(template: &Path, prior: &[Value], doc
         }
     }
     assert_eq!(through_apply, through_continue, "{prior:?} then {document}");
+    for other in additional {
+        assert_eq!(through_continue, other, "{prior:?} then {document}");
+    }
 }
 
 #[test]
-fn one_answers_document_has_the_same_outcome_through_apply_and_continue() {
+fn one_answers_document_has_the_same_outcome_through_all_routes() {
     let documents = [
         json!({"name": "Alpha", "code": "ABC"}),
         json!({"name": "Alpha", "code": "abc"}),
@@ -740,7 +807,7 @@ fn one_answers_document_has_the_same_outcome_through_apply_and_continue() {
             "code": "abc", "flavor": "odd", "items": ["x"], "extras": ["one"]}),
     ];
     for document in documents {
-        same_outcome_through_apply_and_continue(&early_template(), &[], &document);
+        same_outcome_through_all_routes(&early_template(), &[], &document);
     }
     let (folder, _template) = inline(SKIPS);
     let skips = folder.path();
@@ -765,7 +832,7 @@ fn one_answers_document_has_the_same_outcome_through_apply_and_continue() {
         ),
     ];
     for (prior, document) in cases {
-        same_outcome_through_apply_and_continue(skips, &prior, &document);
+        same_outcome_through_all_routes(skips, &prior, &document);
     }
     // A held answer that fails a constraint is not an error when this
     // document skips its question, and is one when the question stays active.
@@ -773,18 +840,18 @@ fn one_answers_document_has_the_same_outcome_through_apply_and_continue() {
         json!({"kind": "plain", "style": 1}),
         json!({"kind": "fancy", "style": 1}),
     ] {
-        same_outcome_through_apply_and_continue(skips, &[], &document);
+        same_outcome_through_all_routes(skips, &[], &document);
     }
     // A repeated answer is compared after format, which need not be a fixed
     // point.
     let (folder, _template) = inline(SUFFIX);
     let prior = [json!({"word": "a"})];
     for document in [json!({"word": "ax"}), json!({"word": "a"})] {
-        same_outcome_through_apply_and_continue(folder.path(), &prior, &document);
+        same_outcome_through_all_routes(folder.path(), &prior, &document);
     }
     // Warnings follow interview order, before a message reached after them.
     let (folder, _template) = inline(ORDERED);
-    same_outcome_through_apply_and_continue(
+    same_outcome_through_all_routes(
         folder.path(),
         &[json!({"flag": false})],
         &json!({"alpha": "a", "zeta": "z", "mid": "m"}),
@@ -1215,16 +1282,17 @@ fn configured_defaults_require_an_explicit_identity_mapping() {
     let first_resolution =
         toha::interview::configured_defaults("first-template", &first, &presets, &mappings)
             .unwrap();
+    let (first_defaults, first_warnings) = first_resolution.into_flat_defaults();
     assert_eq!(
-        first_resolution.defaults[&toha::Id::parse("email").unwrap()].0,
+        first_defaults[&toha::Id::parse("email").unwrap()].0,
         json!("contact@example.invalid")
     );
     assert_eq!(
-        first_resolution.defaults[&toha::Id::parse("license").unwrap()].0,
+        first_defaults[&toha::Id::parse("license").unwrap()].0,
         json!("primary_contact")
     );
     assert_eq!(
-        first_resolution.warnings,
+        first_warnings,
         [
             "local.yml: template-defaults.\"first-template\".removed_question: question is not defined by the selected template; ignored"
         ]
@@ -1233,15 +1301,16 @@ fn configured_defaults_require_an_explicit_identity_mapping() {
     let second_resolution =
         toha::interview::configured_defaults("second-template", &second, &presets, &mappings)
             .unwrap();
+    let (second_defaults, _) = second_resolution.into_flat_defaults();
     assert_eq!(
-        second_resolution.defaults[&toha::Id::parse("contact").unwrap()].0,
+        second_defaults[&toha::Id::parse("contact").unwrap()].0,
         json!("contact@example.invalid")
     );
 
     let unmapped =
         toha::interview::configured_defaults("first", &first, &presets, &mappings).unwrap();
-    assert!(unmapped.defaults.is_empty());
-    assert!(unmapped.warnings.is_empty());
+    assert!(unmapped.warnings().is_empty());
+    assert!(unmapped.into_flat_defaults().0.is_empty());
 }
 
 #[test]
@@ -1297,7 +1366,7 @@ fn configured_default_errors_name_mapping_and_preset_origins() {
             .unwrap_err();
     assert_eq!(
         error.to_string(),
-        "user.yml: template-defaults.\"sample\".enabled\n→ system.yml: presets.\"enabled_value\" (\"yes\"): must be true or false"
+        "user.yml: template-defaults.\"sample\".enabled → system.yml: presets.\"enabled_value\" (\"yes\"): must be true or false"
     );
 
     let unused_bad_preset = [(
@@ -1325,7 +1394,7 @@ fn configured_default_errors_name_mapping_and_preset_origins() {
         &other_identity,
     )
     .unwrap();
-    assert!(resolution.defaults.is_empty());
+    assert!(resolution.into_flat_defaults().0.is_empty());
 }
 
 #[test]
@@ -1352,7 +1421,7 @@ fn configured_default_diagnostics_escape_the_formal_name() {
     )
     .unwrap();
     assert_eq!(
-        resolution.warnings,
+        resolution.warnings(),
         [
             "user.yml: template-defaults.\"sample\\\"quoted\".removed_question: question is not defined by the selected template; ignored"
         ]
@@ -1389,26 +1458,24 @@ fn invalid_configured_default_names_its_source() {
 #[test]
 fn configured_default_that_fails_a_constraint_is_attributed_to_configuration() {
     let template = Template::load(&early_template()).unwrap();
-    let seed = Seed {
-        defaults: toha::interview::configured_defaults(
-            "sample",
-            &template,
-            &Default::default(),
-            &configured(json!({"mode": "medium"})),
-        )
-        .unwrap()
-        .defaults,
-        ..seed()
-    };
-    let Interview::Asking(pending) = Interview::start(&template, seed).unwrap() else {
+    let resolution = toha::interview::configured_defaults(
+        "sample",
+        &template,
+        &Default::default(),
+        &configured(json!({"mode": "medium"})),
+    )
+    .unwrap();
+    let Interview::Asking(pending) = resolution.start(&template, seed().now).unwrap() else {
         panic!("expected questions")
     };
     let raw = protocol::parse_answers(r#"{"name": "Alpha", "label": "First"}"#).unwrap();
     let Interview::Asking(pending) = pending.answer(raw).unwrap() else {
         panic!("expected questions")
     };
-    let Err(AnswerError::Rejected { rejections, .. }) =
-        pending.answer(protocol::parse_answers("{}").unwrap())
+    let Err(AnswerError::Rejected {
+        pending,
+        rejections,
+    }) = pending.answer(protocol::parse_answers("{}").unwrap())
     else {
         panic!("expected a rejection")
     };
@@ -1416,9 +1483,95 @@ fn configured_default_that_fails_a_constraint_is_attributed_to_configuration() {
     assert_eq!(
         messages,
         [
-            "mode: default \"medium\" from configured default for question \"mode\" is not allowed: must be one of: fast, slow"
+            "mode: default \"medium\" from user.yml: template-defaults.\"sample\".mode is not allowed: must be one of: fast, slow"
         ]
     );
+
+    let next = pending
+        .answer(protocol::parse_answers(r#"{"mode":"fast"}"#).unwrap())
+        .unwrap();
+    assert!(matches!(
+        next,
+        Interview::Asking(_) | Interview::Complete(_)
+    ));
+}
+
+#[test]
+fn referenced_configured_constraint_error_keeps_mapping_preset_and_value() {
+    let (_folder, template) = inline(
+        "name: sample\ninterview: [{ id: mode, type: select, prompt: Mode?, options: [fast, slow] }]\n",
+    );
+    let name = PresetName::parse("display_mode").unwrap();
+    let presets = [(
+        name.clone(),
+        sourced(json!("medium"), ConfigLayer::System, "system.yml"),
+    )]
+    .into();
+    let mappings = [(
+        "sample".into(),
+        [(
+            toha::Id::parse("mode").unwrap(),
+            sourced(DefaultSource::Ref(name), ConfigLayer::Local, "local.yml"),
+        )]
+        .into(),
+    )]
+    .into();
+    let resolution =
+        toha::interview::configured_defaults("sample", &template, &presets, &mappings).unwrap();
+    let Interview::Asking(pending) = resolution.start(&template, seed().now).unwrap() else {
+        panic!("expected prompt")
+    };
+    assert_eq!(
+        pending.batch().errors[0].to_string(),
+        "mode: default \"medium\" from local.yml: template-defaults.\"sample\".mode → system.yml: presets.\"display_mode\" (\"medium\") is not allowed: must be one of: fast, slow"
+    );
+}
+
+#[test]
+fn every_template_default_form_fails_constraints_as_a_template_fault() {
+    let cases = [
+        (
+            "{ id: labels, type: multiselect, prompt: Labels?, options: [alpha], default: [unknown] }",
+            "template error in labels.default: default [\"unknown\"] is not allowed: each item must be one of: alpha",
+        ),
+        (
+            "{ id: labels, type: multiselect, prompt: Labels?, options: [alpha], default: \"['unknown']\" }",
+            "template error in labels.default `['unknown']`: default [\"unknown\"] is not allowed: each item must be one of: alpha",
+        ),
+        (
+            "{ id: label, type: text, prompt: Label?, default: x, validate: { min: 2 } }",
+            "template error in label.default `x`: default \"x\" is not allowed: must be at least 2 characters",
+        ),
+    ];
+    for (question, expected) in cases {
+        let (_folder, template) = inline(&format!("name: sample\ninterview: [{question}]\n"));
+        assert_eq!(
+            Interview::start(&template, seed()).unwrap_err().to_string(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn skipped_template_default_checks_ready_rules_without_rendering_presentation() {
+    let (_folder, template) = inline(
+        "name: sample\ndata: { skip_all: true }\ninterview:\n  - group: hidden\n    when: not skip_all\n    nodes:\n      - { id: label, type: text, prompt: \"{{ 'bad' | dateformat }}\", default: x, validate: { min: 2 } }\n",
+    );
+    let error = Interview::start(&template, seed()).unwrap_err().to_string();
+    assert_eq!(
+        error,
+        "template error in label.default `x`: default \"x\" is not allowed: must be at least 2 characters"
+    );
+
+    let (_folder, template) = inline(
+        "name: sample\ndata: { skip_all: true }\ninterview:\n  - { id: length, type: text, prompt: Length? }\n  - group: hidden\n    when: not skip_all\n    nodes:\n      - { id: label, type: text, prompt: \"{{ 'bad' | dateformat }}\", default: x, validate: { min: \"length | int\" } }\n",
+    );
+    let Interview::Asking(pending) = Interview::start(&template, seed()).unwrap() else {
+        panic!("the unavailable dynamic constraint must not block the first batch")
+    };
+    assert!(pending.batch().items.iter().any(
+        |item| matches!(item, toha::Item::Prompt(prompt) if prompt.id.to_string() == "length")
+    ));
 }
 
 #[test]
@@ -1541,7 +1694,7 @@ fn skipped_invalid_answer_is_dropped_beside_another_failing_answer() {
 }
 
 #[test]
-fn early_answer_classification_matrix_is_the_same_through_apply_and_continue() {
+fn early_answer_classification_matrix_is_the_same_through_all_routes() {
     let (folder, _template) = inline(CLASSIFY);
     for kind in ["plain", "fancy"] {
         for target in ["style", "deep"] {
@@ -1553,7 +1706,7 @@ fn early_answer_classification_matrix_is_the_same_through_apply_and_continue() {
                         if let Some(title) = other {
                             document["title"] = json!(title);
                         }
-                        same_outcome_through_apply_and_continue(folder.path(), &[], &document);
+                        same_outcome_through_all_routes(folder.path(), &[], &document);
                     }
                 }
             }

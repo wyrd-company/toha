@@ -12,6 +12,7 @@ use toha::{
 };
 
 fn run(fixture: &Path, target: &Path) -> Result<Vec<String>, (u8, String)> {
+    let target = toha::staging::canonical_target(target).map_err(|error| (1, error.to_string()))?;
     let template =
         Template::load(&fixture.join("template")).map_err(|error| (1, error.to_string()))?;
     let json: serde_json::Map<String, serde_json::Value> =
@@ -51,7 +52,7 @@ fn run(fixture: &Path, target: &Path) -> Result<Vec<String>, (u8, String)> {
     };
     let expect = support::expectation(fixture);
     let plan =
-        Plan::build(&template, &completed, target).map_err(|error| (1, error.to_string()))?;
+        Plan::build(&template, &completed, &target).map_err(|error| (1, error.to_string()))?;
     assert_eq!(
         plan.before_apply,
         expect.before_apply,
@@ -76,7 +77,7 @@ fn run(fixture: &Path, target: &Path) -> Result<Vec<String>, (u8, String)> {
         })
     } else {
         plan.apply(
-            target,
+            &target,
             ApplyOptions {
                 force: expect.options.force,
                 trusted: expect.options.trust,
@@ -96,6 +97,159 @@ fn run(fixture: &Path, target: &Path) -> Result<Vec<String>, (u8, String)> {
         Applied::Written { .. } => Ok(completed.messages),
         Applied::NeedsTrust(_) => Err((3, "hooks will not run without --trust".into())),
     }
+}
+
+fn planning_error(folder: &Path) -> String {
+    let template = Template::load(folder).unwrap();
+    let Interview::Complete(completed) = Interview::start(
+        &template,
+        Seed {
+            now: "2026-01-02T03:04:05+00:00[UTC]".parse().unwrap(),
+            defaults: Default::default(),
+        },
+    )
+    .unwrap() else {
+        panic!("expected complete interview")
+    };
+    let target = tempfile::tempdir().unwrap();
+    let target = toha::staging::canonical_target(target.path()).unwrap();
+    Plan::build(&template, &completed, &target)
+        .unwrap_err()
+        .to_string()
+}
+
+#[test]
+fn file_rule_faults_retain_support_path_field_expression_and_engine_text() {
+    let when = Path::new("tests/fixtures/err-files-when-eval/template");
+    let error = planning_error(when);
+    assert!(
+        error.starts_with(&format!(
+            "{}: template error in files[0].when `'bad' | dateformat`: ",
+            when.join("part.txt").canonicalize().unwrap().display()
+        )),
+        "{error}"
+    );
+
+    let each = Path::new("tests/fixtures/err-each-not-array/template");
+    let error = planning_error(each);
+    assert_eq!(
+        error,
+        format!(
+            "{}: template error in files[0].each `42`: expected array",
+            each.join("part.txt").canonicalize().unwrap().display()
+        )
+    );
+
+    let folder = tempfile::tempdir().unwrap();
+    fs::create_dir(folder.path().join("template")).unwrap();
+    fs::write(folder.path().join("part.txt"), "content").unwrap();
+    fs::write(
+        folder.path().join("template.yml"),
+        "name: sample\nfiles:\n  - each: '[\"bad\"] as item'\n    source: part.txt\n    path: '{{ item | dateformat }}.txt'\n",
+    )
+    .unwrap();
+    let error = planning_error(folder.path());
+    assert!(
+        error.starts_with(&format!(
+            "{}: template error in files[0].path `{{{{ item | dateformat }}}}.txt`: ",
+            folder.path().join("part.txt").display()
+        )),
+        "{error}"
+    );
+}
+
+#[test]
+fn ordinary_path_fault_names_exact_segment_and_content_fault_stays_unchanged() {
+    let folder = tempfile::tempdir().unwrap();
+    let segment = "{{ label | dateformat }}";
+    let source = folder
+        .path()
+        .join("template")
+        .join(segment)
+        .join("note.txt");
+    fs::create_dir_all(source.parent().unwrap()).unwrap();
+    fs::write(&source, "content").unwrap();
+    fs::write(
+        folder.path().join("template.yml"),
+        "name: sample\ndata: { label: bad }\n",
+    )
+    .unwrap();
+    let error = planning_error(folder.path());
+    assert!(
+        error.starts_with(&format!(
+            "{}: template error in path `{segment}`: ",
+            source.display()
+        )),
+        "{error}"
+    );
+
+    let content_folder = tempfile::tempdir().unwrap();
+    fs::create_dir(content_folder.path().join("template")).unwrap();
+    let content = content_folder.path().join("template/body.txt");
+    fs::write(&content, "{{ 'bad' | dateformat }}").unwrap();
+    fs::write(content_folder.path().join("template.yml"), "name: sample\n").unwrap();
+    let error = planning_error(content_folder.path());
+    assert!(
+        error.starts_with(&format!("{}: invalid operation", content.display())),
+        "{error}"
+    );
+    assert!(!error.contains("template error in path"), "{error}");
+}
+
+#[test]
+fn planning_fault_is_byte_equal_through_direct_staged_and_crate_routes() {
+    let template_path = Path::new("tests/fixtures/err-files-when-eval/template")
+        .canonicalize()
+        .unwrap();
+    let target = tempfile::tempdir().unwrap();
+    let answers = target.path().join("answers.json");
+    fs::write(&answers, "{}").unwrap();
+
+    let direct_state = tempfile::tempdir().unwrap();
+    let direct = support::isolated_command(direct_state.path())
+        .arg("apply")
+        .arg(support::folder_address(&template_path))
+        .arg(target.path())
+        .args(["--answers"])
+        .arg(&answers)
+        .output()
+        .unwrap();
+    assert_eq!(direct.status.code(), Some(1));
+    let direct_error = String::from_utf8(direct.stderr).unwrap();
+
+    let staged_state = tempfile::tempdir().unwrap();
+    let staged = support::isolated_command(staged_state.path())
+        .arg("stage")
+        .arg(support::folder_address(&template_path))
+        .arg(target.path())
+        .arg("--async")
+        .output()
+        .unwrap();
+    assert_eq!(staged.status.code(), Some(0));
+    let applied = support::isolated_command(staged_state.path())
+        .arg("apply")
+        .arg(target.path())
+        .output()
+        .unwrap();
+    assert_eq!(applied.status.code(), Some(1));
+    assert_eq!(String::from_utf8(applied.stderr).unwrap(), direct_error);
+
+    let template = Template::load(&template_path).unwrap();
+    let Interview::Complete(completed) = Interview::start(
+        &template,
+        Seed {
+            now: "2026-01-02T03:04:05+00:00[UTC]".parse().unwrap(),
+            defaults: Default::default(),
+        },
+    )
+    .unwrap() else {
+        panic!("expected complete interview")
+    };
+    let canonical = toha::staging::canonical_target(target.path()).unwrap();
+    let crate_error = Plan::build(&template, &completed, &canonical)
+        .unwrap_err()
+        .to_string();
+    assert_eq!(direct_error, format!("{crate_error}\n"));
 }
 
 #[test]

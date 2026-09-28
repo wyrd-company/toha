@@ -5,10 +5,11 @@
 #[allow(dead_code)]
 mod support;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
     fs,
     io::Write,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 use toha::{
@@ -23,6 +24,18 @@ fn schema_validator() -> jsonschema::Validator {
         .with_draft(jsonschema::Draft::Draft202012)
         .build(protocol::protocol_schema())
         .unwrap()
+}
+fn context(target: &Path, template: impl Into<String>, commit: Option<String>) -> Context {
+    let target = canonical_target(target).unwrap();
+    let record = StagedRecord {
+        target: target.as_path().to_owned(),
+        template: template.into(),
+        commit: commit.unwrap_or_default(),
+        named: false,
+        now: "2026-01-02T03:04:05+00:00[UTC]".into(),
+        submissions: vec![],
+    };
+    Context::new(&target, &record)
 }
 #[test]
 fn optional_null_validates_against_batch_schema() {
@@ -42,11 +55,7 @@ fn optional_null_validates_against_batch_schema() {
     };
     let batch = protocol::batch_document(
         pending.batch(),
-        &Context {
-            target: "target".into(),
-            template: "sample".into(),
-            commit: None,
-        },
+        &context(Path::new("target"), "sample", None),
         None,
     );
     let validator = jsonschema::options()
@@ -139,19 +148,14 @@ fn one_shot(path: &Path, target: &Path) -> Value {
     };
     protocol::complete_document(
         &completed,
-        &Context {
-            target: canonical_target(target)
-                .unwrap()
-                .to_string_lossy()
-                .into_owned(),
-            template: path
-                .join("template")
+        &context(
+            target,
+            path.join("template")
                 .canonicalize()
                 .unwrap()
-                .to_string_lossy()
-                .into_owned(),
-            commit: None,
-        },
+                .to_string_lossy(),
+            None,
+        ),
     )
 }
 #[test]
@@ -263,8 +267,9 @@ fn every_success_fixture_through_library_replay() {
             .unwrap()
             .to_string_lossy()
             .into_owned();
+        let canonical = canonical_target(target.path()).unwrap();
         let mut record = StagedRecord {
-            target: canonical_target(target.path()).unwrap(),
+            target: canonical.as_path().to_owned(),
             template: formal.clone(),
             commit: String::new(),
             named: false,
@@ -272,7 +277,7 @@ fn every_success_fixture_through_library_replay() {
             submissions: vec![],
         };
         let store = Store::new(state.path().to_path_buf());
-        store.save(&record).unwrap();
+        store.save(&canonical, &record).unwrap();
         let raw = protocol::parse_answers(&fixture_answers(&fixture).to_string()).unwrap();
         let Headless::Completed {
             completed,
@@ -283,10 +288,10 @@ fn every_success_fixture_through_library_replay() {
         };
         for submission in accepted {
             record.submissions.push(submission);
-            store.save(&record).unwrap();
+            store.save(&canonical, &record).unwrap();
         }
         let Interview::Complete(replayed) = store
-            .load(&record.target)
+            .load(&canonical)
             .unwrap()
             .unwrap()
             .replay(&template)
@@ -294,22 +299,18 @@ fn every_success_fixture_through_library_replay() {
         else {
             panic!("replay incomplete: {}", fixture.display());
         };
-        let ctx = Context {
-            target: record.target.to_string_lossy().into_owned(),
-            template: formal,
-            commit: None,
-        };
+        let ctx = Context::new(&canonical, &record);
         assert_eq!(
             protocol::complete_document(&replayed, &ctx),
             protocol::complete_document(&completed, &ctx),
             "{}",
             fixture.display()
         );
-        let plan = Plan::build(&template, &replayed, target.path()).unwrap();
+        let plan = Plan::build(&template, &replayed, &canonical).unwrap();
         let runner = RecordingRunner::default();
         let result = plan
             .apply(
-                target.path(),
+                &canonical,
                 ApplyOptions {
                     force: expect.options.force,
                     trusted: expect.options.trust,
@@ -475,9 +476,90 @@ fn canonical_nonexistent_target_normalizes_components() {
     let root = tempfile::tempdir().unwrap();
     let expected = root.path().canonicalize().unwrap().join("b/c");
     assert_eq!(
-        canonical_target(&root.path().join("a/../b/./c")).unwrap(),
-        expected
+        canonical_target(&root.path().join("a/../b/./c"))
+            .unwrap()
+            .as_path(),
+        expected.as_path()
     );
+}
+
+#[test]
+fn canonical_targets_have_one_stable_spelling_for_every_path_class() {
+    let root = tempfile::tempdir().unwrap();
+    let existing = root.path().join("existing");
+    fs::create_dir(&existing).unwrap();
+    let existing_with_separator = PathBuf::from(format!(
+        "{}{}",
+        existing.display(),
+        std::path::MAIN_SEPARATOR
+    ));
+    assert_eq!(
+        canonical_target(&existing).unwrap(),
+        canonical_target(&existing_with_separator).unwrap()
+    );
+
+    let current = std::env::current_dir().unwrap();
+    assert_eq!(
+        canonical_target(Path::new(".")).unwrap().as_path(),
+        current.canonicalize().unwrap()
+    );
+    let current_name = current.file_name().unwrap();
+    let parent_relative = Path::new("..").join(current_name).join("new-target");
+    assert_eq!(
+        canonical_target(&parent_relative).unwrap().as_path(),
+        current.canonicalize().unwrap().join("new-target")
+    );
+
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&existing, root.path().join("alias")).unwrap();
+        assert_eq!(
+            canonical_target(&root.path().join("alias/child"))
+                .unwrap()
+                .as_path(),
+            existing.canonicalize().unwrap().join("child")
+        );
+        assert_eq!(
+            canonical_target(Path::new("/")).unwrap().as_path(),
+            Path::new("/")
+        );
+    }
+}
+
+#[test]
+fn legacy_separator_key_migrates_only_after_a_successful_save() {
+    let state = tempfile::tempdir().unwrap();
+    let target_dir = tempfile::tempdir().unwrap();
+    let target = canonical_target(target_dir.path()).unwrap();
+    let mut legacy_text = target.as_path().as_os_str().to_os_string();
+    legacy_text.push(std::path::MAIN_SEPARATOR_STR);
+    let legacy_key = format!(
+        "{:x}.json",
+        Sha256::digest(Path::new(&legacy_text).to_string_lossy().as_bytes())
+    );
+    let legacy_path = state.path().join(legacy_key);
+    let record = StagedRecord {
+        target: PathBuf::from(&legacy_text),
+        template: "sample".into(),
+        commit: String::new(),
+        named: false,
+        now: "2026-01-02T03:04:05+00:00[UTC]".into(),
+        submissions: vec![],
+    };
+    fs::write(&legacy_path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+    let store = Store::new(state.path().to_owned());
+    assert!(store.load(&target).unwrap().is_some());
+
+    let canonical_path = store.path_for(&target);
+    fs::create_dir(&canonical_path).unwrap();
+    assert!(store.save(&target, &record).is_err());
+    assert!(legacy_path.exists());
+    fs::remove_dir(&canonical_path).unwrap();
+
+    store.save(&target, &record).unwrap();
+    assert!(!legacy_path.exists());
+    let stored: StagedRecord = serde_json::from_slice(&fs::read(&canonical_path).unwrap()).unwrap();
+    assert_eq!(stored.target, target.as_path());
 }
 #[test]
 fn explicit_null_differs_from_missing_in_one_shot_and_staged() {
@@ -544,14 +626,7 @@ fn explicit_null_differs_from_missing_in_one_shot_and_staged() {
         else {
             panic!()
         };
-        let ctx = Context {
-            target: canonical_target(target.path())
-                .unwrap()
-                .to_string_lossy()
-                .into_owned(),
-            template: template_path.to_string_lossy().into_owned(),
-            commit: None,
-        };
+        let ctx = context(target.path(), template_path.to_string_lossy(), None);
         assert_eq!(
             second_batch,
             protocol::batch_document(one_pending.batch(), &ctx, None)
@@ -597,18 +672,12 @@ fn skipped_group_has_same_batch_boundary_after_replay() {
     assert_eq!(output.status.code(), Some(4));
     let next: Value = serde_json::from_slice(&output.stdout).unwrap();
     let store = Store::new(support::staged_dir(state.path()));
-    let saved = store
-        .load(&canonical_target(target.path()).unwrap())
-        .unwrap()
-        .unwrap();
+    let canonical = canonical_target(target.path()).unwrap();
+    let saved = store.load(&canonical).unwrap().unwrap();
     let Interview::Asking(replayed) = saved.replay(&template).unwrap() else {
         panic!()
     };
-    let ctx = Context {
-        target: saved.target.to_string_lossy().into_owned(),
-        template: saved.template.clone(),
-        commit: Some(saved.commit.clone()).filter(|c| !c.is_empty()),
-    };
+    let ctx = Context::new(&canonical, &saved);
     assert_eq!(next, protocol::batch_document(replayed.batch(), &ctx, None));
     assert!(next["schema"]["properties"].get("search_engine").is_none());
 }
@@ -823,8 +892,9 @@ fn replay_stores_raw_answer_before_non_idempotent_format() {
     let template = Template::load(folder.path()).unwrap();
     let state = tempfile::tempdir().unwrap();
     let target = tempfile::tempdir().unwrap();
+    let canonical = canonical_target(target.path()).unwrap();
     let record = StagedRecord {
-        target: canonical_target(target.path()).unwrap(),
+        target: canonical.as_path().to_owned(),
         template: folder.path().to_string_lossy().into_owned(),
         commit: String::new(),
         named: false,
@@ -832,9 +902,9 @@ fn replay_stores_raw_answer_before_non_idempotent_format() {
         submissions: vec![indexmap::indexmap! { "value".into() => json!("a") }],
     };
     let store = Store::new(state.path().to_path_buf());
-    store.save(&record).unwrap();
+    store.save(&canonical, &record).unwrap();
     let Interview::Complete(completed) = store
-        .load(&record.target)
+        .load(&canonical)
         .unwrap()
         .unwrap()
         .replay(&template)
@@ -851,7 +921,7 @@ fn replay_stores_raw_answer_before_non_idempotent_format() {
         json!("ax")
     );
     assert_eq!(
-        store.load(&record.target).unwrap().unwrap().submissions[0]["value"],
+        store.load(&canonical).unwrap().unwrap().submissions[0]["value"],
         json!("a")
     );
 }
@@ -897,11 +967,7 @@ fn optional_select_enum_lists_only_its_options() {
     };
     let batch = protocol::batch_document(
         pending.batch(),
-        &Context {
-            target: "target".into(),
-            template: "sample".into(),
-            commit: None,
-        },
+        &context(Path::new("target"), "sample", None),
         None,
     );
     let properties = &batch["schema"]["properties"];

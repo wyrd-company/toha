@@ -255,18 +255,17 @@ fn configured_default_is_visible_and_answers_win() {
     };
     write_config(&root, &config("Configured"));
     let target = root.path().join("staged");
+    let warning = format!(
+        "warning: {}: template-defaults.\"{}\".removed_question: question is not defined by the selected template; ignored",
+        root.path().join("config/toha/config.yml").display(),
+        address
+    );
     let staged = run(
         &root,
         &["stage", &address, target.to_str().unwrap(), "--async"],
         4,
     );
-    assert!(
-        String::from_utf8_lossy(&staged.stderr).contains(&format!(
-            "warning: {}: template-defaults.\"{}\".removed_question: question is not defined by the selected template; ignored",
-            root.path().join("config/toha/config.yml").display(),
-            address
-        ))
-    );
+    assert!(String::from_utf8_lossy(&staged.stderr).contains(&warning));
     let batch = document(&staged);
     assert_eq!(
         batch["schema"]["properties"]["label"]["default"],
@@ -275,7 +274,7 @@ fn configured_default_is_visible_and_answers_win() {
     write_config(&root, &config("Resumed"));
     let empty = root.path().join("empty.json");
     fs::write(&empty, "{}").unwrap();
-    let resumed = document(&run(
+    let continued = run(
         &root,
         &[
             "continue",
@@ -283,12 +282,16 @@ fn configured_default_is_visible_and_answers_win() {
             empty.to_str().unwrap(),
         ],
         0,
-    ));
+    );
+    assert!(String::from_utf8_lossy(&continued.stderr).contains(&warning));
+    let resumed = document(&continued);
     assert_eq!(resumed["answers"]["label"], "Resumed");
+    let applied = run(&root, &["apply", target.to_str().unwrap()], 0);
+    assert!(String::from_utf8_lossy(&applied.stderr).contains(&warning));
     write_config(&root, &config("Configured"));
     let answers = root.path().join("answers.json");
     fs::write(&answers, "{}").unwrap();
-    run(
+    let defaulted = run(
         &root,
         &[
             "apply",
@@ -299,12 +302,13 @@ fn configured_default_is_visible_and_answers_win() {
         ],
         0,
     );
+    assert!(String::from_utf8_lossy(&defaulted.stderr).contains(&warning));
     assert_eq!(
         fs::read_to_string(root.path().join("defaulted/result.txt")).unwrap(),
         "old Configured"
     );
     fs::write(&answers, r#"{"label":"Override"}"#).unwrap();
-    run(
+    let overridden = run(
         &root,
         &[
             "apply",
@@ -315,6 +319,7 @@ fn configured_default_is_visible_and_answers_win() {
         ],
         0,
     );
+    assert!(String::from_utf8_lossy(&overridden.stderr).contains(&warning));
     assert_eq!(
         fs::read_to_string(root.path().join("overridden/result.txt")).unwrap(),
         "old Override"
@@ -350,6 +355,110 @@ fn configured_default_is_visible_and_answers_win() {
     assert!(
         error.contains("presets.\"label_value\" ([\"wrong\"]): must be a string"),
         "{error}"
+    );
+}
+
+#[test]
+fn constraint_invalid_configured_default_is_replaceable_on_every_command_route() {
+    let root = TempDir::new().unwrap();
+    let folder = root.path().join("template");
+    fs::create_dir_all(folder.join("template")).unwrap();
+    fs::write(
+        folder.join("template.yml"),
+        "name: sample\ninterview: [{ id: mode, type: select, prompt: Mode?, options: [fast, slow] }]\n",
+    )
+    .unwrap();
+    fs::write(folder.join("template/result.txt"), "{{ mode }}").unwrap();
+    let formal = folder
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    write_config(
+        &root,
+        &format!("template-defaults:\n  {formal:?}: {{ mode: medium }}\n"),
+    );
+    let source = format!(
+        "{}: template-defaults.\"{}\".mode",
+        root.path().join("config/toha/config.yml").display(),
+        formal.replace('\\', "\\\\").replace('"', "\\\"")
+    );
+
+    let continued_target = root.path().join("continued");
+    let staged = run(
+        &root,
+        &[
+            "stage",
+            &support::folder_address(&folder),
+            continued_target.to_str().unwrap(),
+            "--async",
+        ],
+        4,
+    );
+    let batch = document(&staged);
+    assert_eq!(
+        batch["errors"]["mode"][0],
+        format!("default \"medium\" from {source} is not allowed: must be one of: fast, slow")
+    );
+    assert!(
+        batch["schema"]["properties"]["mode"]
+            .get("default")
+            .is_none()
+    );
+    let answers = root.path().join("answers.json");
+    fs::write(&answers, r#"{"mode":"fast"}"#).unwrap();
+    run(
+        &root,
+        &[
+            "continue",
+            continued_target.to_str().unwrap(),
+            answers.to_str().unwrap(),
+        ],
+        0,
+    );
+
+    let staged_target = root.path().join("staged-apply");
+    run(
+        &root,
+        &[
+            "stage",
+            &support::folder_address(&folder),
+            staged_target.to_str().unwrap(),
+            "--async",
+        ],
+        4,
+    );
+    run(
+        &root,
+        &[
+            "apply",
+            &support::folder_address(&folder),
+            staged_target.to_str().unwrap(),
+            "--answers",
+            answers.to_str().unwrap(),
+        ],
+        0,
+    );
+    assert_eq!(
+        fs::read_to_string(staged_target.join("result.txt")).unwrap(),
+        "fast"
+    );
+
+    let direct_target = root.path().join("direct");
+    run(
+        &root,
+        &[
+            "apply",
+            &support::folder_address(&folder),
+            direct_target.to_str().unwrap(),
+            "--answers",
+            answers.to_str().unwrap(),
+        ],
+        0,
+    );
+    assert_eq!(
+        fs::read_to_string(direct_target.join("result.txt")).unwrap(),
+        "fast"
     );
 }
 

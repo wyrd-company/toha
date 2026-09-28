@@ -276,6 +276,7 @@ mod tests {
     };
     use toha::{
         ApplyOptions, Plan, Seed, Template,
+        config::{ConfigEntry, ConfigLayer, ConfigOrigin, DefaultSource},
         hook::RecordingRunner,
         protocol::{self, Headless},
         staging::StagedRecord,
@@ -376,6 +377,55 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    #[test]
+    fn terminal_answer_replaces_a_constraint_invalid_configured_default() {
+        let (_folder, template) = template(
+            "name: sample\ninterview: [{ id: mode, type: select, prompt: Mode?, options: [fast, slow] }]\n",
+        );
+        let id = toha::Id::parse("mode").unwrap();
+        let mappings = [(
+            "sample".into(),
+            [(
+                id,
+                ConfigEntry {
+                    value: DefaultSource::Literal(json!("medium")),
+                    origin: ConfigOrigin {
+                        layer: ConfigLayer::User,
+                        path: "user.yml".into(),
+                    },
+                },
+            )]
+            .into(),
+        )]
+        .into();
+        let resolution = toha::interview::configured_defaults(
+            "sample",
+            &template,
+            &Default::default(),
+            &mappings,
+        )
+        .unwrap();
+        let interview = resolution
+            .start(&template, "2026-01-02T03:04:05+00:00[UTC]".parse().unwrap())
+            .unwrap();
+        let mut script = Script::new(json!({"mode": "fast"}));
+        let mut records = Vec::new();
+        let completed = drive(interview, &mut script, |raw| {
+            records.push(raw);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(script.asked, ["mode"]);
+        assert_eq!(
+            completed.answers[&toha::Id::parse("mode").unwrap()].to_json(),
+            json!("fast")
+        );
+        assert_eq!(
+            records,
+            [indexmap::indexmap! { "mode".into() => json!("fast") }]
+        );
     }
 
     #[test]
@@ -598,10 +648,11 @@ mod tests {
             assert_eq!(replayed(submissions), replayed(accepted), "{name}");
             let target = tempfile::tempdir().unwrap();
             support::copy_tree(&fixture.join("existing"), target.path());
-            let plan = Plan::build(&template, &completed, target.path()).unwrap();
+            let canonical = crate::staging::canonical_target(target.path()).unwrap();
+            let plan = Plan::build(&template, &completed, &canonical).unwrap();
             if !expect.options.dry_run {
                 plan.apply(
-                    target.path(),
+                    &canonical,
                     ApplyOptions {
                         force: expect.options.force,
                         trusted: expect.options.trust,
