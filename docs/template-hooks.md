@@ -114,8 +114,36 @@ toha apply ./note-template ./output --trust
 
 When installing a template, `toha templates add <address> --trust` records
 trust in your user registry, so later runs do not need `--trust`. Local
-project aliases cannot grant trust. See
-[Managing templates](/docs/toha/templates-management) for installed templates.
+project aliases cannot grant trust.
+
+For a template that is already installed in your user registry, review the
+hooks and approve its current executable surface:
+
+```sh
+toha templates trust daily-note
+```
+
+The approval covers the installed hook nodes and executed in-template files.
+If an update changes that executable surface, the approval lapses. Review the
+changed surface and run `templates trust daily-note` again. This re-approves
+the installed surface without fetching content or changing the installed
+commit.
+
+To revoke approval, run:
+
+```sh
+toha templates untrust daily-note
+```
+
+Revocation does not remove or update the template. It records a denial in your
+user registry, so an approval from a lower registry layer cannot make the
+template trusted again. A later `templates trust daily-note` removes the
+denial and approves the current installed surface.
+
+Both commands require the template to be present in the user registry. They
+refuse a template supplied only by the system registry or local layer. See
+[Managing templates](/docs/toha/templates-management) for installation,
+updates, aliases, and removal.
 
 ## Show messages around file writing
 
