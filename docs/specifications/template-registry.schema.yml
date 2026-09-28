@@ -34,9 +34,12 @@ $defs:
         type: string
       aliases:
         $ref: "#/$defs/aliases"
-      trusted:
-        type: boolean
-        default: false
+      approval:
+        description: >-
+          The approved executable-surface digest. Approval authorizes the
+          template's hooks only while its live digest still equals this value.
+        type: string
+        pattern: '^sha256:[0-9a-f]{64}$'
   registry:
     type: object
     additionalProperties: false

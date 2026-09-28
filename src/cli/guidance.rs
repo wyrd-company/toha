@@ -631,33 +631,51 @@ pub fn answers_without_template(
     lines.join("\n")
 }
 
-/// `apply` did not run hooks of an untrusted template.
-pub fn needs_trust(invocation: &Invocation, installed: Option<&str>) -> String {
+/// `apply` did not run hooks of an untrusted template. `changed` marks a
+/// template whose stored approval no longer matches its hooks.
+pub fn needs_trust(invocation: &Invocation, installed: Option<&str>, changed: bool) -> String {
     trust_lines(
         "hooks will not run without --trust\nto run them this time: ",
         invocation,
         installed,
+        changed,
     )
 }
 
 /// `apply --dry-run` planned hooks of an untrusted template, which the same
-/// command without `--dry-run` refuses to run.
-pub fn dry_run_needs_trust(invocation: &Invocation, installed: Option<&str>) -> String {
+/// command without `--dry-run` refuses to run. `changed` marks a template
+/// whose stored approval no longer matches its hooks.
+pub fn dry_run_needs_trust(
+    invocation: &Invocation,
+    installed: Option<&str>,
+    changed: bool,
+) -> String {
     trust_lines(
         "hooks need trust; to run them: ",
         &invocation.without_dry_run(),
         installed,
+        changed,
     )
 }
 
 /// `lead` followed by the command with `--trust`, and the `templates add
-/// --trust` command for an installed template.
-fn trust_lines(lead: &str, invocation: &Invocation, installed: Option<&str>) -> String {
+/// --trust` command for an installed template. When `changed`, a leading line
+/// states that the hooks changed since approval.
+fn trust_lines(
+    lead: &str,
+    invocation: &Invocation,
+    installed: Option<&str>,
+    changed: bool,
+) -> String {
     let mut trusted = *invocation;
     if let Invocation::Apply { trust, .. } = &mut trusted {
         *trust = true;
     }
-    let mut lines = vec![format!("{lead}{}", trusted.command())];
+    let mut lines = Vec::new();
+    if changed {
+        lines.push("hooks changed since approval".to_string());
+    }
+    lines.push(format!("{lead}{}", trusted.command()));
     if let Some(formal) = installed {
         lines.push(format!(
             "to trust {formal} for every run: {}",

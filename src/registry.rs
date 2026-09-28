@@ -1,4 +1,5 @@
 //! Validated registry layers, discovery, and name resolution.
+use crate::review::ReviewDigest;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -27,8 +28,10 @@ pub struct Entry {
     pub path: PathBuf,
     #[serde(default)]
     pub aliases: Vec<String>,
-    #[serde(default)]
-    pub trusted: bool,
+    /// The approved executable-surface digest. Approval authorizes the
+    /// template's hooks only while its live digest still equals this value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<ReviewDigest>,
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RegistryFile {
@@ -40,14 +43,15 @@ pub struct RegistryFile {
 #[derive(Debug, Clone, Copy, Default)]
 struct FieldPresence {
     aliases: bool,
-    trusted: bool,
+    approval: bool,
 }
 #[derive(Debug, Clone)]
 pub struct Listed {
     pub formal_name: String,
     pub entry: Entry,
     pub layer: Layer,
-    pub trusted: bool,
+    /// The effective approval digest for this entry, after layer merge.
+    pub approval: Option<ReviewDigest>,
 }
 #[derive(Debug, Clone, Default)]
 pub struct Registry {
@@ -58,7 +62,8 @@ pub struct Resolved {
     pub formal_name: String,
     pub entry: Entry,
     pub layer: Layer,
-    pub trusted: bool,
+    /// The effective approval digest for this entry, after layer merge.
+    pub approval: Option<ReviewDigest>,
 }
 #[derive(Debug, thiserror::Error)]
 pub enum RegistryError {
@@ -141,7 +146,7 @@ impl RegistryFile {
                     formal.clone(),
                     FieldPresence {
                         aliases: entry.get("aliases").is_some(),
-                        trusted: entry.get("trusted").is_some(),
+                        approval: entry.get("approval").is_some(),
                     },
                 )
             })
@@ -187,7 +192,7 @@ impl RegistryFile {
                         entry.aliases.push(alias.clone());
                     }
                 }
-                entry.trusted |= old.trusted;
+                entry.approval = entry.approval.take().or_else(|| old.approval.clone());
             }
             next.presence.shift_remove(&formal);
             next.templates.insert(formal, entry);
@@ -223,7 +228,7 @@ impl RegistryFile {
             .entry(formal.into())
             .or_insert(FieldPresence {
                 aliases: true,
-                trusted: true,
+                approval: true,
             })
             .aliases = true;
         Ok(next)
@@ -240,7 +245,7 @@ impl RegistryFile {
             .entry(formal.clone())
             .or_insert(FieldPresence {
                 aliases: true,
-                trusted: true,
+                approval: true,
             })
             .aliases = true;
         Ok(next)
@@ -255,8 +260,8 @@ impl RegistryFile {
                 if !fields.aliases {
                     entry.remove("aliases");
                 }
-                if !fields.trusted {
-                    entry.remove("trusted");
+                if !fields.approval {
+                    entry.remove("approval");
                 }
             }
         }
@@ -323,20 +328,20 @@ impl Registry {
                     }
                     let presence = file.presence.get(formal).copied().unwrap_or(FieldPresence {
                         aliases: true,
-                        trusted: true,
+                        approval: true,
                     });
                     if !presence.aliases {
                         merged.aliases = old.entry.aliases.clone();
                     }
-                    if !presence.trusted {
-                        merged.trusted = old.entry.trusted;
+                    if !presence.approval {
+                        merged.approval = old.entry.approval.clone();
                     }
                 }
                 entries.insert(
                     formal.clone(),
                     Listed {
                         formal_name: formal.clone(),
-                        trusted: merged.trusted,
+                        approval: merged.approval.clone(),
                         entry: merged,
                         layer,
                     },
@@ -461,7 +466,7 @@ impl Registry {
                             ..Entry::default()
                         },
                         layer: Layer::Discovered,
-                        trusted: false,
+                        approval: None,
                     },
                 );
             }
@@ -503,13 +508,18 @@ impl Listed {
             formal_name: self.formal_name.clone(),
             entry: self.entry.clone(),
             layer: self.layer,
-            trusted: self.trusted,
+            approval: self.approval.clone(),
         }
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    const D1: &str = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+    const D2: &str = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
+    fn digest(value: &str) -> ReviewDigest {
+        ReviewDigest::parse(value).unwrap()
+    }
     fn entry(name: &str, aliases: &[&str]) -> Entry {
         Entry {
             name: name.into(),
@@ -555,7 +565,7 @@ mod tests {
         let higher_path = root.path().join("higher.yml");
         fs::write(
             &lower_path,
-            "templates:\n  formal:\n    name: sample\n    source: file:///sample\n    path: /sample\n    ref: main\n    commit: 0000000000000000000000000000000000000000\n    aliases: [lower]\n    trusted: true\n",
+            format!("templates:\n  formal:\n    name: sample\n    source: file:///sample\n    path: /sample\n    ref: main\n    commit: 0000000000000000000000000000000000000000\n    aliases: [lower]\n    approval: {D1}\n"),
         )
         .unwrap();
         fs::write(
@@ -573,21 +583,23 @@ mod tests {
             entry.commit.as_deref(),
             Some("0000000000000000000000000000000000000000")
         );
-        assert!(entry.trusted);
+        // The higher layer omits approval, so it inherits the lower digest.
+        assert_eq!(entry.approval, Some(digest(D1)));
         let rewritten_path = root.path().join("rewritten.yml");
         higher.write_atomic(&rewritten_path).unwrap();
         let rewritten = RegistryFile::load(&rewritten_path, Layer::User).unwrap();
         let merged = Registry::merge(&lower, &rewritten, &RegistryFile::default()).unwrap();
-        assert!(merged.entries["formal"].entry.trusted);
+        assert_eq!(merged.entries["formal"].entry.approval, Some(digest(D1)));
         assert_eq!(
             merged.entries["formal"].entry.reference.as_deref(),
             Some("main")
         );
-        fs::write(&higher_path, "templates:\n  formal:\n    name: sample\n    source: file:///sample\n    path: /sample\n    trusted: false\n").unwrap();
+        // A present approval overrides the lower layer's; aliases still inherit.
+        fs::write(&higher_path, format!("templates:\n  formal:\n    name: sample\n    source: file:///sample\n    path: /sample\n    approval: {D2}\n")).unwrap();
         let higher = RegistryFile::load(&higher_path, Layer::User).unwrap();
         let merged = Registry::merge(&lower, &higher, &RegistryFile::default()).unwrap();
         assert_eq!(merged.entries["formal"].entry.aliases, ["lower"]);
-        assert!(!merged.entries["formal"].entry.trusted);
+        assert_eq!(merged.entries["formal"].entry.approval, Some(digest(D2)));
     }
     #[test]
     fn sparse_entry_writes_track_fields_set_by_each_operation() {
@@ -600,7 +612,7 @@ mod tests {
         .unwrap();
         let sparse = RegistryFile::load(&path, Layer::User).unwrap();
         let mut replacement = entry("sample", &["kept"]);
-        replacement.trusted = true;
+        replacement.approval = Some(digest(D1));
         sparse
             .add([("formal".into(), replacement)])
             .write_atomic(&path)
@@ -610,7 +622,7 @@ mod tests {
             written["templates"]["formal"]["aliases"],
             serde_json::json!(["kept"])
         );
-        assert_eq!(written["templates"]["formal"]["trusted"], true);
+        assert_eq!(written["templates"]["formal"]["approval"], D1);
 
         let commit = "0000000000000000000000000000000000000000";
         sparse
@@ -621,7 +633,7 @@ mod tests {
         let written: Value = serde_norway::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(written["templates"]["formal"]["commit"], commit);
         assert!(written["templates"]["formal"].get("aliases").is_none());
-        assert!(written["templates"]["formal"].get("trusted").is_none());
+        assert!(written["templates"]["formal"].get("approval").is_none());
         assert!(matches!(
             sparse.set_commit("absent", commit.into()),
             Err(RegistryError::NotFound(_))
@@ -634,7 +646,7 @@ mod tests {
             written["templates"]["formal"]["aliases"],
             serde_json::json!(["kept"])
         );
-        assert!(written["templates"]["formal"].get("trusted").is_none());
+        assert!(written["templates"]["formal"].get("approval").is_none());
         with_alias
             .remove_alias("kept")
             .unwrap()
@@ -645,7 +657,7 @@ mod tests {
             written["templates"]["formal"]["aliases"],
             serde_json::json!([])
         );
-        assert!(written["templates"]["formal"].get("trusted").is_none());
+        assert!(written["templates"]["formal"].get("approval").is_none());
 
         sparse
             .remove("formal")
@@ -656,7 +668,7 @@ mod tests {
         assert!(written["templates"].get("formal").is_none());
     }
     #[test]
-    fn local_aliases_do_not_grant_trust() {
+    fn local_layer_carries_no_approval() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("templates.yml");
         fs::write(&path, "templates:\n  formal:\n    aliases: [local]\n").unwrap();
@@ -664,22 +676,26 @@ mod tests {
         let mut user = RegistryFile::default();
         user.templates.insert("formal".into(), entry("short", &[]));
         let merged = Registry::merge(&RegistryFile::default(), &user, &local).unwrap();
-        assert!(!merged.resolve("local").unwrap().trusted);
-        fs::write(&path, "templates:\n  formal:\n    trusted: true\n").unwrap();
+        assert!(merged.resolve("local").unwrap().approval.is_none());
+        fs::write(
+            &path,
+            format!("templates:\n  formal:\n    approval: {D1}\n"),
+        )
+        .unwrap();
         assert!(matches!(
             RegistryFile::load(&path, Layer::Local),
             Err(RegistryError::Schema { .. })
         ));
     }
     #[test]
-    fn readding_keeps_aliases_and_trust() {
+    fn readding_keeps_aliases_and_approval() {
         let mut existing = RegistryFile::default();
         let mut original = entry("short", &["old"]);
-        original.trusted = true;
+        original.approval = Some(digest(D1));
         existing.templates.insert("formal".into(), original);
         let next = existing.add([("formal".into(), entry("short", &["new"]))]);
         assert_eq!(next.templates["formal"].aliases, ["new", "old"]);
-        assert!(next.templates["formal"].trusted);
+        assert_eq!(next.templates["formal"].approval, Some(digest(D1)));
     }
     #[test]
     fn invalid_write_preserves_existing_registry() {
@@ -696,15 +712,15 @@ mod tests {
         assert_eq!(fs::read_to_string(path).unwrap(), "templates: {}\n");
     }
     #[test]
-    fn user_trust_field_has_precedence() {
+    fn user_approval_field_has_precedence() {
         let mut system = RegistryFile::default();
-        let mut trusted = entry("short", &[]);
-        trusted.trusted = true;
-        system.templates.insert("formal".into(), trusted);
+        let mut approved = entry("short", &[]);
+        approved.approval = Some(digest(D1));
+        system.templates.insert("formal".into(), approved);
         let mut user = RegistryFile::default();
         user.templates.insert("formal".into(), entry("short", &[]));
         let merged = Registry::merge(&system, &user, &RegistryFile::default()).unwrap();
-        assert!(!merged.resolve("formal").unwrap().trusted);
+        assert!(merged.resolve("formal").unwrap().approval.is_none());
     }
     #[test]
     fn discovery_reads_only_name() {
@@ -722,6 +738,6 @@ mod tests {
             .unwrap();
         let resolved = registry.resolve("sample").unwrap();
         assert_eq!(resolved.layer, Layer::Discovered);
-        assert!(!resolved.trusted);
+        assert!(resolved.approval.is_none());
     }
 }

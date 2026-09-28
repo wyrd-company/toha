@@ -24,7 +24,7 @@ enum TemplatesCommand {
         /// Alias for the template; fails when the address holds more than one template.
         #[arg(short, long)]
         alias: Option<String>,
-        /// Record the added templates as trusted in the user registry.
+        /// Approve the added templates' current hooks in the user registry.
         #[arg(long)]
         trust: bool,
     },
@@ -344,6 +344,17 @@ fn add(
     for folder in folders {
         let loaded = Template::load(&folder).map_err(CommandError::text)?;
         let name = loaded.name.clone();
+        // `--trust` approves the template's current executable surface; the
+        // digest authorizes its hooks only while the installed content matches.
+        let approval = if trust {
+            Some(
+                toha::HookSurface::of(&loaded)
+                    .map_err(CommandError::text)?
+                    .digest(),
+            )
+        } else {
+            None
+        };
         let formal = if matches!(parsed, Address::Folder(_)) {
             folder.to_string_lossy().into_owned()
         } else {
@@ -385,7 +396,7 @@ fn add(
             commit: commit.clone(),
             path,
             aliases: alias.clone().into_iter().collect(),
-            trusted: trust,
+            approval,
         };
         additions.push((formal.clone(), entry));
         names.push((formal, name));
@@ -412,7 +423,7 @@ fn add(
                 formal_name: formal.clone(),
                 entry: entry.clone(),
                 layer: Layer::User,
-                trusted: entry.trusted,
+                approval: entry.approval.clone(),
             },
         );
     }
@@ -437,6 +448,24 @@ fn add(
     install_staged(ctx, &clone.into_iter().collect::<Vec<_>>(), &next)?;
     Ok(lines)
 }
+/// Whether an entry's stored approval still matches its installed executable
+/// surface. An entry with no approval, or one whose installed template cannot
+/// be loaded or read, is not trusted.
+fn effective_trust(listed: &registry::Listed) -> bool {
+    let Some(approval) = listed.approval.as_ref() else {
+        return false;
+    };
+    let Ok(template) = Template::load(&listed.entry.path) else {
+        return false;
+    };
+    let Ok(surface) = toha::HookSurface::of(&template) else {
+        return false;
+    };
+    matches!(
+        toha::evaluate_trust(Some(approval), &surface.digest()),
+        toha::Trust::Trusted
+    )
+}
 fn list(ctx: &Context, filter: Option<Layer>, json: bool) -> Result<Vec<String>, CommandError> {
     let entries: Vec<registry::Listed> = match filter {
         None => ctx.registry.entries.values().cloned().collect(),
@@ -453,7 +482,7 @@ fn list(ctx: &Context, filter: Option<Layer>, json: bool) -> Result<Vec<String>,
                     formal_name: formal.clone(),
                     entry: entry.clone(),
                     layer,
-                    trusted: entry.trusted,
+                    approval: entry.approval.clone(),
                 })
                 .collect()
         }
@@ -485,7 +514,7 @@ fn list(ctx: &Context, filter: Option<Layer>, json: bool) -> Result<Vec<String>,
         Some(Layer::Discovered) => Vec::new(),
     };
     if json {
-        let values: Vec<_> = entries.iter().map(|e| serde_json::json!({ "formal_name": e.formal_name, "name": e.entry.name, "aliases": e.entry.aliases, "trusted": e.trusted, "layer": e.layer, "source": e.entry.source, "ref": e.entry.reference, "commit": e.entry.commit, "path": e.entry.path })).collect();
+        let values: Vec<_> = entries.iter().map(|e| serde_json::json!({ "formal_name": e.formal_name, "name": e.entry.name, "aliases": e.entry.aliases, "trusted": effective_trust(e), "layer": e.layer, "source": e.entry.source, "ref": e.entry.reference, "commit": e.entry.commit, "path": e.entry.path })).collect();
         return Ok(vec![
             serde_json::to_string(&values).map_err(CommandError::text)?,
         ]);
@@ -497,7 +526,7 @@ fn list(ctx: &Context, filter: Option<Layer>, json: bool) -> Result<Vec<String>,
             e.formal_name,
             e.entry.name,
             e.entry.aliases.join(","),
-            e.trusted
+            effective_trust(e)
         )
     }));
     Ok(lines)
@@ -521,6 +550,7 @@ fn update(ctx: &Context, template: Option<String>) -> Result<Vec<String>, Comman
     }
     let mut next = ctx.user.clone();
     let mut lines = Vec::new();
+    let mut updated = Vec::new();
     let mut fetched = std::collections::HashSet::new();
     let mut staged = Vec::new();
     for (formal, entry) in selected {
@@ -559,9 +589,30 @@ fn update(ctx: &Context, template: Option<String>) -> Result<Vec<String>, Comman
                 .set_commit(&key, commit.clone())
                 .map_err(CommandError::text)?;
             lines.push(format!("updated {key}"));
+            updated.push(key);
         }
     }
     install_staged(ctx, &staged, &next)?;
+    // Effective trust is always the live compare, so the stored approval is
+    // never rewritten here. An update that changes a template's executable
+    // surface lapses its approval; the next apply lists the change and exits 3.
+    for formal in &updated {
+        let Some(entry) = next.templates.get(formal) else {
+            continue;
+        };
+        let Some(approval) = entry.approval.as_ref() else {
+            continue;
+        };
+        let listed = registry::Listed {
+            formal_name: formal.clone(),
+            entry: entry.clone(),
+            layer: Layer::User,
+            approval: Some(approval.clone()),
+        };
+        if !effective_trust(&listed) {
+            lines.push(format!("{formal} (hooks changed; approval lapsed)"));
+        }
+    }
     Ok(lines)
 }
 fn remove(ctx: &Context, template: &str) -> Result<Vec<String>, CommandError> {

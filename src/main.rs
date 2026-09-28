@@ -809,7 +809,9 @@ fn run(
     // A template named for its own staged interview resumes that interview.
     let template = template.filter(|_| existing.is_none());
     let mut terminal_run = template.is_some() && answers.is_none();
-    let registry_trusted;
+    // The stored approval digest of the template resolved by name, compared to
+    // the live executable surface once the template is loaded.
+    let approval: Option<toha::ReviewDigest>;
     // The installed template whose registry trust would run the hooks.
     let installed: Option<String>;
     let (template, interview, saved) = match (template, existing) {
@@ -822,7 +824,7 @@ fn run(
                     Ok(v) => v,
                     Err(e) => return resolve_error(e),
                 };
-            registry_trusted = resolved.trusted;
+            approval = resolved.approval.clone();
             installed = trustable(&resolved, &registry);
             let template = match load_template(&resolved) {
                 Ok(v) => v,
@@ -893,7 +895,7 @@ fn run(
                 Ok(v) => v,
                 Err(e) => return resolve_error(e),
             };
-            registry_trusted = resolved.trusted;
+            approval = resolved.approval.clone();
             installed = trustable(&resolved, &registry);
             let template = match load_template(&resolved) {
                 Ok(v) => v,
@@ -1012,6 +1014,19 @@ fn run(
         (Some(_), Some(_)) => unreachable!("a named template resumes its staged interview"),
     };
     let completed = interview;
+    // Trust is the live executable surface matching the stored approval; the
+    // one flag `--trust` overrides for a single run. This is the only place a
+    // template becomes trusted from stored state.
+    let live_surface = match toha::HookSurface::of(&template) {
+        Ok(surface) => surface.digest(),
+        Err(error) => return Outcome::Error(error.to_string()),
+    };
+    let registry_trusted = matches!(
+        toha::evaluate_trust(approval.as_ref(), &live_surface),
+        toha::Trust::Trusted
+    );
+    // An approval that no longer matches marks the hooks changed since approval.
+    let changed_since_approval = approval.is_some() && !registry_trusted;
     let plan = match Plan::build(&template, &completed, path) {
         Ok(plan) => plan,
         Err(error) => return Outcome::Error(error.to_string()),
@@ -1033,7 +1048,11 @@ fn run(
         // Written after the plan, so that a terminal shows it last.
         eprintln!(
             "{}",
-            guidance::dry_run_needs_trust(&invocation, installed.as_deref())
+            guidance::dry_run_needs_trust(
+                &invocation,
+                installed.as_deref(),
+                changed_since_approval
+            )
         );
         return Outcome::Saved(0);
     }
@@ -1071,7 +1090,11 @@ fn run(
             for line in preview.into_iter().skip(usize::from(before.is_some())) {
                 println!("{line}");
             }
-            Outcome::NeedsTrust(guidance::needs_trust(&invocation, installed.as_deref()))
+            Outcome::NeedsTrust(guidance::needs_trust(
+                &invocation,
+                installed.as_deref(),
+                changed_since_approval,
+            ))
         }
         Err(error @ toha::ApplyError::Conflicts(_)) => {
             Outcome::Error(format!("{error}\n{}", guidance::conflicts(&invocation)))

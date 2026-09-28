@@ -8,6 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use toha::{
+    ReviewDigest,
     config::{self, Config},
     registry::{self, Layer, Registry, RegistryFile},
     source::{self, Address},
@@ -18,7 +19,10 @@ pub struct ResolvedTemplate {
     pub formal_name: String,
     pub commit: String,
     pub folder: PathBuf,
-    pub trusted: bool,
+    /// The approved executable-surface digest for a template resolved by name
+    /// from a writable registry, or `None` for an address, folder, or local
+    /// template, which run hooks only through `--trust`.
+    pub approval: Option<ReviewDigest>,
     pub named: bool,
 }
 
@@ -75,7 +79,7 @@ fn entry(formal: String, registry: &Registry) -> Option<ResolvedTemplate> {
         formal_name: formal,
         commit: listed.entry.commit.clone().unwrap_or_default(),
         folder: listed.entry.path.clone(),
-        trusted: listed.trusted,
+        approval: listed.approval.clone(),
         named: true,
     })
 }
@@ -149,7 +153,7 @@ fn fetch_new(
                     formal_name,
                     commit: commit.clone(),
                     folder: selected_folder(&root, address)?,
-                    trusted: false,
+                    approval: None,
                     named: false,
                 });
             }
@@ -167,7 +171,7 @@ fn fetch_new(
         formal_name,
         commit: fetched.commit,
         folder: selected_folder(&root, address)?,
-        trusted: false,
+        approval: None,
         named: false,
     })
 }
@@ -185,13 +189,13 @@ pub fn resolve_template(
             formal_name: folder.to_string_lossy().into_owned(),
             commit: String::new(),
             folder: folder.clone(),
-            trusted: false,
+            approval: None,
             named: false,
         }),
         Address::Git { .. } => {
             let formal = address.formal_name(&config.hosts);
             if let Some(mut found) = entry(formal, registry) {
-                found.trusted = false;
+                found.approval = None;
                 found.named = false;
                 Ok(found)
             } else {
@@ -242,14 +246,18 @@ pub fn resume_template(
             formal_name: formal.into(),
             commit: String::new(),
             folder,
-            trusted: named && entry(formal.into(), registry).is_some_and(|v| v.trusted),
+            approval: if named {
+                entry(formal.into(), registry).and_then(|v| v.approval)
+            } else {
+                None
+            },
             named,
         });
     }
     if let Some(found) = entry(formal.into(), registry) {
         if found.commit == commit {
             return Ok(ResolvedTemplate {
-                trusted: named && found.trusted,
+                approval: if named { found.approval.clone() } else { None },
                 named,
                 ..found
             });
@@ -268,7 +276,11 @@ pub fn resume_template(
         formal_name: formal.into(),
         commit: commit.into(),
         folder,
-        trusted: named && entry(formal.into(), registry).is_some_and(|v| v.trusted),
+        approval: if named {
+            entry(formal.into(), registry).and_then(|v| v.approval)
+        } else {
+            None
+        },
         named,
     })
 }

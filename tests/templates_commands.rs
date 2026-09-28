@@ -126,7 +126,7 @@ fn readd_sparse_entry_persists_alias_and_trust() {
         serde_norway::from_str(&fs::read_to_string(&registry_path).unwrap()).unwrap();
     let entry = sparse["templates"][&address].as_object_mut().unwrap();
     entry.remove("aliases");
-    entry.remove("trusted");
+    entry.remove("approval");
     fs::write(&registry_path, serde_norway::to_string(&sparse).unwrap()).unwrap();
     assert_exit(
         &run(
@@ -141,7 +141,13 @@ fn readd_sparse_entry_persists_alias_and_trust() {
         written["templates"][&address]["aliases"],
         serde_json::json!(["kept"])
     );
-    assert_eq!(written["templates"][&address]["trusted"], true);
+    // Re-adding with --trust persists an approval digest for the template.
+    assert!(
+        written["templates"][&address]["approval"]
+            .as_str()
+            .is_some_and(|digest| digest.starts_with("sha256:")),
+        "{written}"
+    );
 }
 #[test]
 fn add_rejects_multiple_with_alias_and_bad_template() {
