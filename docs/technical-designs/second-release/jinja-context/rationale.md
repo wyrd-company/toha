@@ -82,7 +82,7 @@ The target shape consumes approved producer revision
 `72a564799b95ab1c187c913ac14ef14938f880bf2ab24ec337c03f887991457b`,
 integrated at `dfe7ba017ebef525310db8b8ab4ead58fae2d147` with design
 SHA-256
-`9560139e48798429a95e06a695dea703817b673d2e18f19e25f3fe4a3efe9b`.
+`9560139e48798429a95e06a695dea703817b673d2e18f19e25f3fe4a3efe9b39`.
 It uses `CanonicalTarget`, `StagingError`, `as_path()`, and no unchecked
 constructor or consumer normalization.
 

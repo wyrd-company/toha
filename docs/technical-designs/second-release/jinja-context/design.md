@@ -135,7 +135,7 @@ The approved target producer contract is anchored at revision
 `72a564799b95ab1c187c913ac14ef14938f880bf2ab24ec337c03f887991457b`,
 and integrated at revision `dfe7ba017ebef525310db8b8ab4ead58fae2d147`,
 design SHA-256
-`9560139e48798429a95e06a695dea703817b673d2e18f19e25f3fe4a3efe9b`:
+`9560139e48798429a95e06a695dea703817b673d2e18f19e25f3fe4a3efe9b39`:
 
 ```rust
 pub fn canonical_target(
