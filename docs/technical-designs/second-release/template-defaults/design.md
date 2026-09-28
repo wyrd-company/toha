@@ -1,17 +1,19 @@
 # Template-specific configured defaults — design
 
 Reuse an answer across templates without pretending two questions mean the same
-thing because they share an id. Config gains a **named store of reusable values**
-(`values`) and a **`template-defaults`** map that, for one template *identity*,
-points a named question's default at a stored value or an inline literal. Nothing
-is applied by matching question ids. Resolution happens at the config/resolve
-boundary and flattens to the unchanged `Seed.defaults: IndexMap<Id, RawAnswer>`;
-the pure interview engine stays identity- and store-unaware.
+thing because they share an id. Config gains a **named store of reusable presets**
+(`presets`) and a **`template-defaults`** map that, for one template *identity*,
+points a named question's default at a preset or an inline literal. Nothing is
+applied by matching question ids. Resolution happens at the config/resolve boundary
+and flattens to the unchanged `Seed.defaults: IndexMap<Id, RawAnswer>`; the pure
+interview engine stays identity- and preset-unaware.
 
-This is the synthesized design for the reframed feature. Base: Candidate 1 (values
-store + identity-keyed mapping, references appear only in mappings). Grafts from
-Candidate 2 (file-naming attribution) and Candidate 3 (reference provenance in
-errors). The prior global-by-id design is superseded (git history `37e2215`).
+This is the synthesized design for the reframed feature, with Bob's approved naming
+(`presets`; reference form `{ preset: <name> }`). Base: Candidate 1 (preset store +
+identity-keyed mapping, references appear only in mappings). Grafts from Candidate 2
+(file-naming attribution) and Candidate 3 (reference provenance in errors). The
+prior global-by-id design is superseded (git history `37e2215`); the arena evaluated
+the store under the working name `values`, renamed to `presets` on approval.
 Evidence: `grounding.md`, `rubric.md`, `candidates/`, `cross-judge.md`,
 `synthesis.md`, `verification.md`.
 
@@ -22,44 +24,44 @@ Evidence: `grounding.md`, `rubric.md`, `candidates/`, `cross-judge.md`,
 ```yaml
 # ~/.config/toha/config.yml
 
-# NEW: a named store of reusable values. You choose the names; they are NOT
-# question ids. A stored value is just data you want to reuse.
-values:
+# NEW: a named store of reusable presets. You choose the names; they are NOT
+# question ids. A preset is just data you want to reuse.
+presets:
   primary_contact: contact@example.invalid
   house_owner: owner/collection
 
 # NEW: per-template defaults, keyed by a template's stable identity (formal name).
-# A question's default points at a stored value (a reference) or is an inline
-# literal. A value reaches a question ONLY because a mapping says so.
+# A question's default points at a preset (a reference) or is an inline literal.
+# A preset reaches a question ONLY because a mapping says so.
 template-defaults:
   "gh:owner/collection":            # this template asks a question id `email`
-    email: { value: primary_contact }   # reference the stored value
-    license: MIT                        # inline literal
+    email: { preset: primary_contact }   # reference the preset
+    license: MIT                          # inline literal
   "gh:owner/newsletter":            # a DIFFERENT template, question id `contact`
-    contact: { value: primary_contact }
+    contact: { preset: primary_contact }
   "toha-demo":                      # the reserved bundled-demo identity
-    title: { value: primary_contact }
+    title: { preset: primary_contact }
 ```
 
-One rule the author internalizes: **`{ value: <name> }` is a reference to a stored
-value; any bare scalar or list is an inline literal.** A literal that spells a
-stored-value name (`license: primary_contact`) is the string `primary_contact`,
-never the value it names — the two forms are different YAML shapes.
+One rule the author internalizes: **`{ preset: <name> }` is a reference to a
+preset; any bare scalar or list is an inline literal.** A literal that spells a
+preset name (`license: primary_contact`) is the string `primary_contact`, never the
+preset it names — the two forms are different YAML shapes.
 
 There is **no** implicit application by question id. A question in another template
 that merely shares the id `email` is untouched unless its own mapping references a
-value.
+preset.
 
 ### Required config examples and resolved outcomes
 
-**1 — one stored value, two differently-named questions**
+**1 — one preset, two differently-named questions**
 
 ```yaml
-values:
+presets:
   primary_contact: contact@example.invalid
 template-defaults:
-  "gh:owner/collection": { email:   { value: primary_contact } }   # asks `email`
-  "gh:owner/newsletter": { contact: { value: primary_contact } }   # asks `contact`
+  "gh:owner/collection": { email:   { preset: primary_contact } }   # asks `email`
+  "gh:owner/newsletter": { contact: { preset: primary_contact } }   # asks `contact`
 ```
 
 | Selected template | Question id | Default becomes |
@@ -72,9 +74,9 @@ Reuse comes from two questions pointing at one **name**, not from a shared id.
 **2 — a same-id question with no mapping is untouched**
 
 ```yaml
-values: { primary_contact: contact@example.invalid }
+presets: { primary_contact: contact@example.invalid }
 template-defaults:
-  "gh:owner/collection": { email: { value: primary_contact } }
+  "gh:owner/collection": { email: { preset: primary_contact } }
   # gh:owner/blog also asks `email`, but has no entry.
 ```
 
@@ -86,11 +88,11 @@ template-defaults:
 **3 — the bundled `toha-demo` identity as a selector** (it asks `title`, `topic`)
 
 ```yaml
-values: { default_title: Sample Title }
+presets: { default_title: Sample Title }
 template-defaults:
   "toha-demo":
-    title: { value: default_title }   # from the store
-    topic: Sample Topic               # inline literal
+    title: { preset: default_title }   # from the preset store
+    topic: Sample Topic                # inline literal
 ```
 
 `toha apply toha-demo ./out` → `title` = `Sample Title`, `topic` = `Sample Topic`.
@@ -100,25 +102,25 @@ An installed/aliased/discovered `toha-demo` resolves to a different formal name
 **4 — a missing reference and a type mismatch (exact attribution)**
 
 ```yaml
-values: {}                                   # no default_title
-template-defaults: { "toha-demo": { title: { value: default_title } } }
+presets: {}                                  # no default_title
+template-defaults: { "toha-demo": { title: { preset: default_title } } }
 ```
 ```
 error: ~/.config/toha/config.yml: template-defaults."toha-demo".title:
-       no stored value named "default_title"
+       no preset named "default_title"
 ```
 
 ```yaml
-values: { flag: yes-please }                 # a string
-template-defaults: { "gh:owner/collection": { agree: { value: flag } } }  # agree is Confirm
+presets: { flag: yes-please }                # a string
+template-defaults: { "gh:owner/collection": { agree: { preset: flag } } }  # agree is Confirm
 ```
 ```
 error: ~/.config/toha/config.yml: template-defaults."gh:owner/collection".agree
-       → values."flag" ("yes-please"): must be true or false
+       → presets."flag" ("yes-please"): must be true or false
 ```
 
 The attribution names the config **file**, the mapping site, and — when the value
-came through a reference — the stored value it resolved through, so the author knows
+came through a reference — the preset it resolved through, so the author knows
 exactly what to fix. The kind message (`must be true or false`, `must be a string`,
 `must be an array of strings`) is the engine's existing `parse_kind` sentence.
 
@@ -130,7 +132,7 @@ let resolved = cli::resolve::resolve_template(arg, &config, &registry, &dirs, &c
 let template = Template::load(&resolved.folder)?;
 // Resolution lives in the toha library, so crate callers get identity scoping too:
 let defaults = toha::interview::configured_defaults(
-    &resolved.formal_name, &template, &config.values, &config.template_defaults,
+    &resolved.formal_name, &template, &config.presets, &config.template_defaults,
 )?;                                        // IndexMap<Id, RawAnswer>
 let interview = toha::interview::Interview::start(&template, Seed { now: jiff::Zoned::now(), defaults })?;
 ```
@@ -138,28 +140,28 @@ let interview = toha::interview::Interview::start(&template, Seed { now: jiff::Z
 ## Module and seam map
 
 ```text
-   config files: values + template-defaults   (system, user, local .toha.yml)
+   config files: presets + template-defaults   (system, user, local .toha.yml)
         │  parse ONCE at the boundary: classify each leaf (reference vs literal),
-        │  parse value names and question ids, tag each with its file/layer
+        │  parse preset names and question ids, tag each with its file/layer
         ▼
-   src/config.rs ── Config { values, template_defaults, .. }   [+2 fields, -defaults]
+   src/config.rs ── Config { presets, template_defaults, .. }   [+2 fields, -defaults]
         │
         ▼
    src/cli/resolve.rs ── ResolvedTemplate (UNCHANGED)   → formal_name (stable identity)
         │
         ▼
-   src/interview.rs ── configured_defaults(formal_name, template, values, mappings)
+   src/interview.rs ── configured_defaults(formal_name, template, presets, mappings)
         │   pick mappings[formal_name]; for each id the template DEFINES:
-        │     reference → look up values (missing → attributed error)
+        │     reference → look up presets (missing → attributed error)
         │     literal   → use verbatim
         │     validate the used value's kind vs the question kind (attributed)
-        │   → IndexMap<Id, RawAnswer>          ← identity + store flattened away here
+        │   → IndexMap<Id, RawAnswer>          ← identity + presets flattened away here
         ▼
    src/main.rs::seed / continue / apply / progress
         ▼
    Seed { now, defaults }
         ▼
-   PURE ENGINE, identity- and store-UNAWARE        [behavior UNCHANGED below Seed]
+   PURE ENGINE, identity- and preset-UNAWARE        [behavior UNCHANGED below Seed]
 ```
 
 Two files carry the feature (`config.rs`, `interview.rs`); the third change is four
@@ -171,15 +173,15 @@ every driver and crate path is served by one code path (grounding: path parity).
 ```rust
 // src/config.rs — parsed once at the boundary into domain types.
 
-/// A config-author-chosen name in the value store. Matches the existing
+/// A config-author-chosen name in the preset store. Matches the existing
 /// `identifier` pattern `^[a-z_][a-z0-9_]*$`. Deliberately NOT a question id —
 /// the two namespaces never touch.
-pub struct ValueName(String);
+pub struct PresetName(String);
 
 /// A configured default's source. The reference/literal split is decided ONCE,
 /// here, and encoded in the type; downstream code never re-parses it.
 pub enum DefaultSource {
-    Ref(ValueName),             // `{ value: <name> }` — resolve against `values`
+    Ref(PresetName),            // `{ preset: <name> }` — resolve against `presets`
     Literal(serde_json::Value), // a bare scalar or string array — used verbatim
 }
 
@@ -187,7 +189,7 @@ pub struct Config {
     pub templates_paths: Vec<PathBuf>,
     pub local_templates_paths: Vec<PathBuf>,
     // REMOVED: pub defaults: IndexMap<Id, Value>   (global-by-id is replaced)
-    pub values: IndexMap<ValueName, Value>,                       // NEW: the store
+    pub presets: IndexMap<PresetName, Value>,                     // NEW: the store
     pub template_defaults: IndexMap<String, IndexMap<Id, DefaultSource>>, // NEW
     pub hosts: IndexMap<String, String>,
     pub local_config_name: String,
@@ -198,15 +200,15 @@ Invariants encoded in the types:
 
 - **Reference vs literal is a type, not a convention** — once past the boundary,
   code matches on `DefaultSource`; a literal can never be re-read as a reference.
-- **The store holds only literals**; `DefaultSource::Ref` can appear only in
-  `template_defaults`. A stored value can never reference another stored value, so
-  **cycles are impossible by construction** — there is no cycle detector because no
-  cycle can exist (recommended; chaining is decision D4).
-- **Three disjoint key types** — `ValueName` (store names), `String` (formal
-  identities), `Id` (question ids) — so no code can confuse a value name with an
+- **The preset store holds only literals**; `DefaultSource::Ref` can appear only in
+  `template_defaults`. A preset can never reference another preset, so **cycles are
+  impossible by construction** — there is no cycle detector because no cycle can
+  exist (recommended; chaining is decision D4).
+- **Three disjoint key types** — `PresetName` (preset names), `String` (formal
+  identities), `Id` (question ids) — so no code can confuse a preset name with an
   identity or a question id.
 
-The wire form (`Layer`) parses `values: Option<IndexMap<String, Value>>` and
+The wire form (`Layer`) parses `presets: Option<IndexMap<String, Value>>` and
 `template_defaults: Option<IndexMap<String, IndexMap<String, Value>>>`, then
 classifies each leaf into `DefaultSource` and validates the names — parse once at
 the boundary, trust the types inside.
@@ -215,20 +217,20 @@ the boundary, trust the types inside.
 
 ```rust
 // src/interview.rs — replaces today's configured_defaults(template, &config.defaults).
-/// Project the store and per-identity mappings onto ONE selected template,
+/// Project the preset store and per-identity mappings onto ONE selected template,
 /// producing the flat seed the pure engine consumes. `formal_name` selects which
 /// mapping applies (exact match). Only questions the template DEFINES are
 /// considered; for each with a mapping, the source is resolved (a Ref against
-/// `values`, a Literal verbatim) and kind-checked against the question. Unknown
+/// `presets`, a Literal verbatim) and kind-checked against the question. Unknown
 /// mapped ids are skipped with a warning (templates evolve), never an error.
 ///
-/// Errors, each attributed to the config file + site (+ the value for a Ref):
-///   - Ref to a name absent from `values` → "no stored value named \"<name>\""
+/// Errors, each attributed to the config file + site (+ the preset for a Ref):
+///   - Ref to a name absent from `presets` → "no preset named \"<name>\""
 ///   - resolved value kind ≠ question kind → the parse_kind message
 pub fn configured_defaults(
     formal_name: &str,
     template: &Template,
-    values: &IndexMap<ValueName, Value>,
+    presets: &IndexMap<PresetName, Value>,
     mappings: &IndexMap<String, IndexMap<Id, DefaultSource>>,
 ) -> Result<Resolution, EvalError>;
 
@@ -247,10 +249,10 @@ pub struct EvalError {
     pub message: String,
     pub expression: Option<String>,
     pub config_key: Option<String>,   // NEW: e.g.
-    //  template-defaults."gh:owner/collection".agree → values."flag" ("yes-please")
+    //  template-defaults."gh:owner/collection".agree → presets."flag" ("yes-please")
 }
 // The config site includes the file path (from the layer the mapping came from)
-// and, for a reference, the resolved value: `→ values."<name>" (<value>)`.
+// and, for a reference, the resolved preset: `→ presets."<name>" (<value>)`.
 ```
 
 Wiring — all four sites already hold the formal name (`resolved.formal_name` for
@@ -259,28 +261,29 @@ direct stage/apply and resume; `saved.template` for progress):
 ```rust
 // seed() gains the formal name; the three staged sites swap the call the same way:
 let Resolution { defaults, warnings } = interview::configured_defaults(
-    &resolved.formal_name, &template, &config.values, &config.template_defaults,
+    &resolved.formal_name, &template, &config.presets, &config.template_defaults,
 )?;
 warnings.iter().for_each(|w| eprintln!("warning: {w}"));
 // call sites: seed src/main.rs:422, continue :664, apply-staged :902, progress :496
 ```
 
 On resume the formal name comes from the recorded `StagedRecord.template` and the
-store + mappings are re-read from live config; nothing is frozen into the record.
+preset store + mappings are re-read from live config; nothing is frozen into the
+record.
 
 ## Precedence — total and deterministic
 
 Layers read system → user → local, as today.
 
-1. **The store `values`** merges per name: `local > user > system` (the existing
-   per-key merge used for `defaults`/`hosts`). Other names are kept.
+1. **The preset store `presets`** merges per name: `local > user > system` (the
+   existing per-key merge used for `defaults`/`hosts`). Other names are kept.
 2. **The mappings `template-defaults`** merge per `(formal name, question id)`:
    a later layer replaces that one pair, keeping sibling questions and other
    identities. A layer adding a new identity or id just adds it.
-3. **Interaction.** A reference always resolves against the **fully merged** store,
-   regardless of which layer the mapping came from — one store, one source of
-   truth. A local mapping may reference a user- or system-defined value.
-4. Both `values` and `template-defaults` are available in system, user, and local
+3. **Interaction.** A reference always resolves against the **fully merged** preset
+   store, regardless of which layer the mapping came from — one store, one source of
+   truth. A local mapping may reference a user- or system-defined preset.
+4. Both `presets` and `template-defaults` are available in system, user, and local
    layers (as `defaults` was). A `template-defaults` key is a formal name, so a
    local mapping supplies *answers for* an identity; it never *remaps* an identity —
    preserving the identity-stability guarantee that keeps `hosts`/`local-config-name`
@@ -314,14 +317,14 @@ alias/short is not offered — those are not stable identity).
   silent empty default.
 - **Type mismatch** → the used value's kind is checked against the question kind via
   the existing `parse_kind`; the error is attributed to the config site (and the
-  value, for a reference).
+  preset, for a reference).
 - **Cycles** → impossible by construction under the recommended shape (references
-  appear only in mappings and resolve one hop into a literal store). If value→value
-  chaining is later chosen (D4), a cycle detector and a `$$`-style escape become
-  necessary; this design recommends against it.
+  appear only in mappings and resolve one hop into a literal preset store). If
+  preset→preset chaining is later chosen (D4), a cycle detector and a `$$`-style
+  escape become necessary; this design recommends against it.
 - **Validate only what is used** — only mappings for the selected identity whose
-  question the template defines are resolved and kind-checked; an unreferenced store
-  value and a mapping for another identity are never validated. See D5 for the
+  question the template defines are resolved and kind-checked; an unreferenced
+  preset and a mapping for another identity are never validated. See D5 for the
   reachability nuance (`when`/batch).
 
 ## Error / results contract
@@ -329,58 +332,58 @@ alias/short is not offered — those are not stable identity).
 | Situation | Result |
 | --- | --- |
 | Mapping id resolves, kind matches | inserted into `Seed.defaults` |
-| Ref to a name absent from merged `values` | `EvalError`, `<file>: template-defaults."<formal>".<id>: no stored value named "<name>"`, exit 1 |
+| Ref to a name absent from merged `presets` | `EvalError`, `<file>: template-defaults."<formal>".<id>: no preset named "<name>"`, exit 1 |
 | Value kind ≠ question kind (literal) | `EvalError`, `<file>: template-defaults."<formal>".<id>: <parse_kind message>`, exit 1 |
-| Value kind ≠ question kind (via ref) | `EvalError`, `<file>: template-defaults."<formal>".<id> → values."<name>" ("<value>"): <parse_kind message>`, exit 1 |
+| Value kind ≠ question kind (via ref) | `EvalError`, `<file>: template-defaults."<formal>".<id> → presets."<name>" ("<value>"): <parse_kind message>`, exit 1 |
 | Mapping id the selected template does not define | skipped; one stderr warning; non-fatal |
 | Mapping for a non-selected identity | ignored |
-| Unreferenced store value | never validated |
+| Unreferenced preset | never validated |
 | Legacy `defaults:` present in any layer | migration error naming the file (see D1), exit 1 |
-| Malformed leaf (object that is not `{ value: <name> }`) | schema rejection naming the file + path, exit 1 |
+| Malformed leaf (object that is not `{ preset: <name> }`) | schema rejection naming the file + path, exit 1 |
 
 No new exit code, no new trust/permission/timeout/pinned-check/subprocess surface;
 resolution reads config data only.
 
 ## Behaviors to prove (falsifiable)
 
-- **B1 reuse_by_name** — one `values` entry referenced by two differently-named
-  questions in two templates yields that value for each. *Fails if reuse needs a
-  shared id.*
-- **B2 no_implicit_by_id** — a template with an `email` question and no mapping
-  keeps its own default while another template maps `email`. *Fails if global-by-id
-  leaks back.*
+- **B1 reuse_by_name** — one preset referenced by two differently-named questions in
+  two templates yields that preset's value for each. *Fails if reuse needs a shared
+  id.*
+- **B2 no_implicit_by_id** — a template with an `email` question and no mapping keeps
+  its own default while another template maps `email`. *Fails if global-by-id leaks
+  back.*
 - **B3 literal_never_a_ref** — `license: primary_contact` (bare) yields the string
-  `primary_contact`, not the stored value. *Fails if a literal is read as a ref.*
-- **B4 missing_ref_is_attributed** — a `{ value: N }` with no `values.N` for a
-  defined question yields the exact missing-ref text naming the file; no silent
+  `primary_contact`, not the preset. *Fails if a literal is read as a ref.*
+- **B4 missing_ref_is_attributed** — a `{ preset: N }` with no `presets.N` for a
+  defined question yields the exact missing-preset text naming the file; no silent
   empty. *Fails on silent empty.*
 - **B5 type_mismatch_is_attributed** — a bad literal and a bad value-via-ref each
-  yield the exact attributed message (the ref case names `→ values."<name>"`).
+  yield the exact attributed message (the ref case names `→ presets."<name>"`).
   *Fails if unattributed or accepted.*
 - **B6 only_used_is_validated** — a broken mapping for a different template, and an
-  unreferenced store value, do not error. *Fails on eager whole-config validation.*
-- **B7 cycles_impossible** — a `values` leaf shaped like a reference is rejected by
-  the store schema (store leaves are literals only). *Fails if `values` accepts a
-  reference.*
+  unreferenced preset, do not error. *Fails on eager whole-config validation.*
+- **B7 cycles_impossible** — a `presets` leaf shaped like a reference is rejected by
+  the preset-store schema (store leaves are literals only). *Fails if `presets`
+  accepts a reference.*
 - **B8 identity_selects** — two templates sharing a short name/title but distinct
   formal names receive their own mappings; neither leaks. *Fails if selection keys
   on short name.*
 - **B9 bundled_demo_selector** — mappings keyed `toha-demo` apply to the bundled
   demo resolved by that formal name. *Fails if the reserved identity is not matched.*
-- **B10 precedence_total** — local value overrides user value for a name; local
+- **B10 precedence_total** — local preset overrides user preset for a name; local
   mapping overrides user mapping for one `(formal, id)` without dropping siblings; a
-  local mapping resolves a user-defined value. *Fails on non-deterministic or
+  local mapping resolves a user-defined preset. *Fails on non-deterministic or
   destructive merge.*
-- **B11 resume_reresolves** — change a stored value between `stage` and `continue`;
-  the resumed interview reflects the new value. *Fails if defaults are frozen.*
+- **B11 resume_reresolves** — change a preset between `stage` and `continue`; the
+  resumed interview reflects the new value. *Fails if defaults are frozen.*
 - **B12 driver_parity** — terminal, headless, staged, direct, and crate paths give
   identical `Seed.defaults` for identical inputs. *Fails if any path diverges.*
 - **B13 legacy_defaults_refused** — a config with `defaults:` fails at load with a
   message naming the file and the conversion; the values are not dropped from the
   file. *Fails on silent acceptance or silent drop.*
 - **B14 engine_purity** — the pipeline below `Seed` is unchanged; the engine never
-  receives the formal name or the store. *Fails if identity/store leaks past the
-  boundary.*
+  receives the formal name or the preset store. *Fails if identity/presets leaks
+  past the boundary.*
 
 ## Proposed contract edits (described; applied by paired implementation 1058)
 
@@ -388,7 +391,7 @@ resolution reads config data only.
 
 ```yaml
 $defs:
-  value-name: { $ref: "#/$defs/identifier" }
+  preset-name: { $ref: "#/$defs/identifier" }
   literal:
     oneOf:
       - { type: string }
@@ -397,11 +400,11 @@ $defs:
   reference:
     type: object
     additionalProperties: false
-    required: [value]
-    properties: { value: { $ref: "#/$defs/value-name" } }
-  values:
+    required: [preset]
+    properties: { preset: { $ref: "#/$defs/preset-name" } }
+  presets:
     type: object
-    propertyNames: { $ref: "#/$defs/value-name" }
+    propertyNames: { $ref: "#/$defs/preset-name" }
     additionalProperties: { $ref: "#/$defs/literal" }
   default-source:
     oneOf: [ { $ref: "#/$defs/reference" }, { $ref: "#/$defs/literal" } ]
@@ -411,21 +414,21 @@ $defs:
       type: object
       propertyNames: { $ref: "#/$defs/identifier" }   # question ids
       additionalProperties: { $ref: "#/$defs/default-source" }
-# shared-config AND local-config: REMOVE `defaults`; ADD `values` and `template-defaults`.
+# shared-config AND local-config: REMOVE `defaults`; ADD `presets` and `template-defaults`.
 ```
 
 The `default-source` `oneOf` makes the representation airtight: a reference is an
-object with exactly `value`; a literal is a scalar or string array; any other object
-is a schema error (not a misread). A stray `defaults:` is caught at load (before
-schema) for a friendly migration message.
+object with exactly `preset`; a literal is a scalar or string array; any other
+object is a schema error (not a misread). A stray `defaults:` is caught at load
+(before schema) for a friendly migration message.
 
-`docs/configuration.md`: replace "Set default answers" with "Reusable values and
-template defaults" — the two properties, the reference-vs-literal rule, the
-precedence, the file-naming errors, and a **guardrail** steering `values` names away
-from question ids (so the store does not read like the removed global-by-id model).
-`docs/specifications/template-interviews.md`: a configured default reaches a question
-only through a `template-defaults` mapping for the selected template's formal name,
-re-resolved against live config on resume.
+`docs/configuration.md`: replace "Set default answers" with "Presets and template
+defaults" — the two properties, the reference-vs-literal rule, the precedence, the
+file-naming errors, and a **guardrail** steering `presets` names away from question
+ids (so the store does not read like the removed global-by-id model).
+`docs/specifications/template-interviews.md`: a configured default reaches a
+question only through a `template-defaults` mapping for the selected template's
+formal name, re-resolved against live config on resume.
 
 ## Out of scope
 
@@ -433,7 +436,7 @@ The pure interview engine and its `Seed.defaults` contract; `Template`, `Plan`,
 `apply`, `protocol`, `staging`, `StagedRecord`; `ResolvedTemplate`'s shape and the
 `<TEMPLATE>` classification order; the trust model (a default never influences trust
 or runs a hook); registry writes (defaults stay a config-side preference). No
-value→value references (D4); no alias/short-name mapping keys; no object-valued
+preset→preset references (D4); no alias/short-name mapping keys; no object-valued
 answers; no new subcommand, trust, permission, timeout, pinned-version check, or
 subprocess. No production or shared schema/spec edits in this design task.
 
@@ -444,65 +447,57 @@ subprocess. No production or shared schema/spec edits in this design task.
   explicit and greppable, and its distinct-key form is airtight without relying on
   the answer shape; rejected as the base for per-row verbosity and because matching
   selectors through the registry re-admits ambiguity. Its file/index attribution is
-  grafted; its `value:`/`literal:` form is offered as decision D2.
+  grafted; its distinct-key form was offered as decision D2.
 - **Sigil references with chaining (arena C3).** `${name}` references, `$$` escape,
-  values may reference values, resolved by a cycle-detecting graph. Rejected: the
+  presets may reference presets, resolved by a cycle-detecting graph. Rejected: the
   sigil re-opens the literal-vs-reference collision the grounding lists under
   *Avoid*, and chaining/cycles are an anti-requirement; its reference-provenance
   error text is grafted.
 - **Broader reusable-value directions** (compared on accidental effects, user
-  control, author dependence, name stability, complexity): a shared value **group**
+  control, author dependence, name stability, complexity): a shared preset **group**
   a template can request; tags/traits on templates; named answer **profiles**
   selected per run. Recommended future direction: **named profiles** layered on the
-  value store (explicit, no accidental inheritance, no author dependence) — not
+  preset store (explicit, no accidental inheritance, no author dependence) — not
   built in this slice.
 
-## Decisions needed first (Bob)
+## Decisions (Bob-approved)
 
-- **D1 — Migration of existing `defaults:` (required; no silent data loss).**
-  *Reject-with-conversion* (recommended; a `defaults:` block is a load error naming
-  the file and showing the exact `values:` + `template-defaults:` rewrite — the
-  user's data stays in the file, nothing runs until converted, no behavior changes
-  silently) vs *adopt-into-`values`-with-warning* (data-preserving fallback if a
-  real 0.1 `defaults:` install base is confirmed; the values stop applying until
-  mapped — a silent behavior change) vs *deprecation-window* (rejected — keeps the
-  removed implicit coupling alive). Auto-translate is infeasible (global-by-id has
-  no identity to translate into). **Recommend reject-with-conversion; fall back to
-  adopt-into-`values` only if 0.1 users of `defaults:` are confirmed.** <span>This
-  is the load-bearing product decision.</span>
-- **D2 — Reference/literal representation.** *Concise* (recommended: `{ value:
-  <name> }` reference + bare scalar/array literal; airtight via the schema `oneOf`)
-  vs *distinct keys* (`value:` / `literal:`, maximally explicit and greppable,
-  future-proof against object-valued answers, but every literal is wrapped). Both
-  unambiguous. **Recommend concise.**
-- **D3 — Names.** The store is `values` and the mappings are `template-defaults`
-  (both converged across all three candidates; neither is `defaults`). Alternatives
-  considered: `stored-values`, `library`, `constants`. **Recommend `values` +
-  `template-defaults`.**
-- **D4 — Value chaining.** *Disallow value→value references* (recommended; cycles
-  impossible by construction, no escape rule needed) vs *allow chaining* with a
-  cycle detector and a literal escape. **Recommend disallow.**
-- **D5 — Validation scope, and the reuse-kind limit (disclosure).** Validate a
-  mapping when the template *defines* the question (recommended; consistent with
-  today's `configured_defaults`, deterministic, catches config errors early) vs only
-  when the question is *reached* given `when`/batch. Disclosure, not a choice: a
-  stored value has one answer kind (its JSON shape), so one value can seed only
-  questions of that kind — documented, not a defect. **Recommend validate-when-
-  defined; document the one-kind-per-value property.**
+Bob approved the recommended option for each decision, with one naming revision
+(the store is `presets`, the reference form is `{ preset: <name> }`).
 
-None of D1–D5 introduces a permission/access change, a timeout, a pinned check, or
-an application subprocess. D1 **removes** the global-by-id capability — this is the
-replacement Bob directed and authorized; the migration disposition is how it is
-removed without silent data loss. Deck inclusion is disclosure, not approval.
+- **D1 — Migration of existing `defaults:` = reject-with-conversion.** A `defaults:`
+  block is a load error naming the file and showing the exact `presets:` +
+  `template-defaults:` rewrite — the user's data stays in the file, nothing runs
+  until converted, and no behavior changes silently. Auto-translate is infeasible
+  (global-by-id has no identity to translate into); the deprecation-window option
+  was rejected. Adopt-into-`presets`-with-warning remains the only fallback and only
+  if a real 0.1 `defaults:` install base is confirmed.
+- **D2 — Reference/literal representation = concise.** `{ preset: <name> }`
+  reference + bare scalar/array literal, airtight via the schema `oneOf`. The
+  distinct-key alternative was declined.
+- **D3 — Names.** The store is **`presets`** and the mappings are
+  **`template-defaults`**; references are `{ preset: <name> }`. (`presets` is the
+  approved revision of the arena's working name `values`.)
+- **D4 — Value chaining = disallow.** No preset→preset references; cycles impossible
+  by construction, no escape rule needed.
+- **D5 — Validation scope = validate-when-defined**, consistent with today's
+  `configured_defaults`, deterministic, catches config errors early. Disclosure
+  (documented, not a defect): a preset has one answer kind (its JSON shape), so one
+  preset can seed only questions of that kind.
+
+No decision introduces a permission/access change, a timeout, a pinned check, or an
+application subprocess. D1 **removes** the global-by-id capability — the replacement
+Bob directed and authorized; the migration disposition is how it is removed without
+silent data loss.
 
 ## Size and complexity
 
 - **Size:** ~M. Two new `Config` fields + a boundary classify/merge block and the
   `defaults` removal in `config.rs`; a rewritten `configured_defaults` (identity +
-  store resolution, file-naming attribution, provenance) in `interview.rs`; four
+  preset resolution, file-naming attribution, provenance) in `interview.rs`; four
   one-line wiring changes in `main.rs`; schema/doc edits (owned by 1058); the
   B1–B14 tests. A migration error path for `defaults:`.
-- **Complexity:** low–moderate. The store and mappings are plain maps merged per
-  key; resolution is one hop with no graph; cycles and ambiguity are designed out.
-  No new concurrency, capability, or engine state. Expected agent implementation
-  time: roughly a focused day against this design.
+- **Complexity:** low–moderate. The preset store and mappings are plain maps merged
+  per key; resolution is one hop with no graph; cycles and ambiguity are designed
+  out. No new concurrency, capability, or engine state. Expected agent
+  implementation time: roughly a focused day against this design.

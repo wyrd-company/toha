@@ -7,6 +7,25 @@ is replaced by named stored values plus explicit references, per the product
 owner's direction. The prior global-by-id design and its arena are superseded and
 preserved in git history at commit `37e2215`.
 
+## Approval and naming delta
+
+Bob approved this design at revision `24b6301` with **one authorized naming
+revision** and all D1–D5 recommendations accepted. The delta, applied faithfully
+across the authoritative contract (`design.md`, the deck, schema/guide/error/example
+text) without re-running the arena:
+
+- The store property `values` → **`presets`**.
+- The reference form `{ value: <name> }` → **`{ preset: <name> }`**.
+- Derived identifiers and prose: `ValueName` → `PresetName`; schema `value-name` →
+  `preset-name` and `values` def → `presets`; the reference schema key `value` →
+  `preset`; error text `no stored value named` → `no preset named`; provenance
+  `→ values."<name>"` → `→ presets."<name>"`.
+
+The arena evaluated the store under the working name `values`; the candidate
+evidence under `candidates/` is preserved as-evaluated (it retains `values`), while
+the chosen final contract is `presets` / `{ preset: <name> }`. This is a rename
+only — no shape, precedence, representation, or behavior changed.
+
 ## Runners and dropouts
 
 Configured intent: four `inherit-parent` architect runner slots plus a cross-judge

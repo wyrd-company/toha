@@ -1,70 +1,70 @@
 <section id="title">
-  <p class="kicker">Toha 0.2.0 · Design brief (revised) · Postplan</p>
-  <h1>Template defaults via named stored values</h1>
-  <p>Reuse an answer across templates by <em>naming</em> it and <em>referencing</em> it — never by pretending two questions mean the same thing because they share a field id.</p>
+  <p class="kicker">Toha 0.2.0 · Design brief (approved) · Postplan</p>
+  <h1>Template defaults via named presets</h1>
+  <p>Reuse an answer across templates by <em>naming</em> it as a preset and <em>referencing</em> it — never by pretending two questions mean the same thing because they share a field id.</p>
   <p>
     <span class="tag">task 1073</span>
     <span class="tag">role: architect</span>
-    <span class="tag warn">Phase C — awaiting Bob's approval</span>
+    <span class="tag">APPROVED by Bob — in independent review</span>
     <span class="tag err">reshaped: global-by-id removed</span>
     <span class="tag">paired impl 1058</span>
   </p>
-  <p class="muted">Revised per Bob's canonical instruction. Consumes bundled-demo f949b6a. Prior global-by-id design superseded (history 37e2215).</p>
+  <p class="muted">Approved with one naming delta: store = presets, reference = { preset: name }. Consumes bundled-demo f949b6a. Prior global-by-id design superseded (history 37e2215).</p>
 </section>
 
 <section id="task">
   <h2>Task</h2>
-  <p>Design template-specific configured defaults for Toha 0.2.0 and obtain Bob's explicit approval of the exact revision before implementation 1058. This task produces a reviewed design package and this brief; it does not implement the feature.</p>
-  <p><strong>The reshape.</strong> The earlier model — a config <code>defaults</code> map keyed by question id that implicitly overrode the matching question in <em>every</em> template — is rejected. A template author and a config author cannot assume two questions sharing an id (<code>title</code>, <code>email</code>, <code>owner</code>) mean the same thing. There must be no implicit application by id.</p>
-  <p><strong>The new model.</strong> Config holds a <strong>named store of reusable values</strong> (called <code>values</code>, deliberately not <code>defaults</code>). A <strong>template-specific default explicitly references</strong> a stored value (by name) or an inline literal, for a named question of a selected template <em>identity</em>. A value reaches a question only because a mapping says so.</p>
+  <p>Design template-specific configured defaults for Toha 0.2.0. Bob has approved this exact revision (with the naming delta below); it is handed to independent review and binds paired implementation 1058.</p>
+  <p><strong>The reshape.</strong> The earlier model — a config <code>defaults</code> map keyed by question id that implicitly overrode the matching question in <em>every</em> template — is rejected. A template author and a config author cannot assume two questions sharing an id (<code>title</code>, <code>email</code>, <code>owner</code>) mean the same thing. There is no implicit application by id.</p>
+  <p><strong>The model.</strong> Config holds a <strong>named store of reusable presets</strong> (called <code>presets</code>, deliberately not <code>defaults</code>). A <strong>template-specific default explicitly references</strong> a preset (by name) or is an inline literal, for a named question of a selected template <em>identity</em>. A preset reaches a question only because a mapping says so.</p>
 </section>
 
 <section id="pre-mortem">
   <h2>Pre-mortem — it failed. Why?</h2>
   <ul>
-    <li><strong>Implicit coupling crept back.</strong> A value applied to a question by id, coupling independent authors. <span class="muted">Mitigation: nothing is applied by id; a value reaches a question only via an explicit mapping (B2).</span></li>
-    <li><strong>Literal vs reference was ambiguous.</strong> A literal that spelled a value name was read as a reference. <span class="muted">Mitigation: <code>{ value: name }</code> is a reference; a bare scalar/array is a literal; the schema <code>oneOf</code> makes any other object a hard error, not a misread (B3, B7).</span></li>
-    <li><strong>A dangling reference produced a silent empty default.</strong> <span class="muted">Mitigation: a missing reference is a clear error naming the file, the mapping site, and the value (B4).</span></li>
-    <li><strong>Cycles / unbounded resolution.</strong> <span class="muted">Mitigation: references live only in mappings and resolve one hop into a literal store — cycles are impossible by construction (B7), no detector needed (D4).</span></li>
-    <li><strong>Migration lost data.</strong> An existing <code>defaults:</code> block was silently dropped or silently reinterpreted. <span class="muted">Mitigation: reject-with-conversion — data stays in the file, nothing runs until converted (D1, B13).</span></li>
-    <li><strong>The engine drifted.</strong> Identity or the store leaked into the pure engine. <span class="muted">Mitigation: resolution at the boundary; engine consumes the unchanged flat Seed.defaults (B12, B14).</span></li>
+    <li><strong>Implicit coupling crept back.</strong> A preset applied to a question by id, coupling independent authors. <span class="muted">Mitigation: nothing is applied by id; a preset reaches a question only via an explicit mapping (B2).</span></li>
+    <li><strong>Literal vs reference was ambiguous.</strong> A literal that spelled a preset name was read as a reference. <span class="muted">Mitigation: <code>{ preset: name }</code> is a reference; a bare scalar/array is a literal; the schema <code>oneOf</code> makes any other object a hard error, not a misread (B3, B7).</span></li>
+    <li><strong>A dangling reference produced a silent empty default.</strong> <span class="muted">Mitigation: a missing reference is a clear error naming the file, the mapping site, and the preset (B4).</span></li>
+    <li><strong>Cycles / unbounded resolution.</strong> <span class="muted">Mitigation: references live only in mappings and resolve one hop into a literal preset store — cycles impossible by construction (B7), no detector needed (D4).</span></li>
+    <li><strong>Migration lost data.</strong> An existing <code>defaults:</code> block was silently dropped or reinterpreted. <span class="muted">Mitigation: reject-with-conversion — data stays in the file, nothing runs until converted (D1, B13).</span></li>
+    <li><strong>The engine drifted.</strong> Identity or the preset store leaked into the pure engine. <span class="muted">Mitigation: resolution at the boundary; engine consumes the unchanged flat Seed.defaults (B12, B14).</span></li>
   </ul>
 </section>
 
 <section id="seams">
   <h2>Module and seam</h2>
   <p>Two files carry the feature (<code>config.rs</code>, <code>interview.rs</code>); the third change is four one-line call-site edits. Resolution stays in the <code>toha</code> library so every driver and crate path is served by one code path. The pipeline below <code>Seed</code> is unchanged.</p>
-  <pre><code class="language-text">   config files: values + template-defaults   (system, user, local .toha.yml)
+  <pre><code class="language-text">   config files: presets + template-defaults   (system, user, local .toha.yml)
         |  parse ONCE: classify leaf (reference vs literal), parse names/ids, tag file/layer
         v
-   src/config.rs -- Config { values, template_defaults, .. }   [+2 fields, -defaults]
+   src/config.rs -- Config { presets, template_defaults, .. }   [+2 fields, -defaults]
         v
    src/cli/resolve.rs -- ResolvedTemplate (UNCHANGED) -> formal_name (stable identity)
         v
-   src/interview.rs -- configured_defaults(formal_name, template, values, mappings)
+   src/interview.rs -- configured_defaults(formal_name, template, presets, mappings)
         |   pick mappings[formal_name]; for each id the template DEFINES:
-        |     reference -> look up values   (missing -> attributed error)
+        |     reference -> look up presets   (missing -> attributed error)
         |     literal   -> use verbatim
         |     validate used value's kind vs question kind (attributed)
-        |   -> IndexMap&lt;Id, RawAnswer&gt;      &lt;- identity + store flattened away here
+        |   -> IndexMap&lt;Id, RawAnswer&gt;      &lt;- identity + presets flattened away here
         v
    src/main.rs::seed / continue / apply / progress  ->  Seed { now, defaults }
         v
-   PURE ENGINE, identity- and store-UNAWARE          [behavior UNCHANGED below Seed]</code></pre>
+   PURE ENGINE, identity- and preset-UNAWARE          [behavior UNCHANGED below Seed]</code></pre>
 </section>
 
 <section id="interface">
   <h2>Public interfaces expected</h2>
   <section>
     <h2>Resolver (in the toha library)</h2>
-    <pre><code class="language-rust">/// Project the store + per-identity mappings onto ONE selected template.
+    <pre><code class="language-rust">/// Project the preset store + per-identity mappings onto ONE selected template.
 /// Replaces configured_defaults(template, &config.defaults).
 /// Only questions the template DEFINES are considered; refs resolve against
-/// `values`; the used value's kind is checked against the question.
+/// `presets`; the used value's kind is checked against the question.
 pub fn configured_defaults(
     formal_name: &str,
     template: &Template,
-    values: &IndexMap&lt;ValueName, Value&gt;,
+    presets: &IndexMap&lt;PresetName, Value&gt;,
     mappings: &IndexMap&lt;String, IndexMap&lt;Id, DefaultSource&gt;&gt;,
 ) -> Result&lt;Resolution, EvalError&gt;;
 
@@ -78,14 +78,14 @@ pub struct Resolution { pub defaults: IndexMap&lt;Id, RawAnswer&gt;, pub warning
     pub message: String,
     pub expression: Option&lt;String&gt;,
     pub config_key: Option&lt;String&gt;,   // NEW, e.g.
-    //  template-defaults."gh:owner/collection".agree -> values."flag" ("yes-please")
+    //  template-defaults."gh:owner/collection".agree -> presets."flag" ("yes-please")
     //  includes the config FILE the mapping came from
 }</code></pre>
   </section>
   <section>
     <h2>Wiring (whole blast radius)</h2>
     <pre><code class="language-rust">let Resolution { defaults, warnings } = interview::configured_defaults(
-    &resolved.formal_name, &template, &config.values, &config.template_defaults,
+    &resolved.formal_name, &template, &config.presets, &config.template_defaults,
 )?;
 warnings.iter().for_each(|w| eprintln!("warning: {w}"));
 // seed :422, continue :664, apply-staged :902, progress :496 (uses saved.template)</code></pre>
@@ -95,11 +95,11 @@ warnings.iter().for_each(|w| eprintln!("warning: {w}"));
 <section id="data">
   <h2>Data structures expected</h2>
   <section>
-    <h2>Config (values + mappings; defaults removed)</h2>
-    <pre><code class="language-rust">pub struct ValueName(String);   // ^[a-z_][a-z0-9_]*$ — NOT a question id
+    <h2>Config (presets + mappings; defaults removed)</h2>
+    <pre><code class="language-rust">pub struct PresetName(String);   // ^[a-z_][a-z0-9_]*$ — NOT a question id
 
 pub enum DefaultSource {
-    Ref(ValueName),               // `{ value: <name> }` — resolve against `values`
+    Ref(PresetName),              // `{ preset: <name> }` — resolve against `presets`
     Literal(serde_json::Value),   // bare scalar or string array — verbatim
 }
 
@@ -107,26 +107,26 @@ pub struct Config {
     pub templates_paths: Vec&lt;PathBuf&gt;,
     pub local_templates_paths: Vec&lt;PathBuf&gt;,
     // REMOVED: pub defaults: IndexMap&lt;Id, Value&gt;
-    pub values: IndexMap&lt;ValueName, Value&gt;,                        // NEW: the store
+    pub presets: IndexMap&lt;PresetName, Value&gt;,                      // NEW: the store
     pub template_defaults: IndexMap&lt;String, IndexMap&lt;Id, DefaultSource&gt;&gt;, // NEW
     pub hosts: IndexMap&lt;String, String&gt;,
     pub local_config_name: String,
 }</code></pre>
-    <p class="muted">References appear only in mappings and resolve one hop into a literal store → cycles impossible by construction. Three disjoint key types (value name / formal identity / question id).</p>
+    <p class="muted">References appear only in mappings and resolve one hop into a literal preset store → cycles impossible by construction. Three disjoint key types (preset name / formal identity / question id).</p>
   </section>
   <section>
     <h2>Config surface the user writes</h2>
-    <pre><code class="language-yaml">values:                            # named reusable data — you pick the names
+    <pre><code class="language-yaml">presets:                           # named reusable data — you pick the names
   primary_contact: contact@example.invalid
 
 template-defaults:                 # keyed by stable template identity
   "gh:owner/collection":
-    email: { value: primary_contact }   # reference the stored value
-    license: MIT                        # inline literal
+    email: { preset: primary_contact }   # reference the preset
+    license: MIT                         # inline literal
   "gh:owner/newsletter":
-    contact: { value: primary_contact } # a DIFFERENT id, SAME value
+    contact: { preset: primary_contact } # a DIFFERENT id, SAME preset
   "toha-demo":
-    title: { value: primary_contact }</code></pre>
+    title: { preset: primary_contact }</code></pre>
   </section>
   <section>
     <h2>Required example: reuse + no implicit id coupling</h2>
@@ -138,23 +138,23 @@ template-defaults:                 # keyed by stable template identity
         <tr><td>gh:owner/blog</td><td>email</td><td>the template's own default (no mapping → untouched)</td></tr>
       </tbody>
     </table>
-    <p class="muted">Reuse comes from two questions pointing at one <em>name</em>, not from a shared id. A same-id question with no mapping is untouched.</p>
+    <p class="muted">Reuse comes from two questions pointing at one preset <em>name</em>, not from a shared id. A same-id question with no mapping is untouched.</p>
   </section>
   <section>
     <h2>Proposed schema edit (applied by 1058)</h2>
     <pre><code class="language-yaml">$defs:
-  value-name: { $ref: "#/$defs/identifier" }
+  preset-name: { $ref: "#/$defs/identifier" }
   literal:
     oneOf: [ { type: string }, { type: boolean },
              { type: array, items: { type: string } } ]
   reference:
     type: object
     additionalProperties: false
-    required: [value]
-    properties: { value: { $ref: "#/$defs/value-name" } }
+    required: [preset]
+    properties: { preset: { $ref: "#/$defs/preset-name" } }
   default-source:
     oneOf: [ { $ref: "#/$defs/reference" }, { $ref: "#/$defs/literal" } ]
-# shared-config AND local-config: REMOVE defaults; ADD values + template-defaults</code></pre>
+# shared-config AND local-config: REMOVE defaults; ADD presets + template-defaults</code></pre>
   </section>
 </section>
 
@@ -165,20 +165,20 @@ template-defaults:                 # keyed by stable template identity
     <table>
       <thead><tr><th>Test</th><th>Proves</th><th>Fails if</th></tr></thead>
       <tbody>
-        <tr><td>B1 reuse_by_name</td><td>one value seeds two differently-named questions</td><td>reuse needs a shared id</td></tr>
+        <tr><td>B1 reuse_by_name</td><td>one preset seeds two differently-named questions</td><td>reuse needs a shared id</td></tr>
         <tr><td>B2 no_implicit_by_id</td><td>an unmapped same-id question is untouched</td><td>global-by-id leaks back</td></tr>
         <tr><td>B3 literal_never_a_ref</td><td>a bare string is a literal, not a lookup</td><td>a literal is read as a reference</td></tr>
-        <tr><td>B4 missing_ref_is_attributed</td><td>missing ref → clear error naming the file</td><td>silent empty default</td></tr>
+        <tr><td>B4 missing_ref_is_attributed</td><td>missing preset → clear error naming the file</td><td>silent empty default</td></tr>
         <tr><td>B5 type_mismatch_is_attributed</td><td>bad literal & bad value-via-ref both attributed</td><td>unattributed or accepted</td></tr>
         <tr><td>B6 only_used_is_validated</td><td>broken mapping for another template does not error</td><td>eager whole-config validation</td></tr>
-        <tr><td>B7 cycles_impossible</td><td>store rejects a reference-shaped leaf</td><td>values accepts a reference</td></tr>
+        <tr><td>B7 cycles_impossible</td><td>preset store rejects a reference-shaped leaf</td><td>presets accepts a reference</td></tr>
         <tr><td>B8 identity_selects</td><td>duplicate short names stay separate by formal name</td><td>selection keys on short name</td></tr>
         <tr><td>B9 bundled_demo_selector</td><td>"toha-demo" key reaches the bundled demo</td><td>the reserved identity is not matched</td></tr>
         <tr><td>B10 precedence_total</td><td>local wins per name and per (formal,id); siblings kept</td><td>non-deterministic/destructive merge</td></tr>
-        <tr><td>B11 resume_reresolves</td><td>changed store value appears on continue</td><td>defaults frozen into the staged record</td></tr>
+        <tr><td>B11 resume_reresolves</td><td>changed preset appears on continue</td><td>defaults frozen into the staged record</td></tr>
         <tr><td>B12 driver_parity</td><td>identical Seed.defaults across all five paths</td><td>a path diverges</td></tr>
         <tr><td>B13 legacy_defaults_refused</td><td>a defaults: block errors with conversion, no drop</td><td>silent acceptance or silent drop</td></tr>
-        <tr><td>B14 engine_purity</td><td>engine never sees the formal name or the store</td><td>identity/store leaks past the boundary</td></tr>
+        <tr><td>B14 engine_purity</td><td>engine never sees the formal name or the preset store</td><td>identity/presets leaks past the boundary</td></tr>
       </tbody>
     </table>
   </section>
@@ -189,7 +189,7 @@ template-defaults:                 # keyed by stable template identity
   <ul>
     <li>The pure interview engine and its <code>Seed.defaults</code> contract; <code>Template</code>, <code>Plan</code>, <code>apply</code>, <code>protocol</code>, <code>staging</code>, <code>StagedRecord</code>; <code>ResolvedTemplate</code>'s shape; the <code>&lt;TEMPLATE&gt;</code> classification order.</li>
     <li>The trust model — a default never influences trust or runs a hook. Registry writes — defaults stay a config-side preference.</li>
-    <li>Value → value references (D4); alias/short-name mapping keys; object-valued answers.</li>
+    <li>Preset → preset references (D4); alias/short-name mapping keys; object-valued answers.</li>
     <li>Any new subcommand, flag, trust, permission, timeout, pinned-version check, or subprocess.</li>
     <li>Any production or shared schema/spec edits in this design task — described only; applied by 1058.</li>
   </ul>
@@ -198,10 +198,10 @@ template-defaults:                 # keyed by stable template identity
 <section id="review">
   <h2>Reviewer focus</h2>
   <ul>
-    <li><strong>Any implicit id application?</strong> Find a path where a value reaches a question without an explicit mapping.</li>
+    <li><strong>Any implicit id application?</strong> Find a path where a preset reaches a question without an explicit mapping.</li>
     <li><strong>Literal/reference confusion?</strong> Find a literal read as a reference, or a reference read as a literal.</li>
     <li><strong>Silent failure?</strong> Find a missing reference or type mismatch that does not error, or errors without naming the config file/site.</li>
-    <li><strong>Engine purity & parity?</strong> Find identity/store leaking past the boundary, or a driver/crate path that diverges.</li>
+    <li><strong>Engine purity & parity?</strong> Find identity/presets leaking past the boundary, or a driver/crate path that diverges.</li>
     <li><strong>Migration data loss?</strong> Find an existing <code>defaults:</code> value that is dropped or silently reinterpreted.</li>
     <li><strong>Precedence totality?</strong> Find a used (identity, id) that resolves to two values or depends on file read order.</li>
   </ul>
@@ -214,12 +214,12 @@ template-defaults:                 # keyed by stable template identity
     <table>
       <thead><tr><th>Candidate</th><th>Shape</th><th>Score</th><th>Outcome</th></tr></thead>
       <tbody>
-        <tr><td>C1</td><td>values store + nested identity map; <code>{value:name}</code> ref / bare literal</td><td>29</td><td><strong>base</strong></td></tr>
-        <tr><td>C2</td><td>values store + ordered binding list; distinct <code>value:</code>/<code>literal:</code> keys</td><td>27</td><td>graft: file/index attribution; distinct-key form offered as D2</td></tr>
-        <tr><td>C3</td><td>value library + <code>${name}</code> sigil, chaining, graph resolver</td><td>24</td><td>graft: reference provenance; sigil + chaining rejected (anti-requirements)</td></tr>
+        <tr><td>C1</td><td>preset store + nested identity map; <code>{preset:name}</code> ref / bare literal</td><td>29</td><td><strong>base</strong></td></tr>
+        <tr><td>C2</td><td>preset store + ordered binding list; distinct source keys</td><td>27</td><td>graft: file/index attribution</td></tr>
+        <tr><td>C3</td><td>value library + <code>${name}</code> sigil, chaining, graph resolver</td><td>24</td><td>graft: reference provenance; sigil + chaining rejected</td></tr>
       </tbody>
     </table>
-    <p class="muted">Orchestrator scores matched the readonly cross-judge exactly. All three converged on: <code>values</code> as the store name, formal-name keying, no implicit id application, and reject-with-conversion migration. gpt-5.6 runners unavailable; re-run on inherit-parent — cross-family diversity lost this run.</p>
+    <p class="muted">Orchestrator scores matched the readonly cross-judge exactly. All three converged on: a named store (not <code>defaults</code>), formal-name keying, no implicit id application, and reject-with-conversion migration. The store, evaluated under the working name <code>values</code>, was renamed to <code>presets</code> on approval. gpt-5.6 runners unavailable; re-run on inherit-parent.</p>
   </section>
   <section>
     <h2>Broader reusable-value directions</h2>
@@ -228,48 +228,45 @@ template-defaults:                 # keyed by stable template identity
       <tbody>
         <tr><td>Named references (this design)</td><td>none (explicit)</td><td>none</td><td>high</td></tr>
         <tr><td>Named answer profiles (recommended future)</td><td>none (explicit, per run)</td><td>none</td><td>high</td></tr>
-        <tr><td>Shared value group a template requests</td><td>low</td><td>medium</td><td>medium</td></tr>
+        <tr><td>Shared preset group a template requests</td><td>low</td><td>medium</td><td>medium</td></tr>
         <tr><td>Tags / traits</td><td>wide</td><td>high</td><td>low</td></tr>
       </tbody>
     </table>
-    <p class="muted">Recommended future direction: named answer profiles layered on the value store — explicit, no accidental inheritance. Not built in this slice.</p>
+    <p class="muted">Recommended future direction: named answer profiles layered on the preset store — explicit, no accidental inheritance. Not built in this slice.</p>
   </section>
 </section>
 
 <section id="decisions">
-  <h2>Decisions needed first (Bob)</h2>
+  <h2>Decisions — Bob-approved</h2>
   <section>
-    <h2>D1 — Migration of existing <code>defaults:</code> (required)</h2>
-    <p><strong>Reject-with-conversion</strong> (recommended): a <code>defaults:</code> block is a load error naming the file and showing the exact <code>values:</code> + <code>template-defaults:</code> rewrite. Data stays in the file; nothing runs until converted; no silent behavior change.</p>
-    <p>vs <strong>adopt-into-<code>values</code>-with-warning</strong> (data-preserving fallback if a real 0.1 install base is confirmed; values stop applying until mapped — a silent behavior change) vs <strong>deprecation-window</strong> (rejected — revives the removed coupling). Auto-translate is infeasible (no identity to translate into). <span class="tag err">removes global-by-id, as directed</span> <span class="tag warn">load-bearing, no silent data loss</span></p>
+    <h2>D1 — Migration of existing <code>defaults:</code> = reject-with-conversion</h2>
+    <p>A <code>defaults:</code> block is a load error naming the file and showing the exact <code>presets:</code> + <code>template-defaults:</code> rewrite. Data stays in the file; nothing runs until converted; no silent behavior change. Deprecation-window rejected; auto-translate infeasible. Adopt-into-<code>presets</code>-with-warning is the only fallback, and only if a real 0.1 <code>defaults:</code> install base is confirmed. <span class="tag err">removes global-by-id, as directed</span> <span class="tag">no silent data loss</span></p>
   </section>
   <section>
-    <h2>D2 — Reference/literal representation</h2>
-    <p><strong>Concise</strong> (recommended): <code>{ value: name }</code> reference + bare scalar/array literal, airtight via the schema <code>oneOf</code>.</p>
-    <p>vs <strong>distinct keys</strong> (<code>value:</code> / <code>literal:</code>): maximally explicit and greppable, future-proof against object answers, but every literal is wrapped. Both unambiguous.</p>
+    <h2>D2 — Representation = concise</h2>
+    <p><code>{ preset: name }</code> reference + bare scalar/array literal, airtight via the schema <code>oneOf</code>. The distinct-key alternative was declined.</p>
   </section>
   <section>
-    <h2>D3 — Names</h2>
-    <p><strong><code>values</code></strong> for the store (all three candidates converged; not <code>defaults</code>) and <strong><code>template-defaults</code></strong> for the mappings, with <code>{ value: name }</code> references. Alternatives: <code>stored-values</code>, <code>library</code>, <code>constants</code>. <span class="tag">recommend values + template-defaults</span></p>
+    <h2>D3 — Names = presets / template-defaults</h2>
+    <p>The store is <strong><code>presets</code></strong> (the approved revision of the arena's working name <code>values</code>); mappings are <strong><code>template-defaults</code></strong>; references are <strong><code>{ preset: name }</code></strong>.</p>
   </section>
   <section>
-    <h2>D4 — Value chaining</h2>
-    <p><strong>Disallow value → value references</strong> (recommended): cycles impossible by construction, no escape rule needed. vs allow chaining with a cycle detector and a literal escape (more power, more surface). <span class="tag">recommend disallow</span></p>
+    <h2>D4 — Chaining = disallow</h2>
+    <p>No preset → preset references; cycles impossible by construction, no escape rule needed.</p>
   </section>
   <section>
-    <h2>D5 — Validation scope + reuse-kind limit (disclosure)</h2>
-    <p><strong>Validate when the template <em>defines</em> the question</strong> (recommended; consistent with today, deterministic, catches errors early) vs only when the question is <em>reached</em> given <code>when</code>/batch.</p>
-    <p>Disclosure (not a choice): a stored value has one answer kind (its JSON shape), so one value can seed only questions of that kind — documented, not a defect.</p>
+    <h2>D5 — Validation scope = validate-when-defined</h2>
+    <p>Validate a mapping when the template <em>defines</em> the question (consistent with today, deterministic, catches errors early). Disclosure: a preset has one answer kind (its JSON shape), so one preset can seed only questions of that kind — documented, not a defect.</p>
   </section>
 </section>
 
 <section id="risks">
   <h2>Risks and disclosures</h2>
   <ul>
-    <li><strong>D1 removes the global-by-id capability</strong> — this is the replacement Bob directed and authorized; the migration disposition is how it is removed without silent data loss. Deck inclusion is disclosure, not approval.</li>
+    <li><strong>D1 removes the global-by-id capability</strong> — the replacement Bob directed and authorized; the migration disposition removes it without silent data loss.</li>
     <li><strong>No</strong> permission/access change, timeout, pinned check, or application subprocess is introduced by any decision.</li>
-    <li><strong>Reuse is bounded to one answer kind per stored value</strong> (D5) — a cross-judge-surfaced property, to be documented.</li>
-    <li><strong>Migration naming trap</strong> — authors may name <code>values</code> after question ids and expect implicit application; a docs guardrail steers names away from ids, and reject-with-conversion forces explicit intent.</li>
+    <li><strong>Reuse is bounded to one answer kind per preset</strong> (D5) — a cross-judge-surfaced property, documented in the guides.</li>
+    <li><strong>Migration naming trap</strong> — authors may name <code>presets</code> after question ids and expect implicit application; a docs guardrail steers names away from ids, and reject-with-conversion forces explicit intent.</li>
     <li><strong>Cross-family judging unavailable</strong> this run; base pick rests on one family's scoring plus the orchestrator's independent read, which agreed exactly.</li>
   </ul>
 </section>
@@ -281,7 +278,7 @@ template-defaults:                 # keyed by stable template identity
       <h3>Size — ~M</h3>
       <ul>
         <li>Two new <code>Config</code> fields + boundary classify/merge; remove <code>defaults</code></li>
-        <li>Rewritten <code>configured_defaults</code> (identity + store resolution, file-naming attribution, provenance)</li>
+        <li>Rewritten <code>configured_defaults</code> (identity + preset resolution, file-naming attribution, provenance)</li>
         <li>Four one-line wiring changes in <code>main.rs</code>; a migration error path</li>
         <li>Schema/doc edits (owned by 1058); B1–B14 tests</li>
         <li>Expected agent implementation time: ~a focused day</li>
@@ -290,7 +287,7 @@ template-defaults:                 # keyed by stable template identity
     <div>
       <h3>Complexity — low–moderate</h3>
       <ul>
-        <li>Store and mappings are plain maps merged per key</li>
+        <li>Preset store and mappings are plain maps merged per key</li>
         <li>Resolution is one hop, no graph; cycles and ambiguity designed out</li>
         <li>No new concurrency, capability, or engine state</li>
         <li>Engine purity preserved; grounding-proven seam</li>
@@ -302,8 +299,8 @@ template-defaults:                 # keyed by stable template identity
 <section id="next">
   <h2>Next</h2>
   <ul>
-    <li>Bob reviews this exact revision and rules on D1–D5 (D1 is the required migration decision).</li>
-    <li>On approval, the design is marked complete; implementation 1058 is bound to the approved artifact revision, exact scope, interfaces, doc/schema impact, and the B1–B14 validation; both dependency graphs are rechecked.</li>
-    <li>If Bob requests changes, this same Postplan draft is revised, the new exact revision recorded, and Bob re-notified — approval of an old revision does not approve a changed one.</li>
+    <li>Design approved by Bob at this exact revision. Handed to independent design review (gitpr) and integration; the design task stays open until review + integration complete.</li>
+    <li>Implementation 1058 is bound to this approved revision: exact scope, interfaces, schema/guide impact, and the B1–B14 validation.</li>
+    <li>Consumers 1072 and 1075 are notified of the approved <code>presets</code>/<code>{ preset: name }</code> contract and the template-identity selector surface.</li>
   </ul>
 </section>
