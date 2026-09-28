@@ -29,6 +29,8 @@ relationships:
   `72a564799b95ab1c187c913ac14ef14938f880bf2ab24ec337c03f887991457b`,
   recommends
   `staging::canonical_target(&Path) -> Result<CanonicalTarget, StagingError>`.
+  The exact producer revision defines no `TargetError`; its factory error is
+  `StagingError`.
   `CanonicalTarget` exposes `as_path()`, has no unchecked constructor or
   `From<PathBuf>`, and is required by identity-sensitive consumers. This design
   consumes that proposed carrier without approving it. If Bob chooses the
@@ -125,20 +127,26 @@ was committed.
 
 ## Gates
 
-Required at the refreshed checkpoint:
+Checkpoint results:
 
 - `rumdl check`: pass for every Markdown artifact.
 - `ryl check`: pass for `design.yml`.
 - `git diff --check`: pass.
 - Required design-brief sections: present.
-- Every horizontal and vertical slide visually inspected at 1280×720.
-- Browser bounds check: no bottom, left, right, or viewport overflow.
+- All 14 horizontal positions and 27 horizontal/vertical slides visually
+  inspected at 1280×720.
+- Browser bounds check: no bottom, left, right, viewport, or body overflow.
 - Dense seam, before/after, behavior, and decision slides inspected at original
   resolution.
 - Local built deck equals published raw deck byte-for-byte.
 - Published wrapper `Reveal.initialize`: exactly 1.
-- Published URL and hashes: recorded in `publication.md`.
+- Published draft version: 2.
+- Published source SHA-256:
+  `d41eddf6521f20ce5943142a676fbd13c2e44a3e8c0e3387323c0fd258e89a8d`.
+- Local and published deck SHA-256:
+  `04aa0bc1cdb7f764bf9f17a874883d3adeaf9550e9860327c7130448c60a33c4`.
+- `task ci`: pass.
+- Published URL and full evidence: recorded in `publication.md`.
 
-The exact refreshed revision, slide count, hashes, and final gate result are
-recorded in `publication.md` and the canonical task after republishing. Bob's
-explicit Phase C approval remains pending.
+The exact refreshed revision is recorded in the canonical task. Bob's explicit
+Phase C approval remains pending.
