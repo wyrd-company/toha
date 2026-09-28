@@ -60,14 +60,21 @@ proposed-design:
     Expose seventeen current-context variables with exact string, nullable,
     array, and boolean types. Reserve only those exact names. Presets remain
     configured answer defaults and are not Jinja context. Ordinary Seed defaults
-    remain the separate flat application-default route.
+    remain the separate flat application-default route. Preserve all three
+    public StagedRecord replay routes with external-callable signatures:
+    replay(&Template, &CanonicalTarget),
+    replay_with_defaults(&Template, defaults, &CanonicalTarget), and
+    replay_with_resolution(&Template, Resolution, &CanonicalTarget). Each
+    receives the producer CanonicalTarget used to load the record and restores
+    current or legacy context internally.
   configured-origin: >-
     ConfigEntry remains the sole origin source. configured_defaults copies each
     winning mapping and optional preset origin into the private ResolvedDefault
     entry in Resolution. Configured start consumes Resolution through
     start_with_context; configured replay consumes it through
-    replay_with_resolution with the restored InvocationContext. Both move entries
-    into DefaultBankEntry::Configured. Only into_flat_defaults deliberately loses
+    replay_with_resolution, which restores InvocationContext from the record
+    and producer carrier internally. Both move entries into
+    DefaultBankEntry::Configured. Only into_flat_defaults deliberately loses
     provenance. Ordinary direct callers keep flat Seed.defaults with context; no
     second resolver or origin map is added.
   access: >-
@@ -86,7 +93,10 @@ proposed-design:
     execution, and environment snapshot. Target and formal name remain in their
     existing record fields. Store::load receives CanonicalTarget, validates
     stored path text, and reconstructs the live context without deserializing a
-    carrier. Replay performs no access or ambient read.
+    carrier. replay, replay_with_defaults, and replay_with_resolution remain
+    public to external crates. Each receives CanonicalTarget and restores
+    current or legacy context from the record; replay performs no access or
+    ambient read.
   mutable-folders: >-
     Resume continues to load current folder bytes. A no-flag Unavailable
     snapshot yields null for later-added references. A carried stage grant or
@@ -106,9 +116,11 @@ proposed-design:
     Seed gains a required context for direct callers. Source-tree syntax errors
     can surface at template load. ConfigEntry origins continue through the
     private configured Resolution and DefaultBank; the ordinary flat Seed route
-    remains exact and distinct. Existing mutable folder behavior, input modality,
-    now(), protocol metadata, configured defaults, hook review, and producer
-    target interfaces remain.
+    remains exact and distinct. Existing public replay routes remain callable
+    with the producer target carrier; StagedRecord restores context so external
+    callers do not need private constructors or environment capture. Existing
+    mutable folder behavior, input modality, now(), protocol metadata,
+    configured defaults, hook review, and producer target interfaces remain.
   canonical-impact: >-
     Paired implementation updates template format/schema, the Jinja guide,
     command-line contract, interview protocol, and a registry reference. This

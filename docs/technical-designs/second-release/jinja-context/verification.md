@@ -60,8 +60,9 @@ separate public flat `Seed`. `canonical_target(&Path)` returns
 `Resolution::start` preserves configured entries, while
 `into_flat_defaults()` is the explicit provenance-dropping route. Existing
 `StagedRecord::replay_with_resolution` consumes `Resolution`; the context design
-adds the restored context parameter and sibling start path. The actual source
-defines no `TargetError`. The complete source-to-consumer trace is preserved in
+adds the producer `&CanonicalTarget` parameter to each preserved public replay
+route and restores context inside the record. The actual source defines no
+`TargetError`. The complete source-to-consumer trace is preserved in
 [producer-composition-reground.md](producer-composition-reground.md).
 
 ## Requirement matrix
@@ -90,14 +91,17 @@ defines no `TargetError`. The complete source-to-consumer trace is preserved in
 
 ## Caller-to-type consistency
 
-- Every current caller constructs `InvocationContext` before engine entry.
+- Direct and new-stage callers construct `InvocationContext` before engine
+  entry. Public replay callers provide the same `CanonicalTarget` used to load
+  the record; the record restores its current or legacy context internally.
 - The ordinary `Seed.context` route reaches `Pending`, `Completed`, staged wire,
   and planning.
 - `ConfigEntry` remains the sole origin source. `configured_defaults` copies the
   winning mapping and optional preset origins into private `ResolvedDefault`
   entries. Configured start consumes them through `start_with_context`;
-  configured replay consumes them through `replay_with_resolution` with the
-  restored `InvocationContext`. Both move them into the configured default bank.
+  configured replay consumes them through `replay_with_resolution`, which
+  restores `InvocationContext` from the record and target carrier internally.
+  Both move them into the configured default bank.
   Ordinary callers use the separate flat `Seed.defaults` route.
 - `Template::admit_environment` owns the need/decision/capture matrix; callers
   do not receive an analysis mask.
@@ -106,8 +110,12 @@ defines no `TargetError`. The complete source-to-consumer trace is preserved in
   no-flag/no-need, denial, or missing stage trust.
 - `Plan::build` retains the producer's exact target parameter and checks it
   against the completed current context before rendering.
-- `Store::load` receives the producer carrier and reconstructs context from
-  record text plus wire facts; the wire cannot deserialize a carrier.
+- `Store::load` receives the producer carrier, validates record text, and
+  reconstructs context from wire facts; the wire cannot deserialize a carrier.
+- Public `StagedRecord::replay`, `replay_with_defaults`, and
+  `replay_with_resolution` remain callable from an external crate. Each takes
+  `&CanonicalTarget`; the methods restore current or legacy context without
+  exposing a legacy constructor or requiring caller environment capture.
 - The single stage adapter maps only the typed `TrustRequired` admission fault
   to `StagingError::EnvironmentTrustRequired`. Every other admission fault stays
   typed as the source of `StagingError::EnvironmentAdmission`, retaining its
@@ -205,6 +213,16 @@ include design is present on its base.
 | `configured_context_start_preserves_constraint_origin` | Route configured start through `into_flat_defaults` plus `Seed`; the configured-default constraint error must still name the winning mapping/preset origin. |
 | `configured_context_replay_preserves_constraint_origin` | Route configured replay through `replay_with_defaults`; replayed recovery must still retain the winning mapping/preset origin. |
 | `ordinary_flat_seed_does_not_claim_configured_origin` | Change ordinary flat `Seed` entries to configured entries or infer an origin; the ordinary route must remain origin-free and behavior-compatible. |
+| `external_crate_replay_restores_current_context_and_legacy_projection` | Remove the public replay route, require callers to build the private context mode, or capture live environment on replay. |
+| `external_crate_replay_with_defaults_restores_current_context_and_legacy_projection` | Remove the flat-default replay route, flatten configured origins through it, or lose legacy compatibility. |
+| `external_crate_replay_with_resolution_preserves_origin_and_legacy_projection` | Require a caller-built `InvocationContext`, flatten `Resolution`, or let legacy replay expose current-only values. |
+
+These three tests live in `tests/staged_replay_public_api.rs`, which compiles as
+an external crate. Each obtains `CanonicalTarget` from the sole factory, loads
+the record with that carrier, and calls the public route without a private
+context constructor. Each exercises a current record and a pre-context legacy
+fixture. Current records must retain the recorded snapshot with no live source
+read; legacy fixtures must keep the old available-name set and projection.
 
 Each mutation must reach and fail the named assertion, then be restored before
 the full gate runs. A compile error or unrelated failing test is not a kill.

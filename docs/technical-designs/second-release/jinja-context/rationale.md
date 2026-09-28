@@ -53,10 +53,14 @@ factory and `Store::load(&CanonicalTarget)` remain the only target authority.
 winning mapping and optional preset origins into private `ResolvedDefault`
 entries inside `Resolution`. Configured start consumes those entries through
 `Resolution::start_with_context`; configured replay consumes them through
-`StagedRecord::replay_with_resolution` with the restored context. Both move the
-entries into `DefaultBankEntry::Configured`. Ordinary callers keep the separate
-flat `Seed.defaults` route. Context threading adds no second origin map or
-resolver, and only `into_flat_defaults` deliberately loses provenance.
+`StagedRecord::replay_with_resolution` with context restored by the record from
+its staged wire and the producer carrier. All three public replay routes remain
+available to external callers; each receives `&CanonicalTarget`, and none
+requires the caller to construct a current or private legacy context. Configured
+replay continues to move the entries into `DefaultBankEntry::Configured`.
+Ordinary callers keep the separate flat `Seed.defaults` route. Context threading
+adds no second origin map or resolver, and only `into_flat_defaults`
+deliberately loses provenance.
 
 ## Synthesis decision
 
@@ -103,6 +107,10 @@ Jinja context access policy.
   on every supported ordinary-caller path; configured start/replay use the
   consuming origin-preserving `Resolution` routes and never flatten through
   `Seed`.
+- We accept adding the producer `&CanonicalTarget` argument to each public
+  staged replay route, while keeping all routes and their semantics, so the
+  record can restore current or legacy context without exposing a private
+  constructor or requiring a caller to capture environment values.
 - We accept approved plaintext persistence of up to five optional values in
   exchange for deterministic later batches without ambient reads or a
   source-change refusal.
@@ -111,7 +119,9 @@ Jinja context access policy.
 - We accept a snapshot of originating interaction, host, privilege, and selected
   identity in exchange for stable branches across every continuation modality.
 - We accept a private legacy projection in exchange for no invented historical
-  facts and no access recovery for existing staged records.
+  facts and no access recovery for existing staged records. Replay methods
+  restore that mode internally, while the public replay routes remain callable
+  with the same producer-owned target carrier.
 - We accept exact-name reservation rather than the whole `toha_` prefix in
   exchange for avoiding an unrequested compatibility restriction.
 - We accept MiniJinja's unstable AST feature behind one private adapter in

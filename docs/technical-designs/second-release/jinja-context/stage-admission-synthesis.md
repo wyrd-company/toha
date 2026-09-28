@@ -121,8 +121,15 @@ apply or abort.
 
 This compatibility mode is internal to records created before the context
 contract. New stage/apply and direct crate calls always use the current
-contract. It avoids an access-related abort/restage path while preserving the
-old staged behavior.
+contract. The public `StagedRecord::replay`, `replay_with_defaults`, and
+`replay_with_resolution` methods remain available. Each takes the same
+producer-created `&CanonicalTarget` used to load or create the record, then
+restores current or legacy context inside the record. External callers do not
+construct `InvocationContext` or the private legacy mode, and replay does not
+capture live environment values. The existing `StagedRecord::new` constructor
+remains available for legacy-compatible records; current context-bearing records
+use `new_with_context`. This preserves old staged behavior without an
+access-related abort/restage path.
 
 ## Grafts, corrections, and rejections
 
@@ -140,10 +147,12 @@ Architect corrections:
   than deriving a replacement target interface;
 - preserve `ConfigEntry` as the sole origin source and `configured_defaults` as
   its sole resolver; consume the private origin-bearing `Resolution` through
-  `start_with_context` and context-bearing `replay_with_resolution`, moving its
-  entries into `DefaultBankEntry::Configured`; retain flat `Seed.defaults` only
-  for ordinary callers, and never use `into_flat_defaults` on configured start
-  or replay;
+  `start_with_context` and `replay_with_resolution`, which restores context
+  from the record before moving entries into `DefaultBankEntry::Configured`;
+  retain flat `Seed.defaults` only for ordinary callers, and never use
+  `into_flat_defaults` on configured start or replay;
+- retain all public staged replay routes and make their current/legacy context
+  restoration usable by external crate callers through the producer carrier;
 - avoid duplicate target and formal-name fields in the context wire;
 - give legacy records a behavior-preserving legacy context instead of
   inventing facts or requiring access recovery.

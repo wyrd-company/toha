@@ -57,13 +57,15 @@ policy.
 5. The public ordinary `Seed { now, defaults, context }` route remains
    separate. Its values enter `DefaultBankEntry::Seed` and carry no configured
    origin.
-6. Staged configured replay restores `InvocationContext` from the record and
-   producer-created target, reads configured warnings, then calls
-   `StagedRecord::replay_with_resolution(template, resolution, context)`. The
-   method parses the recorded instant, calls `start_with_context`, and replays
-   submissions. It does not call `replay_with_defaults` or
-   `into_flat_defaults` (`src/staging.rs`, `replay_with_resolution`; lines
-   298–331).
+6. At the inspected producer source, staged replay routes parse the recorded
+   instant and replay submissions but do not yet carry invocation context
+   (`src/staging.rs`, `StagedRecord::{replay,replay_with_defaults,
+   replay_with_resolution}`; lines 295–331). The context design extends each
+   public route with the same producer-created target used to load the record.
+   Each route restores current or legacy context from the record before replay.
+   Configured replay also reports warnings before consuming `Resolution`, calls
+   `start_with_context`, and replays submissions without using
+   `replay_with_defaults` or `into_flat_defaults`.
 7. `render_default` preserves a configured entry's origin through preparation;
    a constraint failure names the winning mapping and optional preset source,
    removes the invalid default from the prompt, and permits answer recovery
@@ -95,20 +97,35 @@ impl Resolution {
 }
 
 impl StagedRecord {
+    pub fn replay<'a>(
+        &self,
+        template: &'a Template,
+        target: &CanonicalTarget,
+    ) -> Result<Interview<'a>, StagingError>;
+
+    pub fn replay_with_defaults<'a>(
+        &self,
+        template: &'a Template,
+        defaults: IndexMap<Id, RawAnswer>,
+        target: &CanonicalTarget,
+    ) -> Result<Interview<'a>, StagingError>;
+
     pub fn replay_with_resolution<'a>(
         &self,
         template: &'a Template,
         resolution: Resolution,
-        context: InvocationContext,
+        target: &CanonicalTarget,
     ) -> Result<Interview<'a>, StagingError>;
 }
 ```
 
 The context feature extends the producer's consuming composition seams. It does
 not replace `Resolution`, create another origin store, or change the producer's
-`StagingError` owner. `replay_with_resolution` retains configured identity and
-gains the restored context. Only the separate ordinary `Seed.defaults` route is
-flat.
+`StagingError` owner. All existing replay routes remain public. They take the
+producer carrier and restore context inside `StagedRecord`, so external callers
+do not need to construct `InvocationContext` or the private legacy mode. The
+configured route retains configured identity and consumes `Resolution` without
+flattening. Only the separate ordinary `Seed.defaults` route is flat.
 
 ## Failure and recovery
 
@@ -132,8 +149,8 @@ warnings-before-consumption, the ordinary flat `Seed` route, the producer's
 and access behavior.
 
 Add context to private `InterviewSeed`, add consuming
-`Resolution::start_with_context`, and pass restored context into configured
-`replay_with_resolution`.
+`Resolution::start_with_context`, and extend each public replay route with the
+producer carrier so `StagedRecord` restores its own current or legacy context.
 
 Do not flatten configured resolution, reconstruct origins, call
 `replay_with_defaults` for configured replay, add another resolver or target

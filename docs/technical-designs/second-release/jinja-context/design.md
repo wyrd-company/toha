@@ -136,8 +136,8 @@ The approved target producer contract is anchored at revision
 `067c8d2e7c95cf2b16ab3a4103f8b1a8fda331af`, design SHA-256
 `72a564799b95ab1c187c913ac14ef14938f880bf2ab24ec337c03f887991457b`,
 and integrated in the accepted epic base
-`8a19269d78f6da0738edb17e56310621f143923d` (merge commit
-`8a19269d78f6da0738edb17e56310621f143923d`). The published producer design is
+`8a19269d78f6da0738edb17e56310621f143923d`. This is the integrated revision,
+not a merge-commit claim. The published producer design is
 revision `dfe7ba017ebef525310db8b8ab4ead58fae2d147`, design SHA-256
 `9560139e48798429a95e06a695dea703817b673d2e18f19e25f3fe4a3efe9b39`:
 
@@ -159,7 +159,13 @@ source define no `TargetError`.
 
 `StagedRecord.target` remains serialized path text. `Store::load` receives the
 already constructed `&CanonicalTarget`, validates the stored text against it,
-and uses that carrier to reconstruct the live invocation context.
+and uses that carrier to reconstruct the live invocation context. The retained
+`StagedRecord::new` constructor writes no context field and therefore creates a
+legacy-compatible record. `new_with_context` derives the stored target and
+formal name from the supplied invocation context and writes the current wire.
+The old constructor remains source-available for existing crate callers; the
+paired implementation uses `new_with_context` when it persists a current
+invocation. Deserializing a pre-context record also selects `Legacy`.
 
 ## Exact Jinja contract
 
@@ -420,16 +426,48 @@ impl Resolution {
 }
 
 impl StagedRecord {
+    // Existing public constructor remains and creates a legacy projection.
+    pub fn new(
+        target: &CanonicalTarget,
+        template: String,
+        commit: String,
+        named: bool,
+        now: String,
+        submissions: Vec<IndexMap<String, Value>>,
+    ) -> Self;
+
+    // New context-bearing records are created from the completed invocation.
+    pub fn new_with_context(
+        context: InvocationContext,
+        commit: String,
+        named: bool,
+        now: String,
+        submissions: Vec<IndexMap<String, Value>>,
+    ) -> Self;
+
     pub(crate) fn invocation_context(
         &self,
         target: &CanonicalTarget,
     ) -> Result<InvocationContext, StagingError>;
 
+    pub fn replay<'a>(
+        &self,
+        template: &'a Template,
+        target: &CanonicalTarget,
+    ) -> Result<Interview<'a>, StagingError>;
+
+    pub fn replay_with_defaults<'a>(
+        &self,
+        template: &'a Template,
+        defaults: IndexMap<Id, RawAnswer>,
+        target: &CanonicalTarget,
+    ) -> Result<Interview<'a>, StagingError>;
+
     pub fn replay_with_resolution<'a>(
         &self,
         template: &'a Template,
         resolution: Resolution,
-        context: InvocationContext,
+        target: &CanonicalTarget,
     ) -> Result<Interview<'a>, StagingError>;
 }
 
@@ -443,6 +481,11 @@ impl InvocationContext {
     ) -> Result<Self, ContextError>;
 
     pub fn target(&self) -> &CanonicalTarget;
+
+    // Private bridge used by staging to serialize target, formal name, and wire.
+    pub(crate) fn staged_parts(
+        &self,
+    ) -> (CanonicalTarget, String, InvocationContextWire);
 }
 
 impl Plan {
@@ -509,7 +552,7 @@ separate from the live domain carrier:
 
 ```rust
 #[derive(Serialize, Deserialize)]
-enum InvocationContextWire {
+pub(crate) enum InvocationContextWire {
     Legacy,
     Current {
         short_name: String,
@@ -522,7 +565,7 @@ enum InvocationContextWire {
 }
 
 #[derive(Serialize, Deserialize)]
-enum EnvironmentWire {
+pub(crate) enum EnvironmentWire {
     Unavailable,
     Captured {
         user: Option<String>,
@@ -537,17 +580,39 @@ enum EnvironmentWire {
 The wire does not duplicate target or formal name. `Store::load` validates the
 record's target through its `&CanonicalTarget` parameter. The existing record
 supplies the formal name. The remaining wire fields reconstruct the current
-context without deserializing or manufacturing a target carrier.
+context without deserializing or manufacturing a target carrier. The old
+`StagedRecord::new` constructor remains available and creates a record with the
+legacy projection; `new_with_context` creates a current record from the
+invocation context, storing `context.target().as_path()` and the selected formal
+name from that context. Missing serialized context also decodes as `Legacy`.
 
 Replay uses live configured defaults, the recorded instant, context, and
-ordered accepted submissions. It does not read current host, environment,
-terminal, privilege, registry approval, or environment access. The recorded
-snapshot carries through every later batch.
+ordered accepted submissions. Every replay route receives the producer-created
+target carrier. The record restores its own current or legacy context from the
+versioned wire and combines it with that carrier; callers do not construct
+`InvocationContext` or `ContextContract`. Current context restoration uses only
+the recorded host, execution, identity, and environment snapshot. Legacy
+restoration creates the private legacy mode with no new projection. Neither
+route reads current host, environment, terminal, privilege, registry approval,
+or environment access. The recorded snapshot carries through every later
+batch.
 
-The configured replay caller reads warnings before consumption and restores the
-typed context from the staged wire and producer carrier before replay:
+An external crate caller obtains the carrier through the sole producer factory,
+loads the record with that same carrier, and can use each public replay route
+without access to private legacy constructors or environment capture:
 
 ```rust
+let target = canonical_target(Path::new("./output"))?;
+let saved = store.load(&target)?.expect("staged record");
+
+// Existing no-default route: current records restore the recorded snapshot;
+// context-free records keep the legacy projection.
+let interview = saved.replay(&template, &target)?;
+
+// Existing flat-default route remains usable and flat.
+let interview = saved.replay_with_defaults(&template, defaults, &target)?;
+
+// Configured defaults remain origin-bearing through the configured route.
 let resolution = configured_defaults(
     &saved.template,
     &template,
@@ -555,14 +620,29 @@ let resolution = configured_defaults(
     &config.template_defaults,
 )?;
 report(resolution.warnings());
-let context = saved.invocation_context(&target)?;
-let interview = saved.replay_with_resolution(&template, resolution, context)?;
+let interview = saved.replay_with_resolution(&template, resolution, &target)?;
 ```
 
-`replay_with_resolution` parses the recorded instant, calls
+All three public methods restore context inside `StagedRecord` before replay.
+`replay` delegates to `replay_with_defaults` with an empty flat map;
+`replay_with_defaults` starts with `Seed { now, defaults, context }`;
+`replay_with_resolution` parses the recorded instant, reads the resolution's
+warnings before consumption at the caller, restores context, calls
 `resolution.start_with_context(template, now, context)`, and replays accepted
-submissions. It never calls `replay_with_defaults`, destructures `Resolution`
-to a flat map, or uses `into_flat_defaults`.
+submissions. Configured replay never calls `replay_with_defaults`, destructures
+`Resolution` to a flat map, or uses `into_flat_defaults`.
+
+`invocation_context(target)` first validates the persisted target text against
+the supplied producer carrier using the sole `canonical_target` factory, then
+restores the versioned context. `Store::load` performs the same target check on
+the normal load path. This prevents direct deserialization from combining a
+record with a different target without adding another normalizer.
+
+The external-crate implementation proof keeps all three routes callable and
+checks both context-bearing and pre-context records at each route. It uses only
+public `StagedRecord`, `Store`, `Template`, `CanonicalTarget`, and resolution
+APIs. Test source lives in `tests/staged_replay_public_api.rs`, which compiles as
+an external crate; context restoration remains record-owned.
 
 Captured optional strings are plaintext in the existing staged JSON. The store
 does not add a new file mode; access remains governed by its state directory and
@@ -595,8 +675,11 @@ seventeen new names are not injected, reserved, or marked available. Existing
 identity, interaction, or access fact is invented.
 
 Legacy is an internal staged-record mode. New stage, new apply, and direct crate
-calls always create a current context. A legacy record stays legacy through
-continuation and staged apply, then follows the existing removal lifecycle.
+calls always create a current context. The existing public `StagedRecord::new`
+constructor remains available for legacy-compatible records; current records
+use `new_with_context`. Each replay route restores the record's mode and keeps a
+legacy record legacy through continuation and staged apply, then follows the
+existing removal lifecycle.
 
 ## Module and seam
 
@@ -614,12 +697,13 @@ environment admission ────────► snapshot ───────
 presets + ConfigEntry origins ─► configured_defaults ─► Resolution
                                                        (raw + origin entries)
                                               │ start_with_context /
+                                              │ record restores context, then
                                               │ replay_with_resolution
                                               ▼
                                      configured DefaultBank ─► Pending
 ordinary flat defaults ─────────────────────► Seed ────────┤
                                                                 │
-                      StagedRecord ◄──── serialize/replay ──────┤
+                      StagedRecord ◄──── serialize / restore / replay ─┤
                                                                 ▼
                                                             Completed
                                                               │
@@ -709,14 +793,19 @@ This adds no protocol field or wire variant.
 
 Adding required `Seed.context` is a deliberate source break for ordinary crate
 callers, but `Seed.defaults` remains the flat application-default route.
-The configured replay signature likewise gains the restored
-`InvocationContext`; the paired implementation changes its internal command
-callers on the integrated producer base. The producer's
-origin-bearing `Resolution` and method identity remain intact.
+The three public `StagedRecord` replay routes remain available. Each gains the
+producer-created `&CanonicalTarget` input and restores current or legacy
+context from its own staged record. The configured route accepts the unchanged
+origin-bearing `Resolution`; external callers never need a public legacy
+constructor, a manually built context, or a live environment capture. The
+paired implementation updates its internal command callers on the integrated
+producer base, while the legacy constructor and flat-default replay route
+remain available.
 Configured start consumes the private origin-bearing `Resolution` through
 `start_with_context`; configured replay consumes it through
-`replay_with_resolution` with the restored context. Both move the producer's
-`ResolvedDefault` entries into the private configured default bank.
+`replay_with_resolution`, which restores context from the record and target
+carrier. Both move the producer's `ResolvedDefault` entries into the private
+configured default bank.
 `configured_defaults` remains the sole origin source and resolver; no second
 origin map is added. The public interview state machine
 and apply result types otherwise remain. Existing `now()` behavior remains.

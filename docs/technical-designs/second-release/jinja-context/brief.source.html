@@ -185,10 +185,23 @@ pub fn admit_environment(
 }
 
 pub fn replay_with_resolution(
-    &amp;self, template, resolution, context,
+    &amp;self, template, resolution, target,
 ) -&gt; Result&lt;Interview, StagingError&gt;;</code></pre>
     <p>Both consuming routes move raw value plus winning origin into the private configured default bank.</p>
     <p class="muted"><code>into_flat_defaults</code> is an explicit provenance-dropping escape, not an application path.</p>
+  </section>
+  <section>
+    <h2>Public replay — keep every caller route</h2>
+    <table>
+      <thead><tr><th>Existing call</th><th>Context-aware call</th></tr></thead>
+      <tbody>
+        <tr><td><code>record.replay(&amp;template)</code></td><td><code>record.replay(&amp;template, &amp;target)</code></td></tr>
+        <tr><td><code>record.replay_with_defaults(&amp;template, defaults)</code></td><td><code>record.replay_with_defaults(&amp;template, defaults, &amp;target)</code></td></tr>
+        <tr><td><code>record.replay_with_resolution(&amp;template, resolution)</code></td><td><code>record.replay_with_resolution(&amp;template, resolution, &amp;target)</code></td></tr>
+      </tbody>
+    </table>
+    <p>Use the same <code>CanonicalTarget</code> used to load the staged record. The record restores its saved context; the caller does not build a private context or read the live environment.</p>
+    <p class="muted">Current records replay their fixed snapshot. Records from before context support retain the legacy view and all three replay routes. Old record construction remains for legacy callers; new records carry context.</p>
   </section>
   <section>
     <h2>Stage lifecycle — refusal happens first</h2>
@@ -336,6 +349,7 @@ ambient reads: 0</code></pre>
     <h2>Behaviors to prove — contracts stay separate</h2>
     <ul>
       <li>Every target-sensitive call receives the sole producer carrier.</li>
+      <li>An external crate can call all three public replay methods for current and legacy records with no caller-built replay context.</li>
       <li>Only the 17 exact names collide; neighboring <code>toha_</code> names remain legal.</li>
       <li>Configured start and replay keep each winning mapping/preset origin through constraint faults and recovery.</li>
       <li>Only the separate ordinary <code>Seed.defaults</code> route stays flat.</li>
