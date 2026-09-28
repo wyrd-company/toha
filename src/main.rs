@@ -476,14 +476,14 @@ fn record(
     resolved: &ResolvedTemplate,
     now: &jiff::Zoned,
 ) -> StagedRecord {
-    StagedRecord {
-        target: target.as_path().to_owned(),
-        template: resolved.formal_name.clone(),
-        commit: resolved.commit.clone(),
-        named: resolved.named,
-        now: now.to_string(),
-        submissions: vec![],
-    }
+    StagedRecord::new(
+        target,
+        resolved.formal_name.clone(),
+        resolved.commit.clone(),
+        resolved.named,
+        now.to_string(),
+        vec![],
+    )
 }
 /// The configuration, registry, and directories that template names resolve against.
 struct Scope<'a> {

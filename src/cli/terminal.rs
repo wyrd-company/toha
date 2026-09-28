@@ -516,18 +516,20 @@ mod tests {
             "tests/fixtures/early-answers/template",
         ))
         .unwrap();
-        let saved = StagedRecord {
-            target: std::path::PathBuf::from("/tmp/sample-target"),
-            template: "/tmp/sample-template".into(),
-            commit: String::new(),
-            named: false,
-            now: "2026-01-02T03:04:05+00:00[UTC]".into(),
-            submissions: vec![IndexMap::from([
+        let target =
+            crate::staging::canonical_target(std::path::Path::new("/tmp/sample-target")).unwrap();
+        let saved = StagedRecord::new(
+            &target,
+            "/tmp/sample-template".into(),
+            String::new(),
+            false,
+            "2026-01-02T03:04:05+00:00[UTC]".into(),
+            vec![IndexMap::from([
                 ("name".into(), json!("Alpha")),
                 ("enabled".into(), json!(false)),
                 ("mode".into(), json!("slow")),
             ])],
-        };
+        );
         let mut script =
             Script::new(json!({"label": "First", "code": "abc", "flavor": "slow-rich"}));
         let completed = drive(saved.replay(&template).unwrap(), &mut script, |_| Ok(())).unwrap();
@@ -561,14 +563,16 @@ mod tests {
         let mut script = Script::new(json!({"first":"Ada", "second":"yes"}));
         drive_to(start(&template), &mut script, |_| Ok(()), &mut full_output).unwrap();
 
-        let saved = StagedRecord {
-            target: std::path::PathBuf::from("/tmp/sample-target"),
-            template: "/tmp/sample-template".into(),
-            commit: String::new(),
-            named: false,
-            now: "2026-01-02T03:04:05+00:00[UTC]".into(),
-            submissions: vec![IndexMap::from([("first".into(), json!("Ada"))])],
-        };
+        let target =
+            crate::staging::canonical_target(std::path::Path::new("/tmp/sample-target")).unwrap();
+        let saved = StagedRecord::new(
+            &target,
+            "/tmp/sample-template".into(),
+            String::new(),
+            false,
+            "2026-01-02T03:04:05+00:00[UTC]".into(),
+            vec![IndexMap::from([("first".into(), json!("Ada"))])],
+        );
         let resumed = saved.replay(&template).unwrap();
         let Interview::Asking(pending) = &resumed else {
             panic!("expected remaining batch")
@@ -633,13 +637,18 @@ mod tests {
                 panic!("{name}: headless pending")
             };
             assert_eq!(completed.answers, headless.answers, "{name}");
-            let staged = |submissions| StagedRecord {
-                target: std::path::PathBuf::from("/tmp/sample-target"),
-                template: "/tmp/sample-template".into(),
-                commit: String::new(),
-                named: false,
-                now: expect.now.clone(),
-                submissions,
+            let target =
+                crate::staging::canonical_target(std::path::Path::new("/tmp/sample-target"))
+                    .unwrap();
+            let staged = |submissions| {
+                StagedRecord::new(
+                    &target,
+                    "/tmp/sample-template".into(),
+                    String::new(),
+                    false,
+                    expect.now.clone(),
+                    submissions,
+                )
             };
             let replayed = |submissions| match staged(submissions).replay(&template).unwrap() {
                 Interview::Complete(completed) => completed.answers,

@@ -27,14 +27,14 @@ fn schema_validator() -> jsonschema::Validator {
 }
 fn context(target: &Path, template: impl Into<String>, commit: Option<String>) -> Context {
     let target = canonical_target(target).unwrap();
-    let record = StagedRecord {
-        target: target.as_path().to_owned(),
-        template: template.into(),
-        commit: commit.unwrap_or_default(),
-        named: false,
-        now: "2026-01-02T03:04:05+00:00[UTC]".into(),
-        submissions: vec![],
-    };
+    let record = StagedRecord::new(
+        &target,
+        template.into(),
+        commit.unwrap_or_default(),
+        false,
+        "2026-01-02T03:04:05+00:00[UTC]".into(),
+        vec![],
+    );
     Context::new(&target, &record)
 }
 #[test]
@@ -108,6 +108,23 @@ fn send(mut cmd: Command, answers: &Value) -> std::process::Output {
         .write_all(answers.to_string().as_bytes())
         .unwrap();
     child.wait_with_output().unwrap()
+}
+fn move_record_to_legacy_key(state: &Path, target_path: &Path) -> PathBuf {
+    let target = canonical_target(target_path).unwrap();
+    let store = Store::new(support::staged_dir(state));
+    let canonical_path = store.path_for(&target);
+    let mut record: Value = serde_json::from_slice(&fs::read(&canonical_path).unwrap()).unwrap();
+    let legacy_target = format!(
+        "{}{}",
+        target.as_path().display(),
+        std::path::MAIN_SEPARATOR
+    );
+    record["target"] = json!(legacy_target);
+    let legacy_key = format!("{:x}.json", Sha256::digest(legacy_target.as_bytes()));
+    let legacy_path = support::staged_dir(state).join(legacy_key);
+    fs::write(&legacy_path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+    fs::remove_file(canonical_path).unwrap();
+    legacy_path
 }
 fn fixture_answers(path: &Path) -> Value {
     serde_json::from_slice(&fs::read(path.join("answers.json")).unwrap()).unwrap()
@@ -268,14 +285,14 @@ fn every_success_fixture_through_library_replay() {
             .to_string_lossy()
             .into_owned();
         let canonical = canonical_target(target.path()).unwrap();
-        let mut record = StagedRecord {
-            target: canonical.as_path().to_owned(),
-            template: formal.clone(),
-            commit: String::new(),
-            named: false,
-            now: expect.now.clone(),
-            submissions: vec![],
-        };
+        let mut record = StagedRecord::new(
+            &canonical,
+            formal.clone(),
+            String::new(),
+            false,
+            expect.now.clone(),
+            vec![],
+        );
         let store = Store::new(state.path().to_path_buf());
         store.save(&canonical, &record).unwrap();
         let raw = protocol::parse_answers(&fixture_answers(&fixture).to_string()).unwrap();
@@ -471,6 +488,115 @@ fn duplicate_stage_and_missing_staged_apply() {
         Some(1)
     );
 }
+
+#[test]
+fn legacy_record_continue_uses_the_active_canonical_target() {
+    let state = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    let template = Path::new("tests/fixtures/text-basic/template")
+        .canonicalize()
+        .unwrap();
+    let output = command(state.path())
+        .args([
+            "stage",
+            support::folder_address(&template).as_str(),
+            target.path().to_str().unwrap(),
+            "--async",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(4));
+    let legacy_path = move_record_to_legacy_key(state.path(), target.path());
+
+    let mut continue_command = command(state.path());
+    continue_command.args(["continue", target.path().to_str().unwrap(), "-"]);
+    let output = send(continue_command, &json!({}));
+    assert_eq!(
+        output.status.code(),
+        Some(4),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        document["context"]["target"],
+        canonical_target(target.path())
+            .unwrap()
+            .as_path()
+            .to_string_lossy()
+            .as_ref()
+    );
+    assert!(legacy_path.exists());
+}
+
+#[test]
+fn abort_removes_a_legacy_separator_record() {
+    let state = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    let template = Path::new("tests/fixtures/text-basic/template")
+        .canonicalize()
+        .unwrap();
+    let stage = || {
+        command(state.path())
+            .args([
+                "stage",
+                support::folder_address(&template).as_str(),
+                target.path().to_str().unwrap(),
+                "--async",
+            ])
+            .output()
+            .unwrap()
+    };
+    assert_eq!(stage().status.code(), Some(4));
+    let legacy_path = move_record_to_legacy_key(state.path(), target.path());
+
+    let output = command(state.path())
+        .args(["abort", target.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    assert!(!legacy_path.exists());
+    assert_eq!(stage().status.code(), Some(4));
+}
+
+#[test]
+fn successful_apply_removes_a_legacy_separator_record() {
+    let state = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    let fixture = Path::new("tests/fixtures/text-basic");
+    let template = fixture.join("template").canonicalize().unwrap();
+    let output = command(state.path())
+        .args([
+            "stage",
+            support::folder_address(&template).as_str(),
+            target.path().to_str().unwrap(),
+            "--async",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(4));
+    let mut continue_command = command(state.path());
+    continue_command.args(["continue", target.path().to_str().unwrap(), "-"]);
+    let output = send(continue_command, &json!({"name": "Item"}));
+    assert_eq!(output.status.code(), Some(0));
+    let legacy_path = move_record_to_legacy_key(state.path(), target.path());
+
+    let output = command(state.path())
+        .args(["apply", target.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    assert!(!legacy_path.exists());
+    let store = Store::new(support::staged_dir(state.path()));
+    assert!(
+        store
+            .load(&canonical_target(target.path()).unwrap())
+            .unwrap()
+            .is_none()
+    );
+    support::assert_tree(target.path(), &fixture.join("expected"), fixture);
+}
 #[test]
 fn canonical_nonexistent_target_normalizes_components() {
     let root = tempfile::tempdir().unwrap();
@@ -560,14 +686,17 @@ fn legacy_separator_key_migrates_only_after_a_successful_save() {
         Sha256::digest(Path::new(&legacy_text).to_string_lossy().as_bytes())
     );
     let legacy_path = state.path().join(legacy_key);
-    let record = StagedRecord {
-        target: PathBuf::from(&legacy_text),
-        template: "sample".into(),
-        commit: String::new(),
-        named: false,
-        now: "2026-01-02T03:04:05+00:00[UTC]".into(),
-        submissions: vec![],
-    };
+    let mut record_value = serde_json::to_value(StagedRecord::new(
+        &target,
+        "sample".into(),
+        String::new(),
+        false,
+        "2026-01-02T03:04:05+00:00[UTC]".into(),
+        vec![],
+    ))
+    .unwrap();
+    record_value["target"] = json!(PathBuf::from(&legacy_text));
+    let record: StagedRecord = serde_json::from_value(record_value).unwrap();
     fs::write(&legacy_path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
     let store = Store::new(state.path().to_owned());
     assert!(store.load(&target).unwrap().is_some());
@@ -580,8 +709,11 @@ fn legacy_separator_key_migrates_only_after_a_successful_save() {
 
     store.save(&target, &record).unwrap();
     assert!(!legacy_path.exists());
-    let stored: StagedRecord = serde_json::from_slice(&fs::read(&canonical_path).unwrap()).unwrap();
-    assert_eq!(stored.target, target.as_path());
+    let stored: Value = serde_json::from_slice(&fs::read(&canonical_path).unwrap()).unwrap();
+    assert_eq!(
+        stored["target"],
+        target.as_path().to_string_lossy().as_ref()
+    );
 }
 #[test]
 fn explicit_null_differs_from_missing_in_one_shot_and_staged() {
@@ -915,14 +1047,14 @@ fn replay_stores_raw_answer_before_non_idempotent_format() {
     let state = tempfile::tempdir().unwrap();
     let target = tempfile::tempdir().unwrap();
     let canonical = canonical_target(target.path()).unwrap();
-    let record = StagedRecord {
-        target: canonical.as_path().to_owned(),
-        template: folder.path().to_string_lossy().into_owned(),
-        commit: String::new(),
-        named: false,
-        now: "2026-01-02T03:04:05+00:00[UTC]".into(),
-        submissions: vec![indexmap::indexmap! { "value".into() => json!("a") }],
-    };
+    let record = StagedRecord::new(
+        &canonical,
+        folder.path().to_string_lossy().into_owned(),
+        String::new(),
+        false,
+        "2026-01-02T03:04:05+00:00[UTC]".into(),
+        vec![indexmap::indexmap! { "value".into() => json!("a") }],
+    );
     let store = Store::new(state.path().to_path_buf());
     store.save(&canonical, &record).unwrap();
     let Interview::Complete(completed) = store

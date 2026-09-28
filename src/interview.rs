@@ -171,8 +171,8 @@ pub(crate) fn render_hooks(
 #[derive(Debug, Default)]
 pub struct Batch {
     pub items: Vec<Item>,
-    /// Errors for questions in this batch whose answer, held from an earlier
-    /// document, failed validation when the question was reached.
+    /// Recoverable errors for configured defaults and for answers held from an
+    /// earlier document that failed validation when their question was reached.
     pub errors: Rejections,
     default_sources: IndexMap<Id, PreparedDefaultSource>,
 }

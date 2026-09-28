@@ -768,14 +768,14 @@ fn same_outcome_through_all_routes(template: &Path, prior: &[Value], document: &
 
         let loaded = Template::load(template).unwrap();
         let canonical = toha::staging::canonical_target(target.path()).unwrap();
-        let record = toha::staging::StagedRecord {
-            target: canonical.as_path().to_owned(),
-            template: template.to_string_lossy().into_owned(),
-            commit: String::new(),
-            named: false,
-            now: seed().now.to_string(),
-            submissions: vec![],
-        };
+        let record = toha::staging::StagedRecord::new(
+            &canonical,
+            template.to_string_lossy().into_owned(),
+            String::new(),
+            false,
+            seed().now.to_string(),
+            vec![],
+        );
         let context = protocol::Context::new(&canonical, &record);
         let raw = protocol::parse_answers(&document.to_string()).unwrap();
         let (code, result, accepted) = match protocol::answer_headless(
@@ -1781,6 +1781,30 @@ fn rejected_probe_leaks_no_message_or_hook_before_the_corrected_document() {
         ]
     );
     assert_eq!(completed.hooks.len(), 1);
+}
+
+#[test]
+fn rejected_probe_does_not_publish_a_template_fault() {
+    let (_folder, template) = inline(CLASSIFY);
+    let Interview::Asking(pending) = Interview::start(&template, seed()).unwrap() else {
+        panic!("expected questions")
+    };
+    let error = pending
+        .answer(
+            protocol::parse_answers(r#"{"kind":"fancy","boom":true,"style":1,"title":"good"}"#)
+                .unwrap(),
+        )
+        .unwrap_err();
+    let AnswerError::Rejected { rejections, .. } = error else {
+        panic!("the document rejection must suppress the speculative template fault: {error:?}")
+    };
+    assert_eq!(
+        rejections
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ["style: must be a string"]
+    );
 }
 
 #[test]

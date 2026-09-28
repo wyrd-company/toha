@@ -19,7 +19,7 @@ static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StagedRecord {
-    pub target: PathBuf,
+    target: PathBuf,
     pub template: String,
     pub commit: String,
     #[serde(default)]
@@ -49,6 +49,34 @@ pub enum StagingError {
 /// let store: Store = unimplemented!();
 /// let record: StagedRecord = unimplemented!();
 /// store.save(&raw, &record);
+/// ```
+///
+/// ```compile_fail
+/// use std::path::PathBuf;
+/// use toha::staging::StagedRecord;
+/// let raw = PathBuf::from("output");
+/// StagedRecord::new(
+///     &raw,
+///     "sample".into(),
+///     String::new(),
+///     false,
+///     "2026-01-02T03:04:05+00:00[UTC]".into(),
+///     vec![],
+/// );
+/// ```
+///
+/// ```compile_fail
+/// use std::path::PathBuf;
+/// use toha::staging::StagedRecord;
+/// let raw = PathBuf::from("output");
+/// let _ = StagedRecord {
+///     target: raw,
+///     template: "sample".into(),
+///     commit: String::new(),
+///     named: false,
+///     now: "2026-01-02T03:04:05+00:00[UTC]".into(),
+///     submissions: vec![],
+/// };
 /// ```
 ///
 /// ```compile_fail
@@ -226,15 +254,56 @@ impl Store {
         Ok(())
     }
     pub fn remove(&self, target: &CanonicalTarget) -> Result<bool, StagingError> {
-        match fs::remove_file(self.path_for(target)) {
-            Ok(()) => Ok(true),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(e) => Err(e.into()),
-        }
+        let legacy = match self.legacy_path_for(target) {
+            Some(path) if path != self.path_for(target) => match fs::read(&path) {
+                Ok(bytes) => {
+                    let record: StagedRecord = serde_json::from_slice(&bytes)?;
+                    if canonical_target(&record.target)? != *target {
+                        return Err(StagingError::Replay(
+                            "staged record target does not match its storage key".into(),
+                        ));
+                    }
+                    Some(path)
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => return Err(e.into()),
+            },
+            _ => None,
+        };
+        let remove = |path: PathBuf| -> Result<bool, StagingError> {
+            match fs::remove_file(path) {
+                Ok(()) => Ok(true),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+                Err(e) => Err(e.into()),
+            }
+        };
+        let canonical_removed = remove(self.path_for(target))?;
+        let legacy_removed = match legacy {
+            Some(path) => remove(path)?,
+            None => false,
+        };
+        Ok(canonical_removed || legacy_removed)
     }
 }
 
 impl StagedRecord {
+    pub fn new(
+        target: &CanonicalTarget,
+        template: String,
+        commit: String,
+        named: bool,
+        now: String,
+        submissions: Vec<IndexMap<String, Value>>,
+    ) -> Self {
+        Self {
+            target: target.as_path().to_owned(),
+            template,
+            commit,
+            named,
+            now,
+            submissions,
+        }
+    }
     pub fn replay<'a>(&self, template: &'a Template) -> Result<Interview<'a>, StagingError> {
         self.replay_with_defaults(template, IndexMap::new())
     }
