@@ -1081,11 +1081,14 @@ fn run(
 }
 
 fn main() -> ExitCode {
+    // Parse first so that clap handles --version, --help, and usage errors
+    // without a home directory; only the commands below resolve the folders.
+    let command = Cli::parse().command;
     let dirs = match Dirs::resolve() {
         Ok(v) => v,
         Err(e) => return Outcome::Error(e).finish(),
     };
-    match Cli::parse().command {
+    match command {
         Command::Skills { command } => skills::run(command).finish(),
         Command::Stage {
             template,
