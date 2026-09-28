@@ -1,0 +1,240 @@
+<section id="title">
+  <p class="kicker">Toha 0.2.0 · Design 1068 → Implementation 1031</p>
+  <h1>Content injection into existing files</h1>
+  <p>Toha writes a bounded, idempotently-managed region into a file it does not own — the first mutation past whole-file writes.</p>
+  <p>
+    <span class="tag">architect Phase A–F complete</span>
+    <span class="tag warn">awaiting Bob's exact-revision approval</span>
+    <span class="tag">no runtime / canonical edits</span>
+  </p>
+</section>
+
+<section id="task">
+  <h2>Task</h2>
+  <p>Design content injection: adding or updating a bounded region of an existing file while leaving the rest to its owner, and hand the mutation contract to the git-update design (1066) and the paired implementation (1031). This task designs; it does not implement.</p>
+  <ul>
+    <li>Resolve anchors/selection, idempotency, conflict behavior, ownership of file mutations, and failure/recovery.</li>
+    <li>Preserve the pure interview engine, staging replay, and the <code>TargetPath</code>/symlink/<code>.git</code> safety seams.</li>
+    <li>Acceptance: a template that injects into an existing file, applied twice, changes that file exactly once.</li>
+  </ul>
+  <p class="muted">Base chosen by a four-candidate arena (self 30/30, cross-judge 29/30): managed-region markers with a pure <code>resolve_edit</code> and a <code>sha2</code> end-marker checksum.</p>
+</section>
+
+<section id="premortem">
+  <h2>Pre-mortem — the design and implementation failed. Why?</h2>
+  <ul>
+    <li><strong>Idempotency was heuristic.</strong> Re-matching injected text drifted once the user edited nearby, so a second apply duplicated or clobbered. <span class="tag">killed by</span> a recomputed checksum in the end marker: resolving Toha's own output is <code>Unchanged</code> by construction.</li>
+    <li><strong>Replay diverged.</strong> Ownership computed from build-time byte offsets was invalidated by any pre-apply change. <span class="tag">killed by</span> selecting the region by marker at apply time; the plan holds no offsets.</li>
+    <li><strong>A user-owned file was silently rewritten.</strong> Reserializing structured docs (jaq) dropped comments/formatting. <span class="tag">killed by</span> keeping structured-merge out of scope; text markers touch only the managed span.</li>
+    <li><strong>Line endings were renormalized.</strong> Editing via <code>lines().join("\n")</code> changed bytes outside the region. <span class="tag">killed by</span> byte-range splicing; everything outside the region is preserved verbatim.</li>
+    <li><strong>A half-written user file after a crash.</strong> <span class="tag">killed by</span> atomic temp-file-plus-rename for injection writes.</li>
+    <li><strong>Whole-file behavior regressed.</strong> Collapsing every mutation into one enum changed existence⇒conflict semantics. <span class="tag">killed by</span> keeping injection a <code>Plan.edits</code> sibling; the whole-file path is untouched.</li>
+  </ul>
+</section>
+
+<section id="seams">
+  <h2>Module and seam</h2>
+  <p>No new module. <code>template</code> gains an injection rule; <code>plan</code> gains a <code>PlannedEdit</code> sibling and the pure <code>resolve_edit</code>; <code>apply</code> gains a read-modify-write stage. The engine is untouched. The only target read is at apply/dry-run.</p>
+  <svg viewBox="0 0 720 300" role="img" aria-label="Module and seam diagram: template to plan to apply, engine pure, target read only at apply">
+    <rect x="10" y="20" width="150" height="60" rx="6" fill="none" stroke="#888"/>
+    <text x="85" y="45" text-anchor="middle" font-size="13" fill="#ccc">template</text>
+    <text x="85" y="65" text-anchor="middle" font-size="10" fill="#999">InjectionRule</text>
+
+    <rect x="10" y="120" width="150" height="60" rx="6" fill="none" stroke="#888"/>
+    <text x="85" y="145" text-anchor="middle" font-size="13" fill="#ccc">interview (pure)</text>
+    <text x="85" y="165" text-anchor="middle" font-size="10" fill="#999">Completed</text>
+
+    <rect x="270" y="70" width="180" height="80" rx="6" fill="none" stroke="#5b9"/>
+    <text x="360" y="98" text-anchor="middle" font-size="13" fill="#ccc">plan</text>
+    <text x="360" y="118" text-anchor="middle" font-size="10" fill="#999">Plan.edits: PlannedEdit</text>
+    <text x="360" y="134" text-anchor="middle" font-size="10" fill="#999">resolve_edit (pure)</text>
+
+    <rect x="540" y="70" width="170" height="80" rx="6" fill="none" stroke="#5b9"/>
+    <text x="625" y="98" text-anchor="middle" font-size="13" fill="#ccc">apply</text>
+    <text x="625" y="118" text-anchor="middle" font-size="10" fill="#999">read-modify-write</text>
+    <text x="625" y="134" text-anchor="middle" font-size="10" fill="#999">atomic rename</text>
+
+    <rect x="540" y="210" width="170" height="60" rx="6" fill="none" stroke="#c86"/>
+    <text x="625" y="235" text-anchor="middle" font-size="12" fill="#ccc">target file</text>
+    <text x="625" y="253" text-anchor="middle" font-size="10" fill="#999">read only here</text>
+
+    <line x1="160" y1="50" x2="270" y2="95" stroke="#888" marker-end="url(#a)"/>
+    <line x1="160" y1="150" x2="270" y2="115" stroke="#888" marker-end="url(#a)"/>
+    <line x1="450" y1="110" x2="540" y2="110" stroke="#888" marker-end="url(#a)"/>
+    <line x1="625" y1="150" x2="625" y2="210" stroke="#c86" marker-end="url(#a)"/>
+    <defs><marker id="a" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#888"/></marker></defs>
+  </svg>
+  <p class="muted">Shared surface named for coordination: <code>Plan</code> + the file-mutation types. 1076 (Jinja includes / root boundaries) and 1066 (git updates) both touch it — coordinate through the board before either lands.</p>
+</section>
+
+<section id="interface">
+  <h2>Public interfaces expected</h2>
+  <section>
+    <h2>template.yml author surface</h2>
+    <pre><code class="language-yaml">inject:
+  - into: "src/app.rs"          # -> TargetPath (same guards as files)
+    region: "routes"           # stable key; partitions a file's regions
+    when: "add_router"
+    source: support/routes.rs   # body from a support file (rendered)
+    anchor: { after: "fn build_router() {", occurrence: only }
+  - into: ".gitignore"
+    region: "build-artifacts"
+    content: |                  # inline body; mutually exclusive with source
+      /target
+    create: true                # default false</code></pre>
+  </section>
+  <section>
+    <h2>The load-bearing pure function</h2>
+    <pre><code class="language-rust">/// Pure: reads no file; caller passes the current bytes.
+/// resolve_edit(read(path), edit) yields Unchanged when path holds
+/// bytes a prior Write emitted -> idempotent, replay-safe.
+pub enum Resolution { Unchanged, Write(Vec&lt;u8&gt;) }
+
+pub fn resolve_edit(current: Option&lt;&amp;[u8]&gt;, edit: &amp;PlannedEdit)
+    -&gt; Result&lt;Resolution, EditError&gt;;</code></pre>
+  </section>
+  <section>
+    <h2>Crate / CLI — unchanged callers</h2>
+    <pre><code class="language-rust">let plan = Plan::build(&amp;template, &amp;completed, target)?;   // also fills plan.edits
+match plan.apply(target, ApplyOptions { force:false, trusted:true }, &amp;runner)? {
+    Applied::Written { files, .. } =&gt; { /* files includes changed injections */ }
+    Applied::NeedsTrust(plan)      =&gt; { /* unchanged */ }
+}</code></pre>
+    <ul>
+      <li>dry-run: <code>inject &lt;path&gt; (&lt;region&gt;)</code> / <code>update &lt;path&gt; (&lt;region&gt;)</code>; unchanged prints nothing.</li>
+      <li>drift → exit 1, names <code>--force</code>; missing anchor → exit 1; ambiguous → exit 5.</li>
+    </ul>
+  </section>
+  <section>
+    <h2>Mutation contract for 1066 / 1031 (derived view)</h2>
+    <pre><code class="language-rust">pub enum FileMutation&lt;'a&gt; {
+    Whole  { path: &amp;'a TargetPath },
+    Region { path: &amp;'a TargetPath, region: &amp;'a RegionKey },
+}
+impl Plan { pub fn mutations(&amp;self) -&gt; impl Iterator&lt;Item = FileMutation&lt;'_&gt;&gt;; }</code></pre>
+    <p class="muted">Toha owns exactly the byte span between and including a keyed begin/end marker pair; the end-marker checksum identifies the body Toha last wrote.</p>
+  </section>
+</section>
+
+<section id="data">
+  <h2>Data structures expected</h2>
+  <section>
+    <h2>Plan and PlannedEdit</h2>
+    <pre><code class="language-rust">pub struct Plan {
+    pub files: Vec&lt;PlannedFile&gt;,     // whole-file writes (unchanged)
+    pub edits: Vec&lt;PlannedEdit&gt;,     // NEW: region injections, applied after files
+    pub conflicts: Vec&lt;TargetPath&gt;,  // whole-file existence conflicts (unchanged)
+    pub hooks: Vec&lt;PlannedHook&gt;, pub before_apply: Option&lt;String&gt;, pub after_apply: Option&lt;String&gt;,
+}
+pub struct PlannedEdit {
+    pub path: TargetPath, pub region: RegionKey,
+    pub body: String,               // rendered content between the markers
+    pub marker: MarkerStyle,        // comment delimiters, resolved at build
+    pub anchor: Option&lt;Anchor&gt;,      // first-placement only; None => end of file
+    pub create: bool, pub source: Option&lt;PathBuf&gt;,
+}</code></pre>
+  </section>
+  <section>
+    <h2>On-disk managed region (single source of truth)</h2>
+    <pre><code class="language-rust">// >>> toha:region routes >>>
+    router.route("/health", get(health));
+// <<< toha:end routes sha256:9f2c... <<<
+//        ^key            ^checksum of the body Toha wrote (existing sha2 dep)</code></pre>
+    <p class="muted">Checksum turns drift detection into a fact: body matches recorded hash ⇒ template changed (replace); differs ⇒ user edit (drift, refuse without --force).</p>
+  </section>
+  <section>
+    <h2>Errors and anchor</h2>
+    <pre><code class="language-rust">pub struct Anchor { matcher: AnchorMatch, place: Place, occ: Occurrence }
+pub enum AnchorMatch { Literal(String), Regex(Regex) }
+pub enum Occurrence { First, Last, Only }   // Only + >1 => ambiguous (exit 5)
+
+pub enum EditError {
+    TargetMissing, NotUtf8, AnchorMissing, AnchorAmbiguous, Drift, MalformedRegion,
+}</code></pre>
+  </section>
+</section>
+
+<section id="tested">
+  <h2>Behaviors to prove</h2>
+  <p>Each becomes a 1031 fixture; each names how it can fail.</p>
+  <table>
+    <thead><tr><th>Behavior</th><th>Fails if</th></tr></thead>
+    <tbody>
+      <tr><td>Twice-apply changes the file once (sole idempotency assertion)</td><td>second apply rewrites bytes or duplicates the region</td></tr>
+      <tr><td>First placement at anchor / at EOF</td><td>placed at the wrong offset</td></tr>
+      <tr><td>Template-body change replaces only the region</td><td>bytes outside the markers change</td></tr>
+      <tr><td>Drift refuses without --force (exit 1); overwrites with --force</td><td>drift is silently clobbered or --force fabricates placement</td></tr>
+      <tr><td>Missing anchor exit 1; ambiguous (only) exit 5</td><td>wrong code or a silent first-match</td></tr>
+      <tr><td>Whole-file write + injection into one file, one plan</td><td>wrong order or the injection reads pre-write bytes</td></tr>
+      <tr><td>Arbitrary text targets (.gitignore, .rs) exercise comment inference</td><td>unknown-extension silent guess</td></tr>
+      <tr><td>Staged-replay double-apply equals single apply</td><td>replay is not a no-op</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="outofscope">
+  <h2>Out of scope</h2>
+  <ul>
+    <li><strong>Structured-document merge (JSON/YAML/TOML via jaq/serde).</strong> Reserializing drops comments/formatting — a disguised whole-file rewrite of a user-owned file — and cannot touch arbitrary text. Reserved as a future, opt-in, explicitly-formatted mode; not implemented in 1031.</li>
+    <li>A three-way merge of user edits against the managed region.</li>
+    <li>A <code>toha inject</code> subcommand or a second apply pass.</li>
+    <li>Formatter/hook integration for injected content (hooks already exist and gate on trust).</li>
+    <li>Canonical schema/spec/guide edits — owned by the paired implementation (1031).</li>
+  </ul>
+</section>
+
+<section id="review">
+  <h2>Reviewer focus</h2>
+  <p>The adversarial reviewer will be told to attack:</p>
+  <ul>
+    <li><strong>Idempotency proof.</strong> Does <code>Write</code> <em>always</em> recompute the checksum over its emitted body, so re-resolve is provably <code>Unchanged</code> across staging replay?</li>
+    <li><strong>Byte fidelity.</strong> Does the region editor splice byte ranges and preserve every byte (line endings, final newline) outside the region?</li>
+    <li><strong>No-silent-overwrite.</strong> Can any path let <code>--force</code> rewrite a user-owned file outside its own markers, or fabricate placement?</li>
+    <li><strong>Purity.</strong> Does the engine stay free of target reads, and is the only read at apply/dry-run?</li>
+    <li><strong>Composition.</strong> Whole-file write then injection into the same file — ordering, and the same-<code>(path,region)</code> duplicate guard.</li>
+    <li><strong>Safety reuse.</strong> <code>TargetPath</code>/symlink/<code>.git</code> checks on every edit path, before read and before write.</li>
+  </ul>
+</section>
+
+<section id="alternatives">
+  <h2>Alternatives explored</h2>
+  <table>
+    <thead><tr><th>Shape</th><th>Why not the base</th></tr></thead>
+    <tbody>
+      <tr><td>Anchor-only, re-match text on re-apply (candidate-2)</td><td>heuristic idempotency; misfires once the user edits nearby. Kept its cardinality vocabulary.</td></tr>
+      <tr><td>Structured merge via jaq/serde (candidate-3)</td><td>reserializes (loses comments/format); structured-only. Kept "owns value at path" as a reserved mode.</td></tr>
+      <tr><td>One unified FileMutation enum as the internal rep (candidate-4)</td><td>regresses whole-file semantics; build-time offsets not replay-safe. Kept its ownership vocabulary as a derived view.</td></tr>
+      <tr><td>A third <code>Content::Injected</code> variant</td><td>leaks "reads the target" into every <code>Content</code> match; shallower.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="decisions">
+  <h2>Decisions needed first</h2>
+  <p>Options + recommendation for each; deck inclusion is not approval.</p>
+  <ul>
+    <li><strong>D1 Visible markers</strong> written into user files. <em>Recommend: yes</em> (the mechanism).</li>
+    <li><strong>D2 Author surface</strong> — top-level <code>inject</code> list as shown. <em>Recommend: adopt.</em></li>
+    <li><strong>D3 Comment inference + override</strong>; unknown extension without override is a load error. <em>Recommend: yes.</em></li>
+    <li><strong>D4 Drift / --force</strong> — drift refuses (exit 1); <code>--force</code> overwrites the managed region only, never fabricates placement. Extends --force (not a restriction). <em>Recommend: adopt.</em></li>
+    <li><strong>D5 <code>create</code> default false.</strong> <em>Recommend: false.</em></li>
+    <li><strong>D6 Structured-merge out of scope for 1031</strong>, reserved for a future design. <em>Recommend: yes.</em></li>
+    <li><strong>D7 Atomic temp-file+rename</strong> for injection writes. <em>Recommend: yes.</em></li>
+    <li><strong>D8 Reuse existing <code>sha2</code></strong> for the checksum. <em>Recommend: yes (no new dependency).</em></li>
+  </ul>
+  <p><span class="tag">disclosure</span> No supported-capability restriction, no permissions/access change, no timeout mechanic, no pinned version check, no application-subprocess integration. A ruling that changes this returns the item to this checkpoint for separate approval.</p>
+</section>
+
+<section id="size">
+  <h2>Size</h2>
+  <p>Medium. Expected agent implementation time for 1031: roughly one to two focused sessions.</p>
+  <ul>
+    <li>New: <code>InjectionRule</code> + <code>Builder</code> branch, <code>PlannedEdit</code>, <code>resolve_edit</code> + byte-range region parser, apply stage, <code>FileMutation</code> view, comment table.</li>
+    <li>Canonical edits (1031): template-format spec + schema, CLI spec, architecture design, one guide, and the fixture matrix.</li>
+  </ul>
+</section>
+
+<section id="complexity">
+  <h2>Complexity</h2>
+  <p>Moderate, concentrated in one pure function. The hard logic — placement, idempotency, drift, byte-splice — lives in <code>resolve_edit</code>, which takes bytes in and returns a decision, so it is fixture-testable without the filesystem. The apply integration is a small, ordered stage; the engine and whole-file path are untouched. Risk sits in byte fidelity and the comment-inference table, both directly covered by the behavior matrix.</p>
+</section>
