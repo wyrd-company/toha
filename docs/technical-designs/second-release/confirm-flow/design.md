@@ -460,8 +460,10 @@ documents are byte-identical to today; the `stopped` document is new and additiv
   contract, not on merged 1056 runtime.
 - **Target identity (1072).** Confirm-flow adds no second target normalizer and
   builds no plan on stop; `realize`/`Plan` take the identity type — `&Path` today,
-  `&CanonicalTarget` post-1056 — and never normalize. The design is order-
-  independent w.r.t. 1056.
+  `&CanonicalTarget` post-1056 — and never normalize. The design needs no 1056
+  code, so it requires no design rework for the merge order; per the effort's
+  sequencing ruling 1062's runtime integration nonetheless lands after 1056 (a
+  coordination fact — see Decisions needed first).
 - **Origin-bearing consuming `Resolution` (final configured contract).** Wherever
   confirm-flow touches configured-default consumption (start, replay, headless) it
   routes through the origin-bearing consuming `Resolution` (`warnings()`,
@@ -627,15 +629,20 @@ The paired implementation (1062) owns these edits; the design only describes the
   considered: `skip-rest`/`skip-group` bare verbs (C1) or `{ skip: interview |
   group }` (C2/C3). `rest`/`group` reads clearly and avoids the `interview` vs
   top-level-`group` synonym.
-- **D4 — Sequencing vs 1056.** Recommend landing 1062 **independently against the
-  approved 1072 contract** (coupling expressed as the atomicity invariant + the
-  target-identity type), not blocking on 1056. Alternative: order 1062 after 1056.
 - **D5 — `stopped` wire payload.** Recommend including the answers gathered so far
   (for audit/visibility). Alternative: omit them to avoid implying a usable result.
 
 No decision introduces a capability restriction, a permissions/access change, a
 timeout, a pinned check, or an application subprocess; the feature is additive and
 opt-in, and ordinary confirms are unchanged.
+
+**Runtime merge order (coordination ruling — not a decision).** Design preparation
+for confirm-flow is independent, but runtime integration is not: the paired
+implementation (1062) integrates **after** the error-attribution implementation
+(1056). This is set by the effort's sequencing ruling, not offered as a choice. The
+design depends only on the approved 1072 *contract* (the atomicity invariant, the
+target-identity type, and the origin-bearing consuming `Resolution`), so this
+ordering needs no design rework; it only fixes when 1062's code lands.
 
 ## Size and complexity
 

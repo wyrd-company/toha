@@ -248,10 +248,15 @@ struct Ended {                          // a stopped interview
       <tr><td>D1 — Exit code when a confirm stops the run</td><td>Exit 0 (a deliberate choice), with the machine-readable "stopped" status for scripts</td></tr>
       <tr><td>D2 — May a <em>preset</em> answer trigger stop/preview?</td><td>Yes (a default is the answer) — flagged because a preset could then stop a run</td></tr>
       <tr><td>D3 — Wording of the skip scope</td><td><code>{ skip: rest | group }</code></td></tr>
-      <tr><td>D4 — Order vs the error-attribution build (1056)</td><td>Land 1062 independently against the approved contract, not blocked on 1056</td></tr>
       <tr><td>D5 — Include gathered answers in the "stopped" document?</td><td>Yes, for audit</td></tr>
     </tbody>
   </table>
+  <p class="muted">
+    <strong>Merge order is already set (not a decision).</strong> The build for this
+    design is prepared independently, but it goes in <em>after</em> the
+    error-attribution build. Design preparation is independent; runtime integration
+    is not.
+  </p>
   <p class="muted">
     No decision adds a permission, access, timeout, version-pin, or external-process
     behavior. The feature is additive and opt-in; ordinary confirms are unchanged.

@@ -110,14 +110,18 @@ error-attribution approved), addressed under Predecessor composition below.
   contract only: atomicity invariant + target-identity type + origin-bearing
   consuming `Resolution`; adds no second normalizer, reconstructs no origins,
   accepts no rejected answer into probe state, infers no different skip/default
-  policy. Order-independent w.r.t. 1056 (Decision D4). No approved interface is
-  changed by this design, so no dependent returns to review on its account.
+  policy. The design needs no 1056 code; per the effort's sequencing ruling,
+  1062's runtime integration lands after 1056 (a coordination fact, not a
+  decision — design preparation is independent, runtime integration is not). No
+  approved interface is changed by this design, so no dependent returns to review
+  on its account.
 
 ## Residual risks (carried to the checkpoint)
 
-- The five decisions D1–D5 (`design.md`) are genuine product choices with
+- The four product decisions D1, D2, D3, D5 (`design.md`) are genuine choices with
   recommendations; D2 (a preset silently firing a terminal action) is the one worth
-  Bob's explicit attention.
+  Bob's explicit attention. Sequencing (former D4) is no longer a Bob decision: the
+  effort's sequencing ruling fixes 1062's runtime integration after 1056.
 - Adding a wire `status: stopped` and a `disposition` field to `additionalProperties:
   false` documents is an additive contract change agents depend on; documented and
   omitted-on-ordinary, but it is a contract addition, not a no-op.

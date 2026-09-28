@@ -330,10 +330,12 @@ Any confirm-driven vocabulary must be disambiguated from these:
 
 **Risk**
 
-- Sequencing vs 1056: the design references approved-but-unmerged 1072 types.
-  The paired implementation must state whether it lands after 1056 or expresses
-  its coupling as an atomicity invariant + a target-identity type so it is
-  order-independent. This is a decision to surface at Phase C.
+- Sequencing vs 1056: the design references approved-but-unmerged 1072 types and
+  expresses its coupling as the atomicity invariant + the target-identity type, so
+  it needs no 1056 code. Runtime integration order is not left open: per the
+  effort's sequencing ruling, 1062's runtime integration lands after 1056.
+  Independent design preparation is permitted; independent runtime integration is
+  not. This is a coordination fact, not a Phase-C decision.
 - Schema closure: adding a status/field to `additionalProperties: false`
   documents is a wire-contract change agents depend on; must be additive and
   documented.
