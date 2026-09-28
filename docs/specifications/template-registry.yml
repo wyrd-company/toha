@@ -42,6 +42,18 @@ description: >-
   Discovery. A template found by scanning a templates path without a registry
   entry has the canonical absolute path of its folder as its formal name, and
   carries no approval.
+
+  Bundled demo. The reserved `toha-demo` fallback is not a registry entry: no
+  layer records it, and resolution reaches it only when no entry resolves the
+  name, so it never shadows an installed or aliased template. The unfiltered
+  `templates list` presents it as one read-only row in both the text and the
+  `--json` output, only when no entry occupies the name. The descriptor carries
+  its true identity — formal name `toha-demo`, short name `demo`, no aliases, no
+  approval so its trust is false, and its content commit — and is marked
+  `bundled` in `--json` with no registry layer, source, ref, or path, because
+  none exists. It is presentation only and no resolution consults it. The
+  command-line interface specification defines its resolution and offline
+  first-run guarantee.
 format: json-schema
 validation-criteria: >-
   Each system and user registry file validates against `#/$defs/registry` in

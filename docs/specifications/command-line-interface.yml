@@ -13,7 +13,8 @@ description: >-
   with a configured or built-in host prefix followed by `:` is a git shorthand
   address; a value that starts with `.`, `/`, or `~`, or a Windows drive prefix
   (`<letter>:\` or `<letter>:/`), is a local folder; any other value is an alias,
-  then a short name, then a formal name of an installed template. Windows
+  then a short name, then a formal name of an installed template, and finally
+  the reserved bundled name `toha-demo`. Windows
   extended (`\\?\...`) and UNC (`\\server\share`) values are read as names.
   A git address has the form
   `<repository>[@<ref>][#<path>]`, where `<ref>` is a tag, branch, or commit and
@@ -27,6 +28,18 @@ description: >-
   never contains user information. A staged interview resumes a local folder
   template from its recorded formal name as a filesystem path, independently
   of `<TEMPLATE>` argument classification.
+
+  Bundled demo. `toha-demo` is a reserved fallback name. A fresh install can
+  preview, apply, stage, continue, and resume it by name from any directory,
+  offline, with no registry entry, cache, network, or git. Registry resolution
+  always wins: `toha-demo` reaches the bundled demo only when no alias, short
+  name, or formal name resolves it, so installing or aliasing a template as
+  `toha-demo` shadows the bundled demo and narrows no supported use. The bundled
+  demo is untrusted and has no hooks. Its content version is the commit of a
+  staged interview, so a toha upgrade that leaves the demo unchanged still
+  resumes; an upgrade that changes it reports that the demo changed and names
+  staging it again. The unfiltered `templates list` shows the bundled demo as
+  one read-only row when no registry entry occupies the name.
 
   Short names. A short name that matches more than one installed template is
   ambiguous. A command given an ambiguous short name fails with exit code 5

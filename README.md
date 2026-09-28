@@ -73,15 +73,18 @@ direct installation.
 
 ## First run
 
-From a checkout of this repository, use the
-[demo template](docs/examples/demo/template.yml):
+Toha ships a small [demo template](docs/examples/demo/template.yml) inside the
+binary. From any directory, offline, with nothing installed:
 
 ```sh
-toha apply ./docs/examples/demo ./notes
+toha apply toha-demo ./notes
 ```
 
 Answer **Note title** and **Topic**. To inspect the file plan without writing
-it, use `toha apply ./docs/examples/demo ./preview --dry-run`.
+it, use `toha apply toha-demo ./preview --dry-run`.
+
+`toha-demo` is a reserved fallback name. If you install or alias a template as
+`toha-demo`, that template resolves instead.
 
 ## Using Toha from Rust
 

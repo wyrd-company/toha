@@ -235,8 +235,8 @@ proposed-design:
     carry `!include` into the loader; jsonschema for schema validation; globset for ignore and
     static globs; sha2 for staged file names; etcetera for platform
     directories; clap for arguments, inquire for prompts, and include_dir for
-    embedded skills, behind the `cli` feature; and dist for release
-    installers.
+    embedded skills and the bundled demo, behind the `cli` feature; and dist for
+    release installers.
 
   fixture-suite: >-
     Each fixture is a directory under `tests/fixtures/` holding a `template/`
