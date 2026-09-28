@@ -1,0 +1,240 @@
+<section id="title">
+  <p class="kicker">Toha 0.2.0 · Design brief · task 1076</p>
+  <h1>Jinja <code>{% include %}</code> within the template root</h1>
+  <p>Turn on Jinja includes for rendered file bodies, confined to the selected template root, without granting arbitrary filesystem access and without disturbing the separate YAML <code>!include</code>.</p>
+  <p>
+    <span class="tag">design-only</span>
+    <span class="tag">epic 1065</span>
+    <span class="tag">pairs with impl 1061</span>
+    <span class="tag warn">awaiting Bob's approval</span>
+  </p>
+</section>
+
+<section id="step">
+  <h2>Task</h2>
+  <p>Let a template author factor shared text into a <strong>partial</strong> and pull it in at render time with <code>{% include "partials/frontmatter.md" %}</code>. Today Jinja <code>include</code>/<code>import</code>/<code>extends</code> are disabled: every string compiles as a lone template named <code>"value"</code> in a fresh MiniJinja environment with no loader.</p>
+  <ul>
+    <li>Included content stays <strong>inside the selected template root</strong>; no arbitrary filesystem access through the loader.</li>
+    <li>Reject absolute paths, <code>..</code> traversal, and symlink escapes — including a symlink <em>inside</em> the root that resolves outside it.</li>
+    <li>Preserve the YAML <code>!include</code> tag as a separate feature with its own diagnostics.</li>
+    <li>Design only. The paired implementation (1061) owns canonical spec/schema/guide/example edits.</li>
+  </ul>
+  <p class="muted">Base candidate C2 (capability-by-type) + recommended graft of C1 (compile-time confined closure). Full package: <code>docs/technical-designs/second-release/jinja-includes/</code>.</p>
+</section>
+
+<section id="premortem">
+  <h2>Pre-mortem — the design and implementation failed. Why?</h2>
+  <ul>
+    <li><strong>Confinement bypass.</strong> A symlink inside the root points outside; MiniJinja's <code>safe_join</code>/<code>path_loader</code> does not canonicalize, so it follows the link. Mitigation: a custom seam mirroring <code>!include</code> — canonicalize + <code>starts_with(root)</code> + refuse symlink at any component.</li>
+    <li><strong>Diagnostics collide.</strong> A Jinja-include message reuses the YAML <code>!include</code> wording (<code>"include cycle"</code>), confusing two features. Mitigation: every Jinja message says "jinja include".</li>
+    <li><strong>Scope creep onto the interview.</strong> A loader attached to interview-field templates breaks the pure, filesystem-free interview engine across the headless/staged/crate drivers. Mitigation: includes reachable only by a distinct type minted at the two file-body call sites.</li>
+    <li><strong>Silent cycles.</strong> A cycle degrades to a generic "recursion limit exceeded" after ~50 levels with no offending file. Mitigation: recommended mode resolves the graph at compile time and names the cycle path.</li>
+    <li><strong>Unstable dependency churn.</strong> The recommended mode enables MiniJinja's <code>unstable_machinery</code> (no semver guarantee). Surfaced as an explicit decision, with a loader fallback that needs no such feature.</li>
+  </ul>
+</section>
+
+<section id="seams">
+  <h2>Module and seam</h2>
+  <p>One value object owns the single confinement seam; two file-body call sites in <code>plan.rs</code> construct the include-capable template. Everything else stays loaderless, so includes are inert there by construction.</p>
+  <pre><code class="language-text">Template::load (template.rs)
+  └─ root = folder.canonicalize()                    [existing]
+Plan::build (plan.rs)
+  └─ let partials = Partials::rooted(&template.root)  ← built once, single source of truth
+  ├─ walk() source file    ─▶ read_render(path, ctx, &partials)
+  ├─ files: rule source    ─▶ read_render(origin, ctx, &partials)
+  │                                     │
+  │            ┌────────────────────────┴─────────────────────────┐
+  │            │   THE ONE CONFINEMENT SEAM                         │
+  │            │   reject absolute / ".."; refuse symlink at any    │
+  │            │   component; canonicalize; starts_with(root); read │
+  │            └────────────────────────────────────────────────────┘
+  ├─ target path segments  ─▶ Tmpl (loaderless)      includes inert
+  ├─ apply messages, hooks ─▶ Tmpl / Expr (loaderless) includes inert
+interview.rs field compiles ─▶ Tmpl / Expr (loaderless) includes inert
+template.rs !include resolve() ─▶ SEPARATE load-time data feature, own diagnostics</code></pre>
+</section>
+
+<section id="interface">
+  <section id="interface-intro">
+    <h2>Public interfaces expected</h2>
+    <p>New types in <code>src/jinja.rs</code> beside <code>Tmpl</code>. <code>Tmpl</code> and <code>Expr</code> are unchanged and stay loaderless. Navigate down for each item.</p>
+  </section>
+  <section id="interface-partials">
+    <h2>Partials — the include boundary</h2>
+    <pre><code class="language-rust">/// Cheap, cloneable handle to the canonical selected template root
+/// (consumes 1074's ResolvedTemplate.folder identity; defines no new one).
+/// The ONE seam every include name passes through.
+#[derive(Clone, Debug)]
+pub struct Partials { root: std::sync::Arc&lt;std::path::PathBuf&gt; }
+
+impl Partials {
+    pub fn rooted(root: &std::path::Path) -> Self;         // does not re-canonicalize
+    pub fn compile(&self, source: String, label: &str)
+        -> Result&lt;FileTmpl, IncludeError&gt;;                 // label = root-relative path, for diagnostics
+}</code></pre>
+  </section>
+  <section id="interface-filetmpl">
+    <h2>FileTmpl — the capability</h2>
+    <pre><code class="language-rust">/// A compiled file body that MAY resolve {% include %}. A distinct type from
+/// Tmpl: holding one IS the include capability; only Partials::compile mints it.
+pub struct FileTmpl { /* source, env, referenced_ids */ }
+
+impl FileTmpl {
+    pub fn source(&self) -> &str;
+    pub fn references(&self) -> &HashSet&lt;String&gt;;          // incl. include-reached ids (mode A)
+    pub fn render&lt;S: Serialize&gt;(&self, ctx: S) -> Result&lt;String, RenderError&gt;;
+}</code></pre>
+  </section>
+  <section id="interface-plan">
+    <h2>Call-site delta (plan.rs)</h2>
+    <pre><code class="language-rust">// Plan::build: let partials = Partials::rooted(&template.root);
+//   thread &partials into walk() and the files: loop.
+fn read_render(path: &Path, ctx: &impl Serialize, partials: &Partials)
+    -> Result&lt;String, PlanError&gt;;
+// rendered() (path segments) is UNCHANGED — no partials param, includes inert.
+// IncludeError folds into PlanError::Render via Display, like minijinja::Error today.</code></pre>
+  </section>
+</section>
+
+<section id="data">
+  <h2>Data structures expected</h2>
+  <p>One error enum. Distinct wording from every YAML <code>!include</code> message. No <code>template.yml</code> schema key is added — partials are ordinary files plus inline <code>{% include %}</code>.</p>
+  <pre><code class="language-rust">pub enum IncludeError {
+    Template(minijinja::Error),                 // syntax error, unchanged wording
+    NotFound  { name, by },   // "jinja include not found: {name}, included by {by}"
+    Escape    { name, by },   // "jinja include escapes template root: {name}, ..."
+    Symlink   { name, by },   // "jinja include path is a symlink: {name}, ..."
+    NotUtf8   { name, by },   // "jinja include is not utf-8: {name}, ..."
+    Unreadable{ name, source},// "jinja include is not readable: {name}: {io}"
+    Cycle     { path },       // "jinja include cycle: a.md -> b.md -> a.md"
+    Dynamic   { by },         // mode A only: "... must be a literal string, ..."
+}</code></pre>
+  <p class="muted">Mode A adds one private structure: the confined closure (root-relative name → confined UTF-8 source, plus the unioned <code>referenced_ids</code>), built by a static walk with a canonical-path stack — the same shape as <code>template.rs::resolve</code> for <code>!include</code>.</p>
+</section>
+
+<section id="tested">
+  <section id="tested-intro">
+    <h2>Behaviors to prove — how each could fail</h2>
+    <p>Through the fixture harness (the caller interface), plus one runtime symlink test. Navigate down for positive, negative, and inertness guards.</p>
+  </section>
+  <section id="tested-positive">
+    <h2>Positive (exit 0, expected tree)</h2>
+    <table>
+      <thead><tr><th>Fixture</th><th>Proves</th></tr></thead>
+      <tbody>
+        <tr><td><code>include-basic</code></td><td>partial outside source inlined, variable flows in, <code>partials/</code> not emitted</td></tr>
+        <tr><td><code>include-nested</code></td><td>transitive composition; partials not emitted</td></tr>
+        <tr><td><code>include-files-source</code></td><td><code>files:</code> rule source includes a partial</td></tr>
+        <tr><td><code>include-partial-under-source-ignored</code></td><td>partial in source dir, <code>ignore</code>d: included, not emitted</td></tr>
+      </tbody>
+    </table>
+  </section>
+  <section id="tested-negative">
+    <h2>Negative (exit 1, distinct wording)</h2>
+    <table>
+      <thead><tr><th>Fixture</th><th>error_contains</th></tr></thead>
+      <tbody>
+        <tr><td><code>err-jinja-include-missing</code></td><td><code>jinja include not found</code></td></tr>
+        <tr><td><code>err-jinja-include-escape</code> (<code>../</code> + absolute)</td><td><code>jinja include escapes</code></td></tr>
+        <tr><td><code>err-jinja-include-symlink</code> (in-root → out)</td><td><code>jinja include path is a symlink</code></td></tr>
+        <tr><td><code>err-jinja-include-cycle</code></td><td><code>jinja include cycle</code> (mode A names the path)</td></tr>
+        <tr><td><code>err-jinja-include-dynamic</code> (mode A)</td><td><code>must be a literal string</code></td></tr>
+        <tr><td><code>err-jinja-include-reference</code> (mode A)</td><td><code>is not defined by an earlier node</code></td></tr>
+      </tbody>
+    </table>
+  </section>
+  <section id="tested-inert">
+    <h2>Inertness &amp; separation guards</h2>
+    <ul>
+      <li>A source <em>file name</em> and an apply message / interview default each containing <code>{% include %}</code> render as today (no partial resolution) — proves the loaderless <code>Tmpl</code> path is untouched.</li>
+      <li>No Jinja-include message equals a YAML <code>!include</code> message; the existing <code>err-include-cycle</code>/<code>err-include-escape</code> fixtures still pass.</li>
+      <li><strong>Sole-kill</strong>: invert <code>starts_with(root)</code>, drop the symlink refusal, drop absolute/<code>..</code> rejection each in turn → the matching negative fixture fails by name (symlink fixture holds an <em>in-root</em> symlink, the exhaustive shape).</li>
+    </ul>
+  </section>
+</section>
+
+<section id="out-of-scope">
+  <h2>Out of scope</h2>
+  <ul>
+    <li><code>import</code>, <code>extends</code>; dynamic include targets (mode A).</li>
+    <li>Includes on interview fields, expressions, path segments, hook fields, and (pending decision) apply messages.</li>
+    <li>Any change to YAML <code>!include</code>, <code>static</code>, <code>ignore</code>, or path/target confinement.</li>
+    <li>Any <code>template.yml</code> schema key. Pure interview logic and all terminal/headless/staged/direct/crate paths are preserved.</li>
+  </ul>
+</section>
+
+<section id="review">
+  <h2>Reviewer focus — what the adversary attacks</h2>
+  <ul>
+    <li><strong>Every escape vector at the one seam</strong>: absolute, <code>..</code>, and a symlink <em>inside</em> the root resolving outside it. Try to reach a file outside the root.</li>
+    <li><strong>Surface leakage</strong>: can <code>{% include %}</code> resolve a partial from any non-file surface (path segment, interview field, message, hook)? It must not.</li>
+    <li><strong>Diagnostic collision</strong>: does any Jinja message read like the YAML <code>!include</code> feature?</li>
+    <li><strong>Reference/cycle claims</strong> (mode A): is an include-only variable really validated at load? Is the cycle path real, or does it degrade to a recursion limit?</li>
+    <li><strong>Driver purity</strong>: does anything attach a loader to the interview engine?</li>
+  </ul>
+</section>
+
+<section id="alternatives">
+  <h2>Alternatives explored</h2>
+  <table>
+    <thead><tr><th>Candidate</th><th>Shape</th><th>Why not the base</th></tr></thead>
+    <tbody>
+      <tr><td>C1</td><td>Literal-only compile-time closure, no render loader, template.root</td><td>Strongest diagnostics/validation — <strong>grafted</strong> as recommended mode A; needs <code>unstable_machinery</code></td></tr>
+      <tr><td>C2</td><td>Capability-by-type (Partials → FileTmpl), render loader</td><td><strong>Base</strong>: cleanest structural surface enforcement, no unstable dep</td></tr>
+      <tr><td>C3</td><td>source_dir root, relative-to-includer, static graph</td><td>Leaks includes onto interview fields; forces <code>ignore</code> ceremony</td></tr>
+      <tr><td>C4</td><td>template.root, relative-to-includer via RefCell loader</td><td><code>RefCell</code> not <code>Sync</code> (set_loader needs Send+Sync); dead symlink check; cycle wording collides</td></tr>
+    </tbody>
+  </table>
+  <p class="muted">Both scorers ranked C1 &gt; C2 &gt; C3 &gt; C4. Rejected across the board: relative-to-includer (needs name rewriting MiniJinja does not do) and source_dir confinement (no security gain).</p>
+</section>
+
+<section id="decisions">
+  <section id="decisions-x">
+    <h2>Decisions needed first — X: resolution mode</h2>
+    <table>
+      <thead><tr><th>Option</th><th>Buys</th><th>Costs</th></tr></thead>
+      <tbody>
+        <tr><td><strong>A — static closure (recommended)</strong></td><td>named cycle path; missing/escape/symlink at author time; load-time reference validation; no render-time filesystem access</td><td>literal-only targets; enables <code>minijinja</code> <code>unstable_machinery</code> (no semver guarantee)</td></tr>
+        <tr><td>B — render-time loader</td><td>dynamic targets; no unstable feature</td><td>cycle degrades to a translated recursion message (no path); include-only refs surface at render</td></tr>
+      </tbody>
+    </table>
+    <p><strong>Recommendation: A.</strong> Matches Toha's fail-at-author-time posture and the <code>!include</code> precedent. Confinement is identical and equally sound in both. B is a clean fallback if the unstable dependency is unacceptable — the rest of the design is unchanged.</p>
+  </section>
+  <section id="decisions-yz">
+    <h2>Decisions Y &amp; Z</h2>
+    <ul>
+      <li><strong>Y — apply messages.</strong> Exclude from includes (recommended, keeps "file bodies only" crisp) vs include. Cost of adding later: one call site.</li>
+      <li><strong>Z — symlink policy.</strong> Refuse <em>all</em> symlinks in the include path (recommended, matches <code>walk</code>'s source-symlink refusal) vs allow an in-root symlink resolving inside root (matches <code>confined_file</code>).</li>
+    </ul>
+    <p class="muted">None of X/Y/Z adds a timeout, permission/access change, pinned runtime version check, or subprocess integration.</p>
+  </section>
+</section>
+
+<section id="risks">
+  <h2>Access-policy disclosure (separate)</h2>
+  <ul>
+    <li><span class="tag">no new reach</span> Includes resolve <strong>only</strong> inside the selected template root, which Toha already reads wholesale when it renders the source tree. No new filesystem access.</li>
+    <li><span class="tag">no timeout</span> <span class="tag">no permissions change</span> <span class="tag">no pinned check</span> <span class="tag">no subprocess</span></li>
+    <li><span class="tag warn">nod requested</span> Decision X option A enables the <code>minijinja</code> <code>unstable_machinery</code> <strong>build feature</strong> (a no-semver-guarantee crate API) — a dependency/maintenance risk, not an operator capability change.</li>
+  </ul>
+</section>
+
+<section id="acceptance">
+  <h2>Size &amp; Complexity</h2>
+  <table>
+    <thead><tr><th>Dimension</th><th>Estimate</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Size</strong> (agent implementation time)</td><td>Medium. One new value object + error enum in <code>src/jinja.rs</code>, two <code>plan.rs</code> call-site changes, the confined-closure/loader, ~10 fixtures, and the doc/spec edits.</td></tr>
+      <tr><td><strong>Complexity</strong> (with this plan)</td><td>Moderate. The confinement model is a direct reuse of three existing precedents (<code>resolve</code>, <code>confined_file</code>, <code>has_symlink_component</code>); the risk concentrates in the static graph walk / literal extraction (mode A) and the sole-kill of the one seam.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="next">
+  <h2>Next</h2>
+  <ul class="check">
+    <li>Bob approves the exact design revision and rules on decisions X, Y, Z.</li>
+    <li>Implementation 1061 is updated with the approved artifact revisions, exact scope, interfaces, doc/schema impact, and falsifiable validation; dependency graphs re-checked.</li>
+    <li>First build step: <code>Partials</code> + the one confinement seam and its escape-vector tests, since everything depends on that seam being correct.</li>
+  </ul>
+</section>
