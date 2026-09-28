@@ -11,6 +11,7 @@ mod jinja;
 pub mod plan;
 pub mod protocol;
 pub mod registry;
+pub mod review;
 pub mod source;
 pub mod staging;
 pub mod template;
@@ -21,4 +22,8 @@ pub use interview::{
     Pending, Prompt, PromptKind, RawAnswer, RawAnswers, Rejection, RejectionKind, Rejections, Seed,
 };
 pub use plan::{Content, Plan, PlanError, PlannedFile, PlannedHook, PlannedProgram, TargetPath};
+pub use review::{
+    HookSurface, HookSurfaceDiff, HookView, ReviewDigest, ReviewError, ScriptDigest, Trust,
+    evaluate_trust,
+};
 pub use template::{Id, LoadError, Node, Problem, Question, QuestionKind, Template};

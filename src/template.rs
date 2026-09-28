@@ -51,6 +51,24 @@ pub struct Template {
     pub static_files: GlobSet,
     pub hooks: Vec<HookNode>,
     pub messages: ApplyMessages,
+    /// Parsed, post-`!include`, pre-render interview hook node values, in
+    /// interview order. The reviewable surface reads these, so any field —
+    /// known or future — is covered without changing review code.
+    pub interview_hook_nodes: Vec<Value>,
+    /// Parsed, post-`!include`, pre-render top-level hook node values, in list
+    /// order.
+    pub top_hook_nodes: Vec<Value>,
+}
+/// Collects interview hook node values in interview order (depth-first through
+/// groups), so the reviewable surface matches the runtime hook order.
+fn collect_hook_nodes(values: &[Value], out: &mut Vec<Value>) {
+    for value in values.iter().filter_map(Value::as_object) {
+        if value.contains_key("hook") {
+            out.push(Value::Object(value.clone()));
+        } else if let Some(nodes) = value.get("nodes").and_then(Value::as_array) {
+            collect_hook_nodes(nodes, out);
+        }
+    }
 }
 impl Template {
     pub fn has_question_id(&self, id: &Id) -> bool {
@@ -870,6 +888,12 @@ impl Template {
                 problems: b.problems,
             });
         }
+        let mut interview_hook_nodes = Vec::new();
+        collect_hook_nodes(
+            raw.interview.as_deref().unwrap_or_default(),
+            &mut interview_hook_nodes,
+        );
+        let top_hook_nodes = raw.hooks.clone().unwrap_or_default();
         Ok(Self {
             name: raw.name,
             description: raw.description,
@@ -882,6 +906,8 @@ impl Template {
             static_files,
             hooks,
             messages,
+            interview_hook_nodes,
+            top_hook_nodes,
         })
     }
 }
