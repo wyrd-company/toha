@@ -5,36 +5,43 @@ relationships:
     - template-format
     - interview-protocol
     - error-attribution
+    - jinja-includes
 ---
 
 # Jinja context Phase C publication
 
 - Postplan URL: <https://t30jlda1nnbd.postplan.dev>
 - Draft ID: `t30jlda1nnbd`
-- Version: 2
+- Version: 3
 - Portable source: `brief.source.html`
 - Built deck: `brief.deck.html`
 - Source SHA-256:
-  `d41eddf6521f20ce5943142a676fbd13c2e44a3e8c0e3387323c0fd258e89a8d`
+  `ee2071ae2236e44cacd687ac37a7f3dac72f017c2c061a45c52bcd523ca72316`
 - Built and published raw SHA-256:
-  `04aa0bc1cdb7f764bf9f17a874883d3adeaf9550e9860327c7130448c60a33c4`
-- Published wrapper `Reveal.initialize` count: 1
+  `73ec2863a9f52dc1a5b734904d2d8cc616f39bd1c126fa5047f97056b655c7e4`
+- Published `Reveal.initialize` count: 1
 - Published horizontal positions: 14
-- Published slide count: 27
+- Published slide count: 34
 - Epic base and merge-base:
-  `4738042a766dc7b2d1d3c76a9c83c41c03e803d2`
+  `a8dc5293cc47dfb7013eea03fd740e9a486e4ec1`
 
-The local built deck and published raw deck are byte-identical. All 27 slides,
-including every horizontal and vertical position, were rendered and inspected
-at 1280×720. Programmatic bounds checks found no viewport or body overflow.
-Dense seam, before/after, behavior, and decision slides were also inspected at
-original resolution. Bordered code panels remain inside the viewport and no
-slide requires scrolling.
+The committed source rebuilds byte-for-byte to the committed deck. The local
+deck and published raw deck are byte-identical. All 34 slides, including every
+horizontal and vertical position, were rendered after the Reveal transition
+settled and inspected at 1280×720. Programmatic bounds checks found no
+viewport, document-body, slide-section, or visible-descendant overflow. Dense
+seam, interface, data, analysis, arena, and decision slides were also inspected
+at original resolution. No slide clips or requires scrolling.
 
-The repository `task ci` gate passes. The epic base contains the configured
-defaults design. The independent Jinja-include design remains outside this base
-and is not a prerequisite of this context design.
+The exact epic base contains configured presets, the implemented hook-review
+contract, and the approved Jinja-include design. The include binding is revision
+`b87a5482b97e81524272bee1e526698c862754db`, final-design SHA-256
+`3c996d09a6f845ba1125f1447ca8ff110dfb6149a0862f21845cff9c7b126eeb`.
+The approved canonical-target producer remains revision
+`067c8d2e7c95cf2b16ab3a4103f8b1a8fda331af`, design SHA-256
+`72a564799b95ab1c187c913ac14ef14938f880bf2ab24ec337c03f887991457b`.
 
-The canonical task execution log names the exact checkpoint commit. Bob's
-approval must name or unambiguously answer that revision and its access
-decisions; publication alone is not approval.
+The canonical task record names the exact checkpoint commit and separately
+records the required permissions and storage disclosure. Publication alone is
+not approval of the fixed-five plaintext snapshot, mutable-folder outcomes, or
+exact revised package.
