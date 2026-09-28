@@ -1,136 +1,137 @@
-# Rationale — qualified selector keys for template-specific defaults
+# Rationale — value library with sigil references (candidate 3)
 
 ## Problem
 
-Toha's `defaults` maps a question id to a value that replaces the matching
-question's `default` in *every* template that asks that id. Two templates that
-both ask `title` are forced to share one default. We need to scope a default to a
-template **by identity**. The shape is non-obvious because the safe-looking
-selector — the template's short `name` — is not unique across templates
-(`src/registry.rs:485` treats a shared short name as `ResolveError::Ambiguous`),
-and an alias can spell the same string as a formal name. The constraints that
-crossed our boundary: the pure engine consumes a flat `Seed.defaults:
-IndexMap<Id, RawAnswer>` and must stay identity-unaware (`src/interview.rs:37`);
-identity is already resolved to `ResolvedTemplate.formal_name` at the boundary
-(`src/cli/resolve.rs:17`); defaults are re-resolved against live config on resume,
-never frozen (`src/main.rs:496,664,902`); the global-by-id capability must survive
-(feature constraint); and the `configuration key defaults.<id>` error attribution
-must be preserved (`src/interview.rs:228-232`).
+Toha's current `defaults:` maps a question id to a value that replaces the
+matching question's own default in *every* template that asks that id
+(`src/config.rs:26`, `configured_defaults` `src/interview.rs:677`). The product
+owner rejected this: two questions sharing an id (`title`, `email`, `owner`) are
+not the same question, and applying one value to all of them couples independent
+authors through an accidental namespace. The reshaped model must let a config
+author name reusable data, then say *explicitly* which template question each
+datum fills — with no implicit application by id. The design is constrained by a
+seam I must not move: every driver path funnels one flat
+`Seed.defaults: IndexMap<Id, RawAnswer>` into a pure engine that never learns
+which template it is (`src/main.rs:414,496,664,902`; `src/staging.rs:131`).
+Identity is resolved *before* the engine to a stable `formal_name`
+(`src/cli/resolve.rs:16`), which is already in scope at every call site and is
+the one selector unambiguous across folders, git addresses, installed names,
+aliases, duplicate short names, and the bundled `toha-demo`. Defaults must
+re-resolve against live config on resume, never freeze into the staged record,
+and add no trust/permission/timeout/subprocess surface.
 
 ## Usage (caller's view)
 
-The config author writes a `template-defaults:` block whose keys *say what kind of
-selector they are*: `formal:gh:owner/collection`, `alias:my-notes`, `name:notes`,
-`path:./templates/report`. The plain `defaults:` block is unchanged. When a
-resolved template matches several keys, the more precise key wins
-(formal > path > alias > name > global) and, at equal precision, the more local
-file wins. Crate callers see nothing new — they still hand the engine a flat
-`IndexMap<Id, RawAnswer>`. The full quickstart, two config files, and three call
-sites (two templates sharing `title`; the bundled `toha-demo`; a `name:` broadcast
-with a `formal:` override) are in `design.md`.
+The config author writes two blocks: `values:` (names they choose → data) and
+`template-defaults:` (formal name → question id → `${name}` reference or inline
+literal). Reuse is expressed by pointing several questions at one value. The CLI
+is unchanged; the same `toha apply`/`stage`/`continue` commands behave
+differently only because config now targets questions by identity. Crate callers
+see no new surface — they still build `Seed { now, defaults }`. The four required
+examples and their resolved outcomes are in `design.md`; the load-bearing usage
+rules are: a string that is exactly `${name}` is a reference, everything else is
+a literal, `$$` escapes a literal `${`, and keys are formal names (never
+aliases/short names, so same-short-name templates stay separate).
 
 ## Shape
 
-Data first. A `template-defaults` key parses **once at the config boundary** into a
-`Selector` enum — `Formal | Alias | Name | Path` — where the *variant is the
-selector kind*. This is the load-bearing decision: the kind can never be
-reinterpreted downstream, so an alias/formal string collision or a "did I mean the
-short name or the formal name?" mistake is unrepresentable
-(per `encode-lessons-in-structure`). Blocks are held as `Vec<TemplateDefault>`,
-each carrying its `ConfigLayer`, because one resolved template legitimately matches
-several keys and precedence needs every match with its layer — a selector-keyed map
-would force re-deriving the kind on every read (the "add an index later" smell the
-runner-prompt flags).
+Data first. `values` is `IndexMap<String, StoredValue>` and `template-defaults`
+is `IndexMap<String, IndexMap<Id, Mapping>>`; both a `StoredValue` and a
+`Mapping` hold a `Binding` (`Literal | Ref`) plus a `Site` for attribution. The
+ref-vs-literal decision is encoded in the `Binding` type and made exactly once,
+in `Binding::parse` at the config boundary (per boundary-discipline and
+encode-lessons-in-structure) — nothing downstream re-sniffs a string. The
+dominant access pattern is "given the selected formal name, produce the flat
+per-question defaults," and the structure serves it directly: index
+`template-defaults[formal]`, then resolve each `Binding` against `values`. No
+later index or cache is needed.
 
-Flow. At the boundary, `TemplateIdentity::of(&resolved, &registry)` derives the
-identity view (formal name, short name, aliases, folder) where the registry is
-already in hand — `ResolvedTemplate` gains no field, honoring the bundled-demo
-coordination contract. `resolve_defaults(template, identity, config)` then, for
-each question id the template defines, gathers the global candidate plus every
-matching qualified block, ranks by `(specificity, layer)`, validates only the
-winning value against the question's answer type, and returns the flat map. All
-identity is flattened away here; the engine is untouched (`boundary-discipline`).
-The only engine change is *extracting* a pure `validate_default` helper it already
-contained, so both the global and qualified paths validate the same way and the
-existing global error text is preserved (single source of truth per invariant).
+The public surface is two functions and a two-stage pipeline. Stage 1,
+`resolve_template_defaults(formal, library, mappings)`, is the deep part: a graph
+walk that chases `${ref} → value → ${ref} …`, refuses cycles with a `stack`,
+reports missing names, and carries an `origin` string — all *template-unaware*,
+so `progress`, `continue`, and `apply` call it identically with `saved.template`
+or `resolved.formal_name`. Stage 2 is today's `configured_defaults`, narrowed to
+consume the resolved flat map: it keeps ids the template defines, warns (not
+fatals) on an unknown id so resume across template versions survives, and reuses
+the existing `parse_kind`/`prompt_kind` to check value-kind against question-kind
+at the single point a value reaches a question ("validate only the value actually
+used"). The output is the unchanged `IndexMap<Id, RawAnswer>`; the engine,
+`Seed`, `override_default`, and `StagedRecord` are untouched.
 
-Interface depth. The public surface is one config field, one enum, one function,
-and one derived view. Behind it sits the whole precedence lattice, the
-match-not-resolve semantics, and per-id winner selection. Crucially, because
-config keys are *matched* against an already-resolved identity rather than
-*resolved through* `registry.resolve`, the entire registry-ambiguity path
-(exit 5) is unreachable from configured defaults — a large class of failure is
-designed out, not guarded against (`make-operations-idempotent`: the projection is
-a pure function of its inputs and re-runs identically on resume). What stays
-exposed to callers is the qualifier vocabulary and the precedence rule — the
-irreducible spec — and nothing more.
+Interface depth: the public surface is small (two functions over plain config
+types) but hides cycle detection, missing-ref attribution, layer-merge of both
+structures, sigil parsing with escape, and kind checking. Transport (YAML) is
+parsed into `Binding`/`Site` behind the boundary and never exposed. The single
+invariant that JSON shape *is* answer kind lets me drop a declared `type:` on
+values — the check that matters (value-kind vs question-kind) is derived at the
+use site, so there is one source of truth, not two that can drift.
 
 ## Synthesis decision
 
-*Filled in by arena.*
+Filled in by arena.
 
 ## Tradeoffs accepted
 
-- **We accept a more verbose config (qualified keys) in exchange for making
-  selector-kind mistakes unrepresentable.** `formal:gh:owner/collection` is longer
-  than a bare `gh:owner/collection`, but the prefix is exactly what removes the
-  alias/formal and short-name ambiguities.
-- **We accept specificity-primary precedence in exchange for honoring stated
-  intent** — a precise `formal:` key overrides a broad global even from a lower
-  layer. This deliberately departs from the "local always wins" mental model that
-  `defaults`/`hosts` use today; a future reader might mistake it for an oversight,
-  so it is called out as decision D-PRECEDENCE with the alternative encoded.
-- **We accept that `alias:`/`name:` are registry-relative** (their meaning tracks
-  registry state at resolve time) in exchange for ergonomics. Only `formal:`/`path:`
-  are truly identity-stable. The qualifier kind advertises this contract, so the
-  cost is visible in the key itself rather than hidden.
-- **We accept a `name:` broadcast** (matches every template with that short name)
-  rather than refusing short names outright, in exchange for a low-ceremony way to
-  set a default across a family of same-named templates; its low specificity means
-  any `formal:` key overrides it per identity.
-- **We accept validating only the winning value per id**, in exchange for not
-  raising spurious type errors from shadowed defaults the run never uses.
+- We accept a **graph resolver with cycle detection** (a `stack`, a recursive
+  walk) in exchange for chained, reusable values — a value defined once in terms
+  of another. If chaining proves unused, the resolver collapses to a single
+  lookup with no interface change.
+- We accept a **sigil with an escape** (`${name}`, `$$` to escape) in exchange
+  for an unambiguous whole-string ref/literal boundary. The escape burden falls
+  only on literals that would exactly match the grammar — near-zero in practice.
+- We accept **formal-name keys**, which are verbose for folder templates
+  (absolute paths) and require the author to know the formal name, in exchange
+  for identity that is stable across layers and unambiguous across selectors.
+- We accept **rejecting legacy `defaults:` at load** (migration C) — a one-time
+  hard error — in exchange for no silent behaviour change and an explicit target
+  for every migrated value.
+- We accept **whole-value references only** (no interpolation, no per-element
+  refs) in exchange for preserving non-string kinds (a ref can resolve to a bool
+  or a list) and a bounded resolver.
+- We accept an **unknown mapped id being a warning, not an error**, in exchange
+  for resume working when a template version drops a question; the risk is a typo
+  going unnoticed, mitigated by the loud stderr warning.
 
 ## Alternatives considered
 
-- **Single overlay map keyed only by formal name** (`template-defaults:
-  { gh:owner/collection: {...} }`). Simpler surface, but it exposes the collision
-  we are trying to remove: a bare key that *looks* like a formal name could be a
-  short name or an alias, and the reader cannot tell. It hides no complexity that
-  qualified keys hide, and it cannot address "the family of templates short-named
-  `notes`" at all. Lost on interface depth: the ambiguity leaks to the caller.
-- **Ordered rule list** (`[{ match: {...}, defaults: {...} }, ...]`, first match
-  wins). Maximally flexible, but precedence becomes *positional* — the author
-  hand-maintains order, and layering three files means concatenating three lists
-  with unclear cross-file ordering. It exposes ordering complexity to the caller
-  that our `(specificity, layer)` total order hides. Lost on "single source of
-  truth per invariant": precedence would live in list position, not in a rule.
-- **Resolve qualified keys to formal names at load, then collapse to a
-  formal-only overlay.** Keeps precedence to formal-vs-global, but it (a) needs the
-  registry at config-load time, which `config::load` deliberately does not have,
-  and (b) discards the kind distinction that gives `alias:`/`name:` their
-  registry-relative meaning and the `name:` broadcast. Lost on separation of
-  concerns: it drags registry state into the config boundary.
+- **Explicit `type:` on each value** (the lead hypothesis's "typed entries").
+  Rejected: answer kinds are exactly {string, bool, list-of-strings}, so a
+  value's JSON shape already *is* its kind; a declaration is a second source that
+  can disagree with the value (violates single-source-of-truth) and enlarges the
+  schema. The kind check that carries information — value-kind vs *question*-kind
+  — is derived at the use site instead. This is the deliberate divergence from
+  the hypothesis.
+- **Tagged-object reference** (`email: { ref: contact }` / `{ value: "x" }`).
+  Deeper YAML, more nesting, and it exposes a wire discriminator on the authoring
+  surface; the whole-string `${name}` reads as data and keeps mappings flat. It
+  hides no more complexity than the sigil while costing every author more typing.
+- **Keying mappings by alias or short name.** Rejected outright: aliases are a
+  user-layer, remappable concept and short names are non-unique
+  (`src/registry.rs:485-490`), reintroducing the ambiguity the reframe exists to
+  remove and coupling config to registry state.
+- **A flat binding list** (`[{template, question, value}]`). Loses the natural
+  group-by-formal-name access pattern, forces a linear scan per resolution, and
+  has no home for the shared library; the map-of-maps matches the query.
 
 ## Open questions and risks
 
-- Should precedence be **specificity-primary** (recommended) or **layer-primary**?
-  Specificity-primary lets a system-level `formal:` key beat a project-level global
-  default — intended, but it is the one place this design contradicts the existing
-  "local wins" intuition. Which mental model do you want to hold across all config?
-- Do you want all four qualifiers now, or the identity-stable pair
-  (`formal:`/`path:`) first, adding `alias:`/`name:` once the stability contrast is
-  documented?
-- Is refusing a same-layer `alias:` tie (rather than last-in-file-wins) the
-  behavior you want, given it is the only case the merge cannot silently total?
-- Should a `name:` key that matches *nothing installed* stay silently inert, or do
-  you want a `config lint` follow-up that reports dead qualified keys?
-- Is `configuration key template-defaults["formal:gh:owner/x"].<id>` the attribution
-  wording you want, alongside the unchanged `configuration key defaults.<id>`?
+- Should an unknown mapped question id stay a warning, or become an error when
+  the mapping and template commit agree (e.g. only warn across versions)? A
+  stricter default catches typos sooner but can break resume.
+- Is the `$$` escape the right spelling, or would a rarer sigil (e.g. a leading
+  `@`) reduce collisions further at the cost of familiarity? `@`-prefixed
+  literals (handles, scoped packages) are common, which is why I chose the
+  whole-string `${ }` form.
+- For folder-template mappings, is an absolute-path key acceptable, or is a
+  future `toha config resolve-name <selector>` helper worth it to let authors
+  write the selector they use on the CLI?
+- Should chained references be allowed at all, or would a single indirection
+  (mapping → value, value is always a literal) cover every real case and let us
+  drop cycle detection entirely?
 
 ## Next implementation step
 
-Add `Selector`, `TemplateDefault`, and the `template_defaults` fold to
-`src/config.rs` behind the extended `Layer` struct, with unit tests for qualifier
-parsing and per-layer id validation — the boundary parse everything else derives
-from.
+Write `Binding::parse` and its unit tests (ref grammar, `$$` escape, non-string
+literals), since it is the single point that decides ref-vs-literal and every
+other piece depends on it being unambiguous.

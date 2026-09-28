@@ -1,60 +1,60 @@
-# Cross-judge — template-specific configured defaults
+# Cross-judge — template-specific configured defaults (named stored values)
 
 Readonly cross-judge, one runner, scoring every candidate against every rubric
-criterion and recommending a base. Runner family: `inherit-parent` (Claude). A
-different model family (gpt-5.6) was configured for the two gpt runner slots but
-was unavailable in this environment (see `synthesis.md` dropout note); the
-cross-judge therefore ran on the parent family. The judge saw the rubric and the
-three candidate packages by path; it did not see the orchestrator's own scores.
+criterion and recommending a base. Runner family: `inherit-parent` (Claude); the
+gpt-5.6 family remains unavailable in this environment. The judge saw the rubric
+and the three candidate packages by path; it did not see the orchestrator's own
+scores.
 
 ## Scores (judge)
 
-| Criterion | C1 overlay | C2 rule-list | C3 qualified-keys |
+| Criterion | C1 nested-map/`{value:}` | C2 binding-list | C3 sigil/graph |
 | --- | ---: | ---: | ---: |
-| C1 Unambiguous identity selection | 5 | 4 | 5 |
-| C2 Global preserved + total precedence | 5 | 5 | 5 |
-| C3 Engine purity & path parity | 4 | 5 | 4 |
-| C4 Boundary validation & attribution | 4 | 3 | 5 |
-| C5 Interface depth & contained surface | 5 | 5 | 4 |
-| C6 Future reusable direction | 5 | 5 | 5 |
-| **Total** | **28** | **27** | **28** |
+| C1 No implicit id coupling; refs explicit | 5 | 4 | 5 |
+| C2 Ref/literal representation unambiguous & named | 4 | 5 | 3 |
+| C3 Resolution safety (missing/typing/cycles) | 5 | 5 | 4 |
+| C4 Layering, engine purity, path parity | 5 | 4 | 5 |
+| C5 Safe transition of `defaults:` (no silent loss) | 5 | 5 | 4 |
+| C6 Interface depth, contained surface, future | 5 | 4 | 3 |
+| **Total** | **29** | **27** | **24** |
 
 ## Judge recommendation
 
-Base **C1** (breaks the C1/C3 tie in C1's favor for foundation reasons): keys on
-the one identity grounding proves unambiguous (`formal_name`) with zero new
-ambiguity surface; smallest, deepest interface; every graft is additive; its
-precedence rule is already forward-designed for a middle tier.
+Base **C1**. It wins on balance and on the axes the reframe weights hardest:
+strictest identity keying with no registry coupling; **cycles impossible by
+construction** rather than detected (C1 and C2 delete the hazard the grounding
+lists under *Avoid*; C3 opens it then guards it); resolution stays in the `toha`
+library so the crate path is served without reimplementing selection; smallest
+deep surface. Its two soft spots graft cleanly from the losers.
 
 Grafts recommended:
 
-- From **C3**: extract a pure `validate_default` from the engine and own
-  default-error attribution at the boundary — removes C1's need to add a
-  `config_key` field to `EvalError` and to place the resolver inside
-  `interview.rs`, and lets scoped errors name the exact config key plus its
-  layer/file. One graft closes both of C1's soft spots (its C3 and C4 dips).
-  Bring C3's config-relative `path:` handling if local-config portability matters.
-- From **C2**: reuse the existing no-fetch `formal_name` normalizer so a scoped
-  key can be written in any CLI selector form, normalized before lookup —
-  answering C1's own flagged discoverability/verbosity risk — with C2's rule that
-  a selector is refused only when it is ambiguous about the running target.
+- From **C2**: the explicit `value:` / `literal:` key discriminator (removes C1's
+  reliance on the "answers are never objects" reading), and C2's `Origin{file,
+  1-based index}` for the most precise config-site attribution.
+- From **C3**: the reference-provenance chain in error text — name both the mapping
+  site and the value it resolved through (`template-defaults."X".email →
+  values."contact"`), so a shared-value kind error points at the value to fix. Do
+  **not** graft C3's chaining or sigil — both are anti-requirements here.
 
-## Risk the judge says all three candidates missed
+## Risks the judge says all three candidates missed
 
-**The role of "version" in the default key is inconsistent and undocumented.** All
-three key on `formal_name` and exclude `commit`, which produces two different
-answers to "does upgrading a template keep its defaults?":
+1. **Same-answer-kind reuse limit (sharpest).** A stored value's kind equals its
+   JSON shape (string / bool / list-of-strings), so one stored value can seed only
+   questions of a single answer kind — you cannot point both a text question and a
+   confirm question at one value. The feature is sold as "reuse one value across
+   differently-named questions," but the reuse is bounded to one answer kind, and
+   none of the three surfaces or documents it.
+2. **Migration cognitive trap.** Authors migrating from `defaults:` will name
+   `values` entries after question ids (`title`, `email`, `owner`), making the new
+   *explicit* model look like the old *implicit* one and inviting the expectation
+   that it still applies globally. None turns this into an active migration/doc
+   guardrail.
+3. **Eager validation of conditionally-unreachable questions.** All three validate
+   any mapping whose question the template *defines*, regardless of `when`/batch
+   reachability, so a kind mismatch on a question that would never be asked this
+   run still errors at seed time — a tension with "validate only the value actually
+   used." Worth an explicit decision.
 
-- A **ref-pinned git address** carries `@ref#sub` inside the formal name, so
-  `gh:a/b@v1` and `gh:a/b@v2` are different keys — a ref bump silently drops the
-  defaults.
-- An **installed template updated in place** keeps its formal name (new `commit`),
-  so its defaults carry over across the same kind of version change.
-
-Related: **local-layer path/folder keys are machine-absolute and non-portable** — a
-`.toha.yml` committed to a repo with an absolute-path-keyed default breaks on
-another clone; only C3's config-relative `path:` mitigates it.
-
-Both point at one unresolved product question, elevated to the Phase C checkpoint:
-what is allowed to change a default's identity key — a git ref, a content digest, a
-folder move — and is that rule the same for git, installed, and folder templates?
+All three risks are carried into the final design (`design.md`) and its decisions
+(D5 covers 1 and 3; the migration section and D1 cover 2).

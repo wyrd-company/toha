@@ -1,620 +1,715 @@
-# Template-specific configured defaults — Candidate 2 (ordered default rules)
+# Template-specific configured defaults — explicit binding list
 
-A default rule is a `match` selector plus a `set` of id→value pairs. The config
-grows one ordered list, `template-defaults`, of these rules. The bare `defaults`
-map stays exactly as it is and remains the ONLY way to express a global (every
-template) default. At the CLI boundary, for one resolved target identity, the
-list is folded onto the global map into the same flat `IndexMap<Id, Value>` the
-system already produces, and that map flows into the unchanged
-`configured_defaults` → `Seed.defaults` → pure engine path. The engine, staging,
-`Template`, `Plan`, and the `Seed` contract learn nothing new.
+Reuse comes from a small **named store of literal values** and an **ordered
+list of explicit bindings**. Each binding names a template *identity*, a
+question, and a source that is **either** a stored value **or** an inline
+literal — placed in two distinct keys so a literal that spells a value name is
+never misread. Nothing is applied by matching question ids.
 
-> Divergence from the runner's lead hypothesis, stated up front: the hypothesis
-> asked for a single uniform list where global is `match: any`. I keep global as
-> the existing `defaults` map and forbid `any` in the list. Reason in one line:
-> making global a list entry forces per-layer global tiers to be reconstructed
-> for precedence, which the current `config::load` merge (`src/config.rs:151`)
-> has already collapsed; keeping global as the map lets `Config.defaults` keep
-> its exact type and makes the precedence fold trivial and total. The list gives
-> the expressiveness (ordered, selector-typed rules); the map gives the stable
-> global tier. See rationale for why this is the stronger shape.
-
----
+The pure interview engine is untouched. Resolution flattens, at the CLI
+boundary, to the exact map the engine already consumes:
+`Seed.defaults: IndexMap<Id, RawAnswer>` (`src/interview.rs:39`), keyed by the
+selected template's question ids. `configured_defaults`
+(`src/interview.rs:677`) keeps its signature and behavior byte-for-byte; it
+stays identity- and store-unaware.
 
 ## Caller's usage (the spec)
 
-### Quickstart the config author reads
-
 ```text
-`defaults` sets an answer for EVERY template that asks that question id — this is
-unchanged. To set an answer for ONE template, add a `template-defaults` rule.
-Each rule names a template with `match` and lists answers with `set`:
+A toha config file has two independent parts for answers:
 
-    defaults:                       # global: applies to every template (unchanged)
-      title: Untitled
+  values:            a store of named, reusable literals YOU name
+  template-defaults: an ordered list of bindings, each pointing ONE question
+                     of ONE selected template at a stored value or a literal
 
-    template-defaults:              # template-specific: applies to one identity
-      - match: gh:owner/collection
-        set:
-          title: Field Notes
-      - match: ./templates/journal
-        set:
-          title: Daily Log
+A value reaches a question only because a binding says so. Two questions with
+DIFFERENT ids — in the same or different templates — may point at the SAME
+stored value. A question is never touched just because its id equals another
+template's question id.
 
-`match` accepts the same template forms as the command line: an installed name or
-alias, a `gh:owner/collection` git address, a folder like `./x` or `/x`, or the
-reserved `toha-demo`. Two templates that both ask `title` but resolve to
-different identities receive different titles.
+  values:
+    primary_contact: contact@example.invalid
 
-A template-specific rule always wins over a global default for the template it
-names. When two rules name the same template, the more local config layer wins;
-inside one layer, the rule written later wins. Name templates by their git
-address or installed formal name — a bare short name shared by two templates is
-ambiguous and refused when it would decide the template you are running.
+  template-defaults:
+    - template: gh:owner/newsletter    # a formal template identity
+      question: email                  # a question that template asks
+      value: primary_contact           # reference the stored value by name
+    - template: toha-demo
+      question: topic
+      literal: Sample Topic            # an inline literal (distinct key)
+
+Select a template by its formal identity: a git address (gh:owner/collection),
+an absolute folder path, an installed alias or short name that resolves to one
+identity, or the reserved bundled name `toha-demo`. Ambiguous short names are
+refused for THIS run with a message telling you to use the formal name.
 ```
 
-### Call site A — two templates, same question id, different defaults
-
-`~/.config/toha/config.yml`:
-
-```yaml
-defaults:
-  title: Untitled
-template-defaults:
-  - match: gh:owner/collection
-    set:
-      title: Field Notes
-  - match: gh:owner/journal
-    set:
-      title: Daily Log
-```
+Concrete call sites (unchanged CLI surface; only config content is new):
 
 ```console
-$ toha apply gh:owner/collection ./out
-Note title: Field Notes          # rule for gh:owner/collection wins over global
+# A — a stored value reaches two differently-named questions
+$ toha apply gh:owner/newsletter ./out     # email default  = contact@example.invalid
+$ toha apply gh:owner/press-kit  ./out      # contact default = contact@example.invalid
 
-$ toha apply gh:owner/journal ./out
-Note title: Daily Log            # rule for gh:owner/journal wins over global
+# B — the bundled demo, offline, first run, defaults from config
+$ toha apply toha-demo ./out                # title/topic defaults from config
 
-$ toha apply gh:owner/misc ./out
-Note title: Untitled             # no rule matches → global default
+# C — a missing value reference is a clear, attributed error (exit 1)
+$ toha apply toha-demo ./out
+error: ~/.config/toha/config.yml: template-defaults #1 for template
+  "toha-demo", question "title": no value named "licence" is defined under
+  `values`
 ```
 
-Both `collection` and `journal` ask the id `title`; today they are forced to
-share one value. The rule list separates them by identity.
+Crate callers of the `toha` library see **no new surface**. They still build
+`Seed { now, defaults }` and call `Interview::start` /
+`replay_with_defaults` (`src/staging.rs:131`). The store-and-bindings feature
+is a binary/CLI concern — like the bundled demo, it lives in `src/cli/` and
+depends on registry/selector resolution, which is a CLI responsibility.
 
-### Call site B — headless apply, precedence across layers
+## The four required examples
 
-System `/etc/toha/config.yml`:
+### 1 — one stored value, two differently-named questions
 
 ```yaml
+values:
+  primary_contact: contact@example.invalid
+
 template-defaults:
-  - match: gh:owner/collection
-    set:
-      owner: acme            # org-wide policy default for this template
+  - template: gh:owner/newsletter    # this template asks `email`
+    question: email
+    value: primary_contact
+  - template: gh:owner/press-kit     # this template asks `contact`
+    question: contact
+    value: primary_contact
 ```
 
-Local `.toha.yml` (this project only):
+Resolved outcome:
+
+- `toha apply gh:owner/newsletter ./out` → the `email` question's default is
+  `contact@example.invalid`.
+- `toha apply gh:owner/press-kit ./out` → the `contact` question's default is
+  `contact@example.invalid`.
+
+One value reaches two questions with different ids because each binding points
+at it. There is no shared `email`/`contact` id and no implicit coupling.
+
+### 2 — a shared id with no binding stays untouched
 
 ```yaml
+values:
+  house_owner: owner/collection
+
 template-defaults:
-  - match: gh:owner/collection
-    set:
-      owner: field-team      # this project overrides the org default
+  - template: gh:owner/press-kit
+    question: owner              # press-kit's `owner` question
+    value: house_owner
+# gh:owner/blog ALSO asks a question with id `owner`, but no binding names it.
 ```
 
-```console
-$ printf '{"title":"Q3"}' > answers.json
-$ toha apply --answers answers.json gh:owner/collection ./out
-# owner default = field-team   (same specificity → local layer wins over system)
+Resolved outcome:
+
+- `toha apply gh:owner/press-kit ./out` → `owner` default is
+  `owner/collection`.
+- `toha apply gh:owner/blog ./out` → `owner` is **untouched**; the template's
+  own default (or empty) stands.
+
+Sharing the id `owner` does not carry the value to `blog`. Only a binding that
+names `blog`'s identity would.
+
+### 3 — the bundled `toha-demo` as a selector
+
+```yaml
+values:
+  demo_title: Sample Title
+
+template-defaults:
+  - template: toha-demo           # the reserved bundled identity
+    question: title
+    value: demo_title
+  - template: toha-demo
+    question: topic
+    literal: Sample Topic         # inline literal — distinguished by the key
 ```
 
-Same selector, same id, two layers → the local layer wins. A person running the
-interactive form still sees `field-team` pre-filled and can change it
-(`src/cli/terminal.rs:81`).
+Resolved outcome:
 
-### Call site C — stage now, resume later; defaults re-resolve against live config
+- `toha apply toha-demo ./out` → `title` default `Sample Title`, `topic`
+  default `Sample Topic`.
 
-```console
-$ toha stage gh:owner/collection ./out --async batch.json   # process 1
-# ...edit config: change the collection rule's title to "Renamed"...
-$ toha continue ./out answers.json                          # process 2
-$ toha apply ./out                                          # process 3
-Note title: Renamed          # re-resolved from CURRENT config, not frozen at stage
+`toha-demo` resolves as `Address::Name` (`src/source.rs:115`). With no registry
+entry it is `NotFound`; the raw token is then used as the candidate formal name,
+which equals the bundled demo's `formal_name = "toha-demo"` (predecessor
+`f949b6a`). An installed/aliased/discovered `toha-demo` would resolve first, and
+the binding would apply to *that* identity — consistent with the bundled demo's
+fallback-only precedence.
+
+### 4 — a missing reference and a type mismatch
+
+```yaml
+values:
+  license: MIT
+
+template-defaults:
+  - template: toha-demo
+    question: title
+    value: licence               # typo: no such value name
+  - template: toha-demo
+    question: include_summary    # a Confirm (boolean) question
+    literal: yes-please          # wrong kind: a string, not a boolean
 ```
 
-Resume re-derives defaults from the current config keyed by the recorded identity
-(`StagedRecord.template` = formal name), exactly as global defaults do today
-(`src/main.rs:664,902`). Nothing about the rule set is written into the staged
-record.
+Missing-reference error (exact text):
 
-### Crate callers — unchanged
-
-```rust
-let seed = Seed { now, defaults };            // IndexMap<Id, RawAnswer>, unchanged
-let interview = Interview::start(&template, seed)?;
+```
+~/.config/toha/config.yml: template-defaults #1 for template "toha-demo",
+question "title": no value named "licence" is defined under `values`
 ```
 
-Library callers build `Seed.defaults` themselves and see no new type. Rule
-flattening is a binary/CLI concern (it needs the `Registry` and `Dirs` to
-normalize selectors), living beside the other CLI resolution code.
+Type-mismatch error (exact text):
 
----
-
-## Module and seam map
-
-```text
-config files (system / user / local)
-    defaults: { id: value }                 ← global tier (UNCHANGED)
-    template-defaults: [ { match, set } ]   ← NEW ordered rule list
-        │
-        ▼   parse ONLY — raw selector strings, ids parsed to Id, layer+order tagged
-config::load                         src/config.rs  (Config gains `default_rules`)
-    Config { defaults: IndexMap<Id,Value>,          ← type UNCHANGED
-             default_rules: Vec<Rule>, .. }         ← NEW field
-        │
-        ▼   CLI boundary: has Registry + Dirs + cwd to normalize selectors
-resolve::scoped_defaults(target_formal, config, registry, dirs, cwd)   ← NEW
-    base = config.defaults.clone()                  # global tier (specificity 0)
-    for rule in config.default_rules (in (layer,order) ascending):
-        if normalize(rule.match) == target_formal:  # specificity 1 overrides base
-            base.extend(rule.values)                # last write wins ⇒ (layer,order)-max
-    → IndexMap<Id, Value>                           # SAME shape defaults was
-        │
-        ▼   UNCHANGED FROM HERE DOWN
-configured_defaults(template, &flat)     src/interview.rs:677   (signature unchanged)
-    → IndexMap<Id, RawAnswer>
-Seed { now, defaults }  →  Interview (pure)  →  Plan  →  apply / staging
+```
+~/.config/toha/config.yml: template-defaults #2 for template "toha-demo",
+question "include_summary": literal "yes-please" is not a valid answer: must
+be true or false
 ```
 
-Trace: config → `config.rs` (parse) → `resolve.rs` (`scoped_defaults`, the one
-new function) → the existing `configured_defaults` → the pure engine. Three files
-touched below the schema/docs: `src/config.rs` (types + parse), `src/cli/resolve.rs`
-(new function), `src/main.rs` (four call sites pass the target). The flow below
-`configured_defaults` is byte-for-byte the existing path.
-
----
+The tail `must be true or false` is the engine's own `parse_kind` message for a
+`Confirm` question (`src/interview.rs:513`); the CLI wraps it with the binding
+site. A **reference** type mismatch names the value instead of the literal:
+`value "license" ("MIT") is not a valid answer: <message>`. Only the value
+actually used is validated — an unmatched or unreferenced value is never
+kind-checked.
 
 ## Data shapes
 
-### Config-boundary types (`src/config.rs`)
+Domain types parsed once at the config boundary (`toha::config`). `defaults` is
+**removed**; two independent properties replace it.
 
 ```rust
-/// A layer's origin, used only to order rules deterministically.
-/// Local is most local; system is least. Higher rank wins ties of equal
-/// specificity (see the precedence rule).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Origin { System = 0, User = 1, Local = 2 }
+// toha::config
+pub type ValueName = String;   // matches ^[a-z_][a-z0-9_]*$
 
-/// One template-specific default rule, parsed at the config boundary.
-/// `selector` is the raw `<TEMPLATE>` grammar string (never `any`); it is
-/// normalized to a formal name lazily, at match time, where the Registry exists.
 #[derive(Debug, Clone)]
-pub struct Rule {
-    pub selector: String,            // e.g. "gh:owner/collection", "./x", "my-alias"
-    pub origin: Origin,              // which layer declared it
-    pub values: IndexMap<Id, Value>, // ids already parsed; values still raw JSON
-}
-
 pub struct Config {
     pub templates_paths: Vec<PathBuf>,
     pub local_templates_paths: Vec<PathBuf>,
-    pub defaults: IndexMap<Id, Value>,   // UNCHANGED: the global tier
-    pub default_rules: Vec<Rule>,        // NEW: system, then user, then local; each
-                                         //      layer's rules in file order
+    pub values: IndexMap<ValueName, Value>,   // NEW — merged named store
+    pub template_defaults: Vec<Binding>,      // NEW — merged, ordered bindings
     pub hosts: IndexMap<String, String>,
     pub local_config_name: String,
+    // `pub defaults: IndexMap<Id, Value>` (src/config.rs:26) is REMOVED
+}
+
+/// One row of the binding table. Reference vs literal is encoded in the type,
+/// which mirrors "which key was present" in YAML — never a string shape.
+#[derive(Debug, Clone)]
+pub struct Binding {
+    pub selector: String,   // raw <TEMPLATE> selector, exactly as written
+    pub question: Id,       // question id in the selected template
+    pub source: Source,
+    pub origin: Origin,     // file + list index, for attribution
+}
+
+#[derive(Debug, Clone)]
+pub enum Source {
+    Ref(ValueName),   // came from `value: <name>`
+    Literal(Value),   // came from `literal: <any yaml/json value>`
+}
+
+/// The exact config site a binding came from, for attributed errors
+/// (preserves "error attribution that names the config site").
+#[derive(Debug, Clone)]
+pub struct Origin {
+    pub file: PathBuf,
+    pub index: usize,   // 1-based position within that file's template-defaults
 }
 ```
 
-`Config.defaults` keeps its exact current type and meaning, so every existing
-reader and crate caller is unaffected. `default_rules` is stored already sorted
-in ascending precedence order — system block, then user block, then local block,
-each block in the file's declaration order — so `scoped_defaults` never sorts;
-it applies in vector order and lets the last write win.
-
-### Layer parse type (`src/config.rs`, private)
+The wire types stay at the boundary and are parsed into the domain types above
+(`per boundary-discipline`):
 
 ```rust
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 struct Layer {
     templates_paths: Option<Vec<String>>,
-    defaults: Option<IndexMap<String, Value>>,       // unchanged
-    template_defaults: Option<Vec<RawRule>>,         // NEW
+    values: Option<IndexMap<String, Value>>,
+    template_defaults: Option<Vec<RawBinding>>,
     hosts: Option<IndexMap<String, String>>,
     local_config_name: Option<String>,
+    // presence of the removed key drives the migration message (see below)
+    defaults: Option<serde::de::IgnoredAny>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
-struct RawRule {
-    r#match: String,                    // selector string
-    set: IndexMap<String, Value>,       // id (as string) → raw value
+struct RawBinding {
+    template: String,
+    question: String,
+    value: Option<String>,     // exactly one of value / literal, enforced by
+    literal: Option<Value>,    // schema `oneOf` and re-checked on conversion
 }
 ```
 
-Nothing wire-shaped reaches past `config::load`; ids are parsed to `Id` and the
-selector kept as a raw domain string, per boundary-discipline.
-
-### The flat result — unchanged
-
-`scoped_defaults` returns `IndexMap<Id, Value>`: the exact type
-`configured_defaults` already accepts (`src/interview.rs:679`). No new type
-crosses into the engine; `Seed.defaults: IndexMap<Id, RawAnswer>` is untouched.
-
----
-
-## Function signatures
-
-### New — the whole feature's boundary (`src/cli/resolve.rs`)
+The engine seam is unchanged:
 
 ```rust
-/// Fold the template-specific default rules onto the global defaults for one
-/// resolved target identity, producing the flat id→value map that
-/// `configured_defaults` already consumes.
-///
-/// `target` is the resolved template's `formal_name` — the stable identity from
-/// `ResolvedTemplate`/`StagedRecord`. Selector strings in the rules are
-/// normalized with the SAME no-fetch logic as `formal_name` (this module) and
-/// compared for equality against `target`.
-///
-/// Total precedence, highest wins (see "Precedence"): a matching
-/// template-specific rule (specificity 1) always overrides the global map
-/// (specificity 0); among matching rules, the more local layer wins, then the
-/// rule declared later within that layer.
-///
-/// Errors only when a selector is *ambiguous about the target itself* — a bare
-/// short name shared by two entries, one of which is `target`. A selector that
-/// resolves to some other identity, is not installed, or names a folder that is
-/// absent simply does not match and is skipped (with a one-line stderr warning,
-/// matching the local-alias warning at `resolve.rs:67`).
-pub fn scoped_defaults(
-    target: &str,
+// toha::interview — UNCHANGED signature and behavior
+pub fn configured_defaults(
+    template: &Template,
+    values: &IndexMap<Id, Value>,
+) -> Result<IndexMap<Id, RawAnswer>, EvalError>;
+
+// toha::interview::Seed — UNCHANGED
+pub struct Seed { pub now: jiff::Zoned, pub defaults: IndexMap<Id, RawAnswer> }
+```
+
+## Function signatures (new CLI module)
+
+New file `src/cli/defaults.rs` — the only store- and identity-aware code, a
+sibling of `src/cli/bundled.rs`. Selector resolution (registry + hosts) lives
+here so the library engine learns nothing.
+
+```rust
+use crate::{cli::resolve::ResolvedTemplate, Dirs};
+use indexmap::IndexMap;
+use serde_json::Value;
+use std::{fmt, path::Path};
+use toha::{
+    config::{Binding, Config, Origin, Source},
+    interview::{configured_defaults, EvalError, RawAnswer},
+    registry::Registry,
+    source::{self, Address},
+    template::Template,
+    Id,
+};
+
+/// The configured defaults for the selected template: the flat, engine-ready
+/// map the pure interview seeds from. Bindings whose selector resolves to
+/// `resolved.formal_name` supply values (a stored value or an inline literal);
+/// nothing is applied by id. This replaces every current
+/// `configured_defaults(&template, &config.defaults)` call site.
+pub fn for_template(
+    config: &Config,
+    resolved: &ResolvedTemplate,
+    template: &Template,
+    registry: &Registry,
+    dirs: &Dirs,
+    cwd: &Path,
+) -> Result<IndexMap<Id, RawAnswer>, DefaultsError> {
+    // 1. project bindings that name this identity into raw values by question
+    let projected = project(
+        config,
+        template,
+        |b| match_selector(b, &resolved.formal_name, config, registry, dirs, cwd),
+    )?; // IndexMap<Id, (Value, &Binding)>
+
+    // 2. hand the flat map to the UNCHANGED engine validator, then re-attribute
+    //    a kind error back to the binding that produced it.
+    let values: IndexMap<Id, Value> =
+        projected.iter().map(|(id, (v, _))| (id.clone(), v.clone())).collect();
+    configured_defaults(template, &values).map_err(|e: EvalError| {
+        let (_, binding) = &projected[&e.id];
+        DefaultsError::TypeMismatch { binding: BindingRef::of(binding), message: e.message }
+    })
+}
+
+/// Whether a binding's selector names the selected identity. Pure decision
+/// over registry + hosts; performs no fetch.
+enum Match { Applies, Skip, Ambiguous(Vec<String>) }
+
+fn match_selector(
+    binding: &Binding,
+    selected: &str,                 // resolved.formal_name — the stable identity
     config: &Config,
     registry: &Registry,
     dirs: &Dirs,
     cwd: &Path,
-) -> Result<IndexMap<Id, Value>, ResolveError> {
-    let mut flat = config.defaults.clone();          // global tier, already layer-merged
-    for rule in &config.default_rules {              // ascending (origin, order)
-        match selector_matches(&rule.selector, target, config, registry, dirs, cwd)? {
-            true => { for (id, v) in &rule.values { flat.insert(id.clone(), v.clone()); } }
-            false => {}
-        }
+) -> Match {
+    // Fast path: the selector is already the formal name.
+    if binding.selector == selected { return Match::Applies; }
+    match source::parse(&binding.selector, &config.hosts, cwd, &dirs.home) {
+        // git / host forms normalize purely, no I/O (src/source.rs:118)
+        Ok(Address::Git { .. }) => bool_match(
+            source::parse(&binding.selector, &config.hosts, cwd, &dirs.home)
+                .map(|a| a.formal_name(&config.hosts)),
+            selected,
+        ),
+        // a folder that no longer exists cannot be the running template → skip
+        Ok(Address::Folder(p)) => bool_match(Ok(p.to_string_lossy().into_owned()), selected),
+        Ok(Address::Name(n)) => match registry.resolve(&n) {
+            Ok(r) if r.formal_name == selected => Match::Applies,
+            Ok(_) => Match::Skip,
+            // NotFound → use the bare token as the formal name (matches the
+            // reserved `toha-demo` and any not-installed formal-name token)
+            Err(toha::registry::ResolveError::NotFound(_)) if n == selected => Match::Applies,
+            Err(toha::registry::ResolveError::NotFound(_)) => Match::Skip,
+            // ambiguity is only fatal when it could have meant THIS run
+            Err(toha::registry::ResolveError::Ambiguous { matches, .. })
+                if matches.iter().any(|m| m == selected) => Match::Ambiguous(matches),
+            Err(toha::registry::ResolveError::Ambiguous { .. }) => Match::Skip,
+        },
+        // a folder selector that fails to canonicalize can't be the running
+        // folder template → skip, never break an unrelated run
+        Err(_) => Match::Skip,
     }
-    Ok(flat)
 }
 
-/// Does this rule's selector name the target identity?
-/// Reuses `formal_name` (resolve.rs:209) — no fetch, no network.
-fn selector_matches(
-    selector: &str,
-    target: &str,
+fn bool_match(formal: Result<String, source::SourceError>, selected: &str) -> Match {
+    match formal { Ok(f) if f == selected => Match::Applies, _ => Match::Skip }
+}
+
+/// Pure projection: walk the merged bindings in order; for each that names the
+/// selected identity, resolve its source and record it by question id. Later
+/// bindings override earlier ones for the same question (layer + intra-layer
+/// order precedence). Errors before the engine sees anything: missing ref,
+/// ambiguous selector, unknown question.
+fn project<'a>(
+    config: &'a Config,
+    template: &Template,
+    matches: impl Fn(&Binding) -> Match,
+) -> Result<IndexMap<Id, (Value, &'a Binding)>, DefaultsError> {
+    let mut out: IndexMap<Id, (Value, &Binding)> = IndexMap::new();
+    for binding in &config.template_defaults {
+        match matches(binding) {
+            Match::Skip => continue,
+            Match::Ambiguous(matches) => {
+                return Err(DefaultsError::AmbiguousSelector {
+                    binding: BindingRef::of(binding), matches,
+                });
+            }
+            Match::Applies => {}
+        }
+        if !template.has_question_id(&binding.question) {
+            return Err(DefaultsError::UnknownQuestion { binding: BindingRef::of(binding) });
+        }
+        let value = match &binding.source {
+            Source::Literal(v) => v.clone(),
+            Source::Ref(name) => config.values.get(name).cloned().ok_or_else(|| {
+                DefaultsError::MissingValue { binding: BindingRef::of(binding), name: name.clone() }
+            })?,
+        };
+        out.insert(binding.question.clone(), (value, binding)); // last wins
+    }
+    Ok(out)
+}
+
+/// Attributed failures. Each names the file, the 1-based list index, the
+/// selector, and the question — the config site.
+#[derive(Debug)]
+pub enum DefaultsError {
+    MissingValue     { binding: BindingRef, name: String },
+    TypeMismatch     { binding: BindingRef, message: String },
+    UnknownQuestion  { binding: BindingRef },
+    AmbiguousSelector{ binding: BindingRef, matches: Vec<String> },
+}
+
+/// The renderable coordinates of a binding.
+#[derive(Debug)]
+pub struct BindingRef {
+    file: std::path::PathBuf,
+    index: usize,
+    selector: String,
+    question: Id,
+    source: SourceDesc,
+}
+#[derive(Debug)]
+enum SourceDesc { Literal(Value), Ref { name: String, value: Value } }
+
+impl BindingRef {
+    fn of(_b: &Binding) -> Self { unimplemented!("copy origin/selector/question/source") }
+}
+
+impl fmt::Display for DefaultsError { /* exact texts from the examples */ }
+```
+
+Bodies are `unimplemented!()` here; the shapes and the flow are the contract.
+
+## Module and seam map
+
+```text
+config.yml
+  values: { name: literal }
+  template-defaults: [ {template, question, value|literal}, ... ]
+        │  toha::config::load  — boundary parse + LAYER MERGE only
+        │     • per-name merge of `values` (local > user > system)
+        │     • concat of `template-defaults` (system → user → local, file order)
+        │     • RawBinding → Binding (Id parse, exactly-one-of, Origin)
+        │     • presence of removed `defaults:` → migration error (before schema)
+        ▼
+  Config { values, template_defaults, hosts, ... }         (toha library)
+        │
+   [per driver path, AFTER the template + registry are resolved]
+        ▼
+  src/cli/defaults.rs  ── the only store/identity-aware code ──
+     for_template(config, resolved, template, registry, dirs, cwd)
+        • match each binding's selector to resolved.formal_name (no fetch)
+        • resolve Source: Ref → values store | Literal → inline
+        • last-wins per question id
+        • IndexMap<Id, Value>                          (same shape as old defaults)
+        ▼
+  toha::interview::configured_defaults(&template, &values)   ── UNCHANGED ──
+        • validates each value against the question's kind
+        • IndexMap<Id, RawAnswer>
+        ▼
+  Seed { now, defaults }  →  Interview::start / replay_with_defaults   ── UNCHANGED ──
+```
+
+Trace: `config.rs` → `cli/defaults.rs` → `interview.rs`. Three files, one new.
+Everything from `Seed` down is byte-for-byte the existing pipeline; the engine
+never learns an identity, a selector, or a store.
+
+### Wiring (the whole blast radius outside the new module)
+
+```rust
+// src/main.rs — seed() gains the resolution context it needs to project
+fn seed(
+    template: &Template,
+    resolved: &ResolvedTemplate,
     config: &Config,
     registry: &Registry,
     dirs: &Dirs,
     cwd: &Path,
-) -> Result<bool, ResolveError> {
-    match formal_name(selector, config, registry, dirs, cwd) {
-        Ok(formal) => Ok(formal == target),
-        Err(ResolveError::Ambiguous { name, matches }) => {
-            if matches.iter().any(|m| m == target) {
-                // The selector is ambiguous AND could be this target: refuse.
-                Err(ResolveError::Ambiguous { name, matches })
-            } else {
-                Ok(false) // ambiguous, but about other templates — not our target
-            }
-        }
-        Err(ResolveError::Error(message)) => {
-            // NotFound or absent folder: the selector cannot name this target.
-            eprintln!("warning: template-defaults match `{selector}` did not resolve: {message}");
-            Ok(false)
-        }
-    }
+) -> Result<Seed, String> {
+    let now = /* unchanged */;
+    Ok(Seed {
+        now,
+        defaults: cli::defaults::for_template(config, resolved, template, registry, dirs, cwd)
+            .map_err(|e| e.to_string())?,
+    })
 }
+
+// src/main.rs:496, 664, 902 — the three staged paths: replace
+//   toha::interview::configured_defaults(&template, &config.defaults)
+// with
+//   cli::defaults::for_template(&config, &resolved, &template, &registry, dirs, &cwd)
+// (resolved, registry, config, dirs, cwd are already in scope at each site)
 ```
 
-`formal_name` already exists and already does exactly the no-fetch classification
-required: `Folder → canonical path`, `Git → Address::formal_name`, `Name →
-registry.resolve` (alias → short → formal, with `Ambiguous`). `scoped_defaults`
-adds only the fold and the match decision.
+## Precedence rule (total, deterministic)
 
-### Changed call sites (`src/main.rs`) — four, each identical in shape
+Two things merge, independently, then interact only through references.
 
-Before (all four sites, e.g. `src/main.rs:422,496,664,902`):
+1. **The store `values`** — per name: local > user > system. A higher layer's
+   `name` overrides a lower layer's `name`; other names are kept. This is the
+   existing per-key merge used for `defaults`/`hosts` today
+   (`src/config.rs:151-168`, `configuration.md:98-102`).
+2. **The bindings `template-defaults`** — concatenated in layer order
+   **system → user → local**, preserving each file's list order, each tagged
+   with its `Origin`. No override happens at merge time (a selector's identity
+   is not known until it is resolved at a call site).
+3. **At projection**, for the one selected identity, bindings are applied in
+   that concatenated order; a later matching binding **overrides** an earlier
+   one for the same question id. Therefore, per question:
+   **local file order last wins > user > system**, and within a file a lower
+   entry wins.
+4. **References cross layers freely.** A binding in any layer may reference a
+   value defined in any layer, because references resolve against the fully
+   merged store computed in step 1.
 
-```rust
-let defaults = toha::interview::configured_defaults(&template, &config.defaults)?;
-```
+`values` and `template-defaults` are available in both `shared-config`
+(system/user) and `local-config`, exactly as `defaults` was
+(`config.schema.yml:40-51`). `hosts` remains system/user only, so selector
+resolution is stable across directories (a formal name resolves the same way
+everywhere — `configuration.md:94-95`).
 
-After:
+## Typing, missing refs, cycles
 
-```rust
-let flat = cli::resolve::scoped_defaults(&resolved.formal_name, &config, &registry, dirs, &cwd)?;
-let defaults = toha::interview::configured_defaults(&template, &flat)?;
-```
+- **Missing reference** → `DefaultsError::MissingValue`, before the engine
+  runs. Never a silent empty default. Attributed to the file, index, selector,
+  and question (example 4).
+- **Type mismatch** → caught by the unchanged engine `configured_defaults`
+  (`parse_kind`, `src/interview.rs:504`) and re-attributed to the binding as
+  `DefaultsError::TypeMismatch` (example 4). Literals name the literal;
+  references name the value.
+- **Cycles are structurally impossible.** The store maps names to **literals**;
+  a stored value never references another stored value (`Source::Ref` points
+  into `Config.values: IndexMap<ValueName, Value>`, not into another `Source`).
+  Reference resolution is exactly one hop. No cycle detection exists because no
+  cycle can exist. This is a deliberate, load-bearing simplification.
+- **Validate only what is used.** Projection filters to matched bindings first,
+  resolves only their sources, and kind-checks only those values. A
+  type-broken literal or a dangling reference in a binding for another template
+  never affects an unrelated run; an unreferenced store value is never checked.
 
-- **`seed()` (`src/main.rs:414`)** gains the target and context. New signature:
-  ```rust
-  fn seed(
-      template: &Template,
-      target: &str,           // resolved.formal_name
-      scope: &Scope,          // { config, registry, dirs, cwd } already defined at :475
-  ) -> Result<Seed, String>
-  ```
-  Its callers already hold `resolved` and the resolution context.
-- **`continue` (`:664`)** and **`apply` of a staged interview (`:902`)** use
-  `resolved.formal_name` (they already call `resume_template`, so `resolved` is in
-  scope) — the recorded identity, re-resolved against live config.
-- **`progress` (`:496`)** is best-effort; it uses `saved.template` as the target
-  and keeps its `.ok()?` shape:
-  ```rust
-  let flat = cli::resolve::scoped_defaults(&saved.template, scope.config,
-                                           scope.registry, scope.dirs, scope.cwd).ok()?;
-  let defaults = configured_defaults(&template, &flat).ok()?;
-  ```
+## Selectors and identity
 
-`configured_defaults` (`src/interview.rs:677`), `Seed`, `replay_with_defaults`
-(`src/staging.rs:131`), and `Interview::start` are UNCHANGED.
+The stable identity is `ResolvedTemplate.formal_name` (`src/cli/resolve.rs:17`),
+already in scope at every call site. A binding's `template:` selector is
+matched to it, never by short name alone:
 
----
+| Selector form | Matched to `formal_name` by | Evidence |
+| --- | --- | --- |
+| Git / host address (`gh:owner/collection`) | `Address::formal_name` (pure) | `src/source.rs:118` |
+| Absolute folder path | canonical path string | `src/cli/resolve.rs:184` |
+| Installed alias / short / formal name | `registry.resolve` (alias→short→formal) | `src/registry.rs:471` |
+| Duplicate short name | **refused** for this run (use formal) | `src/registry.rs:485` |
+| Bundled `toha-demo` | `Name` NotFound → bare token as formal | predecessor `f949b6a` |
 
-## Precedence (total, deterministic)
-
-For a target formal name `F` and a question id `q`, consider every source that
-supplies a value for `q` and applies to `F`:
-
-- the global map `defaults[q]` (already resolved local→user→system by
-  `config::load`), if present — **specificity 0**;
-- every rule whose `match` normalizes to `F` and whose `set` contains `q` —
-  **specificity 1**.
-
-The winner is the maximum of the ordered key `(specificity, origin, order)`,
-compared lexicographically, higher wins:
-
-1. **specificity** — a template-specific rule (1) beats the global map (0).
-2. **origin** — Local (2) > User (1) > System (0).
-3. **order** — within one layer, the rule declared later wins.
-
-Why this is total: within a single layer, `order` is unique per rule, so no two
-distinct candidates ever tie on all three components. The `scoped_defaults` fold
-realizes this key without sorting: it starts from the specificity-0 map, then
-overwrites with specificity-1 rules applied in ascending `(origin, order)`, so
-the last write is the `(origin, order)`-maximum among matching rules, and any
-matching rule overwrites the global base.
-
-Properties that follow:
-
-- **Global-only configs are byte-identical to today.** With no
-  `template-defaults`, `scoped_defaults` returns `config.defaults.clone()` and
-  the whole flow is unchanged. The `local > user > system` per-key merge for
-  global defaults (`src/config.rs:151-168`) is preserved verbatim.
-- **Specificity dominates layer.** A system rule that names `F` beats a local
-  global default for `F`. This is the intended "if you named a template, you
-  meant it" behavior. A local user is never locked out: a local rule that names
-  `F` (equal specificity) wins by layer.
-- **Deterministic across all paths.** Terminal, headless, staged, direct, and
-  the crate path all call the same `scoped_defaults` → `configured_defaults`
-  chain with the same inputs, so results are identical. Defaults are re-resolved
-  on resume against live config, never frozen (`StagedRecord` stores only
-  `template`+`commit`).
-
----
-
-## Schema / config / guide / embedded-guidance proposals
-
-Proposed edits (described, NOT applied — no shared schema/spec files are touched
-in this design task).
-
-### `docs/specifications/config.schema.yml`
-
-Add to `$defs`:
-
-```yaml
-selector:
-  type: string
-  minLength: 1
-  # A <TEMPLATE> argument: installed name/alias, gh:owner/collection, ./x, /x,
-  # or the reserved toha-demo. The literal `any` is NOT allowed — global
-  # defaults use the `defaults` map.
-  not: { const: any }
-rule:
-  type: object
-  additionalProperties: false
-  required: [match, set]
-  properties:
-    match: { $ref: "#/$defs/selector" }
-    set:   { $ref: "#/$defs/defaults" }   # reuse: propertyNames match `identifier`
-template-defaults:
-  type: array
-  items: { $ref: "#/$defs/rule" }
-```
-
-Add `template-defaults` to the `properties` of BOTH `shared-config` and
-`local-config` (local participation preserved, matching the existing `defaults`
-availability at lines 40-51). `additionalProperties: false` is retained on both.
-
-What the schema catches: non-string / empty selector, `match: any`, unknown keys
-in a rule, and (via the reused `defaults` `$def`) `set` keys that violate the
-`identifier` pattern. What the schema deliberately does NOT catch, because it
-needs the registry: whether a selector resolves, matches nothing, or is
-ambiguous. Value-type validity (a string given where a bool is required) is
-caught downstream by `configured_defaults` exactly as it is for global defaults
-today.
-
-### `src/config.rs` parse (`load`, after the existing defaults merge loop)
-
-```rust
-let mut default_rules = Vec::new();
-for (layer, origin, file) in [
-    (&system, Origin::System, &dirs.system_config),
-    (&user,   Origin::User,   &dirs.user_config),
-    (&local,  Origin::Local,  &local_file),
-] {
-    if let Some(raw_rules) = &layer.template_defaults {
-        for raw in raw_rules {
-            let mut values = IndexMap::new();
-            for (key, value) in &raw.set {
-                values.insert(
-                    Id::parse(key).map_err(|message| ConfigError::Parse {
-                        path: file.clone(), message })?,
-                    value.clone(),
-                );
-            }
-            default_rules.push(Rule { selector: raw.r#match.clone(), origin, values });
-        }
-    }
-}
-```
-
-Bad `set` ids report the offending file exactly as global defaults do
-(`src/config.rs:160-165`).
-
-### `docs/configuration.md`
-
-- Extend "Set default answers": keep the `defaults`-by-id explanation, then add a
-  "Set defaults for one template" subsection with the `template-defaults` list,
-  the `match` selector forms, and the "template-specific beats global, then local
-  layer, then later rule" precedence sentence.
-- In "How the layers combine": add that `template-defaults` blocks concatenate
-  local-then-user-then-system for precedence and that a selector's meaning does
-  not depend on local `hosts` (local cannot set `hosts`, so a git-address
-  selector normalizes the same everywhere — the identity-stability property the
-  global `hosts` note already relies on, lines 93-95).
-
-### Embedded guidance / `docs/specifications/command-line-interface.yml`
-
-Note that `template-defaults` selectors use the same `<TEMPLATE>` grammar and
-resolution order as command arguments, that `toha-demo` is selectable by that
-reserved name, and that a bare short name shared by two templates is refused
-(exit 5) when it would decide the running template — point authors at git
-addresses / formal names.
-
----
+Two templates that share a short name and even a question title stay separate:
+each has a distinct `formal_name`, and a binding names exactly one. A
+short-name selector that is ambiguous is refused **only when the ambiguity set
+contains the running identity** (it plausibly meant this run); otherwise it is
+an irrelevant binding and is skipped — an unrelated run never breaks. A `Name`
+selector that is `NotFound` and is not the running identity is skipped (an
+irrelevant or typo'd binding), never applied by accident.
 
 ## Error / results contract
 
-`scoped_defaults` returns `ResolveError` (same enum used across resolution);
-`configured_defaults` still returns `EvalError` rendered as `configuration key
-defaults.<id>: <message>`.
-
 | Situation | Result |
-|---|---|
-| No `template-defaults`; only `defaults` map | `flat == config.defaults`; behavior byte-identical to today |
-| Rule `match` normalizes to `F` (the target) | Its `set` overrides the global map for that target |
-| Rule `match` normalizes to some other identity | Rule skipped (does not match `F`) |
-| Rule `match` names an uninstalled template (NotFound) | Rule skipped + one-line stderr warning; unrelated runs unaffected |
-| Rule `match` is a folder that is absent on disk | Rule skipped + stderr warning (folder cannot be canonicalized) |
-| Rule `match` is a short name shared by two entries, and `target` is one of them | `ResolveError::Ambiguous { name, matches }` → exit 5; message names both formal names and points to using a formal name |
-| Rule `match` is an ambiguous short name, but `target` is NOT among the matches | Rule skipped (definitely not this target) |
-| Rule value has the wrong type for the winning target's question | `EvalError` → `configuration key defaults.<id>: <message>` (attribution preserved) |
-| Two same-layer rules name `F` and set the same id | Later-declared rule wins (deterministic) |
-| Global `defaults[q]` set, no rule for `F` mentions `q` | Global value used (unchanged) |
+| --- | --- |
+| Binding names this identity, `value:` present in store | value seeds the question |
+| Binding names this identity, `literal:` present | literal seeds the question |
+| `value:` names a missing store entry | `DefaultsError::MissingValue`, exit 1 |
+| Value/literal wrong kind for the question | `DefaultsError::TypeMismatch`, exit 1 |
+| Binding names a question the template lacks | `DefaultsError::UnknownQuestion`, exit 1 |
+| Selector ambiguous and includes this identity | `DefaultsError::AmbiguousSelector`, exit 1 |
+| Selector names another identity / not found / gone | binding skipped (no error) |
+| No binding names a question | template's own default (or empty) stands |
+| `defaults:` key present in any config file | migration error, exit 1 (see below) |
 
-Exit codes are the existing ones (0/1/2/3/5); no new code is introduced.
-Ambiguity reuses exit 5 (`ResolveError::Ambiguous`), consistent with the CLI
-argument path (`src/registry.rs:485`).
-
-**Known imperfection (call-out, not a defect):** a value that came from a
-`template-defaults` rule is still attributed as `configuration key defaults.<id>`
-by `configured_defaults`, not as its rule/selector. This preserves the exact
-existing error contract with zero engine change. Enriching attribution to name
-the rule requires changing `EvalError`/`configured_defaults` (an engine-facing
-change) and is deferred — see open questions.
-
----
+Exit codes are the existing pipeline's; no new code, no new exit value. The
+engine's own faults (template `default`, `when`, …) are unchanged.
 
 ## Behaviors to prove (falsifiable)
 
-1. **Separation by identity** — two installed templates both ask `title`; rules
-   `match: gh:owner/collection {title: A}` and `match: gh:owner/journal {title:
-   B}`. Running each seeds its own title; neither leaks. Fails if a rule for one
-   identity affects the other.
-2. **Global regression** — a config with only `defaults` (no
-   `template-defaults`) produces seeds byte-identical to the current build across
-   terminal, headless, staged `continue`, staged `apply`, and progress. Fails if
-   the fold changes the global-only result.
-3. **Specificity beats layer** — `defaults: {title: G}` (local) plus system
-   `match: F {title: S}`. Target `F` seeds `S`; a different target seeds `G`.
-   Fails if the local global overrides the system template-specific rule for `F`.
-4. **Layer tie at equal specificity** — system `match: F {owner: A}`, local
-   `match: F {owner: B}` → `B`. Fails if system wins.
-5. **Order tie within a layer** — in one file, two rules that both normalize to
-   `F` (one by alias, one by git address) set the same id to different values →
-   the later rule wins. Fails if resolution is order-independent or nondeterministic.
-6. **Ambiguous selector, relevant** — two entries share short name `n`; a rule
-   `match: n`. Running one of the two templates → `ResolveError::Ambiguous` (exit
-   5) naming both formal names. Fails if it silently picks one or is ignored.
-7. **Ambiguous selector, irrelevant** — same ambiguous `match: n`, but running a
-   third, unrelated template → rule skipped, no error. Fails if unrelated runs
-   break.
-8. **Selector matches nothing** — `match: gh:owner/absent` (not installed) or
-   `match: ./missing` → rule skipped, warning on stderr, seed unaffected. Fails
-   if it errors or alters the seed.
-9. **Resume re-resolves live** — stage `gh:owner/collection`, change that rule's
-   value in config, `continue`/`apply` → the new value appears. Fails if the
-   staged record froze the default.
-10. **Bundled demo selectable** — `match: toha-demo {title: X}` sets the default
-    when running the bundled demo, and does not apply to an installed template.
-    Fails if the reserved identity is not addressable by a rule.
-11. **Value-type validation preserved** — a rule sets a bool where the target's
-    question is text → `configuration key defaults.<id>: <message>`. Fails if the
-    error is dropped or misattributed to a non-`defaults` key.
-12. **Crate contract intact** — `Seed { now, defaults: IndexMap<Id, RawAnswer> }`
-    compiles and behaves as before; `configured_defaults` signature unchanged.
+- **Reuse across differently-named questions** — example 1: one store value
+  seeds `email` in one template and `contact` in another; both defaults equal
+  the stored value. Fails if a value can only reach a same-id question.
+- **No implicit by-id** — example 2: `blog`'s `owner` is byte-identical to a
+  no-config run; only `press-kit`'s `owner` changes. Fails if a shared id
+  leaks a value.
+- **Key-disambiguated source** — a store value literally named `primary` and a
+  binding `literal: primary` both present: the literal seeds the question with
+  the string `primary`, never the store entry. Fails if source is inferred from
+  string shape instead of the `value:`/`literal:` key.
+- **Missing ref is loud** — example 4 first binding yields exactly the
+  `MissingValue` text; the interview never starts and no default is silently
+  empty.
+- **Type mismatch is attributed** — example 4 second binding yields exactly the
+  `TypeMismatch` text with the engine's kind message as its tail.
+- **Only-used validation** — a config with a type-broken literal in a binding
+  for template X runs template Y with no error. Fails if all bindings are
+  validated eagerly.
+- **Precedence** — a system, a user, and a local binding for the same
+  (identity, question): the local value wins; within one file, the lower of two
+  wins. A local binding referencing a system-defined value resolves.
+- **Re-resolution on resume** — stage under one config, change a referenced
+  store value, `continue`/`apply`: the new value seeds the question (defaults
+  re-derived from live config, never frozen — `src/main.rs:496,664,902`).
+- **Identical across drivers** — terminal, headless, staged, direct, and crate
+  paths produce the same seeded defaults for the same inputs.
+- **No `defaults:` acceptance** — a config carrying `defaults:` produces the
+  migration error, never silent application.
 
----
+## Proposed schema edits (design only — not applied)
 
-## Broader reusable-default mechanisms (future exploration)
+`docs/specifications/config.schema.yml`:
 
-This slice ships EXACT identity match only. Three broader mechanisms were weighed
-on the required axes (accidental cross-template effects, user control,
-template-author dependence, identity stability, configuration complexity):
+```yaml
+$defs:
+  value-name:
+    type: string
+    pattern: '^[a-z_][a-z0-9_]*$'
+  values:
+    type: object
+    propertyNames: { $ref: "#/$defs/value-name" }
+  template-defaults:
+    type: array
+    items:
+      type: object
+      additionalProperties: false
+      required: [template, question]
+      properties:
+        template: { type: string, minLength: 1 }
+        question: { $ref: "#/$defs/identifier" }
+        value:    { $ref: "#/$defs/value-name" }
+        literal:  true            # any JSON value
+      oneOf:                      # exactly one source key
+        - { required: [value],   not: { required: [literal] } }
+        - { required: [literal], not: { required: [value] } }
+  shared-config:
+    properties:                   # replace `defaults` with the two below
+      values:            { $ref: "#/$defs/values" }
+      template-defaults: { $ref: "#/$defs/template-defaults" }
+  local-config:
+    properties:
+      values:            { $ref: "#/$defs/values" }
+      template-defaults: { $ref: "#/$defs/template-defaults" }
+```
 
-| Mechanism | Accidental effects | User control | Author dependence | Identity stability | Config complexity |
-|---|---|---|---|---|---|
-| **A. Formal-name prefix / glob** (`match: gh:owner/*`) | Bounded to a namespace; legible | High (author writes the glob) | None | High (formal names are stable) | Low — one selector grammar extension |
-| **B. Tags / traits** (template.yml `tags: [rust]`; `match-tag: rust`) | Wide; a tag can hit templates you never intended | Split with authors | High (authors must tag, and keep tags stable) | Low (tags are not identity; can change per version) | Medium — new template.yml surface + config surface |
-| **C. Named profiles** (config `profiles:`, opt-in via `--profile`/`active-profile`) | None (opt-in) | Highest (explicit activation) | None | High | High — new CLI surface + activation model |
+The old `defaults` `$def` and property are removed. Because
+`additionalProperties: false` would reject a stray `defaults:` with a generic
+message, `config::load` checks for the `defaults` key **before** schema
+validation and emits the friendly migration error instead.
 
-**Recommended future direction: A (prefix/glob over formal names).** It is the
-natural extension of this slice — still identity-keyed, still stable, no
-template-author cooperation, and its blast radius is a namespace the author typed,
-not a trait someone else assigned. It slots into the precedence *between* exact
-and global: reserve the specificity axis as an ordinal `exact (2) > glob (1) >
-global (0)` so a future glob tier can be added WITHOUT redefining the precedence
-rule. Tags (B) are more powerful but push a dependency and a new failure mode
-(stale/over-broad tags) onto template authors and widen accidental effects; hold
-until a concrete need appears. Profiles (C) solve a different problem (opt-in
-sets of answers) and can layer on independently later.
+## Documentation edits (design only)
 
-This slice does not build A/B/C. It ships exact match with the specificity axis
-defined as an ordinal so glob is a later, additive change.
+- `docs/configuration.md`: replace "Set default answers" with "Reusable values
+  and template defaults" — the `values` store, the `template-defaults` binding
+  list, selector = formal identity, reference (`value:`) vs literal
+  (`literal:`) by key, the precedence rule, and the migration note. Remove the
+  "Defaults apply by id to every template" paragraph
+  (`configuration.md:79-80`) — that behavior is gone.
+- `docs/specifications/template-interviews.md`: note that a configured default
+  now reaches a question only via an explicit binding to the template's formal
+  identity, and that it still overrides the template's own `default` and re-
+  resolves against live config on resume.
 
----
+## Migration disposition (required product decision)
+
+Existing configs may carry `defaults: { id: value }` (global-by-id). That model
+is removed. No disposition may silently drop those values or silently change
+behavior.
+
+- **Option 1 — Reject with conversion (recommended).** Presence of `defaults:`
+  is a hard error naming the file and giving the exact conversion: move each
+  `defaults.<id>: <v>` to `values.<name>: <v>`, then add a `template-defaults`
+  binding per template+question that should receive it. Loudest; forces the
+  now-required explicit intent; no data loss (nothing runs until converted; the
+  values are named back to the author in the message).
+
+  ```
+  ~/.config/toha/config.yml: `defaults:` is no longer supported — a default no
+  longer applies to every template that shares a question id. Move each entry
+  under `values:` and bind it explicitly, e.g.
+      values:
+        title: Untitled
+      template-defaults:
+        - template: <formal name of the template that asks `title`>
+          question: title
+          value: title
+  ```
+
+- **Option 2 — Adopt as `values` + warn (softer).** Re-read `defaults:` as
+  entries of the `values` store and warn that they now apply to **nothing**
+  until an explicit binding references them. Preserves the data and forbids
+  implicit application, but is a silent *behavior* regression for anyone who
+  relied on by-id application (the default stops appearing). Needs a collision
+  rule if both `defaults:` and `values:` set the same name (recommend: error on
+  collision).
+
+- **Option 3 — Deprecation window (rejected).** Keep `defaults:` working with
+  the old by-id semantics for N releases behind a warning. Rejected: it keeps
+  the exact coupling the product owner removed alive, and forces a messy dual
+  precedence between old `defaults` and new bindings.
+
+- **Auto-translate to bindings (infeasible).** The old semantics targeted
+  *every* template; there is no identity to translate into without inventing a
+  wildcard selector, which re-introduces implicit by-id. Not offered.
+
+**Recommendation: Option 1.** A loud error beats a silent behavior change, and
+per "ceremony scales with blast radius" a hard cutover is cheap while this
+capability has essentially no installed base (the second release is landing
+now). If real 0.1 users of `defaults:` are confirmed, fall back to Option 2 so
+their data is auto-carried into `values:` while application stays explicit.
 
 ## Out of scope
 
-The pure interview engine and its `Seed.defaults: IndexMap<Id, RawAnswer>`
-contract; `configured_defaults`'s signature; `Template`, `Plan`, `apply`,
-`protocol`, `staging`, and `StagedRecord`'s shape; the `<TEMPLATE>` classification
-order; trust and hook execution (a rule never influences trust and never runs a
-hook to produce a value); glob/tag/profile mechanisms; enriching `EvalError`
-provenance; any production code, shared-schema, or spec edits (this task produces
-Markdown only).
-
----
-
-## Size and complexity
-
-- **Size:** ~M. One new function (`scoped_defaults` + `selector_matches`,
-  ~40 lines) reusing the existing `formal_name`; new `Rule`/`Origin` types and a
-  parse block in `config.rs`; four one-line call-site changes in `main.rs`; one
-  `seed()` signature change; schema + docs. No new module.
-- **Complexity:** moderate, and honestly named. The genuine cost is the selector
-  match semantics — the four-way outcome (matches / other identity / not
-  resolvable / ambiguous-and-relevant) is the one subtle part, and it is isolated
-  in `selector_matches` with a truth-table test per row. The precedence fold is
-  trivial because global stays a pre-merged map; the engine, staging, and crate
-  surface do not change at all.
+The pure interview engine and its `configured_defaults`/`Seed` contract, the
+`ResolvedTemplate` shape, the `<TEMPLATE>` classification order, staging record
+fields, the trust model, and the crate library surface. No value→value
+references (and so no cycle machinery). No new subcommand, trust, permission,
+timeout, pinned-version check, or subprocess. No production, schema, or doc
+edits are applied in this design task.

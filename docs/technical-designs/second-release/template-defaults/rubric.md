@@ -1,66 +1,68 @@
-# Rubric — template-specific configured defaults
+# Rubric — template-specific configured defaults (reframed shape)
 
-Derived in Phase B(Frame) from this task's observable outcomes and invariants.
-**Withheld from candidates**: candidates receive only the common task and the
-grounding artifact. This rubric is the picker's tool for the readonly cross-judge
-and the orchestrator's own criterion-by-criterion scoring in synthesis.
+Re-derived for the reframed model: named stored values + explicit per-template
+references, replacing the implicit global-by-id override. **Withheld from
+candidates**: candidates receive only the common task and the grounding. This
+rubric is the readonly cross-judge's tool and the orchestrator's own scoring tool.
 
-Score each criterion 1–5 (5 = fully satisfied, gradeable evidence in the
-candidate's own sketch and rationale).
+Score each criterion 1–5 (5 = fully satisfied with gradeable evidence in the
+candidate's sketch and rationale).
 
-## C1 — Unambiguous identity selection
+## C1 — No implicit id coupling; references are explicit
 
-Every selection form resolves to exactly one default set: bare folder, `./x`,
-absolute path, git address, installed formal name, alias, a **duplicate short
-name**, and the bundled `toha-demo` identity. Two templates that share a short
-name — or share a question title — receive **separate** defaults. The design keys
-on template identity (formal name), never on short name alone or an ambiguous
-selector. States what happens when a selector matches nothing and when a selector
-is itself ambiguous.
+No stored value reaches a question except through an explicit mapping. The design
+proves that two questions with **different** ids can reference one stored value,
+and that a question whose id equals another template's id is **unaffected** unless
+its own mapping references a value. The config author never relies on question-id
+equality across authors. Template selection keys on template **identity**
+(formal name), never a bare/ambiguous short name; the bundled `toha-demo` identity
+is reusable as a selector.
 
-## C2 — Global-by-id preserved with total, explicit precedence
+## C2 — Reference vs literal representation is unambiguous and well named
 
-The existing global-by-question-id capability is preserved, not silently removed,
-narrowed, or reinterpreted. Precedence is total and deterministic across two
-dimensions: specificity (global-by-id vs template-specific) and config layer
-(system < user < local). The design presents disposition/migration **options with
-a recommendation** for existing global-by-id settings, and flags any narrowing as
-requiring Bob's explicit approval.
+A default entry cleanly distinguishes "reference the stored value named N" from
+"use this inline literal." A literal that happens to spell a value name cannot be
+silently misread as a reference (and vice versa). The top-level stored-values
+property has a clear name that is **not** `defaults`; the reference syntax is named
+and legible in real YAML. The representation is parsed once at the boundary into
+domain types.
 
-## C3 — Engine purity and path parity
+## C3 — Resolution safety: missing, typing, cycles
 
-The pure interview engine's `Seed.defaults: IndexMap<Id, RawAnswer>` contract is
-unchanged; the engine stays identity-unaware. Template-specific selection is
-resolved at the boundary and flattened to the same map. Results are identical
-across terminal, headless, staged, direct, and crate paths for identical inputs.
-Configured defaults are re-resolved against live config on resume, not frozen into
-the staged record. No production stubs, runtime changes, or premature shared
-schema/spec edits in the design task.
+A reference to a missing stored value is a clear, attributed error — never a silent
+empty default. A stored value whose type does not match the referencing question's
+answer kind is caught and attributed to the config site and the question. If
+references can chain (a value referencing another), cycles are detected and refused
+with a clear error; if chaining is disallowed, the design states that and why. Only
+the value actually used for a question is validated (no spurious errors from unused
+store entries).
 
-## C4 — Boundary validation and error attribution
+## C4 — Layering, engine purity, path parity
 
-External input is parsed once at its boundary into domain types. Validation covers
-matching and nonmatching templates, all layers, aliases, and invalid value types.
-Each invalid configured default is attributed to its config file, its selector,
-and its question id (extending the current `configuration key defaults.<id>`
-contract). A selector that never matches any template is handled predictably
-(defined, not a silent surprise).
+The stored-values store and the per-template mappings each merge across
+system/user/local with a total, deterministic precedence, and the interaction
+between them is defined. Resolution happens at the config/resolve boundary and
+flattens to the unchanged `Seed.defaults: IndexMap<Id, RawAnswer>`; the pure engine
+stays identity- and store-unaware. Results are identical across terminal, headless,
+staged, direct, and crate paths, and defaults are re-resolved against live config
+on resume, never frozen. No production stubs or premature shared schema/spec edits.
 
-## C5 — Interface depth and contained surface
+## C5 — Safe transition of existing `defaults:` with no silent data loss
 
-The public/config surface added is small relative to the capability it hides
-(deep module, not shallow). No information leakage of internal representation
-across modules; no transport/registry types on the public surface. No new trust,
-permission, timeout, pinned-version-check, or subprocess surface. Locality: the
-change concentrates where identity is already resolved and where config is already
-parsed. Passes the design red-flags screen (shallow module, information leakage,
-temporal decomposition, pass-through method).
+Existing global-by-id `defaults:` config is handled by an explicit transition
+disposition, presented as options with a recommendation: keep working under a
+deprecation window, auto-translate to the new shape, or reject with a clear message
+and a documented conversion. Existing values are never silently dropped or silently
+reinterpreted; the user is told what happened and what to do. The disposition is a
+named product decision for the checkpoint.
 
-## C6 — Future reusable-default direction
+## C6 — Interface depth, contained surface, future direction
 
-At least two plausible broader reusable-default mechanisms are compared on:
-accidental cross-template effects, user control, template-author dependence,
-identity stability, and configuration complexity. A recommended future direction
-is given, and the design does **not** expand this slice's implementation into a
-global mechanism without Bob's approval. The near-term design leaves room for the
-recommended direction without committing to it.
+The config surface added is small relative to the capability it hides (deep module,
+not shallow); no information leakage of internal representation; no new trust,
+permission, timeout, pinned-version-check, or subprocess surface; locality at the
+existing config/resolve boundary; passes the red-flag screen (shallow module,
+information leakage, temporal decomposition, pass-through method). At least two
+broader reusable-value/reference directions are compared (on accidental effects,
+user control, author dependence, identity/name stability, configuration
+complexity) with a recommended future direction that is not over-built now.

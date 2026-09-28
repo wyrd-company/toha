@@ -1,27 +1,31 @@
-# Synthesis — template-specific configured defaults
+# Synthesis — template-specific configured defaults (named stored values)
 
-Records the base pick, the orchestrator's own criterion-by-criterion scoring, the
-reconciliation with the cross-judge, the grafts and rejections, dropouts, and the
-one risk elevated to the Phase C checkpoint.
+Records the base pick, the orchestrator's own criterion scoring, the reconciliation
+with the cross-judge, grafts and rejections, dropouts, and the risks elevated to
+the Phase C checkpoint. This is the reframed round: the implicit global-by-id model
+is replaced by named stored values plus explicit references, per the product
+owner's direction. The prior global-by-id design and its arena are superseded and
+preserved in git history at commit `37e2215`.
 
 ## Runners and dropouts
 
-Configured architect runner intent: four `inherit-parent` slots plus a
-cross-judge preferring a different model family. Actual:
+Configured intent: four `inherit-parent` architect runner slots plus a cross-judge
+preferring a different model family. The gpt-5.6 family remained unavailable this
+run (terminal model-access error, as in the prior round), so all three candidates
+and the cross-judge ran on `inherit-parent` (Claude). Three structurally distinct
+viable candidates were produced (≥2 satisfied). Lost cross-family diversity is a
+run limitation, recorded here.
 
-- Candidate 1 (identity-scoped overlay): produced by `inherit-parent` (Claude). ✅
-- Candidate 2 (ordered rule list): first attempt on `gpt-5.6-sol` **failed** (model
-  unavailable in this environment); re-run on `inherit-parent` (Claude). ✅
-- Candidate 3 (qualified selector keys): first attempt on `gpt-5.6-terra`
-  **failed** (model unavailable); re-run on `inherit-parent` (Claude). ✅
-- Cross-judge: preferred a non-parent family; gpt-5.6 unavailable, so it ran on
-  `inherit-parent`.
+Three distinct directions were explored:
 
-**Dropout note:** the two gpt-5.6 runner slots dropped out on a terminal API
-"model not available" error and were replaced by `inherit-parent` runners on the
-same distinct design directions. Three structurally distinct viable candidates
-were produced, satisfying the ≥2 requirement. The lost cross-family diversity is
-recorded as a limitation of this run, not of the design.
+- **C1** — a `values` store plus a `template-defaults` map keyed by formal identity,
+  each entry a `{ value: <name> }` reference or an inline literal (object ⇒
+  reference, scalar/array ⇒ literal; refs may appear only in mappings).
+- **C2** — a `values` store plus an ordered binding **list**, reference vs literal
+  in distinct keys (`value:` / `literal:`), selectors matched through the registry.
+- **C3** — a `values` library plus a `template-defaults` map using `${name}` sigil
+  references with a `$$` escape, values may chain, resolved by a cycle-detecting
+  graph resolver.
 
 ## Own scores vs cross-judge
 
@@ -29,107 +33,97 @@ Scored independently, criterion by criterion, after reading all three end to end
 
 | Criterion | C1 | C2 | C3 |
 | --- | ---: | ---: | ---: |
-| C1 Unambiguous identity selection | 5 | 4 | 5 |
-| C2 Global preserved + total precedence | 5 | 5 | 5 |
-| C3 Engine purity & path parity | 4 | 5 | 4 |
-| C4 Boundary validation & attribution | 4 | 3 | 5 |
-| C5 Interface depth & contained surface | 5 | 5 | 4 |
-| C6 Future reusable direction | 5 | 5 | 5 |
-| **Total** | **28** | **27** | **28** |
+| C1 No implicit id coupling; refs explicit | 5 | 4 | 5 |
+| C2 Ref/literal representation unambiguous & named | 4 | 5 | 3 |
+| C3 Resolution safety (missing/typing/cycles) | 5 | 5 | 4 |
+| C4 Layering, engine purity, path parity | 5 | 4 | 5 |
+| C5 Safe transition of `defaults:` | 5 | 5 | 4 |
+| C6 Interface depth, contained surface, future | 5 | 4 | 3 |
+| **Total** | **29** | **27** | **24** |
 
-The orchestrator's totals match the cross-judge exactly, including the C1/C3 tie
-at 28 and C2 at 27. No disagreement to reconcile on the numbers. The one place the
-two readings differ in emphasis: the orchestrator rates C3's "config keys are
-*matched* against a resolved identity, never *resolved through* `registry.resolve`"
-as the single most valuable correctness idea in the arena — it is what removes the
-exit-5 ambiguity path from configuration entirely. C1 already has this property
-(it keys on `formal_name`, which is matched by equality), so the base keeps it; the
-synthesis adopts C3's explicit `TemplateIdentity` matching model to make it
-structural rather than incidental.
+The orchestrator's totals match the cross-judge exactly, including the ranking
+C1 > C2 > C3. No numeric disagreement to reconcile. Full agreement on base = C1.
 
 ## Base
 
-**Candidate 1 — identity-scoped overlay keyed on the stable `formal_name`.** Chosen
-for the reasons the cross-judge gives and the orchestrator confirms: it keys on the
-one selector grounding proves unambiguous, its user surface is the smallest and
-deepest, its precedence rule is already forward-designed for a middle tier, and
-every graft below is additive rather than a reshape. A maintainer extends it
-without relearning it.
+**Candidate 1 — a `values` store plus an identity-keyed `template-defaults` map.**
+Chosen for: strictest identity keying (exact `formal_name`, no registry-coupled
+selector); **cycles impossible by construction** (references appear only in
+mappings and resolve one hop into a literal store — no detector needed and none can
+be wrong); resolution kept in the `toha` library so every driver and crate path is
+served identically; and the smallest deep surface (two config fields; the engine's
+`Seed.defaults` contract and the pipeline below it unchanged in behavior).
 
 ## Grafts (source → what → why)
 
-- **From C3 — boundary-owned validation and attribution.** Extract a pure
-  `validate_default(template, id, value)` from the engine and resolve/validate
-  defaults in a new boundary module (`src/cli/defaults.rs`), not inside
-  `interview.rs`. This drops C1's proposed `EvalError.config_key` field and its
-  placement of `resolved_defaults` in the engine, so the pure engine stays 100%
-  identity- and config-unaware (fixes C1's C3 dip), while scoped errors name the
-  exact config key **and** its layer/file, and only the *winning* value per id is
-  validated (fixes C1's C4 dip). One graft closes both of the base's soft spots.
-- **From C3 — the `TemplateIdentity` match model.** Match config keys against a
-  `TemplateIdentity` derived from `ResolvedTemplate` + `Registry`, never by
-  re-resolving the key through `registry.resolve`. Guarantees configuration can
-  never raise the exit-5 ambiguity path. `ResolvedTemplate` is unchanged (honors
-  the bundled-demo coordination contract: no new field or variant).
-- **From C3 — config-relative path handling and refuse-on-tie.** Folder/path
-  identity keys in a *local* config resolve relative to the config file's
-  directory (reusing the existing `config::path` behavior at `src/config.rs:92`),
-  which mitigates the "committed `.toha.yml` breaks on clone" portability risk. A
-  genuine same-layer, same-specificity tie is refused (`Conflict`), not guessed.
-- **From C2 — reserve specificity as an ordinal.** Model specificity as an ordinal
-  (`global < … < identity`) so a future glob or tag tier slots in *between* without
-  redefining the precedence rule. C2's honest "matches nothing → inert, optional
-  one-line stderr note" behavior is adopted for unresolved keys.
+- **From C2 — precise, file-naming attribution.** C1's attribution names
+  `template-defaults."<formal>".<id>` but not the config **file**. Graft C2's
+  `Origin{file, layer}` so every configured-default error names the file (and, for
+  the binding case, its position). A user editing three layered config files must
+  be told which one to fix.
+- **From C3 — reference provenance in errors.** When a value reaches a question
+  *through a reference* and fails the kind check, name both the mapping site and the
+  value it resolved through: `template-defaults."<formal>".<id> → values."<name>":
+  <message>`. The author fixes the stored value, not the mapping.
+- **Considered from C2 — the distinct `value:` / `literal:` keys.** Adopted as a
+  presented alternative (decision D2), not folded in by default: C1's `{ value:
+  <name> }`-or-bare-literal form is already airtight at the schema level (the
+  literal branch of the `oneOf` admits only scalars and string arrays, so an object
+  can only be a reference and a bare string is always a literal), and it keeps
+  literals terse. The distinct-key form is more explicit and future-proofs against
+  object-valued answers; Bob chooses (D2).
 
 ## Rejections (what was dropped and why)
 
-- **C2's ordered rule list with registry-normalized `match` (rejected as the base
-  shape).** Normalizing a selector *through* `formal_name`/`registry.resolve` at
-  match time reintroduces exactly the ambiguity/exit-5 surface that keying on a
-  resolved identity removes — a config file could raise an ambiguity error. The
-  ergonomic goal it served (write a scoped key in any selector form) is better met,
-  if wanted, by C3's qualified keys matched against the identity's own facets. The
-  ordered-list *expressiveness* (order-dependent precedence) is more machinery than
-  the stated problem needs.
-- **C2's deferred attribution (rejected).** Leaving a bad rule value attributed to
-  `defaults.<id>` fails criterion C4; the C3 graft supersedes it.
-- **C3's four-qualifier vocabulary as a *mandatory* now-surface (deferred, not
-  rejected).** `formal:`/`alias:`/`name:`/`path:` and the intentional `name:`
-  broadcast are genuine capabilities, but they widen the user vocabulary and make
-  `alias:`/`name:` registry-relative. The stated problem (two templates, one id,
-  separate defaults) is fully solved by formal-name keying alone. Whether to ship
-  qualified selectors now or reserve them as the recommended future direction is
-  **decision D2** at the Phase C checkpoint — deferred to Bob, not silently
-  decided. The base architecture (identity matching + boundary resolution) makes
-  either choice additive.
-- **Global disposition options B/C from C1/C3 (rejected as recommendation).**
-  Removing or folding away `defaults` narrows a supported capability; keeping
-  global-by-id unchanged as the base tier is recommended (decision D3). A
-  warn-on-overlap variant adds per-run noise for what is the intended mechanism.
+- **C3's `${name}` sigil + `$$` escape (rejected).** A sigil re-opens exactly the
+  literal-vs-reference collision the grounding lists under *Avoid* and then patches
+  it by shape-sniffing a string. A structural distinction (object ⇒ reference, or
+  distinct keys) is safer and needs no escape rule.
+- **C3's value→value chaining + graph/cycle resolver (rejected).** Chaining is a
+  capability the reframe never asks for, and cyclic/unbounded resolution is listed
+  under *Avoid*. Designing cycles out by construction (refs only in mappings, one
+  hop) is strictly stronger than detecting them.
+- **C2's binding-list structure as the base (rejected).** One list row per
+  (template, question) is more verbose than a nested `identity → {question:
+  source}` map for the common case; the nested map is the terser deep surface.
+- **C2's registry-resolved alias/short selectors (rejected).** Resolving a selector
+  through `registry.resolve` at match time couples a config file's meaning to
+  registry state and re-admits the exit-5 ambiguity surface (guarded, but present).
+  Keep C1's exact `formal_name` keying; aliases/short names are not stable identity.
+- **C2's resolution-in-CLI-module (rejected in favor of C1's library placement).**
+  Moving resolution into `src/cli/defaults.rs` leaves crate/library consumers
+  without selection; C1 keeps resolution in the `toha` library so the crate path is
+  served.
 
 ## Convergence signal
 
-All three candidates independently converged on: (a) key on the stable identity,
-never the short name; (b) resolve at the config/resolve boundary and hand the pure
-engine the unchanged flat `Seed.defaults`; (c) re-resolve on resume, never freeze;
-(d) **specificity dominates layer** in precedence, each flagging that exact
-precedence choice as the load-bearing decision for Bob; (e) global-by-id preserved
-as the base tier. This convergence is a strong agreement signal and is carried
-into the final design as settled shape, with the precedence direction itself still
-put to Bob as decision D1 (recommended: specificity-primary).
+All three candidates independently converged on: (a) a top-level `values` store
+named exactly `values` (not `defaults`); (b) template selection keyed on the stable
+`formal_name`, never a short name; (c) no implicit application by id — a value
+reaches a question only via an explicit mapping; (d) resolution at the boundary
+flattening to the unchanged `Seed.defaults`; (e) re-resolution on resume, never
+frozen; (f) **reject-with-conversion** as the recommended migration for existing
+`defaults:`, with auto-translation judged semantically impossible (global-by-id
+carries no template identity to translate into). This strong convergence is carried
+into the final design as settled shape.
 
-## Risk elevated to the checkpoint
+## Risks elevated to the checkpoint
 
-The cross-judge's identity-key-versioning risk (ref-pinned git addresses fragment
-defaults across refs while installed-in-place templates carry them over; local
-absolute-path keys are non-portable) was missed by all three candidates and is
-real. It is carried into the final design's compatibility section and raised as
-Phase C **decision D4** (what may change a default's identity key). The
-config-relative path graft already mitigates the portability half.
+From the cross-judge, missed by all three candidates:
+
+1. **Same-answer-kind reuse limit** — a stored value has one kind (its JSON shape),
+   so it can seed only questions of that answer kind. Documented as an inherent
+   property; folded into decision **D5** and the docs.
+2. **Migration naming trap** — authors will name `values` entries after question
+   ids and expect implicit application. Folded into the migration section and the
+   `configuration.md` guardrail; part of decision **D1**.
+3. **Eager validation of unreachable questions** — validating a mapping whose
+   question the template *defines* even if unreachable via `when`/batch. Consistent
+   with today's `configured_defaults`; surfaced as decision **D5** (validate-when-
+   defined vs validate-when-reached; recommend when-defined).
 
 ## Verification
 
-See `verification.md`: caller usage re-checked against the sketch, every
-requirement and inherited constraint checked against the design, failure cases and
-falsifiable scenarios listed, and compatibility with the approved bundled-demo
-predecessor revision confirmed.
+See `verification.md`: caller usage re-checked against the sketch, every reframed
+requirement and constraint checked, failure/falsifiable scenarios listed, and
+compatibility with the approved bundled-demo predecessor confirmed.

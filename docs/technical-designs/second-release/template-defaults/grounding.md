@@ -120,26 +120,73 @@ Configured defaults never touch trust. Trust gates hook execution
 seed answers. A template-specific-defaults design must not become a new way to
 influence trust or hook execution, and must not run a hook to resolve a default.
 
+## The reframed model — named stored values, explicit references
+
+The implicit global-by-id override is the wrong model. A template author and a
+config author cannot assume that two questions sharing an `Id` (`title`, `email`,
+`owner`) carry the same meaning; applying one config value to every same-id
+question couples independent authors through an accidental namespace. The design
+therefore **replaces** the global-by-id concept rather than preserving it as a
+base tier.
+
+The replacement has two parts:
+
+1. **A named store of reusable values** at the top of config — a property that is
+   deliberately *not* called `defaults`. Each entry binds a **name the config
+   author chooses** (not a template question id) to a value. The store carries no
+   template semantics; it is just named data (an email address, an owner, a
+   license string) the author wants to reuse.
+2. **Explicit per-template references.** A template-specific configured default
+   names a question of a selected template **identity** and points its default at
+   either a stored value (by that value's name) or an inline literal. Nothing is
+   applied implicitly by matching question ids; a value reaches a question only
+   because a mapping said so. Two questions with **different** ids — in the same
+   or different templates — may reference the **same** stored value; a question
+   whose id happens to equal another template's id is untouched unless its own
+   mapping references a value.
+
+This inverts the coupling: the config author states intent per template question,
+and reuse comes from pointing several questions at one named value, not from a
+shared id.
+
 ## Preserve / Change / Avoid / Risk
 
 - **Preserve.** The pure engine's `Seed.defaults: IndexMap<Id, RawAnswer>`
-  contract; global-by-id defaults as a supported capability (feature constraint,
-  no silent removal); identical results across all driver paths; re-resolution on
-  resume; local-layer participation; the `defaults.<id>` error attribution; formal
-  name as stable identity; no trust influence.
-- **Change.** Introduce a way to scope a default to a template **identity** so two
-  templates that share a question id can receive different defaults; define
-  precedence between global-by-id and template-specific, across layers and
-  specificity; extend the config schema and `configuration.md`/embedded guidance.
-- **Avoid.** Keying on short name or ambiguous selectors; freezing defaults into
-  staged records; engine changes that make it identity-aware; writing defaults
-  into the registry; any new trust, permission, timeout, pinned-check, or
+  contract (resolution still flattens to this map, keyed by the selected
+  template's question ids); identical results across terminal/headless/staged/
+  direct/crate paths; re-resolution against live config on resume, never frozen;
+  local-layer participation; formal name as the stable template **identity** used
+  to select which mappings apply; no trust/permission/timeout/pinned-check/
+  subprocess surface; parse-once at the boundary into domain types; error
+  attribution that names the config site.
+- **Change / Replace.** Remove the implicit global-by-id override
+  (`config.defaults` semantics as they exist today, `src/config.rs:26`,
+  `configured_defaults` `src/interview.rs:677`, doc `configuration.md:64-80`).
+  Introduce (a) a named stored-values property (name TBD by the design) and (b)
+  explicit template-identity → question → reference-or-literal mappings. Define
+  the reference-vs-literal representation, the property and reference **names**,
+  layer precedence for both the store and the mappings, and behavior for a
+  reference to a **missing** value, a **type** mismatch against the question kind,
+  and a **cycle** if references can chain. Extend the config schema,
+  `configuration.md`, and `template-interviews.md`.
+- **Migrate without silent data loss.** Existing configs use `defaults:`
+  (global-by-id). Because that concept is being replaced, the design must state an
+  explicit transition disposition for an existing `defaults:` block — keep it
+  working under a deprecation window, auto-translate it, or reject it with a clear
+  message and a documented conversion — and must not silently drop those values.
+  This is a required product decision, not a silent choice.
+- **Avoid.** Any implicit id-based application; keying template selection on short
+  name or an ambiguous selector; a stored-value name colliding with the reference
+  syntax so a literal is misread as a reference; freezing resolved defaults into
+  staged records; engine changes that make it identity- or store-aware; a cyclic
+  or unbounded reference resolution; any new trust/permission/timeout/pinned/
   subprocess surface.
-- **Risk.** Silent narrowing of global-by-id (needs Bob's explicit decision);
-  precedence ambiguity when both a global and a template-specific default match;
-  selector collision between an alias and a formal name; a broader "reusable
-  default" mechanism causing accidental cross-template effects. These are the
-  criteria axes and the Phase C decisions.
+- **Risk.** Literal/reference ambiguity (a bare string that looks like a value
+  name); a dangling reference producing a silent empty default instead of a clear
+  error; type mismatch between a stored value and a question kind; layer merge of
+  the store vs the mappings disagreeing; the migration disposition losing existing
+  `defaults:` data. These are the rubric axes and the Phase C decisions for the
+  reframed shape.
 
 ## Consumed predecessor contract
 
