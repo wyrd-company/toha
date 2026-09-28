@@ -1,4 +1,4 @@
-# Verification — template-specific configured defaults (named stored values)
+# Verification — template-specific configured defaults (named presets)
 
 Phase F for the reframed design. Caller usage re-checked against the sketch, every
 reframed requirement and constraint checked, failure/falsifiable scenarios listed,
@@ -8,18 +8,24 @@ and compatibility with the approved bundled-demo predecessor confirmed.
 
 The four required config examples were traced through the signatures:
 
-- Example 1 (one value, two differently-named questions) resolves through
-  `configured_defaults(formal_name, template, values, mappings)`: each identity's
-  mapping resolves `{ value: primary_contact }` against the merged store → the same
-  value seeds `email` and `contact`. Matches B1.
+- Example 1 (one preset, two differently-named questions) resolves through
+  `configured_defaults(formal_name, template, presets, mappings)`: each identity's
+  sourced mapping resolves `{ preset: primary_contact }` against the merged store →
+  the same preset seeds `email` and `contact`. Matches B1.
 - Example 2 (same-id, no mapping) — `gh:owner/blog` has no entry, so no store value
   reaches its `email`; the template's own default stands. Matches B2.
 - Example 3 (`toha-demo`) — keyed by the reserved formal name; literal + reference
   both resolve. Matches B9.
 - Example 4 (missing ref, type mismatch) — both produce attributed `EvalError`s
-  naming the file, the site, and (for the ref) `→ values."<name>"`. Matches B4, B5.
+  led by the winning mapping file/site; the ref mismatch also names the winning
+  preset file and `→ presets."<name>"`. Matches B4, B5.
 
 Usage and sketch agree.
+
+The caller-first crate example destructures `Resolution { defaults, warnings }`,
+reports each warning, and passes only `defaults` to `Seed`. The four command-driver
+sites use the same result contract, so neither defaults nor mapped-id warnings are
+lost on a supported path (B12).
 
 ## Reframed requirements coverage (Bob's canonical instruction, 11:53)
 
@@ -27,10 +33,10 @@ Usage and sketch agree.
 | --- | --- | --- |
 | No implicit override by field id | mappings are explicit; nothing applied by id | B2 |
 | Equal ids ≠ equal semantics assumption removed | resolution keys on identity + explicit mapping only | B2, B8 |
-| Named stored values, property NOT called `defaults` | `values` store; `defaults` removed | design "Data structures"; B13 |
-| Template defaults explicitly reference stored values | `DefaultSource::Ref` / `{ value: <name> }` | B1, B3 |
-| Reference/literal representation | `{ value: <name> }` vs bare literal; schema `oneOf` (D2) | B3, B7 |
-| Names (property + reference) | `values` + `template-defaults`; `{ value: }` (D3) | design "Decisions" |
+| Named stored values, property NOT called `defaults` | `presets` store; `defaults` removed | design "Data structures"; B13 |
+| Template defaults explicitly reference stored values | `DefaultSource::Ref` / `{ preset: <name> }` | B1, B3 |
+| Reference/literal representation | `{ preset: <name> }` vs bare literal; schema `oneOf` (D2) | B3, B7 |
+| Names (property + reference) | `presets` + `template-defaults`; `{ preset: }` (D3, closed) | design "Decisions" |
 | Typing / missing / cycles | attributed errors; cycles impossible by construction (D4) | B4, B5, B7 |
 | Layer precedence | store per-name, mappings per (formal,id); refs resolve vs merged store | B10 |
 | Safe transition, no silent data loss | migration disposition D1 (reject-with-conversion) | B13 |
@@ -44,7 +50,8 @@ Usage and sketch agree.
 
 - **Preserve** — `Seed.defaults` contract, path parity, re-resolution on resume,
   local-layer participation, formal-name identity, no trust surface, parse-once,
-  attribution: all held (B11, B12, B14; error contract). ✅
+  attribution: all held. Winning mapping and preset origins survive merge in
+  `ConfigEntry<T>` (B4, B5, B10–B12, B14; error contract). ✅
 - **Change/Replace** — global-by-id removed; named store + explicit references
   introduced; names, representation, precedence, missing/type/cycle behavior all
   defined. ✅
@@ -60,7 +67,7 @@ Usage and sketch agree.
 - **Same-answer-kind reuse limit** — disclosed in D5 and to be documented; inherent
   to typed values, not a defect.
 - **Migration naming trap** — addressed by a `configuration.md` guardrail steering
-  `values` names away from question ids, and by D1's reject-with-conversion (which
+  `presets` names away from question ids, and by D1's reject-with-conversion (which
   forces explicit intent rather than a silent lift).
 - **Eager validation of unreachable questions** — surfaced as D5 (validate-when-
   defined, consistent with today's behavior) rather than left implicit.
@@ -87,12 +94,14 @@ B1–B14 make each load-bearing behavior falsifiable. Two anchors a reviewer wil
 want: B2 pins "no implicit by-id" (reintroducing id-application fails B2), and B3/B7
 pin the representation (a literal misread as a reference, or a store entry accepting
 a reference, fails them). B13 pins the migration (silent acceptance or silent drop
-fails it). B14 pins engine purity.
+fails it). B14 pins engine purity. B4/B5/B10 use different winning layer files so
+dropping or swapping either mapping or preset origin fails the named assertion.
 
 ## Verdict
 
 The reframed design resolves Bob's directed reshape and the task's decisions,
 removes the implicit global-by-id model via an explicit named-store-plus-references
 model, migrates existing config without silent data loss, keeps the engine pure, and
-is compatible with the approved predecessor. It holds. Remaining open items (D1–D5)
-are product decisions for the Phase C checkpoint, not design defects.
+is compatible with the approved predecessor. It holds. Bob approved D1–D5, with
+the requested `presets` / `{ preset: <name> }` naming revision; no product decision
+remains open in this design.

@@ -97,7 +97,7 @@
         |     reference -> look up presets   (missing -> attributed error)
         |     literal   -> use verbatim
         |     validate used value's kind vs question kind (attributed)
-        |   -> IndexMap&lt;Id, RawAnswer&gt;      &lt;- identity + presets flattened away here
+        |   -> Resolution { defaults, warnings } &lt;- identity + presets flattened here
         v
    src/main.rs::seed / continue / apply / progress  ->  Seed { now, defaults }
         v
@@ -115,8 +115,8 @@
 pub fn configured_defaults(
     formal_name: &str,
     template: &Template,
-    presets: &IndexMap&lt;PresetName, Value&gt;,
-    mappings: &IndexMap&lt;String, IndexMap&lt;Id, DefaultSource&gt;&gt;,
+    presets: &IndexMap&lt;PresetName, ConfigEntry&lt;Value&gt;&gt;,
+    mappings: &IndexMap&lt;String, IndexMap&lt;Id, ConfigEntry&lt;DefaultSource&gt;&gt;&gt;,
 ) -> Result&lt;Resolution, EvalError&gt;;
 
 pub struct Resolution { pub defaults: IndexMap&lt;Id, RawAnswer&gt;, pub warnings: Vec&lt;String&gt; }</code></pre>
@@ -129,9 +129,10 @@ pub struct Resolution { pub defaults: IndexMap&lt;Id, RawAnswer&gt;, pub warning
     pub message: String,
     pub expression: Option&lt;String&gt;,
     pub config_key: Option&lt;String&gt;,   // NEW, e.g.
-    //  template-defaults."gh:owner/collection".agree -> presets."flag" ("yes-please")
-    //  includes the config FILE the mapping came from
+    //  &lt;mapping-file&gt;: template-defaults."gh:owner/collection".agree
+    //  -&gt; &lt;preset-file&gt;: presets."flag" ("yes-please")
 }</code></pre>
+    <p class="muted">Missing-reference and literal errors lead with the winning mapping file. A referenced type error also names the winning preset file after the provenance arrow. Unknown-question warnings name the winning mapping file/site.</p>
   </section>
   <section>
     <h2>Wiring (whole blast radius)</h2>
@@ -154,16 +155,21 @@ pub enum DefaultSource {
     Literal(serde_json::Value),   // bare scalar or string array — verbatim
 }
 
+pub enum ConfigLayer { System, User, Local }
+pub struct ConfigOrigin { pub layer: ConfigLayer, pub path: PathBuf }
+pub struct ConfigEntry&lt;T&gt; { pub value: T, pub origin: ConfigOrigin }
+
 pub struct Config {
     pub templates_paths: Vec&lt;PathBuf&gt;,
     pub local_templates_paths: Vec&lt;PathBuf&gt;,
     // REMOVED: pub defaults: IndexMap&lt;Id, Value&gt;
-    pub presets: IndexMap&lt;PresetName, Value&gt;,                      // NEW: the store
-    pub template_defaults: IndexMap&lt;String, IndexMap&lt;Id, DefaultSource&gt;&gt;, // NEW
+    pub presets: IndexMap&lt;PresetName, ConfigEntry&lt;Value&gt;&gt;,
+    pub template_defaults:
+        IndexMap&lt;String, IndexMap&lt;Id, ConfigEntry&lt;DefaultSource&gt;&gt;&gt;,
     pub hosts: IndexMap&lt;String, String&gt;,
     pub local_config_name: String,
 }</code></pre>
-    <p class="muted">References appear only in mappings and resolve one hop into a literal preset store → cycles impossible by construction. Three disjoint key types (preset name / formal identity / question id).</p>
+    <p class="muted">Each per-key merge replaces value + exact path/layer together. References appear only in mappings and resolve one hop into a literal preset store → cycles impossible by construction.</p>
   </section>
   <section>
     <h2>Config surface the user writes</h2>
@@ -219,15 +225,15 @@ template-defaults:                 # keyed by stable template identity
         <tr><td>B1 reuse_by_name</td><td>one preset seeds two differently-named questions</td><td>reuse needs a shared id</td></tr>
         <tr><td>B2 no_implicit_by_id</td><td>an unmapped same-id question is untouched</td><td>global-by-id leaks back</td></tr>
         <tr><td>B3 literal_never_a_ref</td><td>a bare string is a literal, not a lookup</td><td>a literal is read as a reference</td></tr>
-        <tr><td>B4 missing_ref_is_attributed</td><td>missing preset → clear error naming the file</td><td>silent empty default</td></tr>
-        <tr><td>B5 type_mismatch_is_attributed</td><td>bad literal & bad value-via-ref both attributed</td><td>unattributed or accepted</td></tr>
+        <tr><td>B4 missing_ref_is_attributed</td><td>missing preset → winning mapping file/site</td><td>silent empty or wrong file</td></tr>
+        <tr><td>B5 type_mismatch_is_attributed</td><td>ref mismatch → mapping file + winning preset file</td><td>either origin lost</td></tr>
         <tr><td>B6 only_used_is_validated</td><td>broken mapping for another template does not error</td><td>eager whole-config validation</td></tr>
         <tr><td>B7 cycles_impossible</td><td>preset store rejects a reference-shaped leaf</td><td>presets accepts a reference</td></tr>
         <tr><td>B8 identity_selects</td><td>duplicate short names stay separate by formal name</td><td>selection keys on short name</td></tr>
         <tr><td>B9 bundled_demo_selector</td><td>"toha-demo" key reaches the bundled demo</td><td>the reserved identity is not matched</td></tr>
-        <tr><td>B10 precedence_total</td><td>local wins per name and per (formal,id); siblings kept</td><td>non-deterministic/destructive merge</td></tr>
+        <tr><td>B10 precedence_total</td><td>local wins per key with its origin; siblings kept</td><td>value/origin split or destructive merge</td></tr>
         <tr><td>B11 resume_reresolves</td><td>changed preset appears on continue</td><td>defaults frozen into the staged record</td></tr>
-        <tr><td>B12 driver_parity</td><td>identical Seed.defaults across all five paths</td><td>a path diverges</td></tr>
+        <tr><td>B12 driver_parity</td><td>identical defaults + warnings; callers surface warnings</td><td>a path diverges or drops a warning</td></tr>
         <tr><td>B13 legacy_defaults_refused</td><td>a defaults: block errors with conversion, no drop</td><td>silent acceptance or silent drop</td></tr>
         <tr><td>B14 engine_purity</td><td>engine never sees the formal name or the preset store</td><td>identity/presets leaks past the boundary</td></tr>
       </tbody>
@@ -251,7 +257,7 @@ template-defaults:                 # keyed by stable template identity
   <ul>
     <li><strong>Any implicit id application?</strong> Find a path where a preset reaches a question without an explicit mapping.</li>
     <li><strong>Literal/reference confusion?</strong> Find a literal read as a reference, or a reference read as a literal.</li>
-    <li><strong>Silent failure?</strong> Find a missing reference or type mismatch that does not error, or errors without naming the config file/site.</li>
+    <li><strong>Silent failure?</strong> Find a missing reference or type mismatch that does not error, loses the winning mapping file, or loses referenced-preset provenance.</li>
     <li><strong>Engine purity & parity?</strong> Find identity/presets leaking past the boundary, or a driver/crate path that diverges.</li>
     <li><strong>Migration data loss?</strong> Find an existing <code>defaults:</code> value that is dropped or silently reinterpreted.</li>
     <li><strong>Precedence totality?</strong> Find a used (identity, id) that resolves to two values or depends on file read order.</li>
@@ -328,7 +334,7 @@ template-defaults:                 # keyed by stable template identity
     <div>
       <h3>Size — ~M</h3>
       <ul>
-        <li>Two new <code>Config</code> fields + boundary classify/merge; remove <code>defaults</code></li>
+        <li>Two new sourced-entry <code>Config</code> fields + boundary classify/merge; remove <code>defaults</code></li>
         <li>Rewritten <code>configured_defaults</code> (identity + preset resolution, file-naming attribution, provenance)</li>
         <li>Four one-line wiring changes in <code>main.rs</code>; a migration error path</li>
         <li>Schema/doc edits (owned by 1058); B1–B14 tests</li>
@@ -338,7 +344,7 @@ template-defaults:                 # keyed by stable template identity
     <div>
       <h3>Complexity — low–moderate</h3>
       <ul>
-        <li>Preset store and mappings are plain maps merged per key</li>
+        <li>Preset store and mappings are plain maps of sourced entries merged per key</li>
         <li>Resolution is one hop, no graph; cycles and ambiguity designed out</li>
         <li>No new concurrency, capability, or engine state</li>
         <li>Engine purity preserved; grounding-proven seam</li>

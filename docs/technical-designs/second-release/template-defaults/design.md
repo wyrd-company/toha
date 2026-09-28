@@ -116,7 +116,8 @@ template-defaults: { "gh:owner/collection": { agree: { preset: flag } } }  # agr
 ```
 ```
 error: ~/.config/toha/config.yml: template-defaults."gh:owner/collection".agree
-       → presets."flag" ("yes-please"): must be true or false
+       → ~/.config/toha/config.yml: presets."flag" ("yes-please"):
+       must be true or false
 ```
 
 The attribution names the config **file**, the mapping site, and — when the value
@@ -131,11 +132,21 @@ let config = toha::config::load(&dirs.config_paths(), &cwd)?;
 let resolved = cli::resolve::resolve_template(arg, &config, &registry, &dirs, &cwd)?;
 let template = Template::load(&resolved.folder)?;
 // Resolution lives in the toha library, so crate callers get identity scoping too:
-let defaults = toha::interview::configured_defaults(
-    &resolved.formal_name, &template, &config.presets, &config.template_defaults,
-)?;                                        // IndexMap<Id, RawAnswer>
+let toha::interview::Resolution { defaults, warnings } =
+    toha::interview::configured_defaults(
+        &resolved.formal_name,
+        &template,
+        &config.presets,
+        &config.template_defaults,
+    )?;
+warnings.iter().for_each(|warning| eprintln!("warning: {warning}"));
 let interview = toha::interview::Interview::start(&template, Seed { now: jiff::Zoned::now(), defaults })?;
 ```
+
+`Resolution` is never passed as `Seed.defaults`. Supported command drivers print
+each warning to stderr; a crate caller receives the same warnings and chooses its
+own reporting adapter. The example reports them to stderr so it does not silently
+discard a mapped-id warning.
 
 ## Module and seam map
 
@@ -155,7 +166,7 @@ let interview = toha::interview::Interview::start(&template, Seed { now: jiff::Z
         │     reference → look up presets (missing → attributed error)
         │     literal   → use verbatim
         │     validate the used value's kind vs the question kind (attributed)
-        │   → IndexMap<Id, RawAnswer>          ← identity + presets flattened away here
+        │   → Resolution { defaults, warnings } ← identity + presets flattened here
         ▼
    src/main.rs::seed / continue / apply / progress
         ▼
@@ -185,12 +196,20 @@ pub enum DefaultSource {
     Literal(serde_json::Value), // a bare scalar or string array — used verbatim
 }
 
+/// The layer and exact file that supplied a winning merged entry.
+pub enum ConfigLayer { System, User, Local }
+pub struct ConfigOrigin { pub layer: ConfigLayer, pub path: PathBuf }
+
+/// Merge replaces this whole value, so the winner and its origin cannot drift.
+pub struct ConfigEntry<T> { pub value: T, pub origin: ConfigOrigin }
+
 pub struct Config {
     pub templates_paths: Vec<PathBuf>,
     pub local_templates_paths: Vec<PathBuf>,
     // REMOVED: pub defaults: IndexMap<Id, Value>   (global-by-id is replaced)
-    pub presets: IndexMap<PresetName, Value>,                     // NEW: the store
-    pub template_defaults: IndexMap<String, IndexMap<Id, DefaultSource>>, // NEW
+    pub presets: IndexMap<PresetName, ConfigEntry<Value>>, // NEW: sourced store
+    pub template_defaults:
+        IndexMap<String, IndexMap<Id, ConfigEntry<DefaultSource>>>, // NEW
     pub hosts: IndexMap<String, String>,
     pub local_config_name: String,
 }
@@ -207,11 +226,15 @@ Invariants encoded in the types:
 - **Three disjoint key types** — `PresetName` (preset names), `String` (formal
   identities), `Id` (question ids) — so no code can confuse a preset name with an
   identity or a question id.
+- **Every merge winner retains its origin** — `ConfigEntry<T>` couples the parsed
+  value with its exact config path and system/user/local layer. Per-name and
+  per-`(formal name, question id)` replacement moves both together.
 
 The wire form (`Layer`) parses `presets: Option<IndexMap<String, Value>>` and
 `template_defaults: Option<IndexMap<String, IndexMap<String, Value>>>`, then
-classifies each leaf into `DefaultSource` and validates the names — parse once at
-the boundary, trust the types inside.
+classifies each leaf into `DefaultSource`, validates the names, and wraps every
+preset and mapping leaf in `ConfigEntry` with the current file/layer — parse once
+at the boundary, trust the types inside.
 
 ## Public interfaces expected (signatures)
 
@@ -230,8 +253,8 @@ the boundary, trust the types inside.
 pub fn configured_defaults(
     formal_name: &str,
     template: &Template,
-    presets: &IndexMap<PresetName, Value>,
-    mappings: &IndexMap<String, IndexMap<Id, DefaultSource>>,
+    presets: &IndexMap<PresetName, ConfigEntry<Value>>,
+    mappings: &IndexMap<String, IndexMap<Id, ConfigEntry<DefaultSource>>>,
 ) -> Result<Resolution, EvalError>;
 
 /// The resolved seed plus non-fatal warnings (mapped ids the template lacks).
@@ -239,8 +262,8 @@ pub struct Resolution { pub defaults: IndexMap<Id, RawAnswer>, pub warnings: Vec
 ```
 
 Attribution (graft from C2/C3): `EvalError` gains one optional field carrying the
-full config-site string, built at the boundary; the engine's own template-error
-rendering is unchanged.
+full config-site string, built from the retained winning origins; the engine's own
+template-error rendering is unchanged.
 
 ```rust
 pub struct EvalError {
@@ -249,11 +272,22 @@ pub struct EvalError {
     pub message: String,
     pub expression: Option<String>,
     pub config_key: Option<String>,   // NEW: e.g.
-    //  template-defaults."gh:owner/collection".agree → presets."flag" ("yes-please")
+    //  <mapping-file>: template-defaults."gh:owner/collection".agree
+    //  → <preset-file>: presets."flag" ("yes-please")
 }
-// The config site includes the file path (from the layer the mapping came from)
-// and, for a reference, the resolved preset: `→ presets."<name>" (<value>)`.
 ```
+
+Origin selection is deterministic:
+
+- A missing reference and a literal kind error render the winning **mapping
+  entry's** path first; there is no second origin for a missing preset, and the
+  literal lives at the mapping site.
+- A referenced kind error also renders the winning mapping path first, preserving
+  the approved leading diagnostic contract, then renders
+  `→ <preset-file>: presets."<name>" (<value>)` from the winning preset entry.
+- An unknown-question warning names the winning mapping path and site.
+- The retained layer is available for structured diagnostics and tests; human text
+  uses exact paths, which already distinguish system, user, and local files.
 
 Wiring — all four sites already hold the formal name (`resolved.formal_name` for
 direct stage/apply and resume; `saved.template` for progress):
@@ -276,10 +310,12 @@ record.
 Layers read system → user → local, as today.
 
 1. **The preset store `presets`** merges per name: `local > user > system` (the
-   existing per-key merge used for `defaults`/`hosts`). Other names are kept.
+   existing per-key merge used for `defaults`/`hosts`). Other names are kept. Each
+   replacement installs the winning value and its `ConfigOrigin` together.
 2. **The mappings `template-defaults`** merge per `(formal name, question id)`:
    a later layer replaces that one pair, keeping sibling questions and other
-   identities. A layer adding a new identity or id just adds it.
+   identities. A layer adding a new identity or id just adds it. The winning
+   mapping's origin is replaced with the value.
 3. **Interaction.** A reference always resolves against the **fully merged** preset
    store, regardless of which layer the mapping came from — one store, one source of
    truth. A local mapping may reference a user- or system-defined preset.
@@ -334,8 +370,8 @@ alias/short is not offered — those are not stable identity).
 | Mapping id resolves, kind matches | inserted into `Seed.defaults` |
 | Ref to a name absent from merged `presets` | `EvalError`, `<file>: template-defaults."<formal>".<id>: no preset named "<name>"`, exit 1 |
 | Value kind ≠ question kind (literal) | `EvalError`, `<file>: template-defaults."<formal>".<id>: <parse_kind message>`, exit 1 |
-| Value kind ≠ question kind (via ref) | `EvalError`, `<file>: template-defaults."<formal>".<id> → presets."<name>" ("<value>"): <parse_kind message>`, exit 1 |
-| Mapping id the selected template does not define | skipped; one stderr warning; non-fatal |
+| Value kind ≠ question kind (via ref) | `EvalError`, `<mapping-file>: template-defaults."<formal>".<id> → <preset-file>: presets."<name>" ("<value>"): <parse_kind message>`, exit 1 |
+| Mapping id the selected template does not define | skipped; one stderr warning naming the winning mapping file/site; non-fatal |
 | Mapping for a non-selected identity | ignored |
 | Unreferenced preset | never validated |
 | Legacy `defaults:` present in any layer | migration error naming the file (see D1), exit 1 |
@@ -355,11 +391,14 @@ resolution reads config data only.
 - **B3 literal_never_a_ref** — `license: primary_contact` (bare) yields the string
   `primary_contact`, not the preset. *Fails if a literal is read as a ref.*
 - **B4 missing_ref_is_attributed** — a `{ preset: N }` with no `presets.N` for a
-  defined question yields the exact missing-preset text naming the file; no silent
-  empty. *Fails on silent empty.*
+  defined question yields the exact missing-preset text led by the winning mapping
+  file; no silent empty. Put the mapping in a different layer from an unrelated
+  preset to prove the winning entry is used. *Fails on silent empty or wrong file.*
 - **B5 type_mismatch_is_attributed** — a bad literal and a bad value-via-ref each
-  yield the exact attributed message (the ref case names `→ presets."<name>"`).
-  *Fails if unattributed or accepted.*
+  yield the exact attributed message. Put the winning mapping and preset in
+  different files: the ref case starts with the mapping file and names
+  `→ <preset-file>: presets."<name>"`. *Fails if either winner's origin is lost,
+  unattributed, or accepted.*
 - **B6 only_used_is_validated** — a broken mapping for a different template, and an
   unreferenced preset, do not error. *Fails on eager whole-config validation.*
 - **B7 cycles_impossible** — a `presets` leaf shaped like a reference is rejected by
@@ -372,12 +411,15 @@ resolution reads config data only.
   demo resolved by that formal name. *Fails if the reserved identity is not matched.*
 - **B10 precedence_total** — local preset overrides user preset for a name; local
   mapping overrides user mapping for one `(formal, id)` without dropping siblings; a
-  local mapping resolves a user-defined preset. *Fails on non-deterministic or
-  destructive merge.*
+  local mapping resolves a user-defined preset; the surviving entries report the
+  local mapping origin and user preset origin. *Fails on non-deterministic or
+  destructive merge, or if a value wins without its origin.*
 - **B11 resume_reresolves** — change a preset between `stage` and `continue`; the
   resumed interview reflects the new value. *Fails if defaults are frozen.*
-- **B12 driver_parity** — terminal, headless, staged, direct, and crate paths give
-  identical `Seed.defaults` for identical inputs. *Fails if any path diverges.*
+- **B12 driver_parity** — terminal, headless, staged, direct, and crate paths receive
+  identical `Resolution { defaults, warnings }` for identical inputs; command and
+  example crate callers surface every warning before passing only `defaults` into
+  `Seed`. *Fails if any path diverges or discards a warning.*
 - **B13 legacy_defaults_refused** — a config with `defaults:` fails at load with a
   message naming the file and the conversion; the values are not dropped from the
   file. *Fails on silent acceptance or silent drop.*
@@ -492,12 +534,12 @@ silent data loss.
 
 ## Size and complexity
 
-- **Size:** ~M. Two new `Config` fields + a boundary classify/merge block and the
+- **Size:** ~M. Two new sourced-entry `Config` fields + a boundary classify/merge block and the
   `defaults` removal in `config.rs`; a rewritten `configured_defaults` (identity +
   preset resolution, file-naming attribution, provenance) in `interview.rs`; four
   one-line wiring changes in `main.rs`; schema/doc edits (owned by 1058); the
   B1–B14 tests. A migration error path for `defaults:`.
-- **Complexity:** low–moderate. The preset store and mappings are plain maps merged
-  per key; resolution is one hop with no graph; cycles and ambiguity are designed
+- **Complexity:** low–moderate. The preset store and mappings are plain maps of
+  `ConfigEntry<T>` merged per key; resolution is one hop with no graph; cycles and ambiguity are designed
   out. No new concurrency, capability, or engine state. Expected agent
   implementation time: roughly a focused day against this design.
