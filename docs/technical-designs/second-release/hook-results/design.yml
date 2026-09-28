@@ -1,0 +1,195 @@
+$schema: https://refinery.systems/ontology/technical-design
+relationships:
+  realizes: toha
+  implements:
+    - template-format
+    - command-line-interface
+  references:
+    - interview-protocol
+    - template-registry
+    - architecture
+    - jinja-context
+    - jinja-includes
+    - hook-review-trust
+    - error-attribution
+objective: >-
+  Expose a finished hook's exit_code, stdout, and stderr to later Jinja
+  surfaces, opt-in, so a template can run a later hook conditionally on an
+  earlier one, pass an earlier hook's output to a later one, or report a result
+  in the closing message, without changing hook trust and without ever silently
+  placing command output into generated files or public output.
+background:
+  current-design: >-
+    Plan::build renders every hook field and message before any file is written
+    and before any hook runs; hooks run last in Plan::apply, where a nonzero exit
+    stops remaining hooks and fails the apply. HookOutcome carries only
+    success and code. A hook has no id. StagedRecord stores submissions, not
+    results, and replay never re-runs hooks.
+  problems:
+    - >-
+      Nothing a template author writes can read what a hook did, because all
+      Jinja renders before the first hook runs.
+    - >-
+      A result-reading surface must join the approved complete retained render
+      program and conservative analysis before stage admission, and must not
+      become a late engine ambient read or a new environment surface.
+    - >-
+      Exposing stdout/stderr must not change hook trust, must not silently place
+      output into generated files or public output, and must not silently weaken
+      the default failed-hook behavior.
+design-challenges:
+  deferred-render: >-
+    A result value exists only after its producing hook runs, but reference
+    analysis must stay static and pre-admission. Names are analyzed at
+    Template::load; values are bound in the apply effect loop.
+  static-availability: >-
+    A surface may reference a result only if it always runs after the producer,
+    proven at load, so a value exists before it is read.
+  opt-in-trust: >-
+    Exposure and failure tolerance are separate explicit opt-ins; existing hooks
+    are byte-identical; the stdio change lives in the producer node so the 1069
+    digest covers it.
+  no-new-reserved-name: >-
+    A hook id is an ordinary identifier in the existing authored-id space; the
+    seventeen reserved names and their collision rule are untouched.
+proposed-design:
+  high-level-overview: >-
+    A hook opts in with id and, when it exposes output, capture. Its result is
+    read as <id>.exit_code/stdout/stderr by later top-level hook
+    when/run[1..]/args/cwd and by messages.after-apply. Template::load resolves
+    every read to an earlier-ordered producer and its captured fields, rejecting
+    forward/self/unknown/uncaptured/unread references before admission.
+    Plan::build renders result-free surfaces and retains result-reading ones as
+    AfterHooks(Deferred). Plan::apply_reporting runs each hook, records
+    {exit_code, stdout, stderr} into a per-apply HookResults dropped at return,
+    and renders each deferred surface just before its step.
+  identity-and-namespace: >-
+    id is a bare identifier joining the answer-id space; a duplicate against a
+    question, data, computed, group, or hook id is the existing load error, and
+    equality with one of the seventeen reserved names is the approved 1075
+    collision error. No new reserved name; no value named preset or presets.
+  readable-surfaces: >-
+    Later top-level hook when, run[1..], args, cwd, and messages.after-apply may
+    read a result. run[0], the script path, each, files, path segments,
+    before-apply, interview fields, and interview hooks may not. Interview hooks
+    may produce a result but never read one, keeping the pure engine free of
+    results.
+  capture: >-
+    capture is an explicit list of stdout and stderr on the producer. A read
+    stream that is not captured is a load error; a captured stream that is never
+    read is a load error. An uncaptured stream inherits the terminal as today.
+    Captured text is never printed by Toha.
+  failure: >-
+    The default nonzero-stops-and-fails behavior is unchanged. allow-failure
+    true, which requires an id whose result is read, tolerates a nonzero exit
+    code only; a signal stays fatal, so exit_code is none means the hook did not
+    run.
+  result-value: >-
+    A result is exactly exit_code, stdout, stderr. A skipped or unreached
+    producer yields all three none, never undefined. Non-UTF-8 output is a fatal
+    ApplyError naming the stream and valid_up_to, carrying no bytes. Trailing
+    carriage returns and newlines are removed.
+  deferred-program: >-
+    Planned<T> is Ready(T) or AfterHooks(Deferred). Result-free hook fields and
+    after-apply render at Plan::build; result-reading ones are retained compiled
+    and rendered in the apply loop against HookResults. run[0] and each stay
+    eager, so slot count is fixed at plan build and dry-run lists every
+    invocation with placeholders for deferred arguments.
+  interleave: >-
+    Plan::apply_reporting is the only site where results exist. After files are
+    written it renders each deferred hook, checks its cwd symlink, runs it,
+    decodes captured streams, records the result, and enforces stop-on-failure;
+    then it renders the deferred after-apply. HookResults is pub(crate) and
+    dropped when apply returns.
+  trust: >-
+    id, capture, and allow-failure are parsed hook-node fields covered by the
+    1069 parsed-node digest automatically. No new field names an in-tree
+    executable, and run[0] and the script path cannot read a result, so no
+    program is derived from output. Impl 1063 adds a schema-driven guard test
+    that classifies every hook-node key and fails on any unclassified key,
+    citing the 1069 coverage decision. Staged apply --trust stays
+    hook-execution-only.
+  composition: >-
+    Result names are static and analyzed by the 1075 retained-program reference
+    analysis, contributing zero environment need; the engine performs no ambient
+    read; results are effect-loop output, not context or configured defaults.
+    canonical_target and CanonicalTarget::as_path are consumed unchanged, with no
+    second normalizer or TargetError; the configured Resolution route and flat
+    Seed route are untouched; result-reading fields hold guarded Tmpl/Expr, never
+    FileTmpl, and add no include surface. StagedRecord and the three public
+    replay routes are unchanged and perform no live read.
+  dry-run: >-
+    Dry-run builds the plan and runs nothing; every planned invocation is listed
+    because run[0] and each are eager. Deferred arguments show <id.field>
+    placeholders and a deferred when shows its source. NeedsTrust keys on a
+    non-empty hooks list, counting deferred steps. Stop and abort produce no
+    Completed, so no plan is built and nothing runs.
+  compatibility: >-
+    A hook with no id is byte-identical to today. Crate types gain the new
+    fields (pre-v1, no back-compat owed). Manual Debug on HookOutcome and
+    PlannedHook keeps existing text and prints new fields only when non-default.
+    Existing ApplyError Display is byte-identical and never carries captured
+    text.
+  module-seam: >-
+    template.rs owns id/capture/allow-failure parse and settle_hook_results
+    (resolution, ordering, surface, capture, allow-failure-must-be-read) using
+    the 1075 analysis; interview.rs renders interview hooks (produce, never
+    read); plan.rs owns the Ready/AfterHooks split and Deferred preview/render;
+    apply.rs is the only interleave; hook.rs owns capture, decode, and
+    HookResults. staging, resolution, and target identity are untouched.
+out-of-scope:
+  - Reading a result in files, path segments, before-apply, interview fields,
+    interview hooks, run[0], the script path, or each.
+  - A new reserved Jinja name or namespace object; any change to the seventeen
+    reserved names, their collision rule, or the preset/presets rule.
+  - Persisting hook results, or any change to StagedRecord, replay routes, the
+    configured Resolution route, canonical-target identity, or the pure engine.
+  - A capture size limit, a new trust/permission/timeout/pinned-check policy, or
+    any application subprocess integration beyond the existing hook execution.
+  - list-shaped results for an each hook, and ran/ok convenience fields.
+  - Canonical specification, schema, guide, and example edits, which the paired
+    implementation 1063 owns.
+decisions-for-approval:
+  readable-surface-breadth: >-
+    Recommend broad minus run[0] and each (later hook
+    when/run[1..]/args/cwd plus after-apply) over narrow (when plus after-apply
+    only). Broad meets the objective of passing an earlier hook's output to a
+    later one; narrow forces a script workaround. Disclosure: broad lets a
+    producer's output become a later command's argument, written by the author,
+    with text originating from the producer's environment. This bounds a new
+    capability and excludes files and before-apply because writes precede hooks;
+    no existing capability is removed.
+  id-shares-answer-space: >-
+    A hook id is an ordinary identifier; a duplicate against a question, data,
+    computed, or group id is the existing load error. No new reserved name.
+  decode-policy: >-
+    Recommend strict UTF-8 with a fatal, byte-free error, because decoded text
+    can flow into later argv and lossy replacement would silently corrupt it.
+validation:
+  - >-
+    A later hook when reading an earlier hook exit_code runs or is skipped
+    accordingly; the fixture proves both branches.
+  - >-
+    An after-apply message and a later hook argument interpolate a captured
+    stdout; the fixture proves the exact rendered text.
+  - >-
+    A read of a stream that is not captured, a captured stream never read, a
+    forward or self reference, a read on a disallowed surface, id with each, and
+    allow-failure without a read all fail at load with the named messages.
+  - >-
+    A nonzero hook without allow-failure stops and fails; with allow-failure it
+    is tolerated and its exit_code is readable; a signal stays fatal even with
+    allow-failure.
+  - >-
+    A skipped producer yields exit_code none; a reader guarding on
+    exit_code is none behaves correctly.
+  - >-
+    Non-UTF-8 captured output fails with ApplyError::HookOutput carrying no
+    bytes; no Debug or Display of any hook type contains captured text.
+  - >-
+    A hook with no id renders, plans, runs, and lists in dry-run byte-identically
+    to the pre-feature behavior (sole-kill: adding capture must change the 1069
+    digest; the guard test fails on an unclassified hook-node key).
+  - >-
+    Dry-run lists every planned invocation with placeholders for deferred
+    arguments and runs no hook; stop and abort build no plan.
