@@ -71,7 +71,7 @@ presets:
   default_labels: [review, shared]
 
 template-defaults:
-  "gh:example/sample-template":
+  "gh:example/collection":
     email: { preset: primary_contact }
     labels: { preset: default_labels }
     include_summary: false

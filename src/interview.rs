@@ -699,10 +699,11 @@ pub fn configured_defaults(
         return Ok(Resolution { defaults, warnings });
     };
     for (id, entry) in values {
+        let identity = serde_json::to_string(formal_name).expect("string is a JSON value");
         let mapping_key = format!(
-            "{}: template-defaults.\"{}\".{id}",
+            "{}: template-defaults.{}.{id}",
             entry.origin.path.display(),
-            formal_name
+            identity
         );
         let Some(question) = question_by_id(&template.interview, id) else {
             warnings.push(format!(
