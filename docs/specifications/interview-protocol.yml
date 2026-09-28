@@ -140,8 +140,9 @@ description: >-
   and apply use the same constructed target identity. A separator-keyed legacy
   record is accepted only when its stored target canonicalizes to that identity.
   Its next successful save writes the canonical key before removing the legacy
-  key. Abort and successful apply remove both canonical and validated legacy
-  keys. The staged record holds the target path, the formal name and
+  key. Successful apply removes both canonical and legacy keys. Abort removes
+  both keys by target identity without requiring either stored record to be
+  readable. The staged record holds the target path, the formal name and
   resolved commit of the template, whether the argument resolved by name, the
   instant that `now()` returns for this
   interview, and every accepted answers submission, in order. Resuming replays

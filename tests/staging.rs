@@ -561,6 +561,42 @@ fn abort_removes_a_legacy_separator_record() {
 }
 
 #[test]
+fn abort_removes_an_unreadable_legacy_separator_record() {
+    let state = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    let template = Path::new("tests/fixtures/text-basic/template")
+        .canonicalize()
+        .unwrap();
+    let stage = || {
+        command(state.path())
+            .args([
+                "stage",
+                support::folder_address(&template).as_str(),
+                target.path().to_str().unwrap(),
+                "--async",
+            ])
+            .output()
+            .unwrap()
+    };
+    assert_eq!(stage().status.code(), Some(4));
+    let legacy_path = move_record_to_legacy_key(state.path(), target.path());
+    fs::write(&legacy_path, br#"{"target":"truncated"#).unwrap();
+
+    let output = command(state.path())
+        .args(["abort", target.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!legacy_path.exists());
+    assert_eq!(stage().status.code(), Some(4));
+}
+
+#[test]
 fn successful_apply_removes_a_legacy_separator_record() {
     let state = tempfile::tempdir().unwrap();
     let target = tempfile::tempdir().unwrap();

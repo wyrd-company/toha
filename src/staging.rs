@@ -254,22 +254,10 @@ impl Store {
         Ok(())
     }
     pub fn remove(&self, target: &CanonicalTarget) -> Result<bool, StagingError> {
-        let legacy = match self.legacy_path_for(target) {
-            Some(path) if path != self.path_for(target) => match fs::read(&path) {
-                Ok(bytes) => {
-                    let record: StagedRecord = serde_json::from_slice(&bytes)?;
-                    if canonical_target(&record.target)? != *target {
-                        return Err(StagingError::Replay(
-                            "staged record target does not match its storage key".into(),
-                        ));
-                    }
-                    Some(path)
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-                Err(e) => return Err(e.into()),
-            },
-            _ => None,
-        };
+        let canonical = self.path_for(target);
+        let legacy = self
+            .legacy_path_for(target)
+            .filter(|path| path != &canonical);
         let remove = |path: PathBuf| -> Result<bool, StagingError> {
             match fs::remove_file(path) {
                 Ok(()) => Ok(true),
@@ -277,7 +265,7 @@ impl Store {
                 Err(e) => Err(e.into()),
             }
         };
-        let canonical_removed = remove(self.path_for(target))?;
+        let canonical_removed = remove(canonical)?;
         let legacy_removed = match legacy {
             Some(path) => remove(path)?,
             None => false,
