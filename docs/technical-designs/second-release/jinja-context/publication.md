@@ -12,22 +12,22 @@ relationships:
 
 - Postplan URL: <https://t30jlda1nnbd.postplan.dev>
 - Draft ID: `t30jlda1nnbd`
-- Version: 4
+- Version: 5
 - Approved design revision:
-  `521b2677e52bea9f8f99751faa5788c9699aa8d6`
+  `45c61e123f9382e4ed3acc9f92e1b289c9f0fc2f`
 - Epic base and merge-base:
-  `dfe7ba017ebef525310db8b8ab4ead58fae2d147`
+  `a62061fdce74b6b1a743c70565dd9fbeec2413bb`
 - Portable source: `brief.source.html`
 - Built deck: `brief.deck.html`
 - Design SHA-256:
-  `ab5397c8cf87ce40c3b02d92e8c555541119a3e335145d3fd87eaecd8d0f699e`
+  `c5e7f92c66121e3f98eafb13575744fb629a95812419636ca42e16c060e98d6b`
 - Verification SHA-256:
-  `85dc04e0fbeb8ace6ec3027145f22380279888c54e4bb2eb2961c659aebe8ec2`
+  `a433161a525dd067a052da1ea5225ef6440b937a9b0d13e5de3574a55f63decc`
 - Brief source SHA-256:
-  `747aa32489096082d30f59beeb2b4dcda2ef6bfdeda5d716589dbfdf9f570b23`
+  `0b25c446cd96ca5db49432219686735e60c46cba9d9190b939826c1de61c87f4`
 - Built and published raw SHA-256:
-  `db36ddf4035a241989e8615ed6d7f531ea772c344316f2bf2319948f22496348`
-- Built and published raw bytes: 318401
+  `d8e842d6c253a048b78dc7984d75515a51accd86ac7cba5a24407b9adc73860b`
+- Built and published raw bytes: 318477
 - Published `Reveal.initialize` count: 1
 - Published horizontal positions: 14
 - Published slide count: 34
@@ -48,10 +48,12 @@ progress. References with the flag capture the fixed five once. Continue has no
 trust flag, live environment read, recheck, or access abort/retry. Mutable
 folders use the recorded result without a source or program identity refusal.
 
-The exact epic base contains configured presets, the hook-review contract, the
-Jinja-include design, and the canonical-target producer. Presets remain answer
-defaults and are not Jinja context. Configured start and replay keep winning
-`ConfigEntry` origins; ordinary direct callers keep flat `Seed.defaults`.
+The exact epic base contains the configured-presets implementation, the
+hook-review contract, the Jinja-include design, and the canonical-target
+producer. Presets remain answer defaults and are not Jinja context.
+`configured_defaults` uses winning source-bearing `ConfigEntry` origins in
+diagnostics, then returns flat `Resolution.defaults`; ordinary direct callers
+keep flat `Seed.defaults`. Context adds no second origin map or resolver.
 
 The include binding is revision
 `b87a5482b97e81524272bee1e526698c862754db`, final-design SHA-256
