@@ -14,15 +14,15 @@ relationships:
 - Draft ID: `t30jlda1nnbd`
 - Version: 5
 - Approved design revision:
-  `45c61e123f9382e4ed3acc9f92e1b289c9f0fc2f`
+  `6531546a113f672a10d47c19c54ed700b75c9165`
 - Epic base and merge-base:
   `a62061fdce74b6b1a743c70565dd9fbeec2413bb`
 - Portable source: `brief.source.html`
 - Built deck: `brief.deck.html`
 - Design SHA-256:
-  `c5e7f92c66121e3f98eafb13575744fb629a95812419636ca42e16c060e98d6b`
+  `50511d19f2a533b4a88e3e7a5b068159d4b5263f3516163a33cfa96d8a3c5fe4`
 - Verification SHA-256:
-  `a433161a525dd067a052da1ea5225ef6440b937a9b0d13e5de3574a55f63decc`
+  `6721d4953e7bee77ac59858e17a99ca37d2290a27ff8a6c2e49c1d1af689626b`
 - Brief source SHA-256:
   `0b25c446cd96ca5db49432219686735e60c46cba9d9190b939826c1de61c87f4`
 - Built and published raw SHA-256:
@@ -63,7 +63,7 @@ The canonical-target contract was approved at revision
 `72a564799b95ab1c187c913ac14ef14938f880bf2ab24ec337c03f887991457b`,
 and integrated at revision `dfe7ba017ebef525310db8b8ab4ead58fae2d147`,
 design SHA-256
-`9560139e48798429a95e06a695dea703817b673d2e18f19e25f3fe4a3efe9b`.
+`9560139e48798429a95e06a695dea703817b673d2e18f19e25f3fe4a3efe9b39`.
 Consumers receive only `CanonicalTarget` from `canonical_target(&Path) ->
 Result<CanonicalTarget, StagingError>`, inspect it through `as_path()`, and add
 no unchecked constructor or second normalizer.
