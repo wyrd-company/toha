@@ -2,7 +2,7 @@
 // relationships:
 //   implements: architecture
 // ---
-use crate::Dirs;
+use crate::{Dirs, cli::bundled};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -32,7 +32,7 @@ pub enum ResolveError {
     Ambiguous { name: String, matches: Vec<String> },
 }
 impl ResolveError {
-    fn text(error: impl ToString) -> Self {
+    pub(crate) fn text(error: impl ToString) -> Self {
         Self::Error(error.to_string())
     }
 }
@@ -202,10 +202,17 @@ pub fn resolve_template(
                 fetch_new(&address, config, dirs)
             }
         }
-        Address::Name(name) => {
-            let resolved = registry.resolve(name)?;
-            Ok(entry(resolved.formal_name, registry).expect("resolved registry entry"))
-        }
+        Address::Name(name) => match registry.resolve(name) {
+            Ok(resolved) => {
+                Ok(entry(resolved.formal_name, registry).expect("resolved registry entry"))
+            }
+            // The reserved demo answers only when nothing else does; NotFound(other)
+            // and every Ambiguous propagate exactly as today.
+            Err(registry::ResolveError::NotFound(n)) if n == bundled::RESERVED => {
+                bundled::resolve(dirs)
+            }
+            Err(e) => Err(e.into()),
+        },
     }
 }
 
@@ -221,7 +228,13 @@ pub fn formal_name(
     Ok(match &address {
         Address::Folder(folder) => folder.to_string_lossy().into_owned(),
         Address::Git { .. } => address.formal_name(&config.hosts),
-        Address::Name(name) => registry.resolve(name)?.formal_name,
+        // A reserved NotFound keeps the name, so `apply toha-demo` finds its own
+        // staged run.
+        Address::Name(name) => match registry.resolve(name) {
+            Ok(resolved) => resolved.formal_name,
+            Err(registry::ResolveError::NotFound(n)) if n == bundled::RESERVED => n,
+            Err(e) => return Err(e.into()),
+        },
     })
 }
 
@@ -262,6 +275,9 @@ pub fn resume_template(
                 ..found
             });
         }
+    }
+    if let Some(result) = bundled::resume(formal, commit, dirs) {
+        return result;
     }
     let mut address =
         source::parse(formal, &config.hosts, cwd, &dirs.home).map_err(ResolveError::text)?;

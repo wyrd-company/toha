@@ -1,4 +1,5 @@
 mod cli {
+    pub mod bundled;
     pub mod guidance;
     pub mod resolve;
     pub mod templates;

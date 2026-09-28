@@ -1,4 +1,7 @@
-use crate::{Dirs, cli::guidance};
+use crate::{
+    Dirs,
+    cli::{bundled, guidance},
+};
 use clap::{Args, Subcommand};
 use std::{
     fs,
@@ -514,8 +517,23 @@ fn list(ctx: &Context, filter: Option<Layer>, json: bool) -> Result<Vec<String>,
         }
         Some(Layer::Discovered) => Vec::new(),
     };
+    // D3: the unfiltered listing carries one read-only descriptor for the
+    // bundled demo, in both formats, but only when no registry entry occupies the
+    // reserved name — that is exactly when the fallback would resolve. It is
+    // presentation only: no persisted entry and no resolution source, marked
+    // `bundled` in `--json` with no registry layer, source, ref, or path, and
+    // resolution never consults it.
+    let show_bundled = filter.is_none()
+        && matches!(
+            ctx.registry.resolve(bundled::RESERVED),
+            Err(ResolveError::NotFound(_))
+        );
+    let row = bundled::listing_row();
     if json {
-        let values: Vec<_> = entries.iter().map(|e| serde_json::json!({ "formal_name": e.formal_name, "name": e.entry.name, "aliases": e.entry.aliases, "trusted": effective_trust(e), "layer": e.layer, "source": e.entry.source, "ref": e.entry.reference, "commit": e.entry.commit, "path": e.entry.path })).collect();
+        let mut values: Vec<_> = entries.iter().map(|e| serde_json::json!({ "formal_name": e.formal_name, "name": e.entry.name, "aliases": e.entry.aliases, "trusted": effective_trust(e), "layer": e.layer, "source": e.entry.source, "ref": e.entry.reference, "commit": e.entry.commit, "path": e.entry.path })).collect();
+        if show_bundled {
+            values.push(serde_json::json!({ "formal_name": row.formal, "name": row.short, "aliases": [], "trusted": row.trusted, "commit": bundled::commit(), "bundled": true }));
+        }
         return Ok(vec![
             serde_json::to_string(&values).map_err(CommandError::text)?,
         ]);
@@ -530,6 +548,9 @@ fn list(ctx: &Context, filter: Option<Layer>, json: bool) -> Result<Vec<String>,
             effective_trust(e)
         )
     }));
+    if show_bundled {
+        lines.push(format!("{}\t{}\t\t{}", row.formal, row.short, row.trusted));
+    }
     Ok(lines)
 }
 fn update(ctx: &Context, template: Option<String>) -> Result<Vec<String>, CommandError> {
