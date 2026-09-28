@@ -49,9 +49,11 @@ and privilege decisions. The pure engine accepts only domain values.
 
 The staged wire is separate from the live target carrier. The producer's sole
 factory and `Store::load(&CanonicalTarget)` remain the only target authority.
-Configured callers retain the origin-bearing `Resolution` through start and
-replay, while ordinary callers keep the flat `Seed.defaults` route. Context
-threading does not split defaults from their winning `ConfigEntry` origin.
+`configured_defaults` retains sole ownership of source-bearing `ConfigEntry`
+resolution and its winning-origin diagnostics. Configured callers carry the
+resulting `Resolution { defaults, warnings }` through start and replay, while
+ordinary callers keep flat `Seed.defaults`. Context threading adds no second
+origin map or resolver.
 
 ## Synthesis decision
 
@@ -92,7 +94,7 @@ constructor or consumer normalization.
   possible `debug()` calls in exchange for preserving supported syntax.
 - We accept a required `Seed.context` migration in exchange for explicit facts
   on every supported ordinary-caller path; configured start/replay use the
-  origin-bearing `Resolution` continuation.
+  existing flat `Resolution` continuation after origin-aware resolution.
 - We accept approved plaintext persistence of up to five optional values in
   exchange for deterministic later batches without ambient reads or a
   source-change refusal.

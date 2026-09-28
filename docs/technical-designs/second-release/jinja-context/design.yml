@@ -61,9 +61,11 @@ proposed-design:
     array, and boolean types. Reserve only those exact names. Presets remain
     flat defaults and are not Jinja context.
   configured-origin: >-
-    Configured start and replay retain the origin-bearing Resolution through
-    engine entry so winning ConfigEntry file/layer provenance is not flattened.
-    Ordinary direct callers keep the flat Seed.defaults route with context.
+    configured_defaults remains the sole consumer of source-bearing ConfigEntry
+    values and uses their winning file/layer origins in warnings and errors.
+    Configured start and replay carry the resulting Resolution with flat
+    defaults through engine entry. Ordinary direct callers keep flat
+    Seed.defaults with context; no second origin map is added.
   access: >-
     Direct/new apply uses explicit --trust or a current matching reviewed
     approval for an eligible named user/system entry. Stage requires its own
@@ -98,10 +100,11 @@ proposed-design:
     completed context.
   compatibility: >-
     Seed gains a required context for direct callers. Source-tree syntax errors
-    can surface at template load. Origin-bearing configured Resolution and flat
-    Seed defaults remain distinct. Existing mutable folder behavior, input
-    modality, now(), protocol metadata, configured defaults, hook review, and
-    producer target interfaces remain.
+    can surface at template load. Source-bearing ConfigEntry diagnostics,
+    Resolution with flat defaults and warnings, and flat Seed defaults remain
+    exact and distinct. Existing mutable folder behavior, input modality,
+    now(), protocol metadata, configured defaults, hook review, and producer
+    target interfaces remain.
   canonical-impact: >-
     Paired implementation updates template format/schema, the Jinja guide,
     command-line contract, interview protocol, and a registry reference. This

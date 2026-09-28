@@ -138,8 +138,9 @@ Architect corrections:
 - remove every program/source-identity replay gate;
 - preserve the approved `Plan::build(..., &CanonicalTarget)` signature rather
   than deriving a replacement target interface;
-- preserve origin-bearing configured `Resolution` through start/replay while
-  retaining flat `Seed.defaults` for ordinary callers;
+- preserve `configured_defaults` as the sole source-bearing `ConfigEntry`
+  resolver, carry its flat `Resolution { defaults, warnings }` through
+  start/replay, and retain flat `Seed.defaults` for ordinary callers;
 - avoid duplicate target and formal-name fields in the context wire;
 - give legacy records a behavior-preserving legacy context instead of
   inventing facts or requiring access recovery.

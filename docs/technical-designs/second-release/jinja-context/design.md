@@ -90,6 +90,12 @@ let context = InvocationContext::new(
 let interview = resolution.start_with_context(&template, now, context)?;
 ```
 
+`configured_defaults` consumes the winning source-bearing `ConfigEntry` values
+and authors origin-specific warnings and errors before it returns
+`Resolution { defaults, warnings }`. The returned defaults stay flat.
+`start_with_context` consumes that existing result into `Seed`; it is a caller
+continuation, not a second provenance store.
+
 For stage, `RequireStageGrant` with an environment need fails before the five
 values are read, before `Seed`, before `Interview::start`, before any question
 or message renders, and before any staged write. `CarryStageGrant` captures all
@@ -515,8 +521,14 @@ host adapter ─────────────────► HostFacts   
 originating driver ───────────► ExecutionFacts     │          │
 environment admission ────────► snapshot ──────────┘          │
                                                               ▼
-presets + ConfigEntry origins ─► Resolution ─► configured start ─► Pending
-flat defaults ───────────────────────────────► Seed ────────────┤
+presets + ConfigEntry origins ─► configured_defaults + diagnostics
+                                              │
+                                              ▼
+                         Resolution { flat defaults, warnings }
+                                              │
+                                              ▼
+                                    configured start ─► Pending
+flat defaults ───────────────────────────────► Seed ────┤
                                                                 │
                       StagedRecord ◄──── serialize/replay ──────┤
                                                                 ▼
@@ -580,11 +592,13 @@ being completed.
 
 Adding required `Seed.context` is a deliberate source break for ordinary crate
 callers, but `Seed.defaults` remains the flat application-default route.
-Configured start and replay keep the origin-bearing `Resolution` through engine
-entry; they do not coordinate or flatten a second origin map. The public
-interview state machine and apply result types otherwise remain. Existing
-`now()` behavior remains. Source-tree Jinja compilation moves to template load,
-so an attributable syntax/include error can occur earlier.
+Configured start and replay keep `Resolution { defaults, warnings }` as the
+continuation through engine entry. `configured_defaults` remains the sole place
+that consumes winning `ConfigEntry` file/layer origins for attributed warnings
+and errors; no second origin map is added. The public interview state machine
+and apply result types otherwise remain. Existing `now()` behavior remains.
+Source-tree Jinja compilation moves to template load, so an attributable
+syntax/include error can occur earlier.
 
 ## Canonical document changes for implementation
 
@@ -643,8 +657,9 @@ The paired implementation updates:
     and remain frozen.
 11. **Collisions and presets:** every exact authored collision is attributed; a
     neighboring `toha_` name loads; presets remain answer defaults only;
-    configured start/replay preserve winning `ConfigEntry` origin while the
-    ordinary `Seed.defaults` route stays flat.
+    configured start/replay preserve winning `ConfigEntry` origin in resolution
+    diagnostics while `Resolution.defaults` and ordinary `Seed.defaults` stay
+    flat.
 12. **Redaction and wire:** captured strings appear only in intended rendered
     output and staged JSON, never in `Debug`, errors, protocol metadata, or
     guidance. The wire has no target carrier, generic map, or access token.

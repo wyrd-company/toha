@@ -43,7 +43,7 @@ relationships:
   their transitive closure, and does not turn YAML `!include` or configuration
   fields into loader surfaces.
 
-The integration base is `dfe7ba017ebef525310db8b8ab4ead58fae2d147`.
+The integration base is `a62061fdce74b6b1a743c70565dd9fbeec2413bb`.
 
 ## Requirement matrix
 
@@ -74,8 +74,10 @@ The integration base is `dfe7ba017ebef525310db8b8ab4ead58fae2d147`.
 - Every current caller constructs `InvocationContext` before engine entry.
 - The ordinary `Seed.context` route reaches `Pending`, `Completed`, staged wire,
   and planning.
-- Configured start and replay retain the origin-bearing `Resolution` until
-  engine entry; only the ordinary caller route uses flat `Seed.defaults`.
+- `configured_defaults` remains the sole consumer of source-bearing
+  `ConfigEntry` values and uses their winning origins in diagnostics. Configured
+  start and replay carry its flat `Resolution { defaults, warnings }` through
+  engine entry; ordinary callers use flat `Seed.defaults`.
 - `Template::admit_environment` owns the need/decision/capture matrix; callers
   do not receive an analysis mask.
 - `FixedEnvironmentSource` exposes exactly five named optional values. It is
@@ -175,7 +177,7 @@ include design is present on its base.
 | `mutable_folder_no_flag_added_reference_stays_null` | Read the newly referenced ambient value or introduce an access gate. |
 | `mutable_folder_carried_grant_supplies_later_reference` | Drop an unreferenced captured field or introduce a source/program identity refusal. |
 | `canonical_target_factory_is_the_only_constructor` | Add an unchecked conversion or replace a consumer carrier with `PathBuf`. |
-| `configured_context_start_preserves_winning_origin` | Destructure `Resolution` into flat defaults before engine start. |
+| `configured_context_start_preserves_origin_diagnostics` | Bypass `configured_defaults` or replace a winning `ConfigEntry` origin before a configured-start error. |
 
 Each mutation must reach and fail the named assertion, then be restored before
 the full gate runs. A compile error or unrelated failing test is not a kill.
