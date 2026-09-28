@@ -103,3 +103,100 @@ See `verification.md`: caller usage traced against the sketch; every rubric
 criterion and inherited constraint checked against the design; failure cases and
 falsifiable scenarios enumerated; composition with the approved 1072 contract and
 the origin-bearing `Resolution` confirmed; the design holds.
+
+---
+
+# Round 2 — `flow` node vs action-bearing confirm (Bob's 19:06 request)
+
+Bob asked, at the Phase C checkpoint, for a structural alternative: *"instead of
+adding an action to `confirm` types, perhaps a new `flow` block with a when
+expression and action enum should be used instead."* This is a change request, not
+approval. Per the architect workflow, human pushback on the shape is Phase A
+evidence: `grounding-flow.md` re-grounds the flow-node semantics, and a fresh blind
+arena (`runner-task-flow.md`, capsules `flow-1/2/3`, `own-score-flow.md`,
+`cross-judge-flow.md`) developed the flow shape. Round-1 evidence (candidates 1–4,
+its cross-judge, own-score, and the synthesized confirm-action design preserved as
+`design-round1-confirm-action.md`) is retained intact.
+
+## Base (round 2)
+
+**flow-1 — the minimal standalone `flow` node.** Final design in `design.md`.
+Stop is a terminal `Interview::Ended` variant that `Plan::build` cannot consume
+(type-safe unplannability); dry-run is a `Disposition` on `Completed`; skip reuses
+the existing skip machinery; `skip: group` skips the *rest of the current group*
+from the node's position (`rest` skips the rest of the interview). The `confirm`
+type is not modified at all — ordinary confirms stay pure boolean by construction.
+
+## Reconciling the parent/judge disagreement
+
+Both the parent and the cross-judge **recommend the flow node over the round‑1
+action-bearing confirm**, and both **reject flow-3's stop-as-`Completed`-disposition**
+in favour of a type-safe terminal stop variant. The only disagreement is the base:
+the judge picked **flow-2** (28) for its group-attached guard; the parent scored
+flow-1 and flow-3 tied first (29.5) and flow-2 lower (28.5).
+
+The judge's case for flow-2 rests almost entirely on one claim: a group-attached
+`{ skip: group }` makes group-skip *structural and move-safe*, addressing the
+grounding Risk about scope silently changing output. Examining the semantics
+dissolves that advantage:
+
+- A `group:` node **already carries its own `when`**, which skips the entire group
+  when false. "Skip this whole group on a condition" is therefore already
+  expressible today with `group.when` — flow-2's group-attached `{ skip: group }`
+  largely **duplicates** it (flow-2's own rationale flags the
+  `group.flow {skip: group}` vs `group.when: false` overlap as an open question).
+- The task's `skip: group` outcome is "skip the **rest of the current** group from
+  here" — a mid-group early-out. That is *inherently positional* and is exactly
+  flow-1's primitive; a positional node that skips the rest of its enclosing group
+  is doing precisely what it says, not silently changing meaning.
+
+So the judge's headline benefit is mostly redundant surface, and flow-1's
+positional `skip: group` is the correct, task-specified primitive — not the
+fragility the judge scored it as. The parent therefore keeps **flow-1 as the base**
+and defuses the scope concern by defining `skip: group` precisely in the design
+(and spelling whole-group conditional skip as `group.when`). Group-attachment is
+surfaced as an **optional decision** (D-attach), not baked in.
+
+## Grafts (folded into `design.md`)
+
+- **From flow-3:** the `Completed::step() -> Step::{Plan{apply}, …}` routing seam so
+  every driver routes proceed-vs-dry-run through one method (adapted: stop stays the
+  `Ended` variant, handled before a `Completed` exists); the explicit same-batch
+  **readiness** argument (a flow node whose `when` reads a still-pending answer
+  blocks and fires only after it commits — no batch race); and the idempotent
+  monotone dry-run raise for deterministic multi-flow-node replay.
+- **From flow-2:** the group-attached guard, offered as an **optional** affordance
+  (decision D-attach) with the explicit note that conditional whole-group skip is
+  already `group.when`; and its scenario proving positional-vs-structural scope,
+  reused to document the `skip: group` semantics unambiguously.
+- **From flow-1 (base):** the minimal `flow: <action>` + sibling `when`/`label`
+  spelling that mirrors `message: <text>`, and the type-safe `Ended` stop.
+
+## Rejections (with reason)
+
+- **flow-3's stop-as-`Completed`-disposition** — rejected (parent and judge agree):
+  it makes "cannot be planned" a runtime discipline across ~6 call sites rather than
+  a type fact. Keep the terminal `Ended` variant.
+- **flow-2 as the base / baking in group-attachment** — rejected: the group-attached
+  `{ skip: group }` largely duplicates the existing `group.when`; it adds surface and
+  a real overlap for little unique value. Offered as an optional decision instead.
+- **The round‑1 action-bearing-confirm shape as the mechanism** — set aside per
+  Bob's "instead" and the merits below; preserved as `design-round1-confirm-action.md`
+  and summarized in the design's Alternatives.
+
+## Shape recommendation to Bob (headline decision)
+
+Adopt the **`flow` node**. It is the cleaner engine fit (reuses `when`, the node
+walk, `visited`, and the skip machinery verbatim; leaves `confirm` untouched so
+ordinary confirms carry zero regression risk), strictly more expressive (the trigger
+is any expression over prior answers/computed values, not one confirm's boolean),
+and free of the same-batch race (readiness gating). Its one cost is a single
+indirection for the simplest "no → stop" (the trigger reads one node away from the
+confirm), which both reviewers judge worth it. The round‑1 confirm-action shape
+remains the more *locally obvious* form for that simplest case only.
+
+## Verification
+
+See `verification.md` (rewritten for the flow-node design): caller usage traced
+against the sketch, every criterion and inherited constraint checked, failure cases
+enumerated, predecessor composition confirmed. The design holds.
