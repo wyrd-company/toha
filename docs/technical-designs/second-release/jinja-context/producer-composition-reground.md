@@ -21,7 +21,7 @@ design SHA-256
 `9560139e48798429a95e06a695dea703817b673d2e18f19e25f3fe4a3efe9b39`.
 Its implementation is integrated at epic revision
 `8a19269d78f6da0738edb17e56310621f143923d`. The current design review base
-and branch merge-base are `1e663bd661304698ebd10219c8c52d78020a189e`.
+and branch merge-base are `d33245065f80e3ed9a8c75ea6526e8a9f9386f21`.
 
 The integrated target interface is
 `canonical_target(&Path) -> Result<CanonicalTarget, StagingError>`, with

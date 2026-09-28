@@ -18,14 +18,14 @@ relationships:
 - Accepted producer integration revision:
   `8a19269d78f6da0738edb17e56310621f143923d`
 - Current design review base and merge-base:
-  `1e663bd661304698ebd10219c8c52d78020a189e`
+  `d33245065f80e3ed9a8c75ea6526e8a9f9386f21`
 - Portable source: `brief.source.html`
 - Built deck: `brief.deck.html`
 - Design SHA-256: `4627b6e93e1170f74025b1d191f548354a7bd2a18a0e69f9ddc202613389a73c`
 - Design YAML SHA-256: `db72b87d054a4aa97fee59fd71884ce5a9503d9fe4ee7bda657b146e4a4285b7`
-- Verification SHA-256: `998035d18f9932d1c94b8cb623682b49da1f32a57f769c2f37eca3d02f26f6d5`
+- Verification SHA-256: `7df29ddf863a541d3436f5c0f898fb0e89068b03f8c80b1028cfbac2f8e46c7e`
 - Rationale SHA-256: `50f96cbbc32902c76d7358ba3e521363a8afe824ac6a1d85d70f678acae86896`
-- Producer composition re-ground SHA-256: `ba33576a7c7d5285c89b93123379ed0c907967b6a2607bae58c2e9ad00a260ed`
+- Producer composition re-ground SHA-256: `f78af96ae4697c324340dde06164b348159b1e5d61118ed76f96728bdf733086`
 - Brief source SHA-256: `7f87c3ee127ce1629e1bc7e9db731b72b30c0fe9eb2a6c0ce8588d9d4104ad0f`
 - Built and published raw SHA-256: `02357d17140b4ac210143e10bdb295cf13318fd39c9db17df1ee7580f454f435`
 - Built and published raw bytes: 319927

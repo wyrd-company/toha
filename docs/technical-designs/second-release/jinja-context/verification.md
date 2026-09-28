@@ -51,7 +51,7 @@ relationships:
 The producer implementation is integrated at
 `8a19269d78f6da0738edb17e56310621f143923d`. The current design review base and
 task branch merge-base are both
-`1e663bd661304698ebd10219c8c52d78020a189e`, which retains that implementation.
+`d33245065f80e3ed9a8c75ea6526e8a9f9386f21`, which retains that implementation.
 The source contains the producer-owned opaque
 `CanonicalTarget(PathBuf)`, private `Resolution.defaults` of
 `ResolvedDefault { raw, origin }`, `DefaultBankEntry::Configured`, and the
