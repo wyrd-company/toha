@@ -114,7 +114,18 @@ was committed.
 
 ## Gates
 
-The package must pass Markdown/YAML checks, `task ci`, design-schema validation
-where available, clean-diff review, deck section assertions, published-byte
-verification, one `Reveal.initialize`, and visual review of every slide before
-the Phase C revision is recorded.
+Completed before checkpoint publication:
+
+- `rumdl check`: pass for every Markdown artifact.
+- `ryl check`: pass for `design.yml`.
+- `git diff --check`: pass.
+- Required design-brief sections: present.
+- Local slide count: 23; every slide visually inspected at 1280×720.
+- Browser bounds check: no bottom, left, or right overflow on any slide.
+- Dense seam, behavior, and decision slides: inspected at original resolution.
+- Local built deck equals published raw deck byte-for-byte.
+- Published wrapper `Reveal.initialize`: exactly 1.
+- Published URL and hashes: recorded in `publication.md`.
+
+The repository gate `task ci` passed at the publication checkpoint. Bob's
+explicit Phase C approval remains pending.
