@@ -106,7 +106,7 @@ the origin-bearing `Resolution` confirmed; the design holds.
 
 ---
 
-# Round 2 — `flow` node vs action-bearing confirm (Bob's 19:06 request)
+## Round 2 — `flow` node vs action-bearing confirm (Bob's 19:06 request)
 
 Bob asked, at the Phase C checkpoint, for a structural alternative: *"instead of
 adding an action to `confirm` types, perhaps a new `flow` block with a when
@@ -118,7 +118,7 @@ arena (`runner-task-flow.md`, capsules `flow-1/2/3`, `own-score-flow.md`,
 its cross-judge, own-score, and the synthesized confirm-action design preserved as
 `design-round1-confirm-action.md`) is retained intact.
 
-## Base (round 2)
+### Base (round 2)
 
 **flow-1 — the minimal standalone `flow` node.** Final design in `design.md`.
 Stop is a terminal `Interview::Ended` variant that `Plan::build` cannot consume
@@ -127,7 +127,7 @@ the existing skip machinery; `skip: group` skips the *rest of the current group*
 from the node's position (`rest` skips the rest of the interview). The `confirm`
 type is not modified at all — ordinary confirms stay pure boolean by construction.
 
-## Reconciling the parent/judge disagreement
+### Reconciling the parent/judge disagreement
 
 Both the parent and the cross-judge **recommend the flow node over the round‑1
 action-bearing confirm**, and both **reject flow-3's stop-as-`Completed`-disposition**
@@ -157,7 +157,7 @@ and defuses the scope concern by defining `skip: group` precisely in the design
 (and spelling whole-group conditional skip as `group.when`). Group-attachment is
 surfaced as an **optional decision** (D-attach), not baked in.
 
-## Grafts (folded into `design.md`)
+### Grafts (folded into `design.md`)
 
 - **From flow-3:** the `Completed::step() -> Step::{Plan{apply}, …}` routing seam so
   every driver routes proceed-vs-dry-run through one method (adapted: stop stays the
@@ -172,7 +172,7 @@ surfaced as an **optional decision** (D-attach), not baked in.
 - **From flow-1 (base):** the minimal `flow: <action>` + sibling `when`/`label`
   spelling that mirrors `message: <text>`, and the type-safe `Ended` stop.
 
-## Rejections (with reason)
+### Rejections (with reason)
 
 - **flow-3's stop-as-`Completed`-disposition** — rejected (parent and judge agree):
   it makes "cannot be planned" a runtime discipline across ~6 call sites rather than
@@ -184,7 +184,7 @@ surfaced as an **optional decision** (D-attach), not baked in.
   Bob's "instead" and the merits below; preserved as `design-round1-confirm-action.md`
   and summarized in the design's Alternatives.
 
-## Shape recommendation to Bob (headline decision)
+### Shape recommendation to Bob (headline decision)
 
 Adopt the **`flow` node**. It is the cleaner engine fit (reuses `when`, the node
 walk, `visited`, and the skip machinery verbatim; leaves `confirm` untouched so
@@ -195,7 +195,7 @@ indirection for the simplest "no → stop" (the trigger reads one node away from
 confirm), which both reviewers judge worth it. The round‑1 confirm-action shape
 remains the more *locally obvious* form for that simplest case only.
 
-## Verification
+### Verification
 
 See `verification.md` (rewritten for the flow-node design): caller usage traced
 against the sketch, every criterion and inherited constraint checked, failure cases
@@ -203,7 +203,7 @@ enumerated, predecessor composition confirmed. The design holds.
 
 ---
 
-# Approval closure (2026-09-28)
+## Approval closure (2026-09-28)
 
 Bob approved the flow-node design and pre-approved the `abort` disposition either way
 (verbatim recorded on the task, kept separate from interpretation). Closure actions:

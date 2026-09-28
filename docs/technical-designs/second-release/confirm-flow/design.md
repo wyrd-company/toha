@@ -498,6 +498,7 @@ to today; the `ended` document (with `kind`) is new and additive.
 ## Behaviors to prove (falsifiable)
 
 **Declaration / load**
+
 1. `flow: teleport` (unknown action) → load error naming the allowed set (incl. `abort`).
 2. `{ skip: group }` on a top-level flow node → load error naming `{ skip: rest }`.
 3. `flow` beside `id`/`type` → load error (flow is a node kind).
