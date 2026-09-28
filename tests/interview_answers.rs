@@ -1687,6 +1687,72 @@ fn template_fault_after_a_skipped_invalid_answer_is_the_error() {
         "{stderr}"
     );
     assert!(!stderr.contains("style"), "{stderr}");
+    assert_eq!(submissions(state.path(), target.path()), 0);
+
+    let (code, result) = continue_with(
+        state.path(),
+        target.path(),
+        json!({
+            "kind": "plain",
+            "boom": false,
+            "style": 1,
+            "title": "good",
+            "deep": "good",
+            "last": "done"
+        }),
+    );
+    assert_eq!(code, 0, "{result}");
+    assert_eq!(
+        result["messages"],
+        json!([
+            "warning: answer for \"style\" was not used: the question was skipped",
+            "fine"
+        ])
+    );
+    assert_eq!(submissions(state.path(), target.path()), 1);
+}
+
+#[test]
+fn rejected_probe_leaks_no_message_or_hook_before_the_corrected_document() {
+    let (_folder, template) = inline(
+        "name: sample\ninterview:\n  - { id: kind, type: select, prompt: Kind?, options: [plain, fancy], required: true }\n  - { id: style, type: text, prompt: Style?, when: \"kind == 'fancy'\", validate: { regex: '^[a-z]+$' } }\n  - message: once\n  - { hook: { run: [tool] } }\n  - { id: title, type: text, prompt: Title?, required: true, validate: { regex: '^[a-z]+$' } }\n  - { id: last, type: text, prompt: Last?, required: true }\n",
+    );
+    let Interview::Asking(pending) = Interview::start(&template, seed()).unwrap() else {
+        panic!("expected questions")
+    };
+    let Err(AnswerError::Rejected {
+        pending,
+        rejections,
+    }) = pending
+        .answer(protocol::parse_answers(r#"{"kind":"plain","style":1,"title":"NO"}"#).unwrap())
+    else {
+        panic!("expected rejection")
+    };
+    assert_eq!(
+        rejections
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ["title: must match ^[a-z]+$"]
+    );
+
+    let Interview::Complete(completed) = pending
+        .answer(
+            protocol::parse_answers(r#"{"kind":"plain","style":1,"title":"good","last":"done"}"#)
+                .unwrap(),
+        )
+        .unwrap()
+    else {
+        panic!("expected completion")
+    };
+    assert_eq!(
+        completed.messages,
+        [
+            "warning: answer for \"style\" was not used: the question was skipped",
+            "once"
+        ]
+    );
+    assert_eq!(completed.hooks.len(), 1);
 }
 
 #[test]
