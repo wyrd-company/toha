@@ -46,11 +46,12 @@ pub fn plain_formal(formal: &str) -> &str {
 
 /// The form of a formal name that `command` accepts. `stage`, `apply`, and
 /// `templates add` read a `<TEMPLATE>` or address argument, so a folder is
-/// named by its drive path; `templates remove`, `update`, and `alias` look up
-/// the formal name as the registry stores it.
+/// named by its drive path; `templates remove`, `update`, `alias`, `trust`, and
+/// `untrust` look up the formal name as the registry stores it.
 pub fn formal_for<'a>(command: &str, formal: &'a str) -> &'a str {
     match command {
-        "templates remove" | "templates update" | "templates alias" => formal,
+        "templates remove" | "templates update" | "templates alias" | "templates trust"
+        | "templates untrust" => formal,
         _ => plain_formal(formal),
     }
 }
@@ -658,9 +659,9 @@ pub fn dry_run_needs_trust(
     )
 }
 
-/// `lead` followed by the command with `--trust`, and the `templates add
-/// --trust` command for an installed template. When `changed`, a leading line
-/// states that the hooks changed since approval.
+/// `lead` followed by the command with `--trust`, and the `templates trust`
+/// command that approves an installed template for every run. When `changed`, a
+/// leading line states that the hooks changed since approval.
 fn trust_lines(
     lead: &str,
     invocation: &Invocation,
@@ -680,11 +681,46 @@ fn trust_lines(
         lines.push(format!(
             "to trust {formal} for every run: {}",
             toha(
-                "templates add",
-                &["--trust".into()],
-                &[value(formal_for("templates add", formal))]
+                "templates trust",
+                &[],
+                &[value(formal_for("templates trust", formal))]
             )
         ));
+    }
+    lines.join("\n")
+}
+
+/// `templates trust` could not read the installed executable surface of
+/// `formal`, so it cannot be approved.
+pub fn surface_unreadable(formal: &str, error: &toha::ReviewError) -> String {
+    format!("cannot read the installed hooks of {formal}: {error}")
+}
+
+/// The installed hooks a `templates trust` grant approved, echoed on standard
+/// error as an audit of what was approved. Presentation only: it compares
+/// nothing and does not decide trust.
+pub fn approved_surface(surface: &toha::HookSurface) -> String {
+    let mut lines = vec!["approved surface:".to_string()];
+    for (index, view) in surface.views().iter().enumerate() {
+        // An interview hook node wraps its command in `hook`; a top-level hook
+        // is the command itself.
+        let command = view.node.get("hook").unwrap_or(&view.node);
+        let mut parts = Vec::new();
+        if let Some(script) = command.get("script").and_then(serde_json::Value::as_str) {
+            parts.push(format!("script: {script}"));
+        }
+        if let Some(run) = command.get("run") {
+            parts.push(format!("run: {run}"));
+        }
+        if let Some(args) = command.get("args") {
+            parts.push(format!("args: {args}"));
+        }
+        let detail = if parts.is_empty() {
+            command.to_string()
+        } else {
+            parts.join("  ")
+        };
+        lines.push(format!("  hook {}  {detail}", index + 1));
     }
     lines.join("\n")
 }
@@ -796,7 +832,18 @@ pub fn ambiguous(name: &str, matches: &[String], retry: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Shell, formal_for, path_value, plain_formal, word_for};
+    use super::{Shell, formal_for, path_value, plain_formal, surface_unreadable, word_for};
+
+    #[test]
+    fn surface_unreadable_names_the_template_and_the_error() {
+        let error = toha::ReviewError::Escape(std::path::PathBuf::from("/outside/x.sh"));
+        let message = surface_unreadable("acme", &error);
+        assert!(
+            message.starts_with("cannot read the installed hooks of acme:"),
+            "{message}"
+        );
+        assert!(message.contains("escapes the template root"), "{message}");
+    }
 
     #[test]
     fn each_command_gets_the_formal_name_form_it_accepts() {
@@ -804,7 +851,13 @@ mod tests {
         for command in ["stage", "apply", "templates add"] {
             assert_eq!(formal_for(command, extended), r"D:\a\template", "{command}");
         }
-        for command in ["templates remove", "templates update", "templates alias"] {
+        for command in [
+            "templates remove",
+            "templates update",
+            "templates alias",
+            "templates trust",
+            "templates untrust",
+        ] {
             assert_eq!(formal_for(command, extended), extended, "{command}");
         }
         assert_eq!(

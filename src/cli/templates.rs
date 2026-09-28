@@ -68,6 +68,16 @@ enum TemplatesCommand {
         #[arg(short, long, conflicts_with_all=["template", "alias"], value_name = "ALIAS")]
         remove: Option<String>,
     },
+    /// Approve the installed hooks of a template so its apply runs them.
+    Trust {
+        /// Formal, short, or alias name of an installed template.
+        template: String,
+    },
+    /// Revoke approval of a template's hooks.
+    Untrust {
+        /// Formal, short, or alias name of an installed template.
+        template: String,
+    },
 }
 #[derive(Debug)]
 pub enum CommandError {
@@ -658,6 +668,46 @@ fn remove(ctx: &Context, template: &str) -> Result<Vec<String>, CommandError> {
     }
     Ok(vec![format!("removed {formal}")])
 }
+/// Approve the current installed executable surface of an installed template.
+/// Reads only the installed folder — never fetches, reclones, or moves the
+/// commit — and writes the approval to the user registry alone.
+fn trust(ctx: &Context, name: &str) -> Result<Vec<String>, CommandError> {
+    let (formal, entry) = ctx.resolve_user(name)?;
+    let template = Template::load(&entry.path).map_err(CommandError::text)?;
+    let surface = toha::HookSurface::of(&template)
+        .map_err(|error| CommandError::text(guidance::surface_unreadable(&formal, &error)))?;
+    let live = surface.digest();
+    // Idempotency is defined through the one trust rule: a surface that changed
+    // since approval is not "already trusted"; the command holds no `==`.
+    if matches!(
+        toha::evaluate_trust(entry.approval.as_ref(), &live),
+        toha::Trust::Trusted
+    ) {
+        return Ok(vec![format!("already trusted {formal}")]);
+    }
+    let next = ctx
+        .user
+        .set_approval(&formal, Some(live))
+        .map_err(CommandError::text)?;
+    ctx.write(&next)?;
+    eprintln!("{}", guidance::approved_surface(&surface));
+    Ok(vec![format!("trusted {formal}")])
+}
+/// Revoke approval of an installed template's hooks. Reads nothing on disk, so
+/// it cannot fail on the installed surface; it clears the approval and persists
+/// a denial so a lower registry layer's approval cannot reappear.
+fn untrust(ctx: &Context, name: &str) -> Result<Vec<String>, CommandError> {
+    let (formal, entry) = ctx.resolve_user(name)?;
+    if entry.approval.is_none() && entry.denied {
+        return Ok(vec![format!("already untrusted {formal}")]);
+    }
+    let next = ctx
+        .user
+        .set_approval(&formal, None)
+        .map_err(CommandError::text)?;
+    ctx.write(&next)?;
+    Ok(vec![format!("untrusted {formal}")])
+}
 fn valid_alias(alias: &str) -> bool {
     !alias.is_empty()
         && alias.split('-').all(|p| {
@@ -731,6 +781,8 @@ pub fn retry(args: &TemplatesArgs) -> impl Fn(&str) -> String + use<> {
         TemplatesCommand::Update { .. } => ("templates update", None),
         TemplatesCommand::Remove { .. } => ("templates remove", None),
         TemplatesCommand::Alias { alias, .. } => ("templates alias", alias.clone()),
+        TemplatesCommand::Trust { .. } => ("templates trust", None),
+        TemplatesCommand::Untrust { .. } => ("templates untrust", None),
         TemplatesCommand::Add { .. } | TemplatesCommand::List { .. } => ("templates list", None),
     };
     move |formal| {
@@ -772,5 +824,7 @@ pub fn run(args: TemplatesArgs, dirs: Dirs, cwd: &Path) -> Result<Vec<String>, C
             alias: name,
             remove,
         } => alias(&ctx, template, name, remove),
+        TemplatesCommand::Trust { template } => trust(&ctx, &template),
+        TemplatesCommand::Untrust { template } => untrust(&ctx, &template),
     }
 }

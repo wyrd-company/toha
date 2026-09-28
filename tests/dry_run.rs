@@ -237,7 +237,7 @@ fn dry_run_of_an_installed_untrusted_template_also_names_registry_trust() {
     );
     assert_eq!(
         support::suggested(&String::from_utf8_lossy(&output.stderr), "for every run"),
-        ["templates", "add", "--trust", &template]
+        ["templates", "trust", &template]
     );
 }
 

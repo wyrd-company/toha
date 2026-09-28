@@ -110,7 +110,7 @@ fn untrusted_hooks_of_installed_template_name_registry_trust() {
                 "toha apply --answers {answers} --trust hooks-untrusted {}",
                 case.target()
             ),
-            format!("toha templates add --trust {template}"),
+            format!("toha templates trust {template}"),
         ],
     );
 }
