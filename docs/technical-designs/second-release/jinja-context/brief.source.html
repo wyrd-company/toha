@@ -1,0 +1,367 @@
+<!--
+relationships:
+  realizes: toha
+  references:
+    - template-format
+    - interview-protocol
+    - template-registry
+-->
+<section id="title">
+  <p class="kicker">Toha 0.2.0 · Design brief · Phase C checkpoint</p>
+  <h1>One Jinja context from interview to plan</h1>
+  <p>Templates receive exact target, identity, host, execution, and five trust-gated values through one replay-stable snapshot.</p>
+  <p>
+    <span class="tag">role: architect</span>
+    <span class="tag">paired implementation: 1060</span>
+    <span class="tag warn">BOB DECISION REQUIRED</span>
+    <span class="tag">design only</span>
+  </p>
+  <p class="muted">Prepared from five blind candidates, independent scoring, and the integrated configured-default and hook-review contracts. No runtime or shared contract was edited.</p>
+</section>
+
+<section id="task">
+  <h2>Task</h2>
+  <p>Define Toha-owned Jinja variables once, then make terminal, headless, staged/resumed, and direct crate callers observe the same typed context.</p>
+  <div class="two">
+    <div>
+      <h3>What templates get</h3>
+      <ul>
+        <li>Canonical target basename</li>
+        <li>Short name, formal name, aliases, source</li>
+        <li>OS, architecture, Linux distribution facts</li>
+        <li>Admin and originating interactive status</li>
+        <li>Five optional values behind trust</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Success</h3>
+      <ul>
+        <li>One pure interview engine</li>
+        <li>One projection for interview and planning</li>
+        <li>Deterministic staged replay</li>
+        <li>No whole-environment access</li>
+        <li>No second target normalizer</li>
+      </ul>
+    </div>
+  </div>
+  <p><a href="https://github.com/wyrd-company/toha">Toha repository</a> · <a href="https://github.com/wyrd-company/toha/pull/8">0.2.0 release pull request</a></p>
+</section>
+
+<section id="pre-mortem">
+  <h2>Pre-mortem — the build failed. Why?</h2>
+  <ul>
+    <li><strong>Interview and generated files disagree.</strong> The context was rebuilt twice. <span class="muted">One snapshot and one projection remove the second policy.</span></li>
+    <li><strong>A resumed interview changes branches.</strong> Host or environment values were re-read. <span class="muted">Staging stores the original snapshot.</span></li>
+    <li><strong>Revoked trust still exposes stored values.</strong> Replay skipped the live gate. <span class="muted">Current access is required before any replay.</span></li>
+    <li><strong>A context name silently shadows template data.</strong> Merge order became policy. <span class="muted">Exact collisions fail at template load.</span></li>
+    <li><strong>Config presets become a second Jinja namespace.</strong> <span class="muted">Presets still flatten only into question defaults.</span></li>
+    <li><strong>Target spellings disagree.</strong> Planning used the raw CLI path. <span class="muted">The existing canonical result is used end to end.</span></li>
+  </ul>
+</section>
+
+<section id="seams">
+  <h2>Module and seam</h2>
+  <pre><code class="language-text">registry/config + resolver --&gt; SelectedTemplate --┐
+canonical_target result --------------------------┤
+CLI host adapter -----------&gt; HostFacts           ├--&gt; InvocationContext
+terminal driver ------------&gt; ExecutionFacts      │          │
+effective trust ------------&gt; EnvironmentAccess --┘          │
+                                                              v
+presets --&gt; Resolution { defaults, warnings } --&gt; Seed --&gt; Pending
+                                                              │
+                    StagedRecord &lt;---- serialize/replay -------┤
+                                                              v
+                                                          Completed
+                                                              │
+template data + answers + now + InvocationContext --&gt; one projection
+                                           │                  │
+                                           └---- interview ---┴---&gt; Plan</code></pre>
+  <p><strong>Depth:</strong> callers supply one domain value. The context module hides 17 projections, fallbacks, collision policy, redaction, and replay representation.</p>
+</section>
+
+<section id="interface">
+  <section>
+    <h2>Public interfaces expected — context</h2>
+    <pre><code class="language-rust">pub struct Seed {
+    pub now: Zoned,
+    pub defaults: IndexMap&lt;Id, RawAnswer&gt;,
+    pub context: InvocationContext,
+}
+
+pub struct InvocationContext {
+    target: PathBuf,
+    selected: SelectedTemplate,
+    host: HostFacts,
+    execution: ExecutionFacts,
+    environment: EnvironmentAccess,
+}</code></pre>
+    <p class="muted">The target is the exact existing <code>canonical_target</code> result. The engine performs no ambient read.</p>
+  </section>
+  <section>
+    <h2>Public interfaces expected — planning</h2>
+    <pre><code class="language-rust">impl Plan {
+    pub fn build(
+        template: &amp;Template,
+        completed: &amp;Completed,
+        canonical_target: &amp;Path,
+    ) -&gt; Result&lt;Self, PlanError&gt;;
+}
+
+// Before rendering:
+PlanError::ContextTarget { expected, actual }</code></pre>
+    <p>The command passes the same canonical value to context, planning, and apply. The comparison does not normalize again.</p>
+  </section>
+  <section>
+    <h2>Command surface expected</h2>
+    <pre><code class="language-sh">toha apply --trust sample ./output
+toha stage --trust sample ./output --async
+toha continue --trust ./output answers.json
+toha apply --trust ./output</code></pre>
+    <p><code>apply</code> keeps <code>--trust</code>. <code>stage</code> and <code>continue</code> gain the same spelling because they evaluate Jinja before apply.</p>
+  </section>
+</section>
+
+<section id="data">
+  <section>
+    <h2>Data structures expected</h2>
+    <pre><code class="language-rust">pub struct SelectedTemplate {
+    formal_name: String,
+    aliases: Vec&lt;String&gt;,      // effective registry order
+    source: Option&lt;String&gt;,    // selected registry Entry.source
+}
+
+pub struct HostFacts {
+    os: String,
+    arch: String,
+    os_name: Option&lt;String&gt;,
+    os_id: Option&lt;String&gt;,
+    os_id_like: Vec&lt;String&gt;,
+}
+
+pub struct ExecutionFacts {
+    is_admin: bool,
+    is_interactive: bool,
+}</code></pre>
+  </section>
+  <section>
+    <h2>Five values — and no environment map</h2>
+    <pre><code class="language-rust">pub enum EnvironmentAccess {
+    Denied,
+    Granted(TrustedEnvironment),
+}
+
+pub struct TrustedEnvironment {
+    user: Option&lt;String&gt;,
+    hostname: Option&lt;String&gt;,
+    editor: Option&lt;String&gt;,
+    shell: Option&lt;String&gt;,
+    visual: Option&lt;String&gt;,
+}</code></pre>
+    <p>Denied access performs no gated read and projects five <code>null</code> values. Debug output is redacted.</p>
+  </section>
+  <section>
+    <h2>Concrete template example</h2>
+    <pre><code class="language-jinja">{% if toha_is_interactive %}
+Preparing {{ toha_template_name }} for {{ toha_target_name }}.
+{% endif %}
+
+{% if toha_env_editor is not none %}
+editor = {{ toha_env_editor }}
+{% endif %}</code></pre>
+    <p class="muted">The same names work in prompts, defaults, conditions, computed values, messages, hooks, paths, file bodies, rules, and apply messages.</p>
+  </section>
+  <section>
+    <h2>Exact identity and target values</h2>
+    <table>
+      <thead><tr><th>Name</th><th>Type</th><th>Example / absence</th></tr></thead>
+      <tbody>
+        <tr><td><code>toha_target_name</code></td><td>string or null</td><td><code>output</code>; root/non-Unicode → null</td></tr>
+        <tr><td><code>toha_template_name</code></td><td>string</td><td>loaded short name</td></tr>
+        <tr><td><code>toha_template_formal_name</code></td><td>string</td><td>stable selected identity</td></tr>
+        <tr><td><code>toha_template_aliases</code></td><td>string[]</td><td>registry order; none → []</td></tr>
+        <tr><td><code>toha_template_source</code></td><td>string or null</td><td>selected registry source; no entry → null</td></tr>
+      </tbody>
+    </table>
+  </section>
+  <section>
+    <h2>Exact host and execution values</h2>
+    <table>
+      <thead><tr><th>Names</th><th>Type</th><th>Fallback</th></tr></thead>
+      <tbody>
+        <tr><td><code>toha_host_os</code>, <code>toha_host_arch</code></td><td>string</td><td>Rust target vocabulary</td></tr>
+        <tr><td><code>toha_host_os_name</code>, <code>toha_host_os_id</code></td><td>string or null</td><td>missing/malformed → null</td></tr>
+        <tr><td><code>toha_host_os_id_like</code></td><td>string[]</td><td>missing/malformed → []</td></tr>
+        <tr><td><code>toha_is_admin</code></td><td>boolean</td><td>unknown → false</td></tr>
+        <tr><td><code>toha_is_interactive</code></td><td>boolean</td><td>originating driver; replay-stable</td></tr>
+      </tbody>
+    </table>
+    <p><a href="https://www.freedesktop.org/software/systemd/man/latest/os-release.html">os-release field reference</a></p>
+  </section>
+</section>
+
+<section id="tested">
+  <section>
+    <h2>Behaviors to prove — contract</h2>
+    <table>
+      <thead><tr><th>Test group</th><th>Proves</th><th>Fails if</th></tr></thead>
+      <tbody>
+        <tr><td>B1 Every surface</td><td>one snapshot reaches all render locations</td><td>interview and plan differ</td></tr>
+        <tr><td>B2 Identity</td><td>formal/alias/source types stay exact</td><td>alias spelling becomes identity</td></tr>
+        <tr><td>B3 Target</td><td>one canonical basename and no trailing separator</td><td>raw CLI spelling leaks back</td></tr>
+        <tr><td>B4 Host</td><td>partial and malformed os-release fall back</td><td>metadata failure aborts a run</td></tr>
+        <tr><td>B5 Execution</td><td>terminal/headless/staged/direct booleans are exact</td><td>resume mode changes old branches</td></tr>
+        <tr><td>B6 Denied access</td><td>no read; five nulls</td><td>a spy observes a gated read</td></tr>
+        <tr><td>B7 Granted access</td><td>only approved paths expose only five values</td><td>another environment key crosses</td></tr>
+      </tbody>
+    </table>
+  </section>
+  <section>
+    <h2>Behaviors to prove — replay and safety</h2>
+    <table>
+      <thead><tr><th>Test group</th><th>Proves</th><th>Fails if</th></tr></thead>
+      <tbody>
+        <tr><td>B8 Replay authorization</td><td>recorded values + current grant</td><td>revoked approval still replays</td></tr>
+        <tr><td>B9 Redaction</td><td>values stay out of debug/errors/protocol</td><td>a sentinel appears</td></tr>
+        <tr><td>B10 Collisions</td><td>17 exact names fail at load</td><td>shadowing reaches runtime</td></tr>
+        <tr><td>B11 Legacy records</td><td>safe upgrade or pre-replay refusal</td><td>historical facts are invented</td></tr>
+        <tr><td>B12 Caller parity</td><td>command and crate paths agree</td><td>an adapter rebuilds policy</td></tr>
+        <tr><td>B13 Predecessors</td><td>presets, trust, and target seams stay exact</td><td>a second owner appears</td></tr>
+        <tr><td>B14 Regression</td><td>full <code>task ci</code> remains green</td><td>existing protocol or apply drifts</td></tr>
+      </tbody>
+    </table>
+  </section>
+</section>
+
+<section id="out-of-scope">
+  <h2>Out of scope</h2>
+  <ul>
+    <li>Runtime, specification, schema, or guide edits in this design task.</li>
+    <li>Arbitrary environment access or a dynamic lookup function.</li>
+    <li>Trust commands or a changed review digest.</li>
+    <li>A second target normalizer or dependency on the target-fix implementation.</li>
+    <li>Configured-default behavior, origin, or <code>presets</code> naming changes.</li>
+    <li>A new <code>Run</code> façade, staged encryption, or file-permission policy.</li>
+    <li>Timeouts, pinned-version checks, or application subprocesses.</li>
+  </ul>
+</section>
+
+<section id="review">
+  <h2>Reviewer focus</h2>
+  <ul>
+    <li><strong>Hidden process read:</strong> find any engine, Jinja, plan, or staging path that reads ambient state.</li>
+    <li><strong>Trust bypass:</strong> replay a granted record after approval changes, or expose a sixth value.</li>
+    <li><strong>Dual context:</strong> make an interview field and plan field observe different facts.</li>
+    <li><strong>Collision hole:</strong> shadow a reserved name through data, question, computed, or <code>each</code>.</li>
+    <li><strong>Predecessor drift:</strong> merge presets into Jinja, replace the trust evaluator, or normalize a target twice.</li>
+    <li><strong>Unsupported restriction:</strong> break root, non-Unicode, terminal continuation, headless, staged, or crate use.</li>
+    <li><strong>Leakage:</strong> place a granted value in debug output, an error, or protocol metadata.</li>
+  </ul>
+</section>
+
+<section id="alternatives">
+  <section>
+    <h2>Alternatives explored — arena</h2>
+    <table>
+      <thead><tr><th>Candidate</th><th>Shape</th><th>Architect / judge</th><th>Outcome</th></tr></thead>
+      <tbody>
+        <tr><td>C1</td><td>Seed-held immutable snapshot</td><td>4.25 / 4.25</td><td><strong>base</strong></td></tr>
+        <tr><td>C2</td><td>Snapshot + strict target/mode contracts</td><td>3.25 / 3.05</td><td>target graft; mode refusal rejected</td></tr>
+        <tr><td>C3</td><td>Snapshot + separate environment grant</td><td>3.45 / 3.30</td><td>no-read graft; new permission rejected</td></tr>
+        <tr><td>C4</td><td>Snapshot + concrete host semantics</td><td>3.45 / 3.05</td><td>admin/fallback graft; stale replay rejected</td></tr>
+        <tr><td>C5</td><td>Owning <code>Run</code> session façade</td><td>2.30 / 2.05</td><td>whole shape rejected</td></tr>
+      </tbody>
+    </table>
+    <p class="muted">Four blind candidates converged. A fifth blind directed candidate supplied the structurally distinct session shape. No dropouts.</p>
+  </section>
+  <section>
+    <h2>Alternatives explored — policy and lifetime</h2>
+    <ul>
+      <li><strong>MiniJinja globals:</strong> rejected — hidden process state and broken replay.</li>
+      <li><strong>Plan-only context:</strong> rejected — interview expressions remain incomplete.</li>
+      <li><strong>Re-read on resume:</strong> rejected — old branches can change.</li>
+      <li><strong>Stored grant without reauthorization:</strong> rejected — revocation has no effect.</li>
+      <li><strong>Separate environment permission:</strong> rejected — outside the requested <code>--trust</code> gate.</li>
+      <li><strong>Reserve all <code>toha_</code> names:</strong> rejected — unrequested compatibility restriction.</li>
+    </ul>
+  </section>
+</section>
+
+<section id="decisions">
+  <section>
+    <h2>Decision needed first — environment grant</h2>
+    <div class="two">
+      <div>
+        <h3>A — effective template trust</h3>
+        <p><code>--trust</code> <strong>or</strong> a current matching reviewed-registry approval grants the five values.</p>
+        <p><span class="tag warn">RECOMMENDED</span></p>
+        <p class="muted">One content-bound trust decision for the invocation. Folder, direct Git, local-registry, and bundled selections still require <code>--trust</code>.</p>
+      </div>
+      <div>
+        <h3>B — <code>--trust</code> only</h3>
+        <p>Registry approval continues to authorize hooks, but never the five values.</p>
+        <p><span class="tag">NARROWER</span></p>
+        <p class="muted">Separates permissions, but reviewed templates require another explicit action every time they need these values.</p>
+      </div>
+    </div>
+  </section>
+  <section>
+    <h2>Access semantics included in the recommendation</h2>
+    <ul>
+      <li>Add existing <code>--trust</code> spelling to <code>stage</code> and <code>continue</code>.</li>
+      <li>Capture only user, hostname, editor, shell, and visual after access.</li>
+      <li>Persist at most those five values in plaintext in existing staged state.</li>
+      <li>Require current effective access before replay of a granted snapshot.</li>
+      <li>Repeat <code>--trust</code> to resume a stage first granted for one run.</li>
+      <li>Never elevate a saved denial; start a new interview to change the snapshot.</li>
+    </ul>
+    <p><span class="tag err">EXPLICIT PERMISSIONS / ACCESS APPROVAL REQUIRED</span></p>
+  </section>
+</section>
+
+<section id="size">
+  <h2>Size — large, about 1–2 focused agent days</h2>
+  <ul>
+    <li>Context domain types, exact-name projection, collision/readiness integration</li>
+    <li>Resolver identity additions and command host/access adapter</li>
+    <li>Seed, Pending, Completed, staged record, replay, and plan wiring</li>
+    <li>CLI additions and guidance for <code>stage</code>/<code>continue --trust</code></li>
+    <li>Legacy staged-record handling and redaction</li>
+    <li>Canonical specification/schema/guide updates</li>
+    <li>Fourteen cross-path behavior groups plus full regression gate</li>
+  </ul>
+  <p class="muted">The implementation task is already classified L. No runtime work starts before this exact design and access semantics are approved.</p>
+</section>
+
+<section id="complexity">
+  <h2>Complexity — moderate with this plan</h2>
+  <div class="two">
+    <div>
+      <h3>Concentrated complexity</h3>
+      <ul>
+        <li>Replay plus revocation</li>
+        <li>Every Jinja evaluation surface</li>
+        <li>Cross-platform host capture</li>
+        <li>Legacy staged compatibility</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Designed out</h3>
+      <ul>
+        <li>No environment map or dynamic lookup</li>
+        <li>No second engine workflow</li>
+        <li>No second target or trust policy</li>
+        <li>No graph, concurrency, timeout, or subprocess</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section id="next">
+  <h2>Phase C checkpoint</h2>
+  <ol>
+    <li>Approve option A (recommended) or choose option B.</li>
+    <li>Explicitly approve or reject the listed staged access semantics.</li>
+    <li>Approve this exact artifact/deck revision for implementation binding.</li>
+  </ol>
+  <p>The design task remains open while approval is pending. Publishing, review, silence, or elapsed time is not approval.</p>
+</section>
