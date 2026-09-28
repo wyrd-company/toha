@@ -95,9 +95,13 @@ computed id.
 If file generation cannot evaluate a value, the error names the source file,
 the exact field, and the authored value. For example:
 
+<!-- rumdl-disable MD013 -->
+
 ```text
 /templates/sample/part.txt: template error in files[0].path `{{ item.name }}.txt`: item has no attribute named name
 ```
+
+<!-- rumdl-enable MD013 -->
 
 The fields are `files[i].when`, `files[i].each`, and `files[i].path`. A fault
 in a normal source-tree path uses `path` and shows only the path segment that

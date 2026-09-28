@@ -8,8 +8,9 @@ relationships:
 ---
 
 Toha reads configuration at three levels: system, user, and the current
-directory. You can use it to find template folders, set template-specific default answers, and
-define Git host shortcodes. A missing file acts as an empty configuration.
+directory. You can use it to find template folders, set template-specific
+default answers, and define Git host shortcodes. A missing file acts as an
+empty configuration.
 
 ## Find the configuration files
 
@@ -108,9 +109,13 @@ question's constraints, Toha asks the question without that default. The error
 names the winning mapping file. A preset reference also names the winning
 preset file, name, and value:
 
+<!-- rumdl-disable MD013 -->
+
 ```text
 mode: default "legacy" from /config/local.yml: template-defaults."sample".mode → /config/user.yml: presets."display_mode" ("legacy") is not allowed: must be one of: compact, detailed
 ```
+
+<!-- rumdl-enable MD013 -->
 
 An answer supplied in the terminal, an answers document, or a resumed staged
 interview replaces that invalid configured value.
