@@ -1,0 +1,420 @@
+<!--
+relationships:
+  realizes: toha
+  references:
+    - template-format
+    - command-line-interface
+    - jinja-context
+    - jinja-includes
+    - hook-review-trust
+    - error-attribution
+-->
+<section id="title">
+  <p class="kicker">Toha 0.2.0 · Design for approval</p>
+  <h1>Let a template read what a hook did</h1>
+  <p>A hook can opt in to expose its exit code and output, so a later hook or the
+    closing message can react to it — without changing trust and without ever
+    writing command output into generated files.</p>
+  <p>
+    <span class="tag">architect design</span>
+    <span class="tag">Phase C checkpoint</span>
+    <span class="tag warn">needs your decisions</span>
+    <span class="tag">no runtime changes yet</span>
+  </p>
+</section>
+
+<section id="task">
+  <section>
+    <h2>Task — react to a hook's result</h2>
+    <p>Toha hooks are commands run after files are written (for example
+      <code>git init</code>). Today a hook can only pass or fail; nothing a
+      template author writes can see <em>what a hook did</em>.</p>
+    <div class="two">
+      <div>
+        <p><strong>Authors want to</strong></p>
+        <ul>
+          <li>Run a later hook only if an earlier one succeeded</li>
+          <li>Pass an earlier hook's output to a later command</li>
+          <li>Report a result in the closing message</li>
+        </ul>
+      </div>
+      <div>
+        <p><strong>This design adds, opt-in</strong></p>
+        <ul>
+          <li>A hook <code>id</code></li>
+          <li>Reading <code>id.exit_code</code>, <code>id.stdout</code>,
+            <code>id.stderr</code></li>
+          <li>Nothing changes for a hook without an <code>id</code></li>
+        </ul>
+      </div>
+    </div>
+    <p><a href="https://github.com/wyrd-company/toha">Toha repository</a> ·
+      paired implementation task 1063</p>
+  </section>
+  <section>
+    <h2>Before and after — a conditional hook</h2>
+    <div class="two">
+      <div>
+        <p><strong>Before</strong> — no way to branch</p>
+        <pre><code class="language-yaml">hooks:
+  - run: [ lint-tool, --check, . ]
+  - run: [ test-tool ]
+
+# A failing lint stops everything.
+# You cannot "fix, then test".</code></pre>
+      </div>
+      <div>
+        <p><strong>After</strong> — read the result</p>
+        <pre><code class="language-yaml">hooks:
+  - id: lint
+    run: [ lint-tool, --check, . ]
+    allow-failure: true
+  - run: [ lint-tool, --fix, . ]
+    when: "lint.exit_code != 0"
+  - run: [ test-tool ]
+    when: "lint.exit_code == 0"</code></pre>
+      </div>
+    </div>
+    <p class="muted">A hook opts in with <code>id</code>. Only later hooks and the
+      closing message can read it.</p>
+  </section>
+  <section>
+    <h2>Before and after — use a hook's output</h2>
+    <div class="two">
+      <div>
+        <p><strong>Before</strong></p>
+        <pre><code class="language-yaml">hooks:
+  - run: [ git, describe, --tags ]
+
+# The version prints to the screen
+# and is then gone.</code></pre>
+      </div>
+      <div>
+        <p><strong>After</strong></p>
+        <pre><code class="language-yaml">hooks:
+  - id: version
+    run: [ git, describe, --tags ]
+    capture: [ stdout ]
+messages:
+  after-apply: "Created at {{ version.stdout }}."</code></pre>
+      </div>
+    </div>
+    <p class="muted"><code>capture</code> names the streams the template reads.
+      Captured output is not printed by Toha; it appears only where the template
+      places it.</p>
+  </section>
+</section>
+
+<section id="pre-mortem">
+  <section>
+    <h2>Pre-mortem — how this could go wrong</h2>
+    <p>Imagine the design and build failed. The likely causes, and the guard the
+      design puts against each:</p>
+    <table>
+      <thead><tr><th>Failure</th><th>Guard in the design</th></tr></thead>
+      <tbody>
+        <tr><td>A hook's output silently lands in a generated file</td>
+          <td>Files can never read a result; only later hooks and the closing
+            message can</td></tr>
+        <tr><td>Exposing output quietly weakens "a failed hook stops the run"</td>
+          <td>The stop-and-fail default is unchanged; tolerating a failure is a
+            separate, explicit opt-in that must be read</td></tr>
+        <tr><td>A new field slips past template trust review</td>
+          <td>The new fields are already inside the reviewed hook fingerprint; a
+            test fails if a future field escapes it</td></tr>
+        <tr><td>A template reads a result that does not exist yet</td>
+          <td>Rejected when the template loads, before anything runs</td></tr>
+        <tr><td>A new name clashes with an existing template</td>
+          <td>No new reserved name; a hook <code>id</code> is an ordinary name
+            with the existing duplicate rule</td></tr>
+      </tbody>
+    </table>
+  </section>
+</section>
+
+<section id="seams">
+  <section>
+    <h2>Module and seam — where the work sits</h2>
+    <p>The change lives in the phase that already runs hooks. The interview
+      engine, staging, replay, and trust are untouched.</p>
+    <pre><code class="language-text">Template load   check every result read: exists, captured, comes
+                after its hook, on an allowed surface  (before anything runs)
+      |
+Plan build      hooks/messages that read no result render as today;
+                the few that do are held back
+      |
+Apply (writes)  write files, then for each hook:
+                  render the held-back parts against results so far
+                  run the hook, record {exit_code, stdout, stderr}
+                then render the closing message
+                  --> results are used here and discarded; never saved</code></pre>
+    <p class="muted">One place does the interleave (apply). Everything else is a
+      load-time check.</p>
+  </section>
+  <section>
+    <h2>What stays exactly as it is</h2>
+    <ul>
+      <li>The pure interview engine reads nothing from the machine</li>
+      <li>Staging, resume, and replay — unchanged; results are never saved</li>
+      <li>Template trust and the reviewed hook fingerprint — unchanged</li>
+      <li>The seventeen reserved context names and every other approved rule</li>
+    </ul>
+    <p><a href="https://t30jlda1nnbd.postplan.dev">Depends on: Jinja context
+      design (1075)</a> · includes design (1076) · confirm-flow design (1077) ·
+      hook-review trust (1069)</p>
+  </section>
+</section>
+
+<section id="interface">
+  <section>
+    <h2>What an author writes (1 of 2)</h2>
+    <p>Three optional hook fields. Absent them, a hook behaves exactly as today.</p>
+    <table>
+      <thead><tr><th>Field</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td><code>id</code></td><td>Names the hook so its result can be read
+          as <code>id.exit_code</code> / <code>id.stdout</code> /
+          <code>id.stderr</code></td></tr>
+        <tr><td><code>capture</code></td><td>The output streams to keep:
+          <code>[stdout]</code>, <code>[stderr]</code>, or both. Required to read
+          a stream</td></tr>
+        <tr><td><code>allow-failure</code></td><td>Tolerate a nonzero exit so a
+          later hook can react to it. Must be read somewhere</td></tr>
+      </tbody>
+    </table>
+  </section>
+  <section>
+    <h2>Where a result can be read (2 of 2)</h2>
+    <div class="two">
+      <div>
+        <p><strong>Can read a result</strong></p>
+        <ul>
+          <li>A later hook's condition</li>
+          <li>A later hook's arguments and working directory</li>
+          <li>The closing <code>after-apply</code> message</li>
+        </ul>
+      </div>
+      <div>
+        <p><strong>Cannot read a result</strong></p>
+        <ul>
+          <li>Generated files and their paths</li>
+          <li>The opening message and interview questions</li>
+          <li>The program name of a hook, and <code>each</code> lists</li>
+        </ul>
+      </div>
+    </div>
+    <p class="muted">A result is a plain value named after the hook's
+      <code>id</code>. There is no new reserved word.</p>
+  </section>
+</section>
+
+<section id="data">
+  <section>
+    <h2>Data shapes — the result value</h2>
+    <p>A result read as <code>id.&lt;field&gt;</code> is an object with exactly
+      three fields:</p>
+    <pre><code class="language-yaml">exit_code: 0        # the number the command returned;
+                    # empty (none) means the hook did not run
+stdout: "v1.2.3"    # present only if capture includes stdout
+stderr: ""          # present only if capture includes stderr</code></pre>
+    <ul>
+      <li><code>exit_code is none</code> means "did not run" (its condition was
+        false)</li>
+      <li><code>exit_code == 0</code> means it ran and succeeded</li>
+      <li>Output is decoded as text; non-text output fails the run with a clear
+        message and never leaks bytes</li>
+    </ul>
+  </section>
+  <section>
+    <h2>Data shapes — under the hood (for the build)</h2>
+    <p class="muted">For the implementer and reviewer; a manager can skip this.</p>
+    <pre><code class="language-rust">// The hook node gains three opt-in fields.
+struct HookNode { /* … */ id: Option&lt;Id&gt;, capture: Capture, allow_failure: bool }
+
+// The outcome carries captured streams; its Debug never prints them.
+struct HookOutcome { success: bool, code: Option&lt;i32&gt;,
+                     stdout: Option&lt;String&gt;, stderr: Option&lt;String&gt; }
+
+// A surface is rendered now, or held for the apply loop.
+enum Planned&lt;T&gt; { Ready(T), AfterHooks(Deferred) }</code></pre>
+    <p class="muted">Results live only inside apply and are dropped when it
+      returns. Nothing is added to the saved staging record.</p>
+  </section>
+</section>
+
+<section id="tested">
+  <section>
+    <h2>Behaviors to prove (1 of 2)</h2>
+    <p>Each is falsifiable — the fixture fails if the behavior is wrong.</p>
+    <table>
+      <thead><tr><th>Behavior</th><th>How it could fail</th></tr></thead>
+      <tbody>
+        <tr><td>A later hook runs or is skipped by an earlier hook's exit code</td>
+          <td>The wrong branch runs</td></tr>
+        <tr><td>Captured stdout appears in a later argument and the message</td>
+          <td>Wrong or empty text</td></tr>
+        <tr><td>A failed hook still stops the run by default</td>
+          <td>Removing the guard lets it continue — a named test must fail</td></tr>
+        <tr><td>Tolerating a failure needs an explicit, read opt-in</td>
+          <td>A silent weakening slips through</td></tr>
+      </tbody>
+    </table>
+  </section>
+  <section>
+    <h2>Behaviors to prove (2 of 2)</h2>
+    <table>
+      <thead><tr><th>Behavior</th><th>How it could fail</th></tr></thead>
+      <tbody>
+        <tr><td>Reading an uncaptured, forward, or unknown result is rejected at
+          load</td><td>A typo is silently empty at runtime</td></tr>
+        <tr><td>A hook that did not run reads as empty, never an error</td>
+          <td>An undefined value crashes the render</td></tr>
+        <tr><td>Non-text output fails cleanly with no leaked bytes</td>
+          <td>Corrupted text flows into a command</td></tr>
+        <tr><td>A hook with no <code>id</code> behaves byte-for-byte as today</td>
+          <td>Existing templates change behavior</td></tr>
+        <tr><td>A dry run lists every hook and runs none</td>
+          <td>A hook runs during preview</td></tr>
+      </tbody>
+    </table>
+  </section>
+</section>
+
+<section id="out-of-scope">
+  <section>
+    <h2>Out of scope</h2>
+    <ul>
+      <li>Reading a result in files, the opening message, questions, a hook's
+        program name, or <code>each</code> lists</li>
+      <li>Any new reserved word or change to the seventeen context names</li>
+      <li>Saving results, or any change to staging, resume, or replay</li>
+      <li>A limit on captured output size (would be a new policy — ask if wanted)</li>
+      <li>Any new trust, permission, timeout, version pin, or subprocess policy</li>
+      <li>The canonical spec, schema, guide, and example edits — owned by the
+        paired implementation (1063)</li>
+    </ul>
+  </section>
+</section>
+
+<section id="review">
+  <section>
+    <h2>Reviewer focus — attack these</h2>
+    <ul>
+      <li>Can any output reach a generated file or public text? (should be
+        impossible)</li>
+      <li>Can capturing a stream silently change whether a program sees a
+        terminal, without trust re-review?</li>
+      <li>Is a result ever readable before its hook runs, on any surface?</li>
+      <li>Does a failed hook still stop the run unless explicitly tolerated?</li>
+      <li>Do the new fields stay inside the reviewed hook fingerprint?</li>
+      <li>Does replay or resume still read nothing live?</li>
+    </ul>
+  </section>
+</section>
+
+<section id="alternatives">
+  <section>
+    <h2>Alternatives explored</h2>
+    <p>Five candidate designs — three in-house and two written independently and
+      blind, then scored by an independent judge.</p>
+    <table>
+      <thead><tr><th>Shape</th><th>Why not chosen</th></tr></thead>
+      <tbody>
+        <tr><td>A new <code>hooks</code>/<code>results</code> namespace</td>
+          <td>Would add a reserved word and break existing templates that use
+            that name</td></tr>
+        <tr><td>Infer capture from what is read</td>
+          <td>An edit elsewhere could quietly change a hook's output behavior,
+            outside trust review</td></tr>
+        <tr><td>A "did it run / did it pass" pair of fields</td>
+          <td>Redundant once a signal is always fatal and "empty" means
+            "did not run"</td></tr>
+        <tr><td>Named execution "stages"</td>
+          <td>A second ordering that just repeats list order</td></tr>
+        <tr><td>Read results only in conditions and the message (narrow)</td>
+          <td>Cannot pass output to a later command — a decision for you
+            (below)</td></tr>
+      </tbody>
+    </table>
+    <p class="muted">The chosen shape takes the smallest surface from one and the
+      static safety and trust posture from the other.</p>
+  </section>
+</section>
+
+<section id="decisions">
+  <section>
+    <h2>Decisions needed first</h2>
+    <p>Three rulings before the build starts. Recommendations given.</p>
+    <ol>
+      <li><strong>How much can read a result?</strong> — see next slide</li>
+      <li><strong>A hook <code>id</code> is an ordinary name</strong>, sharing the
+        space of question and data names (a clash is the existing duplicate
+        error). <em>Recommended: yes</em> — it avoids a new reserved word.</li>
+      <li><strong>Non-text output</strong> fails the run with a clear message.
+        <em>Recommended: yes</em> — the alternative silently corrupts text that
+        may become a command argument.</li>
+    </ol>
+  </section>
+  <section>
+    <h2>Decision 1 — how much can read a result</h2>
+    <div class="two">
+      <div>
+        <p><strong>Broad</strong> <span class="tag">recommended</span></p>
+        <p>Later hooks (condition, arguments, working directory) and the closing
+          message.</p>
+        <ul>
+          <li>Meets the goal: pass output to a later command</li>
+          <li>A hook's program name and <code>each</code> stay fixed, so a dry
+            run still lists every command</li>
+        </ul>
+      </div>
+      <div>
+        <p><strong>Narrow</strong></p>
+        <p>Only conditions and the closing message.</p>
+        <ul>
+          <li>Cannot pass output to a later command</li>
+          <li>That case would need a wrapper script instead</li>
+        </ul>
+      </div>
+    </div>
+    <p class="muted"><strong>Disclosure:</strong> broad lets a hook's output become
+      a later command's argument. The author writes that, and the text comes from
+      the hook's own environment; hooks already require trust. This adds a new
+      ability; it removes nothing. Files and the opening message are excluded
+      either way.</p>
+  </section>
+</section>
+
+<section id="size">
+  <section>
+    <h2>Size</h2>
+    <p>Expected implementation effort for the paired task (1063):
+      <strong>about one to two focused days</strong> for an agent.</p>
+    <ul>
+      <li>Load-time checks and the new fields — the largest part</li>
+      <li>Holding back and rendering the few result-reading parts in the apply
+        loop</li>
+      <li>Capturing output in the process runner</li>
+      <li>Fixtures for each behavior, plus the trust-coverage guard test</li>
+      <li>Spec, schema, guide, and example updates</li>
+    </ul>
+  </section>
+</section>
+
+<section id="complexity">
+  <section>
+    <h2>Complexity</h2>
+    <p><strong>Moderate.</strong> The risk is concentrated and understood.</p>
+    <ul>
+      <li>One new interleave (run a hook, then render the next part) in a single
+        place</li>
+      <li>Load-time checks reuse the analysis the context design already
+        built — no new machinery</li>
+      <li>The trust story needs no change: the new fields are already covered,
+        and a program name can never come from output</li>
+      <li>Everything is opt-in, so existing templates are unaffected</li>
+    </ul>
+    <p><a href="https://github.com/wyrd-company/toha">Toha repository</a> ·
+      design source in <code>docs/technical-designs/second-release/hook-results/</code></p>
+  </section>
+</section>
