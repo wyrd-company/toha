@@ -1,0 +1,270 @@
+<section id="title">
+  <p class="kicker">Toha 0.2.0 · Design brief · Phase C</p>
+  <h1>A confirm answer can steer the run</h1>
+  <p>
+    Let a template say "if they answer this way, stop — or preview — or skip the
+    rest," while a plain yes/no question keeps working exactly as it does today.
+  </p>
+  <p>
+    <span class="tag">Approved design sought</span>
+    <span class="tag">design only</span>
+    <span class="tag">paired build: task 1062</span>
+  </p>
+</section>
+
+<section id="task">
+  <h2>Task</h2>
+  <p>
+    A confirm question today only produces a yes/no value that later questions
+    can read. This design lets a template bind a specific answer to an
+    <strong>action</strong> that steers the run itself.
+  </p>
+  <ul>
+    <li><strong>Stop</strong> — end the run now; write no files, run no hooks.</li>
+    <li><strong>Dry-run</strong> — finish the questions, show the plan, write nothing.</li>
+    <li><strong>Skip</strong> — skip the rest of the questions (the whole run, or just the current group).</li>
+  </ul>
+  <p class="muted">
+    Actions are written in the template as data, never guessed from the wording
+    of the prompt. A confirm with no action is unchanged. The same behavior works
+    from every way Toha is driven: the terminal, an answers file, a saved
+    (staged) interview, a direct apply, and the library.
+  </p>
+  <p class="muted">
+    Depends on: the presets/configured-defaults work (already merged) and the
+    error-attribution design (approved). Paired implementation: task 1062.
+    Repository: <a href="https://github.com/wyrd-company/toha">github.com/wyrd-company/toha</a>.
+  </p>
+</section>
+
+<section id="pre-mortem">
+  <h2>Pre-mortem — imagine the build failed. Why?</h2>
+  <ul>
+    <li><strong>A "stop" still wrote something.</strong> A file or a hook slipped through because "don't apply" was left to each caller to remember.</li>
+    <li><strong>Answering "no, stop" errored out.</strong> The stop ran the leftover questions anyway and tripped over a bad default in one the user never saw.</li>
+    <li><strong>A plain yes/no question changed.</strong> Adding actions quietly altered how ordinary confirms behave.</li>
+    <li><strong>The action was guessed from the prompt text</strong> instead of being declared, so it fired in surprising places.</li>
+    <li><strong>Resuming a saved interview behaved differently</strong> because the action was stored as extra state that drifted from the answers.</li>
+    <li><strong>A rejected answers file still triggered an action</strong> or left a half-saved interview.</li>
+  </ul>
+  <p class="muted">The design closes each of these by construction; see Reviewer focus.</p>
+</section>
+
+<section id="module-seam">
+  <h2>Module and seam</h2>
+  <pre><code class="language-text">template.yml (action: on a confirm)
+      │  load-time checks: action only on confirm; not empty;
+      │  known values only; "skip: group" needs a group
+      ▼
+  interview engine ── reaches an ANSWERED, ACTIVE confirm
+      │            └─► ONE decision point reads the answer + the declared action
+      │                 stop   → end the interview (a result that cannot be applied)
+      │                 dry-run→ finish, but mark "plan only"
+      │                 skip   → skip the rest (reuses the existing skip machinery)
+      ▼
+  interview result ── Asking · Complete(plan-or-preview) · Ended(stopped)
+      │
+      ├─ terminal    ─┐
+      ├─ answers file ─┤ thin adapters: each just routes the result;
+      ├─ saved/staged ─┤ none re-implements the stop/preview/skip rules
+      ├─ direct apply ─┤
+      └─ library      ─┘
+             │
+   proceed → build plan → APPLY (the only place files are written / hooks run)
+   preview → build plan → SHOW, do not apply
+   stopped → nothing to build; cannot apply</code></pre>
+  <p class="muted">
+    The engine owns the decision in one place. Everything downstream only reads
+    the outcome. "No files, no hooks" on stop/preview means simply not reaching
+    the one apply step.
+  </p>
+</section>
+
+<section id="interface">
+  <h2>Public interfaces</h2>
+  <p class="muted">Navigate down for each surface. Signatures are the contract the build fills in.</p>
+  <section>
+    <h3>The result the engine returns</h3>
+    <pre><code class="language-rust">pub enum Interview&lt;'a&gt; {
+    Asking(Pending&lt;'a&gt;),
+    Complete(Completed),   // now also says: apply, or preview only
+    Ended(Ended),          // NEW: a confirm "stop" ended the run
+}</code></pre>
+    <p class="muted">
+      "Stopped" is its own result that carries nothing to apply — so there is no
+      way, in code, to write files from a stopped run.
+    </p>
+  </section>
+  <section>
+    <h3>A one-call gate for library and direct callers</h3>
+    <pre><code class="language-rust">// Build unless stopped; apply only when proceeding. One place, one policy.
+pub fn realize(template, outcome, target, options, runner)
+    -&gt; Result&lt;Realized, RealizeError&gt;;
+
+pub enum Realized {
+    Stopped { by: Id },              // nothing built, nothing written
+    Previewed { plan: Plan, by: Id },// dry-run: plan built, shown, not applied
+    Applied(Applied),                // normal apply
+}</code></pre>
+  </section>
+  <section>
+    <h3>The drivers, unchanged in spirit</h3>
+    <pre><code class="language-rust">// terminal: returns the outcome instead of only a completion
+pub enum DriveResult { Completed(Completed), Stopped(Ended) }
+
+// answers file / wire: one new arm beside the existing two
+pub enum Headless&lt;'a&gt; { Completed{..}, Pending{..}, Stopped{..} }
+
+// saved interview replays to the same outcomes, re-derived from the answers</code></pre>
+  </section>
+</section>
+
+<section id="data">
+  <h2>Data structures</h2>
+  <p class="muted">Navigate down for each shape.</p>
+  <section>
+    <h3>How a template declares an action</h3>
+    <pre><code class="language-yaml">- id: proceed
+  type: confirm
+  prompt: "Ready to scaffold?"
+  action:
+    when_false: { skip: rest }   # "no" skips the remaining questions
+- id: overwrite_ok
+  type: confirm
+  prompt: "Target is not empty. Continue anyway?"
+  action:
+    when_false: stop             # "no" ends the run
+- id: preview_first
+  type: confirm
+  prompt: "Show the plan first?"
+  action:
+    when_true: dry-run           # "yes" previews, writes nothing</code></pre>
+    <p class="muted">Values: <code>stop</code>, <code>dry-run</code>, or <code>{ skip: rest | group }</code>. At least one of <code>when_true</code>/<code>when_false</code>.</p>
+  </section>
+  <section>
+    <h3>What the engine carries</h3>
+    <pre><code class="language-rust">enum Disposition { Proceed, DryRun }   // on a completed interview
+
+struct Ended {                          // a stopped interview
+    by: Id,                             // the confirm that stopped it
+    answers: Answers,                   // gathered so far, for reporting only
+    messages: Vec&lt;String&gt;,             // no hooks, no plannable value
+}</code></pre>
+    <p class="muted">
+      Nothing new is saved to disk. The stop/preview decision is recomputed from
+      the recorded answers every time, so resuming a saved interview reproduces
+      it exactly.
+    </p>
+  </section>
+  <section>
+    <h3>On the wire (for agents and scripts)</h3>
+    <pre><code class="language-json">{ "protocol": 1, "status": "stopped",
+  "context": { "target": "/abs/out", "template": "web-service", "commit": null },
+  "by": "overwrite_ok", "answers": { "overwrite_ok": false }, "messages": [] }</code></pre>
+    <p class="muted">
+      A new <code>stopped</code> status, and an optional "dry-run" marker on a
+      completion. Both are additive; an ordinary completion looks exactly as it
+      does today.
+    </p>
+  </section>
+</section>
+
+<section id="behaviors">
+  <h2>Behaviors to prove</h2>
+  <p class="muted">Each is written so it can fail. Navigate down for the groups.</p>
+  <section>
+    <h3>The safety guarantees</h3>
+    <table>
+      <thead><tr><th>Claim</th><th>How it could fail</th></tr></thead>
+      <tbody>
+        <tr><td>A plain confirm is unchanged</td><td>Same answers and output as today, byte for byte, on every driver</td></tr>
+        <tr><td>Stop writes nothing, runs no hook</td><td>Check the target folder is untouched and the hook recorder is empty</td></tr>
+        <tr><td>Stop can't fault on a later question</td><td>A template with a bad default after the stop still stops cleanly</td></tr>
+        <tr><td>Preview writes nothing</td><td>Plan is shown; target folder and hook recorder stay empty</td></tr>
+      </tbody>
+    </table>
+  </section>
+  <section>
+    <h3>Scope, resume, and rejection</h3>
+    <table>
+      <thead><tr><th>Claim</th><th>How it could fail</th></tr></thead>
+      <tbody>
+        <tr><td>"skip: group" stays inside its group</td><td>Questions after the group are still asked; nested groups compose</td></tr>
+        <tr><td>Skipped questions get defined values</td><td>Each records its normal default/empty and the existing "answer not used" warning</td></tr>
+        <tr><td>Resuming reproduces the outcome</td><td>Replaying the saved answers yields the identical stop/preview/skip</td></tr>
+        <tr><td>A rejected answers file does nothing</td><td>No action fires and no interview is saved when any answer is rejected</td></tr>
+        <tr><td>Only the declared answer fires</td><td>The other yes/no value proceeds normally</td></tr>
+      </tbody>
+    </table>
+  </section>
+  <section>
+    <h3>Same result everywhere</h3>
+    <p>
+      The same template and answers produce the same outcome through the
+      terminal, an answers file, a saved interview, a direct apply, and the
+      library — and the machine-readable "stopped" document is identical between
+      the answers-file and saved-interview paths.
+    </p>
+  </section>
+</section>
+
+<section id="scope">
+  <h2>Out of scope</h2>
+  <ul>
+    <li>The existing question/skip/default rules underneath the decision point — reused, not changed.</li>
+    <li>Preset selection and error-attribution internals — owned by their own designs.</li>
+    <li>Any new trust, permission, timeout, version-pin, or external-process behavior. A confirm action never runs a hook or touches trust.</li>
+    <li>Actions on non-confirm questions; guessing actions from prompt text; chained or per-run overridden actions.</li>
+  </ul>
+</section>
+
+<section id="review">
+  <h2>Reviewer focus — what to attack</h2>
+  <ul>
+    <li><strong>Can any path write a file or run a hook on stop or preview?</strong> The claim is "no, by construction."</li>
+    <li><strong>Does a rejected answers file ever fire an action or half-save?</strong> The claim is "never."</li>
+    <li><strong>Does a resumed interview ever differ from a fresh one?</strong> The claim is "identical, because nothing extra is stored."</li>
+    <li><strong>Does an ordinary confirm change at all?</strong> The claim is "not one byte."</li>
+    <li><strong>Does "skip" ever leave a question with an undefined value?</strong> The claim is "it reuses the existing skip values."</li>
+  </ul>
+</section>
+
+<section id="alternatives">
+  <h2>Alternatives explored</h2>
+  <p class="muted">Four independent designs were produced and cross-judged; the base was chosen and the best ideas grafted in.</p>
+  <ul>
+    <li><strong>Chosen:</strong> the decision is an effect the engine emits where the answer is read; a stop is a result that cannot be applied.</li>
+    <li><strong>Also strong (grafted):</strong> a one-call "realize" gate so library and direct callers never re-implement the rules — folded in.</li>
+    <li><strong>Rejected:</strong> modelling "stop" as "silently skip everything and finish." It made a stop do needless work and could error on a question the user never reached, and reported the run as "complete."</li>
+    <li><strong>Rejected:</strong> guessing the action from the prompt, or a separate scanner that re-derives the interview — both invite drift.</li>
+  </ul>
+</section>
+
+<section id="decisions">
+  <h2>Decisions needed first</h2>
+  <table>
+    <thead><tr><th>Decision</th><th>Recommendation</th></tr></thead>
+    <tbody>
+      <tr><td>D1 — Exit code when a confirm stops the run</td><td>Exit 0 (a deliberate choice), with the machine-readable "stopped" status for scripts</td></tr>
+      <tr><td>D2 — May a <em>preset</em> answer trigger stop/preview?</td><td>Yes (a default is the answer) — flagged because a preset could then stop a run</td></tr>
+      <tr><td>D3 — Wording of the skip scope</td><td><code>{ skip: rest | group }</code></td></tr>
+      <tr><td>D4 — Order vs the error-attribution build (1056)</td><td>Land 1062 independently against the approved contract, not blocked on 1056</td></tr>
+      <tr><td>D5 — Include gathered answers in the "stopped" document?</td><td>Yes, for audit</td></tr>
+    </tbody>
+  </table>
+  <p class="muted">
+    No decision adds a permission, access, timeout, version-pin, or external-process
+    behavior. The feature is additive and opt-in; ordinary confirms are unchanged.
+  </p>
+</section>
+
+<section id="size">
+  <h2>Size</h2>
+  <p>Medium. One decision point and one new result in the engine; small routing changes in each driver; the template loader gains the action and its four load-time checks; the documented spec/guide edits are owned by the paired build (task 1062); plus the behavior tests above.</p>
+  <p class="muted">Expected implementation time: one to two focused agent days after refreshing onto the current base.</p>
+</section>
+
+<section id="complexity">
+  <h2>Complexity</h2>
+  <p>Low to moderate. Skip reuses machinery that already exists; nothing new is saved to disk; there is no new concurrency, no new dependency, and no new external behavior. The main care is keeping the decision in one place and proving the "writes nothing on stop/preview" guarantee.</p>
+</section>
