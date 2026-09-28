@@ -397,6 +397,7 @@ fn add(
             path,
             aliases: alias.clone().into_iter().collect(),
             approval,
+            denied: false,
         };
         additions.push((formal.clone(), entry));
         names.push((formal, name));

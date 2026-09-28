@@ -42,9 +42,11 @@ $defs:
         pattern: '^sha256:[0-9a-f]{64}$'
       trusted:
         description: >-
-          Accepted but ignored. A system or user registry from before approval
-          digests may carry this legacy field; it grants no trust, so the entry
-          reads as needing review until its hooks are approved.
+          A legacy boolean. `false` denies the template's hooks: it clears any
+          approval inherited from a lower registry layer, so the entry reads as
+          needing review, and it is written back so the denial survives a
+          round-trip. `true` is ignored and grants nothing. New writes emit only
+          `false`, and only to record a denial.
         type: boolean
   registry:
     type: object

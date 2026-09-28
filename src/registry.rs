@@ -32,6 +32,15 @@ pub struct Entry {
     /// template's hooks only while its live digest still equals this value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval: Option<ReviewDigest>,
+    /// A denial recorded by a `trusted: false` field. A denial clears any
+    /// approval inherited from a lower registry layer, so the entry reads as
+    /// needing review; it is written back as `trusted: false` so the denial
+    /// survives a round-trip. It is set only from the legacy `false` value and
+    /// carries no serde field of its own. (A future untrust command — design
+    /// 1054 — records a denial this way, persisting `trusted: false` while
+    /// leaving `approval` absent.)
+    #[serde(skip)]
+    pub denied: bool,
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RegistryFile {
@@ -151,6 +160,14 @@ impl RegistryFile {
                 )
             })
             .collect();
+        // A legacy `trusted: false` records a denial; `trusted: true` is ignored.
+        let denied: std::collections::HashSet<String> = value["templates"]
+            .as_object()
+            .into_iter()
+            .flat_map(|templates| templates.iter())
+            .filter(|(_, entry)| entry.get("trusted").and_then(Value::as_bool) == Some(false))
+            .map(|(formal, _)| formal.clone())
+            .collect();
         if layer == Layer::Local {
             let aliases: LocalRegistry =
                 serde_json::from_value(value).map_err(|e| RegistryError::Parse {
@@ -180,6 +197,9 @@ impl RegistryFile {
                     message: e.to_string(),
                 })?;
             file.presence = presence;
+            for (formal, entry) in file.templates.iter_mut() {
+                entry.denied = denied.contains(formal);
+            }
             Ok(file)
         }
     }
@@ -192,7 +212,13 @@ impl RegistryFile {
                         entry.aliases.push(alias.clone());
                     }
                 }
-                entry.approval = entry.approval.take().or_else(|| old.approval.clone());
+                if entry.approval.is_some() {
+                    // An explicit new grant clears a prior denial.
+                    entry.denied = false;
+                } else {
+                    entry.approval = old.approval.clone();
+                    entry.denied = entry.denied || old.denied;
+                }
             }
             next.presence.shift_remove(&formal);
             next.templates.insert(formal, entry);
@@ -265,6 +291,16 @@ impl RegistryFile {
                 }
             }
         }
+        // A denial is written back as `trusted: false` so it survives a
+        // round-trip through this and every other writer; nothing writes
+        // `trusted: true`.
+        for (formal, entry) in &self.templates {
+            if entry.denied {
+                if let Some(object) = value["templates"][formal].as_object_mut() {
+                    object.insert("trusted".into(), Value::Bool(false));
+                }
+            }
+        }
         let mut schema = SCHEMA.clone();
         schema["$ref"] = Value::String("#/$defs/registry".into());
         let validator = jsonschema::options()
@@ -318,6 +354,10 @@ impl Registry {
         let mut entries: IndexMap<String, Listed> = IndexMap::new();
         for (layer, file) in [(Layer::System, system), (Layer::User, user)] {
             for (formal, entry) in &file.templates {
+                let own = file.presence.get(formal).copied().unwrap_or(FieldPresence {
+                    aliases: true,
+                    approval: true,
+                });
                 let mut merged = entry.clone();
                 if let Some(old) = entries.get(formal) {
                     if merged.reference.is_none() {
@@ -326,16 +366,20 @@ impl Registry {
                     if merged.commit.is_none() {
                         merged.commit = old.entry.commit.clone();
                     }
-                    let presence = file.presence.get(formal).copied().unwrap_or(FieldPresence {
-                        aliases: true,
-                        approval: true,
-                    });
-                    if !presence.aliases {
+                    if !own.aliases {
                         merged.aliases = old.entry.aliases.clone();
                     }
-                    if !presence.approval {
+                    if !own.approval {
                         merged.approval = old.entry.approval.clone();
                     }
+                }
+                // A denial at this layer clears its own approval and any
+                // approval inherited from a lower layer, so the entry reads as
+                // needing review. A lower denial needs no propagation: a denied
+                // lower entry already carries no approval to inherit, and a
+                // higher layer that grants an approval is not itself denied.
+                if merged.denied {
+                    merged.approval = None;
                 }
                 entries.insert(
                     formal.clone(),
@@ -750,6 +794,107 @@ mod tests {
             RegistryFile::load(&local_path, Layer::Local),
             Err(RegistryError::Schema { .. })
         ));
+    }
+    #[test]
+    fn higher_layer_denial_clears_lower_approval() {
+        // A user layer loaded with `trusted: false` clears a system approval
+        // for the same formal name, so the template reads as needing review.
+        let root = tempfile::tempdir().unwrap();
+        let system_path = root.path().join("system.yml");
+        let user_path = root.path().join("user.yml");
+        fs::write(
+            &system_path,
+            format!("templates:\n  formal:\n    name: sample\n    source: file:///sample\n    path: /sample\n    approval: {D1}\n"),
+        )
+        .unwrap();
+        fs::write(
+            &user_path,
+            "templates:\n  formal:\n    name: sample\n    source: file:///sample\n    path: /sample\n    trusted: false\n",
+        )
+        .unwrap();
+        let system = RegistryFile::load(&system_path, Layer::System).unwrap();
+        let user = RegistryFile::load(&user_path, Layer::User).unwrap();
+        assert!(user.templates["formal"].denied);
+        let merged = Registry::merge(&system, &user, &RegistryFile::default()).unwrap();
+        assert!(
+            merged.resolve("sample").unwrap().approval.is_none(),
+            "a higher-layer denial clears the lower approval"
+        );
+        // A user layer that omits both fields inherits the system approval.
+        fs::write(
+            &user_path,
+            "templates:\n  formal:\n    name: sample\n    source: file:///sample\n    path: /sample\n",
+        )
+        .unwrap();
+        let user = RegistryFile::load(&user_path, Layer::User).unwrap();
+        let merged = Registry::merge(&system, &user, &RegistryFile::default()).unwrap();
+        assert_eq!(merged.resolve("sample").unwrap().approval, Some(digest(D1)));
+    }
+    #[test]
+    fn explicit_higher_grant_clears_lower_denial() {
+        // A system `trusted: false` denial is overridden by an explicit user
+        // approval for the same formal name.
+        let root = tempfile::tempdir().unwrap();
+        let system_path = root.path().join("system.yml");
+        let user_path = root.path().join("user.yml");
+        fs::write(
+            &system_path,
+            "templates:\n  formal:\n    name: sample\n    source: file:///sample\n    path: /sample\n    trusted: false\n",
+        )
+        .unwrap();
+        fs::write(
+            &user_path,
+            format!("templates:\n  formal:\n    name: sample\n    source: file:///sample\n    path: /sample\n    approval: {D2}\n"),
+        )
+        .unwrap();
+        let system = RegistryFile::load(&system_path, Layer::System).unwrap();
+        let user = RegistryFile::load(&user_path, Layer::User).unwrap();
+        let merged = Registry::merge(&system, &user, &RegistryFile::default()).unwrap();
+        assert_eq!(merged.resolve("sample").unwrap().approval, Some(digest(D2)));
+        // With the user omitting both, the system denial is inherited.
+        fs::write(
+            &user_path,
+            "templates:\n  formal:\n    name: sample\n    source: file:///sample\n    path: /sample\n",
+        )
+        .unwrap();
+        let user = RegistryFile::load(&user_path, Layer::User).unwrap();
+        let merged = Registry::merge(&system, &user, &RegistryFile::default()).unwrap();
+        assert!(merged.resolve("sample").unwrap().approval.is_none());
+    }
+    #[test]
+    fn denial_survives_writers_and_a_grant_clears_it() {
+        // A denial round-trips through write_atomic and an unrelated writer, and
+        // an explicit grant clears it.
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("templates.yml");
+        fs::write(
+            &path,
+            "templates:\n  formal:\n    name: sample\n    source: file:///sample\n    path: /sample\n    trusted: false\n",
+        )
+        .unwrap();
+        let file = RegistryFile::load(&path, Layer::User).unwrap();
+        file.write_atomic(&path).unwrap();
+        let written: Value = serde_norway::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(written["templates"]["formal"]["trusted"], false);
+        let reloaded = RegistryFile::load(&path, Layer::User).unwrap();
+        assert!(reloaded.templates["formal"].denied);
+        // An unrelated writer keeps the denial.
+        reloaded
+            .add_alias("formal", "kept")
+            .unwrap()
+            .write_atomic(&path)
+            .unwrap();
+        let written: Value = serde_norway::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(written["templates"]["formal"]["trusted"], false);
+        // An explicit grant (add carrying an approval) clears the denial.
+        let mut grant = entry("sample", &[]);
+        grant.approval = Some(digest(D1));
+        let granted = reloaded.add([("formal".into(), grant)]);
+        assert!(!granted.templates["formal"].denied);
+        granted.write_atomic(&path).unwrap();
+        let written: Value = serde_norway::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(written["templates"]["formal"].get("trusted").is_none());
+        assert_eq!(written["templates"]["formal"]["approval"], D1);
     }
     #[test]
     fn discovery_reads_only_name() {
