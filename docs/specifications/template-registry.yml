@@ -45,6 +45,34 @@ description: >-
   entry has the canonical absolute path of its folder as its formal name, and
   carries no approval.
 
+  Listing output. `templates list` writes a tab-separated text table with the
+  columns `FORMAL NAME`, `SHORT NAME`, `ALIASES`, and `TRUSTED`. `ALIASES` joins
+  multiple aliases with commas. `templates list --json` writes an array. Every
+  registry row in that array carries these fields:
+
+  - `formal_name`: the registry key or discovered template's canonical folder
+    path.
+  - `name`: the short name from `template.yml`.
+  - `aliases`: an array of aliases, empty when the entry has none.
+  - `trusted`: the effective trust at listing time. It is true only when the
+    approval that remains after the registry layers merge matches the live
+    executable surface. A missing approval, a denial, an unreadable template or
+    executable surface, or a changed executable surface makes it false.
+  - `layer`: the effective registry layer: `system`, `user`, `local`, or
+    `discovered`.
+  - `source`: the repository URL or canonical local-folder path recorded for the
+    template.
+  - `ref`: the requested git ref, or `null` when the template has none.
+  - `commit`: the installed git commit, or `null` for a local-folder template.
+  - `path`: the installed or discovered template folder.
+
+  Registry rows omit `bundled`. The filtered forms `templates list -u`,
+  `templates list -l`, and `templates list -s`, with or without `--json`, list
+  only their selected registry layer and never include the bundled descriptor.
+  Registry merge and precedence remain defined by Layers above. Name collision
+  and fallback resolution remain defined by Bundled demo in the command-line
+  interface specification.
+
   Bundled demo. The reserved `toha-demo` fallback is not a registry entry: no
   layer records it, and resolution reaches it only when no entry resolves the
   name, so it never shadows an installed or aliased template. The unfiltered
@@ -56,6 +84,28 @@ description: >-
   none exists. It is presentation only and no resolution consults it. The
   command-line interface specification defines its resolution and offline
   first-run guarantee.
+
+  Examples. These are transcripts from the packaged command-line program in an
+  isolated environment. An empty registry produces the bundled descriptor in
+  both formats:
+
+      $ toha templates list
+      FORMAL NAME	SHORT NAME	ALIASES	TRUSTED
+      toha-demo	demo		false
+
+      $ toha templates list --json
+      [{"aliases":[],"bundled":true,"commit":"4ea89c79a239afaafa5e9b30b0a062d4c3bd12a38e80976ceaddfd27155d947c","formal_name":"toha-demo","name":"demo","trusted":false}]
+
+  After the local-folder template at `/tmp/sample-list-contract/template` is
+  installed with short name `toha-demo`, the unfiltered list contains its
+  registry row and suppresses the bundled descriptor:
+
+      $ toha templates list
+      FORMAL NAME	SHORT NAME	ALIASES	TRUSTED
+      /tmp/sample-list-contract/template	toha-demo		false
+
+      $ toha templates list --json
+      [{"aliases":[],"commit":null,"formal_name":"/tmp/sample-list-contract/template","layer":"user","name":"toha-demo","path":"/tmp/sample-list-contract/template","ref":null,"source":"/tmp/sample-list-contract/template","trusted":false}]
 format: json-schema
 validation-criteria: >-
   Each system and user registry file validates against `#/$defs/registry` in
