@@ -174,6 +174,7 @@ pub struct Batch {
     /// Errors for questions in this batch whose answer, held from an earlier
     /// document, failed validation when the question was reached.
     pub errors: Rejections,
+    default_sources: IndexMap<Id, PreparedDefaultSource>,
 }
 #[derive(Debug)]
 pub enum Item {
@@ -190,6 +191,10 @@ pub struct Prompt {
     pub default: Option<Answer>,
     pub options: Vec<String>,
     pub constraints: Constraints,
+}
+#[derive(Debug)]
+struct PreparedPrompt {
+    prompt: Prompt,
     default_source: Option<PreparedDefaultSource>,
     configured_rejection: Option<Rejection>,
 }
@@ -483,7 +488,7 @@ fn make_prompt(
     t: &Template,
     a: &Answers,
     seed: &InterviewSeed,
-) -> Result<Prompt, EvalError> {
+) -> Result<PreparedPrompt, EvalError> {
     let ctx = context(t, a, seed);
     let id = &q.id;
     let title = q
@@ -563,9 +568,9 @@ fn make_prompt(
             loop_min,
             loop_max,
         },
-        default_source: prepared.as_ref().map(|value| value.source.clone()),
-        configured_rejection: None,
     };
+    let default_source = prepared.as_ref().map(|value| value.source.clone());
+    let mut configured_rejection = None;
     if let Some(prepared) = prepared {
         if let Err(rejected) =
             validate(id, &Rules::of_prompt(&prompt, q), prepared.answer.to_json())
@@ -586,7 +591,7 @@ fn make_prompt(
                 }
                 PreparedDefaultSource::Configured(origin) => {
                     prompt.default = None;
-                    prompt.configured_rejection = Some(rejection(
+                    configured_rejection = Some(rejection(
                         id,
                         format!(
                             "default {} from {} is not allowed: {}",
@@ -600,7 +605,11 @@ fn make_prompt(
             }
         }
     }
-    Ok(prompt)
+    Ok(PreparedPrompt {
+        prompt,
+        default_source,
+        configured_rejection,
+    })
 }
 fn parse_kind(id: &Id, kind: PromptKind, value: Value) -> Result<Answer, Rejection> {
     let fail = |msg: &str| rejection(id, msg);
@@ -1358,7 +1367,8 @@ impl<'a> Advance<'a> {
                             .transpose()?
                             .unwrap_or(true);
                     if active {
-                        let prompt = make_prompt(q, self.template, &self.answers, &self.seed)?;
+                        let prepared = make_prompt(q, self.template, &self.answers, &self.seed)?;
+                        let prompt = prepared.prompt;
                         if let Some(raw) = self.held.shift_remove(&q.id) {
                             match check_answer(
                                 self.template,
@@ -1383,8 +1393,11 @@ impl<'a> Advance<'a> {
                                 Err(CheckError::Eval(e)) => return Err(e),
                             }
                         }
-                        if let Some(error) = prompt.configured_rejection.clone() {
+                        if let Some(error) = prepared.configured_rejection {
                             self.batch.errors.push(error);
+                        }
+                        if let Some(source) = prepared.default_source {
+                            self.batch.default_sources.insert(q.id.clone(), source);
                         }
                         self.batch.items.push(Item::Prompt(prompt));
                     } else {
@@ -1753,7 +1766,12 @@ impl<'a> Pending<'a> {
                 // a document answers its question.
                 (None, Some(error)) => Err(error.clone().into()),
                 (None, None) => match &p.default {
-                    Some(v) if matches!(p.default_source, Some(PreparedDefaultSource::Seed)) => {
+                    Some(v)
+                        if matches!(
+                            self.batch.default_sources.get(&p.id),
+                            Some(PreparedDefaultSource::Seed)
+                        ) =>
+                    {
                         self.check_inner(&p.id, RawAnswer(v.to_json()))
                             .map_err(|e| match e {
                                 CheckError::Rejected(r) => rejection(

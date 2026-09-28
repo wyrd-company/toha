@@ -1497,6 +1497,39 @@ fn configured_default_that_fails_a_constraint_is_attributed_to_configuration() {
 }
 
 #[test]
+fn flattening_configured_defaults_explicitly_drops_their_source() {
+    let template = Template::load(&early_template()).unwrap();
+    let resolution = toha::interview::configured_defaults(
+        "sample",
+        &template,
+        &Default::default(),
+        &configured(json!({"mode": "medium"})),
+    )
+    .unwrap();
+    let (defaults, _) = resolution.into_flat_defaults();
+    let Interview::Asking(pending) =
+        Interview::start(&template, Seed { defaults, ..seed() }).unwrap()
+    else {
+        panic!("expected questions")
+    };
+    let Interview::Asking(pending) = pending
+        .answer(protocol::parse_answers(r#"{"name":"Alpha","label":"First"}"#).unwrap())
+        .unwrap()
+    else {
+        panic!("expected questions")
+    };
+    let Err(AnswerError::Rejected { rejections, .. }) =
+        pending.answer(protocol::parse_answers("{}").unwrap())
+    else {
+        panic!("expected a rejection")
+    };
+    assert_eq!(
+        rejections[0].to_string(),
+        "mode: default \"medium\" from configured default for question \"mode\" is not allowed: must be one of: fast, slow"
+    );
+}
+
+#[test]
 fn referenced_configured_constraint_error_keeps_mapping_preset_and_value() {
     let (_folder, template) = inline(
         "name: sample\ninterview: [{ id: mode, type: select, prompt: Mode?, options: [fast, slow] }]\n",

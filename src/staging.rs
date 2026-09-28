@@ -139,9 +139,7 @@ impl Store {
     }
     fn legacy_path_for(&self, target: &CanonicalTarget) -> Option<PathBuf> {
         let path = target.as_path();
-        if path.parent().is_none() {
-            return None;
-        }
+        path.parent()?;
         let mut legacy = path.as_os_str().to_os_string();
         legacy.push(std::path::MAIN_SEPARATOR_STR);
         let digest = Sha256::digest(Path::new(&legacy).to_string_lossy().as_bytes());
