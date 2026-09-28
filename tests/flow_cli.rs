@@ -227,6 +227,25 @@ fn abort_removes_the_record_under_the_canonical_key() {
 }
 
 #[test]
+fn a_rejecting_and_aborting_continue_keeps_the_staged_record() {
+    // Behavior 21 at the driver: a document that both fails validation and
+    // would fire an abort returns the rejection (exit 4) and never removes the
+    // staged record — the removal runs only after a committed end.
+    let interview = "  - { id: code, type: text, prompt: Code?, validate: { min: 2 } }\n  - flow: abort\n    when: \"code == 'x'\"\n";
+    let case = Case::new(interview);
+    let staged = case.run(&["stage", case.template(), case.target(), "--async"]);
+    assert_eq!(code(&staged), 4, "{}", stderr(&staged));
+    assert!(case.staged());
+
+    let rejected = case.send(&["continue", case.target(), "-"], r#"{"code": "x"}"#);
+    assert_eq!(code(&rejected), 4, "{}", stderr(&rejected));
+    assert!(
+        case.staged(),
+        "a rejected document removed the staged record"
+    );
+}
+
+#[test]
 fn flow_dry_run_and_cli_dry_run_compose_without_writing() {
     // Behavior 13: a flow dry-run alone, and combined with `--dry-run`, both
     // show the plan and write nothing, exit 0, neither applying twice.
