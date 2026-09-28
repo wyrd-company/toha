@@ -8,74 +8,87 @@ relationships:
     - jinja-includes
 ---
 
-# Jinja context approved design publication
+# Jinja context design publication
 
 - Postplan URL: <https://t30jlda1nnbd.postplan.dev>
 - Draft ID: `t30jlda1nnbd`
-- Version: 6
-- Approved design revision:
-  `df80b79e2d21740c667d15892541b995b70219cc`
-- Epic base and merge-base:
-  `a62061fdce74b6b1a743c70565dd9fbeec2413bb`
+- Version: 7
+- Exact design content revision (SHA-256):
+  `4627b6e93e1170f74025b1d191f548354a7bd2a18a0e69f9ddc202613389a73c`
+- Accepted epic base and merge-base: `8a19269d78f6da0738edb17e56310621f143923d`
 - Portable source: `brief.source.html`
 - Built deck: `brief.deck.html`
-- Design SHA-256:
-  `18dcbee04289d4a05463178ae091f52654cef1c106e871a0586d5a062d60fbc0`
-- Verification SHA-256:
-  `ad3c7c0d8e52815467d6eedf2fdce20039b2e57aaeeb707a26c1aa4295dfc020`
-- Brief source SHA-256:
-  `0220427f74c76d1b25a316106cac51ef682f66464f0f4764beaf0c1e855b764f`
-- Built and published raw SHA-256:
-  `841e59f3c89a4f5feac489ad48d62ca8221a6d989e5ffc17d9e637801eb97f40`
-- Built and published raw bytes: 319768
+- Design SHA-256: `4627b6e93e1170f74025b1d191f548354a7bd2a18a0e69f9ddc202613389a73c`
+- Design YAML SHA-256: `db72b87d054a4aa97fee59fd71884ce5a9503d9fe4ee7bda657b146e4a4285b7`
+- Verification SHA-256: `02f08138a4569ff13e6751427ace57d6c632b4acd770209fa41a790e8dc4fd18`
+- Rationale SHA-256: `50f96cbbc32902c76d7358ba3e521363a8afe824ac6a1d85d70f678acae86896`
+- Producer composition re-ground SHA-256: `ddbe4a6e8a1640ac9ebcb741d45b6cbad6f0f830ac551cebf72f655411b231e6`
+- Brief source SHA-256: `7f87c3ee127ce1629e1bc7e9db731b72b30c0fe9eb2a6c0ce8588d9d4104ad0f`
+- Built and published raw SHA-256: `02357d17140b4ac210143e10bdb295cf13318fd39c9db17df1ee7580f454f435`
+- Built and published raw bytes: 319927
 - Published `Reveal.initialize` count: 1
 - Published horizontal positions: 14
-- Published slide count: 35
+- Published slide count: 35 (all horizontal and vertical positions)
 
-The committed source rebuilds byte-for-byte to the committed deck. The local
-deck, published raw response, and published deck response are byte-identical.
-All 35 horizontal and vertical slides were rendered after the Reveal transition
-settled and inspected at 1280×720. Programmatic bounds checks found no viewport,
-document-body, slide-section, or visible-descendant overflow. Dense seam,
-interface, trust, data, replay, analysis, arena, and closure slides were also
-inspected at original resolution. No slide clips or requires scrolling.
-
-The approved design uses the four-case stage matrix. A stage without references
-or `--trust` records `Unavailable` with zero environment reads. Explicit
-`stage --trust` captures the fixed five once even without an initial reference.
-A stage with references but no flag fails before interview or staged-state
-progress. References with the flag capture the fixed five once. Continue has no
-trust flag, live environment read, recheck, or access abort/retry. Mutable
-folders use the recorded result without a source or program identity refusal.
-
-The exact epic base contains the configured-presets implementation, the
-hook-review contract, the Jinja-include design, and the canonical-target
-producer. Presets remain answer defaults and are not Jinja context.
-`ConfigEntry` remains the sole origin source. `configured_defaults` carries each
-winning mapping and optional preset origin in private `ResolvedDefault` entries.
-Configured start and replay consume that `Resolution` into
-`DefaultBankEntry::Configured` with the invocation context; only the separate
-ordinary `Seed.defaults` route stays flat. Context adds no second origin map or
-resolver.
-
-Phase E re-grounding machine-captured the unchanged integration base above and
-the read-only active producer implementation at
-`807ad9cc4b510f30dc927242c214a7201d54c72c`. The latter confirms the approved
-private origin-bearing storage and consuming routes but remains independently
-owned; this design adds no implementation dependency.
-
-The include binding is revision
-`b87a5482b97e81524272bee1e526698c862754db`, final-design SHA-256
-`3c996d09a6f845ba1125f1447ca8ff110dfb6149a0862f21845cff9c7b126eeb`.
-The canonical-target contract was approved at revision
-`067c8d2e7c95cf2b16ab3a4103f8b1a8fda331af`, design SHA-256
-`72a564799b95ab1c187c913ac14ef14938f880bf2ab24ec337c03f887991457b`,
-and integrated at revision `dfe7ba017ebef525310db8b8ab4ead58fae2d147`,
+This revision composes the separately approved Jinja-context decision with the
+accepted producer implementation. Bob's error-attribution approval binds the
+producer's original checkpoint `067c8d2e7c95cf2b16ab3a4103f8b1a8fda331af`,
 design SHA-256
-`9560139e48798429a95e06a695dea703817b673d2e18f19e25f3fe4a3efe9b39`.
-Consumers receive only `CanonicalTarget` from `canonical_target(&Path) ->
-Result<CanonicalTarget, StagingError>`, inspect it through `as_path()`, and add
-no unchecked constructor or second normalizer.
+`72a564799b95ab1c187c913ac14ef14938f880bf2ab24ec337c03f887991457b`, all
+recommendations including choices 1A–5A, and the separately disclosed removal
+of raw-path inputs from identity-sensitive consumers. The accepted producer
+factory is `canonical_target(&Path) -> Result<CanonicalTarget, StagingError>`;
+`as_path()` is its only projection. There is no `TargetError`, unchecked
+constructor, or second normalizer.
 
-This design publication changes no runtime or shared canonical artifact. The
-paired implementation owns those changes after design review.
+The actual base contains origin-bearing configured `Resolution`, private
+`ResolvedDefault { raw, origin }`, and `DefaultBankEntry::Configured`. The
+design's context-bearing configured start consumes that resolution through
+`start_with_context`; configured replay keeps `replay_with_resolution` and
+receives the restored context. Only the distinct ordinary flat `Seed` route
+uses flat defaults. `ConfigEntry` remains the sole origin source, and
+`into_flat_defaults()` remains an explicit provenance-dropping escape.
+
+This producer approval does not expand Bob's earlier Jinja-context approval.
+The four-case stage matrix, five named optional values, fixed-five snapshot,
+no environment read without an explicit carried stage grant, replay without a
+trust flag or live recheck, and approved mutable-folder behavior remain under
+that context approval. No new context decision is requested by this producer
+alignment.
+
+## Composition evidence
+
+The exact base source was inspected in `src/config.rs`, `src/interview.rs`,
+`src/staging.rs`, `src/main.rs`, `src/plan.rs`, and `src/protocol.rs`. The
+source-to-consumer chain, signatures, warning order, failure attribution, and
+caller evidence are in
+[producer-composition-reground.md](producer-composition-reground.md).
+
+The Jinja context uses the four-case stage matrix. No references and no flag
+records unavailable with zero reads. An explicit `stage --trust` captures the
+fixed five once even without an initial reference. References without the flag
+fail before interview or staged-state progress. References with the flag
+capture the fixed five once. Continue has no trust option, live environment
+read, recheck, or access abort/retry. Mutable folders use the recorded result
+without a source or program identity refusal.
+
+The configured-presets contract remains answer data, not Jinja context.
+`ConfigEntry` remains the sole origin source. The stage adapter maps only the
+typed environment trust refusal to `StagingError::EnvironmentTrustRequired`;
+other admission faults retain their source and evaluator detail.
+
+## Validation and rendered deck
+
+The exact-head task gates, full artifact checks, independent review basis,
+Postplan raw-byte equality, and per-slide visual/bounds results are recorded in
+the task handoff. The deck is rebuilt from `brief.source.html`; the committed
+deck and published response are byte-identical. Every horizontal and vertical
+slide was rendered after a 650 ms transition settle and checked at 1280×720 for
+viewport, body, section, and visible-descendant bounds; all 35 had zero bounds
+violations. All 35 renders were visually scanned in a contact sheet. The changed
+target-interface slide was inspected at full resolution. Manager-facing slides
+use plain language, side-by-side before/after examples, and vertical stacks for
+long decisions and lists. Technical detail stays in a short appendix.
+
+This design task changes no runtime or shared canonical artifact. The paired
+implementation owns those changes after review.

@@ -157,7 +157,7 @@ impl CanonicalTarget {
     pub fn as_path(&amp;self) -&gt; &amp;Path;
 }</code></pre>
     <p>No unchecked constructor. No <code>From&lt;PathBuf&gt;</code>. No consumer normalizer.</p>
-    <p class="muted">Approved at <code>067c8d2e…</code>; integrated at <code>dfe7ba0…</code>.</p>
+    <p class="muted">Approved at <code>067c8d2e…</code>; implemented on the accepted base <code>8a19269d…</code>. The factory returns producer-owned <code>StagingError</code>. This target approval does not change the separately approved context policy.</p>
   </section>
   <section>
     <h2>Public interface — one deep admission call</h2>

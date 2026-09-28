@@ -135,8 +135,10 @@ let plan = Plan::build(&template, &completed, &target)?;
 The approved target producer contract is anchored at revision
 `067c8d2e7c95cf2b16ab3a4103f8b1a8fda331af`, design SHA-256
 `72a564799b95ab1c187c913ac14ef14938f880bf2ab24ec337c03f887991457b`,
-and integrated at revision `dfe7ba017ebef525310db8b8ab4ead58fae2d147`,
-design SHA-256
+and integrated in the accepted epic base
+`8a19269d78f6da0738edb17e56310621f143923d` (merge commit
+`8a19269d78f6da0738edb17e56310621f143923d`). The published producer design is
+revision `dfe7ba017ebef525310db8b8ab4ead58fae2d147`, design SHA-256
 `9560139e48798429a95e06a695dea703817b673d2e18f19e25f3fe4a3efe9b39`:
 
 ```rust
@@ -152,6 +154,8 @@ impl CanonicalTarget {
 `CanonicalTarget` has no public unchecked constructor and no `From<PathBuf>`.
 Context, storage, protocol, plan, and apply consumers receive this carrier and
 inspect it only through `as_path()`. No context code normalizes a path.
+The result error is the producer-owned `StagingError`; the accepted contract and
+source define no `TargetError`.
 
 `StagedRecord.target` remains serialized path text. `Store::load` receives the
 already constructed `&CanonicalTarget`, validates the stored text against it,
@@ -707,7 +711,7 @@ Adding required `Seed.context` is a deliberate source break for ordinary crate
 callers, but `Seed.defaults` remains the flat application-default route.
 The configured replay signature likewise gains the restored
 `InvocationContext`; the paired implementation changes its internal command
-callers after the producer implementation is integrated. The producer's
+callers on the integrated producer base. The producer's
 origin-bearing `Resolution` and method identity remain intact.
 Configured start consumes the private origin-bearing `Resolution` through
 `start_with_context`; configured replay consumes it through

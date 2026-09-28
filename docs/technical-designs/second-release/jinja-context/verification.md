@@ -27,7 +27,8 @@ relationships:
 - **Canonical target:** approved producer revision
   `067c8d2e7c95cf2b16ab3a4103f8b1a8fda331af`, design SHA-256
   `72a564799b95ab1c187c913ac14ef14938f880bf2ab24ec337c03f887991457b`.
-  The design is integrated at revision
+  The accepted implementation is integrated in epic revision
+  `8a19269d78f6da0738edb17e56310621f143923d`; its published design is revision
   `dfe7ba017ebef525310db8b8ab4ead58fae2d147`, design SHA-256
   `9560139e48798429a95e06a695dea703817b673d2e18f19e25f3fe4a3efe9b39`.
   The exact interface is
@@ -47,11 +48,18 @@ relationships:
   their transitive closure, and does not turn YAML `!include` or configuration
   fields into loader surfaces.
 
-The integration base is `a62061fdce74b6b1a743c70565dd9fbeec2413bb`.
-Its runtime still has the predecessor flat implementation and is grounding, not
-the origin-bearing producer contract that the paired implementation composes
-with. Runtime integration is owned by the active producer task.
-The complete source-to-merge-to-default-bank-to-caller trace is preserved in
+The exact refreshed integration base is
+`8a19269d78f6da0738edb17e56310621f143923d`; the task branch merge-base equals
+it. The source at this base contains the producer-owned opaque
+`CanonicalTarget(PathBuf)`, private `Resolution.defaults` of
+`ResolvedDefault { raw, origin }`, `DefaultBankEntry::Configured`, and the
+separate public flat `Seed`. `canonical_target(&Path)` returns
+`Result<CanonicalTarget, StagingError>`; `as_path()` is the only projection.
+`Resolution::start` preserves configured entries, while
+`into_flat_defaults()` is the explicit provenance-dropping route. Existing
+`StagedRecord::replay_with_resolution` consumes `Resolution`; the context design
+adds the restored context parameter and sibling start path. The actual source
+defines no `TargetError`. The complete source-to-consumer trace is preserved in
 [producer-composition-reground.md](producer-composition-reground.md).
 
 ## Requirement matrix

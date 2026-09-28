@@ -133,8 +133,11 @@ approved-decisions:
     a captured fixed-five snapshot supplies later-added references. No source or
     program identity refusal is introduced.
   target: >-
-    Consume the sole producer CanonicalTarget factory result and StagingError;
-    use as_path() only and add no unchecked constructor or consumer normalizer.
+    Consume canonical_target(&Path) -> Result<CanonicalTarget, StagingError>
+    from the sole producer factory in accepted epic base
+    8a19269d78f6da0738edb17e56310621f143923d. Use as_path() only; add no
+    unchecked constructor, TargetError, or consumer normalizer. This producer
+    approval does not expand the separate Jinja-context approval.
 out-of-scope: >-
   Runtime or shared canonical edits; arbitrary environment access; a generic
   environment map; a new trust command or digest; a second target normalizer;

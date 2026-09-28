@@ -83,11 +83,15 @@ access-related abort/restage path.
 The target shape consumes approved producer revision
 `067c8d2e7c95cf2b16ab3a4103f8b1a8fda331af`, design SHA-256
 `72a564799b95ab1c187c913ac14ef14938f880bf2ab24ec337c03f887991457b`,
-integrated at `dfe7ba017ebef525310db8b8ab4ead58fae2d147` with design
+published as `dfe7ba017ebef525310db8b8ab4ead58fae2d147` with design
 SHA-256
 `9560139e48798429a95e06a695dea703817b673d2e18f19e25f3fe4a3efe9b39`.
-It uses `CanonicalTarget`, `StagingError`, `as_path()`, and no unchecked
-constructor or consumer normalization.
+Its implementation is integrated in accepted epic revision
+`8a19269d78f6da0738edb17e56310621f143923d`. It uses
+`canonical_target(&Path) -> Result<CanonicalTarget, StagingError>`,
+`CanonicalTarget::as_path()`, and no unchecked constructor or consumer
+normalization. This producer approval does not extend the separately approved
+Jinja context access policy.
 
 ## Tradeoffs accepted
 
