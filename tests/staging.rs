@@ -497,6 +497,13 @@ fn canonical_targets_have_one_stable_spelling_for_every_path_class() {
         canonical_target(&existing).unwrap(),
         canonical_target(&existing_with_separator).unwrap()
     );
+    assert_eq!(
+        canonical_target(&existing)
+            .unwrap()
+            .as_path()
+            .to_string_lossy(),
+        existing.canonicalize().unwrap().to_string_lossy()
+    );
 
     let current = std::env::current_dir().unwrap();
     assert_eq!(
