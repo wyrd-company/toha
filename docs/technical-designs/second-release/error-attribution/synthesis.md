@@ -138,10 +138,10 @@ Rejected:
   tests.
 
 No red flag remains that requires reframing. The configured-default seam is an
-explicit amendment to a final prerequisite and therefore remains a Phase C
-approval item rather than an assumed implementation detail.
+explicit amendment to a final prerequisite and is included in the checkpoint
+approval rather than treated as an assumed implementation detail.
 
-## Product recommendations for Phase C
+## Approved product decisions
 
 1. **Undecidable early skip — reject now.** The value already fails a literal,
    answer-independent rule. A rejected document is not persisted; the caller can
@@ -154,8 +154,8 @@ approval item rather than an assumed implementation detail.
    constraint whose references are unavailable.
 4. **Canonical target — use the opaque type.** This makes bypass impossible for
    crate callers. It changes public planning, apply, store, record, and context
-   signatures from raw paths and requires explicit approval as a source API
-   restriction.
+   signatures from raw paths. The checkpoint approval explicitly includes this
+   source API restriction.
 
 Typed literal default faults name `<id>.default` without backticks. Expression
 and string-template defaults retain exact authored source in backticks.

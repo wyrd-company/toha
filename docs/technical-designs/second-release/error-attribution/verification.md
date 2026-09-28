@@ -20,9 +20,30 @@ relationships:
 - Approved configured behavior: exact `formal_name`, `presets`,
   `{ preset: <name> }`, mapping-first attribution, optional winning preset
   origin, one-hop resolution, and validate-when-defined.
-- The public flat `Seed.defaults` route remains available. This design proposes
-  a separate consuming `Resolution::start` and staged replay route for
-  configured provenance.
+- The public flat `Seed.defaults` route remains available. Configured callers
+  use the approved consuming `Resolution::start` and staged replay route so
+  provenance stays attached to the selected value.
+
+## Approved checkpoint
+
+The implementation contract is bound to commit
+`067c8d2e7c95cf2b16ab3a4103f8b1a8fda331af`, design SHA-256
+`72a564799b95ab1c187c913ac14ef14938f880bf2ab24ec337c03f887991457b`,
+and Postplan draft `a2q5sdtr0ctw` version 1. The approved selections are:
+
+1. Reject a known-invalid early answer when its skip is unresolved.
+2. Omit a proven-skipped early error beside a current failure and emit no
+   warning from the rejected probe.
+3. Check a skipped template default against ready constraints without forcing
+   unavailable dynamic dependencies.
+4. Consume one origin-bearing `Resolution` for configured start and replay
+   while preserving the ordinary flat `Seed` route.
+5. Require the opaque `CanonicalTarget` from the sole factory at every
+   identity-sensitive public consumer.
+
+Selection 5 includes the disclosed removal of raw `&Path` from those supported
+public methods. No other supported capability, permission, access, timeout,
+pinned-version, subprocess, or trust-policy change is part of the approval.
 
 ## Requirement matrix
 
@@ -92,8 +113,7 @@ and compile-fail target checks. Its score did not select the base.
 - Configured-default naming, selection, precedence, migration, and schema do not
   change.
 - The opaque target changes public signatures that currently accept `&Path`.
-  This is an explicit Phase C capability decision and cannot be implemented
-  without Bob's approval of the exact design.
+  The exact checkpoint approval explicitly includes this capability change.
 
 ## Constraint audit
 
@@ -123,6 +143,6 @@ and compile-fail target checks. Its score did not select the base.
 
 Grounding, three candidate packages, contamination disposition, independent
 score, readonly cross-judge, synthesis, red-flag screen, and this requirement
-audit are complete. Implementation remains closed until Bob approves the exact
-design and the four stated product/interface recommendations in the published
-brief.
+audit are complete. The exact checkpoint and all five recommended selections
+are approved. The paired implementation remains closed only on its recorded
+merge prerequisites and this design's independent review and integration.

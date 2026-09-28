@@ -57,9 +57,9 @@
     give every target consumer one canonical identity.
   </p>
   <p>
-    <span class="tag warn">Bob decision required</span>
+    <span class="tag">Approved design</span>
     <span class="tag">design only</span>
-    <span class="tag">implementation closed</span>
+    <span class="tag">implementation contract ready</span>
   </p>
 </section>
 
@@ -404,19 +404,19 @@ compact, detailed</code></pre>
 </section>
 
 <section id="decisions">
-  <h2>Decisions needed first</h2>
+  <h2>Approved decisions</h2>
   <section>
     <h2>1 · Early failure when skip is unresolved</h2>
     <div class="two">
       <div>
-        <p><strong>A · Reject now — recommended</strong></p>
+        <p><strong>A · Reject now — approved</strong></p>
         <p>
           The value already fails an answer-independent rule, so accepted staged
           history stays valid.
         </p>
       </div>
       <div>
-        <p><strong>B · Defer</strong></p>
+        <p><strong>B · Defer — rejected</strong></p>
         <p>
           Accept the document and report the known failure only when the
           question is reached.
@@ -428,14 +428,14 @@ compact, detailed</code></pre>
     <h2>2 · Proven skipped beside another failure</h2>
     <div class="two">
       <div>
-        <p><strong>A · Omit it — recommended</strong></p>
+        <p><strong>A · Omit it — approved</strong></p>
         <p>
           The value is unused. Keep the real current error; emit no warning
           until a corrected document commits.
         </p>
       </div>
       <div>
-        <p><strong>B · Keep it</strong></p>
+        <p><strong>B · Keep it — rejected</strong></p>
         <p>
           Return an error for the unused early value whenever any current answer
           fails.
@@ -447,14 +447,14 @@ compact, detailed</code></pre>
     <h2>3 · Skipped template default</h2>
     <div class="two">
       <div>
-        <p><strong>A · Check ready rules — recommended</strong></p>
+        <p><strong>A · Check ready rules — approved</strong></p>
         <p>
           A template-owned value must satisfy every rule already knowable;
           unavailable dynamic rules do not block the skipped branch.
         </p>
       </div>
       <div>
-        <p><strong>B · Active questions only</strong></p>
+        <p><strong>B · Active questions only — rejected</strong></p>
         <p>
           A skipped default can violate its ready template rules and still enter
           downstream answers.
@@ -466,14 +466,14 @@ compact, detailed</code></pre>
     <h2>4 · Configured provenance seam</h2>
     <div class="two">
       <div>
-        <p><strong>A · Consuming Resolution — recommended</strong></p>
+        <p><strong>A · Consuming Resolution — approved</strong></p>
         <p>
           Keep flat Seed for ordinary callers; configured start and replay
           consume one value-plus-origin result.
         </p>
       </div>
       <div>
-        <p><strong>B · Companion maps</strong></p>
+        <p><strong>B · Companion maps — rejected</strong></p>
         <p>
           Keep the current resolver result and ask callers to synchronize values
           with origins.
@@ -489,14 +489,14 @@ compact, detailed</code></pre>
     <h2>5 · Canonical target carrier</h2>
     <div class="two">
       <div>
-        <p><strong>A · Opaque type — recommended</strong></p>
+        <p><strong>A · Opaque type — approved</strong></p>
         <p>
           Only the canonical constructor can create target identity;
           compile-time checks cover every consumer.
         </p>
       </div>
       <div>
-        <p><strong>B · Keep PathBuf</strong></p>
+        <p><strong>B · Keep PathBuf — rejected</strong></p>
         <p>
           Fewer signature edits, but public crate callers can bypass
           normalization.
@@ -504,7 +504,7 @@ compact, detailed</code></pre>
       </div>
     </div>
     <p>
-      <span class="tag err">Capability approval</span> A removes raw
+      <span class="tag warn">Capability approved</span> A removes raw
       <code>&amp;Path</code> access from supported public target-consuming
       methods.
     </p>
@@ -542,8 +542,8 @@ compact, detailed</code></pre>
     </li>
   </ul>
   <p class="muted">
-    Implementation stays closed until the exact design revision and decisions
-    are approved.
+    The paired implementation is bound to this design after independent review
+    and integration.
   </p>
 </section>
 

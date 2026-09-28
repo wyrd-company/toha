@@ -617,8 +617,8 @@ template format and protocol schemas need no structural change.
 
 ## Size and complexity
 
-Expected implementation time is one to two focused agent days after approval and
-base refresh. Complexity is moderate: the change touches public target
+Expected implementation time is one to two focused agent days after base
+refresh. Complexity is moderate: the change touches public target
 signatures, configured start/replay wiring, prompt preparation, one
 transactional answer path, storage compatibility, canonical documents, and
 cross-route tests. It adds no new dependency, concurrency, protocol shape, or
