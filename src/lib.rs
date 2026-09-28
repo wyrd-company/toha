@@ -5,6 +5,7 @@
 // ---
 pub mod apply;
 pub mod config;
+mod fault;
 pub mod hook;
 pub mod interview;
 mod jinja;

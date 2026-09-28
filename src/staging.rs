@@ -2,6 +2,7 @@
 // relationships:
 //   implements: architecture
 // ---
+use crate::interview::Resolution;
 use crate::{AnswerError, Interview, RawAnswer, RawAnswers, Seed, Template};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -37,7 +38,61 @@ pub enum StagingError {
     Replay(String),
 }
 
-pub fn canonical_target(path: &Path) -> Result<PathBuf, StagingError> {
+/// A target identity produced only by [`canonical_target`].
+///
+/// Raw paths cannot enter identity-sensitive consumers:
+///
+/// ```compile_fail
+/// use std::path::PathBuf;
+/// use toha::staging::{StagedRecord, Store};
+/// let raw = PathBuf::from("output");
+/// let store: Store = unimplemented!();
+/// let record: StagedRecord = unimplemented!();
+/// store.save(&raw, &record);
+/// ```
+///
+/// ```compile_fail
+/// use std::path::PathBuf;
+/// use toha::{Completed, Plan, Template};
+/// let raw = PathBuf::from("output");
+/// let template: Template = unimplemented!();
+/// let completed: Completed = unimplemented!();
+/// Plan::build(&template, &completed, &raw);
+/// ```
+///
+/// ```compile_fail
+/// use std::path::PathBuf;
+/// use toha::protocol::Context;
+/// use toha::staging::StagedRecord;
+/// let raw = PathBuf::from("output");
+/// let record: StagedRecord = unimplemented!();
+/// Context::new(&raw, &record);
+/// ```
+///
+/// ```compile_fail
+/// use std::path::PathBuf;
+/// use toha::{ApplyOptions, Plan};
+/// use toha::hook::RecordingRunner;
+/// let raw = PathBuf::from("output");
+/// let plan: Plan = unimplemented!();
+/// plan.apply(&raw, ApplyOptions::default(), &RecordingRunner::default());
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CanonicalTarget(PathBuf);
+
+impl CanonicalTarget {
+    pub fn as_path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for CanonicalTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.display().fmt(f)
+    }
+}
+
+pub fn canonical_target(path: &Path) -> Result<CanonicalTarget, StagingError> {
     let absolute = if path.is_absolute() {
         path.to_owned()
     } else {
@@ -61,11 +116,14 @@ pub fn canonical_target(path: &Path) -> Result<PathBuf, StagingError> {
             .parent()
             .ok_or_else(|| StagingError::Replay("target has no existing ancestor".into()))?;
     }
-    Ok(ancestor.canonicalize()?.join(
-        normalized
-            .strip_prefix(ancestor)
-            .expect("ancestor is a prefix"),
-    ))
+    let suffix = normalized
+        .strip_prefix(ancestor)
+        .expect("ancestor is a prefix");
+    let mut canonical = ancestor.canonicalize()?;
+    if !suffix.as_os_str().is_empty() {
+        canonical.push(suffix);
+    }
+    Ok(CanonicalTarget(canonical))
 }
 
 pub struct Store {
@@ -75,21 +133,64 @@ impl Store {
     pub fn new(dir: PathBuf) -> Self {
         Self { dir }
     }
-    pub fn path_for(&self, target: &Path) -> PathBuf {
-        let digest = Sha256::digest(target.to_string_lossy().as_bytes());
+    pub fn path_for(&self, target: &CanonicalTarget) -> PathBuf {
+        let digest = Sha256::digest(target.as_path().to_string_lossy().as_bytes());
         self.dir.join(format!("{digest:x}.json"))
     }
-    pub fn load(&self, target: &Path) -> Result<Option<StagedRecord>, StagingError> {
-        match fs::read(self.path_for(target)) {
-            Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e.into()),
+    fn legacy_path_for(&self, target: &CanonicalTarget) -> Option<PathBuf> {
+        let path = target.as_path();
+        if path.parent().is_none() {
+            return None;
         }
+        let mut legacy = path.as_os_str().to_os_string();
+        legacy.push(std::path::MAIN_SEPARATOR_STR);
+        let digest = Sha256::digest(Path::new(&legacy).to_string_lossy().as_bytes());
+        Some(self.dir.join(format!("{digest:x}.json")))
     }
-    pub fn save(&self, record: &StagedRecord) -> Result<(), StagingError> {
+    pub fn load(&self, target: &CanonicalTarget) -> Result<Option<StagedRecord>, StagingError> {
+        let read = |path: PathBuf| -> Result<Option<StagedRecord>, StagingError> {
+            match fs::read(path) {
+                Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(e) => Err(e.into()),
+            }
+        };
+        if let Some(record) = read(self.path_for(target))? {
+            if canonical_target(&record.target)? != *target {
+                return Err(StagingError::Replay(
+                    "staged record target does not match its storage key".into(),
+                ));
+            }
+            return Ok(Some(record));
+        }
+        let Some(path) = self.legacy_path_for(target) else {
+            return Ok(None);
+        };
+        let Some(record) = read(path)? else {
+            return Ok(None);
+        };
+        if canonical_target(&record.target)? != *target {
+            return Err(StagingError::Replay(
+                "staged record target does not match its storage key".into(),
+            ));
+        }
+        Ok(Some(record))
+    }
+    pub fn save(
+        &self,
+        target: &CanonicalTarget,
+        record: &StagedRecord,
+    ) -> Result<(), StagingError> {
+        if canonical_target(&record.target)? != *target {
+            return Err(StagingError::Replay(
+                "staged record target does not match the active target".into(),
+            ));
+        }
         fs::create_dir_all(&self.dir)?;
-        let target = self.path_for(&record.target);
-        let bytes = serde_json::to_vec_pretty(record)?;
+        let canonical_path = self.path_for(target);
+        let mut stored = record.clone();
+        stored.target = target.as_path().to_owned();
+        let bytes = serde_json::to_vec_pretty(&stored)?;
         let (temp, mut file) = loop {
             let n = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
             let temp = self
@@ -108,14 +209,25 @@ impl Store {
         let result = (|| {
             file.write_all(&bytes)?;
             file.sync_all()?;
-            fs::rename(&temp, target)
+            fs::rename(&temp, &canonical_path)
         })();
         if result.is_err() {
             let _ = fs::remove_file(&temp);
         }
-        result.map_err(Into::into)
+        result.map_err(StagingError::Io)?;
+        if let Some(legacy) = self
+            .legacy_path_for(target)
+            .filter(|p| p != &canonical_path)
+        {
+            match fs::remove_file(legacy) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Ok(())
     }
-    pub fn remove(&self, target: &Path) -> Result<bool, StagingError> {
+    pub fn remove(&self, target: &CanonicalTarget) -> Result<bool, StagingError> {
         match fs::remove_file(self.path_for(target)) {
             Ok(()) => Ok(true),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
@@ -137,8 +249,27 @@ impl StagedRecord {
             .now
             .parse()
             .map_err(|e: jiff::Error| StagingError::Replay(e.to_string()))?;
-        let mut interview = Interview::start(template, Seed { now, defaults })
+        let interview = Interview::start(template, Seed { now, defaults })
             .map_err(|e| StagingError::Replay(e.to_string()))?;
+        self.replay_from(interview)
+    }
+
+    pub fn replay_with_resolution<'a>(
+        &self,
+        template: &'a Template,
+        resolution: Resolution,
+    ) -> Result<Interview<'a>, StagingError> {
+        let now = self
+            .now
+            .parse()
+            .map_err(|e: jiff::Error| StagingError::Replay(e.to_string()))?;
+        let interview = resolution
+            .start(template, now)
+            .map_err(|e| StagingError::Replay(e.to_string()))?;
+        self.replay_from(interview)
+    }
+
+    fn replay_from<'a>(&self, mut interview: Interview<'a>) -> Result<Interview<'a>, StagingError> {
         for submission in &self.submissions {
             let Interview::Asking(pending) = interview else {
                 return Err(StagingError::Replay(

@@ -5,6 +5,7 @@
 use crate::{
     AnswerError, Batch, Completed, EvalError, Id, Interview, Item, Pending, Prompt, PromptKind,
     RawAnswer, RawAnswers, Rejections, Template,
+    staging::{CanonicalTarget, StagedRecord},
 };
 use indexmap::IndexMap;
 use serde_json::{Map, Value, json};
@@ -12,10 +13,19 @@ use std::sync::LazyLock;
 
 #[derive(Debug, Clone)]
 pub struct Context {
-    pub target: String,
-    pub template: String,
+    target: String,
+    template: String,
     /// The resolved commit of a git template; `None` for a local folder.
-    pub commit: Option<String>,
+    commit: Option<String>,
+}
+impl Context {
+    pub fn new(target: &CanonicalTarget, record: &StagedRecord) -> Self {
+        Self {
+            target: target.to_string(),
+            template: record.template.clone(),
+            commit: Some(record.commit.clone()).filter(|commit| !commit.is_empty()),
+        }
+    }
 }
 fn context_value(context: &Context) -> Value {
     json!({"target": context.target, "template": context.template, "commit": context.commit})

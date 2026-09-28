@@ -26,7 +26,7 @@ use cli::{
     resolve::{ResolveError, ResolvedTemplate},
 };
 use toha::{
-    AnswerError, Applied, ApplyOptions, Interview, Plan, Seed, Template,
+    AnswerError, Applied, ApplyOptions, Interview, Plan, Template,
     hook::ProcessRunner,
     protocol::{self, Context, Headless},
     staging::{self, StagedRecord, Store},
@@ -417,36 +417,32 @@ fn report_config_warnings(warnings: &[String]) {
         eprintln!("warning: {warning}");
     }
 }
-fn seed(
+fn resolution(
     formal_name: &str,
     template: &Template,
     config: &toha::config::Config,
-) -> Result<Seed, String> {
+) -> Result<(toha::interview::Resolution, jiff::Zoned), String> {
     let now = match std::env::var("TOHA_NOW") {
         Ok(value) => value.parse().map_err(|e: jiff::Error| e.to_string())?,
         Err(std::env::VarError::NotPresent) => jiff::Zoned::now(),
         Err(e) => return Err(e.to_string()),
     };
-    let toha::interview::Resolution { defaults, warnings } = toha::interview::configured_defaults(
+    let resolution = toha::interview::configured_defaults(
         formal_name,
         template,
         &config.presets,
         &config.template_defaults,
     )
     .map_err(|e| e.to_string())?;
-    report_config_warnings(&warnings);
-    Ok(Seed { now, defaults })
+    report_config_warnings(resolution.warnings());
+    Ok((resolution, now))
 }
-fn setup(path: &Path, dirs: &Dirs) -> Result<(PathBuf, Store), String> {
+fn setup(path: &Path, dirs: &Dirs) -> Result<(staging::CanonicalTarget, Store), String> {
     let target = staging::canonical_target(path).map_err(|e| e.to_string())?;
     Ok((target, Store::new(dirs.state.clone())))
 }
-fn context(record: &StagedRecord) -> Context {
-    Context {
-        target: record.target.to_string_lossy().into_owned(),
-        template: record.template.clone(),
-        commit: Some(record.commit.clone()).filter(|commit| !commit.is_empty()),
-    }
+fn context(target: &staging::CanonicalTarget, record: &StagedRecord) -> Context {
+    Context::new(target, record)
 }
 /// The formal name of a template resolved by name from the user or system
 /// registry, whose recorded trust would run its hooks.
@@ -475,9 +471,13 @@ fn resolve_error(error: ResolveError) -> Outcome {
         },
     }
 }
-fn record(target: PathBuf, resolved: &ResolvedTemplate, now: &jiff::Zoned) -> StagedRecord {
+fn record(
+    target: &staging::CanonicalTarget,
+    resolved: &ResolvedTemplate,
+    now: &jiff::Zoned,
+) -> StagedRecord {
     StagedRecord {
-        target,
+        target: target.as_path().to_owned(),
         template: resolved.formal_name.clone(),
         commit: resolved.commit.clone(),
         named: resolved.named,
@@ -506,17 +506,16 @@ fn progress(saved: &StagedRecord, scope: &Scope) -> Progress {
         )
         .ok()?;
         let template = load_template(&resolved).ok()?;
-        let toha::interview::Resolution { defaults, warnings } =
-            toha::interview::configured_defaults(
-                &saved.template,
-                &template,
-                &scope.config.presets,
-                &scope.config.template_defaults,
-            )
-            .ok()?;
-        report_config_warnings(&warnings);
+        let resolution = toha::interview::configured_defaults(
+            &saved.template,
+            &template,
+            &scope.config.presets,
+            &scope.config.template_defaults,
+        )
+        .ok()?;
+        report_config_warnings(resolution.warnings());
         let complete = matches!(
-            saved.replay_with_defaults(&template, defaults).ok()?,
+            saved.replay_with_resolution(&template, resolution).ok()?,
             Interview::Complete(_)
         );
         Some(complete)
@@ -599,12 +598,12 @@ fn stage(template: String, path: PathBuf, output: Option<Option<String>>, dirs: 
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
     };
-    let seed = match seed(&resolved.formal_name, &template, &config) {
+    let (resolution, now) = match resolution(&resolved.formal_name, &template, &config) {
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
     };
-    let saved = record(target, &resolved, &seed.now);
-    let interview = match Interview::start(&template, seed) {
+    let saved = record(&target, &resolved, &now);
+    let interview = match resolution.start(&template, now) {
         Ok(v) => v,
         Err(e) => return Outcome::Error(e.to_string()),
     };
@@ -612,13 +611,13 @@ fn stage(template: String, path: PathBuf, output: Option<Option<String>>, dirs: 
         let mut saved = saved;
         let completed = terminal::drive(interview, &mut terminal::InquireAsk, |submission| {
             saved.submissions.push(submission);
-            store.save(&saved).map_err(|e| e.to_string())
+            store.save(&target, &saved).map_err(|e| e.to_string())
         });
         return match completed {
             Ok(_) => {
                 // An interview without prompts still needs a staged record.
                 if saved.submissions.is_empty() {
-                    if let Err(e) = store.save(&saved) {
+                    if let Err(e) = store.save(&target, &saved) {
                         return Outcome::Error(e.to_string());
                     }
                 }
@@ -630,14 +629,15 @@ fn stage(template: String, path: PathBuf, output: Option<Option<String>>, dirs: 
     let output = output.unwrap();
     let (document, code) = match interview {
         Interview::Asking(pending) => (
-            protocol::batch_document(pending.batch(), &context(&saved), None),
+            protocol::batch_document(pending.batch(), &context(&target, &saved), None),
             4,
         ),
-        Interview::Complete(completed) => {
-            (protocol::complete_document(&completed, &context(&saved)), 0)
-        }
+        Interview::Complete(completed) => (
+            protocol::complete_document(&completed, &context(&target, &saved)),
+            0,
+        ),
     };
-    if let Err(e) = store.save(&saved) {
+    if let Err(e) = store.save(&target, &saved) {
         return Outcome::Error(e.to_string());
     }
     if let Some(file) = output {
@@ -682,18 +682,17 @@ fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome 
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
     };
-    let toha::interview::Resolution { defaults, warnings } =
-        match toha::interview::configured_defaults(
-            &resolved.formal_name,
-            &template,
-            &config.presets,
-            &config.template_defaults,
-        ) {
-            Ok(v) => v,
-            Err(e) => return Outcome::Error(e.to_string()),
-        };
-    report_config_warnings(&warnings);
-    let interview = match saved.replay_with_defaults(&template, defaults) {
+    let resolution = match toha::interview::configured_defaults(
+        &resolved.formal_name,
+        &template,
+        &config.presets,
+        &config.template_defaults,
+    ) {
+        Ok(v) => v,
+        Err(e) => return Outcome::Error(e.to_string()),
+    };
+    report_config_warnings(resolution.warnings());
+    let interview = match saved.replay_with_resolution(&template, resolution) {
         Ok(v) => v,
         Err(e) => {
             return Outcome::Error(guidance::replay_failed(
@@ -708,7 +707,10 @@ fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome 
             return Outcome::Error(guidance::complete_answers_unused(&path, &saved.template));
         }
         eprintln!("{}", guidance::complete(&path));
-        return Outcome::Document(protocol::complete_document(completed, &context(&saved)), 0);
+        return Outcome::Document(
+            protocol::complete_document(completed, &context(&target, &saved)),
+            0,
+        );
     }
     if answers.is_none() {
         if !io::stdin().is_terminal() {
@@ -716,7 +718,7 @@ fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome 
         }
         return match terminal::drive(interview, &mut terminal::InquireAsk, |submission| {
             saved.submissions.push(submission);
-            store.save(&saved).map_err(|e| e.to_string())
+            store.save(&target, &saved).map_err(|e| e.to_string())
         }) {
             Ok(_) => Outcome::Saved(0),
             Err(error) => Outcome::Error(error),
@@ -737,17 +739,18 @@ fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome 
     match pending.answer(raw) {
         Ok(next) => {
             saved.submissions.push(submission);
-            if let Err(e) = store.save(&saved) {
+            if let Err(e) = store.save(&target, &saved) {
                 return Outcome::Error(e.to_string());
             }
             match next {
                 Interview::Asking(p) => Outcome::Document(
-                    protocol::batch_document(p.batch(), &context(&saved), None),
+                    protocol::batch_document(p.batch(), &context(&target, &saved), None),
                     4,
                 ),
-                Interview::Complete(c) => {
-                    Outcome::Document(protocol::complete_document(&c, &context(&saved)), 0)
-                }
+                Interview::Complete(c) => Outcome::Document(
+                    protocol::complete_document(&c, &context(&target, &saved)),
+                    0,
+                ),
             }
         }
         Err(AnswerError::Rejected {
@@ -756,7 +759,7 @@ fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome 
         }) => Outcome::Document(
             protocol::batch_document(
                 pending.batch(),
-                &context(&saved),
+                &context(&target, &saved),
                 Some(&guidance::explain_rejections(
                     &rejections,
                     &path,
@@ -858,12 +861,12 @@ fn run(
                 Ok(v) => v,
                 Err(e) => return Outcome::Error(e),
             };
-            let seed = match seed(&resolved.formal_name, &template, &config) {
+            let (resolution, now) = match resolution(&resolved.formal_name, &template, &config) {
                 Ok(v) => v,
                 Err(e) => return Outcome::Error(e),
             };
-            let saved = record(target.clone(), &resolved, &seed.now);
-            let interview = match Interview::start(&template, seed) {
+            let saved = record(&target, &resolved, &now);
+            let interview = match resolution.start(&template, now) {
                 Ok(v) => v,
                 Err(e) => return Outcome::Error(e.to_string()),
             };
@@ -887,13 +890,13 @@ fn run(
                         saved.submissions = accepted;
                         let document = protocol::batch_document(
                             pending.batch(),
-                            &context(&saved),
+                            &context(&target, &saved),
                             Some(&rejections),
                         );
                         if dry_run {
                             eprintln!("{}", guidance::dry_run_incomplete(&invocation, path));
                         } else {
-                            if let Err(e) = store.save(&saved) {
+                            if let Err(e) = store.save(&target, &saved) {
                                 return Outcome::Error(e.to_string());
                             }
                             eprintln!("{}", guidance::incomplete(path));
@@ -929,18 +932,17 @@ fn run(
                 Ok(v) => v,
                 Err(e) => return Outcome::Error(e),
             };
-            let toha::interview::Resolution { defaults, warnings } =
-                match toha::interview::configured_defaults(
-                    &resolved.formal_name,
-                    &template,
-                    &config.presets,
-                    &config.template_defaults,
-                ) {
-                    Ok(v) => v,
-                    Err(e) => return Outcome::Error(e.to_string()),
-                };
-            report_config_warnings(&warnings);
-            let interview = match saved.replay_with_defaults(&template, defaults) {
+            let resolution = match toha::interview::configured_defaults(
+                &resolved.formal_name,
+                &template,
+                &config.presets,
+                &config.template_defaults,
+            ) {
+                Ok(v) => v,
+                Err(e) => return Outcome::Error(e.to_string()),
+            };
+            report_config_warnings(resolution.warnings());
+            let interview = match saved.replay_with_resolution(&template, resolution) {
                 Ok(v) => v,
                 Err(e) => {
                     return Outcome::Error(guidance::replay_failed(
@@ -975,7 +977,7 @@ fn run(
                         } => {
                             saved.submissions.extend(accepted);
                             if !dry_run {
-                                if let Err(e) = store.save(&saved) {
+                                if let Err(e) = store.save(&target, &saved) {
                                     return Outcome::Error(e.to_string());
                                 }
                             }
@@ -990,7 +992,7 @@ fn run(
                             if dry_run {
                                 eprintln!("{}", guidance::dry_run_incomplete(&invocation, path));
                             } else {
-                                if let Err(e) = store.save(&saved) {
+                                if let Err(e) = store.save(&target, &saved) {
                                     return Outcome::Error(e.to_string());
                                 }
                                 eprintln!("{}", guidance::incomplete(path));
@@ -998,7 +1000,7 @@ fn run(
                             return Outcome::Document(
                                 protocol::batch_document(
                                     pending.batch(),
-                                    &context(&saved),
+                                    &context(&target, &saved),
                                     Some(&guidance::explain_rejections(
                                         &rejections,
                                         path,
@@ -1022,7 +1024,7 @@ fn run(
                                 return Ok(());
                             }
                             saved.submissions.push(submission);
-                            store.save(&saved).map_err(|e| e.to_string())
+                            store.save(&target, &saved).map_err(|e| e.to_string())
                         },
                     );
                     match completed {
@@ -1036,7 +1038,7 @@ fn run(
                 Interview::Asking(p) => {
                     eprintln!("{}", guidance::incomplete(path));
                     return Outcome::Document(
-                        protocol::batch_document(p.batch(), &context(&saved), None),
+                        protocol::batch_document(p.batch(), &context(&target, &saved), None),
                         4,
                     );
                 }
@@ -1062,7 +1064,7 @@ fn run(
     );
     // An approval that no longer matches marks the hooks changed since approval.
     let changed_since_approval = approval.is_some() && !registry_trusted;
-    let plan = match Plan::build(&template, &completed, path) {
+    let plan = match Plan::build(&template, &completed, &target) {
         Ok(plan) => plan,
         Err(error) => return Outcome::Error(error.to_string()),
     };
@@ -1104,7 +1106,7 @@ fn run(
     // Each file line is printed as the file is written, so that the lines
     // precede the output of every hook.
     match plan.apply_reporting(
-        path,
+        &target,
         ApplyOptions {
             force,
             trusted: registry_trusted || trust,

@@ -39,6 +39,16 @@ pub struct Seed {
     pub now: jiff::Zoned,
     pub defaults: IndexMap<Id, RawAnswer>,
 }
+#[derive(Debug, Clone)]
+struct InterviewSeed {
+    now: jiff::Zoned,
+    defaults: IndexMap<Id, DefaultBankEntry>,
+}
+#[derive(Debug, Clone)]
+enum DefaultBankEntry {
+    Seed(RawAnswer),
+    Configured(ResolvedDefault),
+}
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum Interview<'a> {
@@ -48,7 +58,7 @@ pub enum Interview<'a> {
 #[derive(Debug)]
 pub struct Pending<'a> {
     template: &'a Template,
-    seed: Seed,
+    seed: InterviewSeed,
     answers: Answers,
     held: RawAnswers,
     skipped: Skipped,
@@ -180,6 +190,19 @@ pub struct Prompt {
     pub default: Option<Answer>,
     pub options: Vec<String>,
     pub constraints: Constraints,
+    default_source: Option<PreparedDefaultSource>,
+    configured_rejection: Option<Rejection>,
+}
+#[derive(Debug, Clone)]
+struct PreparedDefault {
+    answer: Answer,
+    source: PreparedDefaultSource,
+}
+#[derive(Debug, Clone)]
+enum PreparedDefaultSource {
+    Template { expression: Option<String> },
+    Configured(ConfiguredDefaultOrigin),
+    Seed,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptKind {
@@ -241,13 +264,16 @@ impl fmt::Display for EvalError {
                 .unwrap_or_else(|| configured_default_source(&self.id));
             return write!(f, "{key}: {}", self.message);
         }
-        match &self.expression {
-            Some(source) => write!(
+        match (&self.expression, self.field) {
+            (Some(source), _) => write!(
                 f,
                 "template error in {}.{} `{}`: {}",
                 self.id, self.field, source, self.message
             ),
-            None => write!(f, "{}.{}: {}", self.id, self.field, self.message),
+            (None, "default") => {
+                write!(f, "template error in {}.default: {}", self.id, self.message)
+            }
+            (None, _) => write!(f, "{}.{}: {}", self.id, self.field, self.message),
         }
     }
 }
@@ -285,7 +311,7 @@ fn fault(id: &Id, field: &'static str, source: Option<&str>, error: impl ToStrin
 fn context(
     template: &Template,
     answers: &Answers,
-    seed: &Seed,
+    seed: &InterviewSeed,
 ) -> std::collections::BTreeMap<String, Value> {
     context_from_answers(answers, &template.data, &seed.now)
 }
@@ -325,7 +351,7 @@ fn hook_ready(h: &crate::template::HookNode, a: &Answers, t: &Template) -> bool 
             HookProgram::Script { args, .. } => args.iter().all(ready),
         }
 }
-fn question_ready(q: &Question, a: &Answers, t: &Template, seed: &Seed) -> bool {
+fn question_ready(q: &Question, a: &Answers, t: &Template, seed: &InterviewSeed) -> bool {
     let base = tmpl_ready(&q.prompt, a, t)
         && q.description.as_ref().is_none_or(|v| tmpl_ready(v, a, t))
         && q.placeholder.as_ref().is_none_or(|v| tmpl_ready(v, a, t))
@@ -373,7 +399,7 @@ fn eval_typed<T: Clone + serde::de::DeserializeOwned>(
 ) -> Result<T, EvalError> {
     v.eval(ctx).map_err(|e| fault(id, field, v.source(), e))
 }
-fn default_ready(q: &Question, a: &Answers, t: &Template, seed: &Seed) -> bool {
+fn default_ready(q: &Question, a: &Answers, t: &Template, seed: &InterviewSeed) -> bool {
     if seed.defaults.contains_key(&q.id) {
         return true;
     }
@@ -393,13 +419,20 @@ fn render_default(
     q: &Question,
     t: &Template,
     a: &Answers,
-    seed: &Seed,
-) -> Result<Option<Answer>, EvalError> {
+    seed: &InterviewSeed,
+) -> Result<Option<PreparedDefault>, EvalError> {
     let id = &q.id;
     let kind = prompt_kind(q);
-    if let Some(raw) = seed.defaults.get(id) {
+    if let Some(entry) = seed.defaults.get(id) {
+        let (raw, source) = match entry {
+            DefaultBankEntry::Seed(raw) => (raw, PreparedDefaultSource::Seed),
+            DefaultBankEntry::Configured(value) => (
+                &value.raw,
+                PreparedDefaultSource::Configured(value.origin.clone()),
+            ),
+        };
         return parse_kind(id, kind, raw.0.clone())
-            .map(Some)
+            .map(|answer| Some(PreparedDefault { answer, source }))
             .map_err(|e| eval_error(id, CONFIGURED_DEFAULT, e.message));
     }
     let ctx = context(t, a, seed);
@@ -410,23 +443,47 @@ fn render_default(
             .as_ref()
             .map(|v| {
                 v.render(&ctx)
-                    .map(Answer::Text)
+                    .map(|answer| PreparedDefault {
+                        answer: Answer::Text(answer),
+                        source: PreparedDefaultSource::Template {
+                            expression: Some(v.source().into()),
+                        },
+                    })
                     .map_err(|e| fault(id, "default", Some(v.source()), e))
             })
             .transpose(),
         QuestionKind::Confirm { default } => default
             .as_ref()
-            .map(|v| eval_typed(v, &ctx, id, "default").map(Answer::Bool))
+            .map(|v| {
+                eval_typed(v, &ctx, id, "default").map(|answer| PreparedDefault {
+                    answer: Answer::Bool(answer),
+                    source: PreparedDefaultSource::Template {
+                        expression: v.source().map(str::to_owned),
+                    },
+                })
+            })
             .transpose(),
         QuestionKind::MultiSelect { default, .. } | QuestionKind::TextLoop { default, .. } => {
             default
                 .as_ref()
-                .map(|v| eval_typed(v, &ctx, id, "default").map(Answer::List))
+                .map(|v| {
+                    eval_typed(v, &ctx, id, "default").map(|answer| PreparedDefault {
+                        answer: Answer::List(answer),
+                        source: PreparedDefaultSource::Template {
+                            expression: v.source().map(str::to_owned),
+                        },
+                    })
+                })
                 .transpose()
         }
     }
 }
-fn make_prompt(q: &Question, t: &Template, a: &Answers, seed: &Seed) -> Result<Prompt, EvalError> {
+fn make_prompt(
+    q: &Question,
+    t: &Template,
+    a: &Answers,
+    seed: &InterviewSeed,
+) -> Result<Prompt, EvalError> {
     let ctx = context(t, a, seed);
     let id = &q.id;
     let title = q
@@ -489,14 +546,14 @@ fn make_prompt(q: &Question, t: &Template, a: &Answers, seed: &Seed) -> Result<P
             PromptKind::TextLoop
         }
     };
-    let default = render_default(q, t, a, seed)?;
-    Ok(Prompt {
+    let prepared = render_default(q, t, a, seed)?;
+    let mut prompt = Prompt {
         id: id.clone(),
         kind,
         title,
         description,
         placeholder,
-        default,
+        default: prepared.as_ref().map(|value| value.answer.clone()),
         options,
         constraints: Constraints {
             required,
@@ -506,7 +563,44 @@ fn make_prompt(q: &Question, t: &Template, a: &Answers, seed: &Seed) -> Result<P
             loop_min,
             loop_max,
         },
-    })
+        default_source: prepared.as_ref().map(|value| value.source.clone()),
+        configured_rejection: None,
+    };
+    if let Some(prepared) = prepared {
+        if let Err(rejected) =
+            validate(id, &Rules::of_prompt(&prompt, q), prepared.answer.to_json())
+        {
+            match prepared.source {
+                PreparedDefaultSource::Template { expression } => {
+                    return Err(EvalError {
+                        id: id.clone(),
+                        field: "default",
+                        message: format!(
+                            "default {} is not allowed: {}",
+                            prepared.answer.to_json(),
+                            rejected.message
+                        ),
+                        expression,
+                        config_key: None,
+                    });
+                }
+                PreparedDefaultSource::Configured(origin) => {
+                    prompt.default = None;
+                    prompt.configured_rejection = Some(rejection(
+                        id,
+                        format!(
+                            "default {} from {} is not allowed: {}",
+                            prepared.answer.to_json(),
+                            origin.description(),
+                            rejected.message
+                        ),
+                    ));
+                }
+                PreparedDefaultSource::Seed => {}
+            }
+        }
+    }
+    Ok(prompt)
 }
 fn parse_kind(id: &Id, kind: PromptKind, value: Value) -> Result<Answer, Rejection> {
     let fail = |msg: &str| rejection(id, msg);
@@ -592,6 +686,81 @@ impl<'q> Rules<'q> {
             regex: q.validate.regex.as_ref(),
         }
     }
+
+    fn ready(
+        q: &'q Question,
+        answers: &Answers,
+        template: &Template,
+        seed: &InterviewSeed,
+    ) -> Result<Self, EvalError> {
+        let ctx = context(template, answers, seed);
+        let number = |field: &'static str,
+                      value: &'q Option<Typed<u32>>|
+         -> Result<Option<u32>, EvalError> {
+            value
+                .as_ref()
+                .filter(|value| typed_ready(value, answers, template))
+                .map(|value| eval_typed(value, &ctx, &q.id, field))
+                .transpose()
+        };
+        let required = typed_ready(&q.required, answers, template)
+            .then(|| eval_typed(&q.required, &ctx, &q.id, "required"))
+            .transpose()?;
+        let (options, loop_min, loop_max) = match &q.kind {
+            QuestionKind::Select { options, .. } | QuestionKind::MultiSelect { options, .. } => {
+                let options = typed_ready(options, answers, template)
+                    .then(|| eval_typed(options, &ctx, &q.id, "options"))
+                    .transpose()?;
+                (options, None, None)
+            }
+            QuestionKind::TextLoop { min, max, .. } => {
+                (None, number("loop.min", min)?, number("loop.max", max)?)
+            }
+            _ => (None, None, None),
+        };
+        Ok(Self {
+            kind: prompt_kind(q),
+            required,
+            min: number("validate.min", &q.validate.min)?,
+            max: number("validate.max", &q.validate.max)?,
+            loop_min,
+            loop_max,
+            options,
+            regex: q.validate.regex.as_ref(),
+        })
+    }
+}
+
+fn skipped_default(
+    q: &Question,
+    prepared: Option<PreparedDefault>,
+    answers: &Answers,
+    template: &Template,
+    seed: &InterviewSeed,
+) -> Result<Option<Answer>, EvalError> {
+    let Some(prepared) = prepared else {
+        return Ok(None);
+    };
+    if let PreparedDefaultSource::Template { expression } = &prepared.source {
+        if let Err(rejected) = validate(
+            &q.id,
+            &Rules::ready(q, answers, template, seed)?,
+            prepared.answer.to_json(),
+        ) {
+            return Err(EvalError {
+                id: q.id.clone(),
+                field: "default",
+                message: format!(
+                    "default {} is not allowed: {}",
+                    prepared.answer.to_json(),
+                    rejected.message
+                ),
+                expression: expression.clone(),
+                config_key: None,
+            });
+        }
+    }
+    Ok(Some(prepared.answer))
 }
 fn prompt_kind(q: &Question) -> PromptKind {
     match q.kind {
@@ -683,8 +852,90 @@ fn validate(id: &Id, rules: &Rules, value: Value) -> Result<Answer, Rejection> {
 }
 #[derive(Debug)]
 pub struct Resolution {
-    pub defaults: IndexMap<Id, RawAnswer>,
-    pub warnings: Vec<String>,
+    defaults: IndexMap<Id, ResolvedDefault>,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedDefault {
+    raw: RawAnswer,
+    origin: ConfiguredDefaultOrigin,
+}
+
+#[derive(Debug, Clone)]
+struct ConfiguredDefaultOrigin {
+    mapping: MappingSite,
+    preset: Option<PresetSite>,
+}
+
+#[derive(Debug, Clone)]
+struct MappingSite {
+    origin: crate::config::ConfigOrigin,
+    formal_name: String,
+    id: Id,
+}
+
+#[derive(Debug, Clone)]
+struct PresetSite {
+    origin: crate::config::ConfigOrigin,
+    name: PresetName,
+    value: Value,
+}
+
+impl ConfiguredDefaultOrigin {
+    fn description(&self) -> String {
+        let identity =
+            serde_json::to_string(&self.mapping.formal_name).expect("string is a JSON value");
+        let mapping = format!(
+            "{}: template-defaults.{}.{id}",
+            self.mapping.origin.path.display(),
+            identity,
+            id = self.mapping.id
+        );
+        match &self.preset {
+            Some(preset) => format!(
+                "{mapping} → {}: presets.\"{}\" ({})",
+                preset.origin.path.display(),
+                preset.name,
+                preset.value
+            ),
+            None => mapping,
+        }
+    }
+}
+
+impl Resolution {
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
+
+    pub fn start<'a>(
+        self,
+        template: &'a Template,
+        now: jiff::Zoned,
+    ) -> Result<Interview<'a>, EvalError> {
+        Interview::start_with_bank(
+            template,
+            InterviewSeed {
+                now,
+                defaults: self
+                    .defaults
+                    .into_iter()
+                    .map(|(id, value)| (id, DefaultBankEntry::Configured(value)))
+                    .collect(),
+            },
+        )
+    }
+
+    pub fn into_flat_defaults(self) -> (IndexMap<Id, RawAnswer>, Vec<String>) {
+        (
+            self.defaults
+                .into_iter()
+                .map(|(id, value)| (id, value.raw))
+                .collect(),
+            self.warnings,
+        )
+    }
 }
 
 pub fn configured_defaults(
@@ -700,9 +951,14 @@ pub fn configured_defaults(
     };
     for (id, entry) in values {
         let identity = serde_json::to_string(formal_name).expect("string is a JSON value");
+        let mapping = MappingSite {
+            origin: entry.origin.clone(),
+            formal_name: formal_name.into(),
+            id: id.clone(),
+        };
         let mapping_key = format!(
             "{}: template-defaults.{}.{id}",
-            entry.origin.path.display(),
+            mapping.origin.path.display(),
             identity
         );
         let Some(question) = question_by_id(&template.interview, id) else {
@@ -711,8 +967,8 @@ pub fn configured_defaults(
             ));
             continue;
         };
-        let (value, config_key) = match &entry.value {
-            DefaultSource::Literal(value) => (value, mapping_key),
+        let (value, preset) = match &entry.value {
+            DefaultSource::Literal(value) => (value, None),
             DefaultSource::Ref(name) => {
                 let Some(preset) = presets.get(name) else {
                     return Err(EvalError {
@@ -725,23 +981,29 @@ pub fn configured_defaults(
                 };
                 (
                     &preset.value,
-                    format!(
-                        "{mapping_key}\n→ {}: presets.\"{}\" ({})",
-                        preset.origin.path.display(),
-                        name,
-                        preset.value
-                    ),
+                    Some(PresetSite {
+                        origin: preset.origin.clone(),
+                        name: name.clone(),
+                        value: preset.value.clone(),
+                    }),
                 )
             }
         };
+        let origin = ConfiguredDefaultOrigin { mapping, preset };
         parse_kind(id, prompt_kind(question), value.clone()).map_err(|error| EvalError {
             id: id.clone(),
             field: CONFIGURED_DEFAULT,
             message: error.message,
             expression: None,
-            config_key: Some(config_key),
+            config_key: Some(origin.description()),
         })?;
-        defaults.insert(id.clone(), RawAnswer(value.clone()));
+        defaults.insert(
+            id.clone(),
+            ResolvedDefault {
+                raw: RawAnswer(value.clone()),
+                origin,
+            },
+        );
     }
     Ok(Resolution { defaults, warnings })
 }
@@ -763,10 +1025,15 @@ fn skipped_descendants_ready(
     nodes: &[Node],
     answers: &Answers,
     template: &Template,
-    seed: &Seed,
+    seed: &InterviewSeed,
 ) -> bool {
     let mut available = answers.clone();
-    fn visit(nodes: &[Node], available: &mut Answers, template: &Template, seed: &Seed) -> bool {
+    fn visit(
+        nodes: &[Node],
+        available: &mut Answers,
+        template: &Template,
+        seed: &InterviewSeed,
+    ) -> bool {
         for node in nodes {
             match node {
                 Node::Question(q) => {
@@ -794,7 +1061,7 @@ fn skipped_descendants_ready(
 fn check_answer(
     template: &Template,
     answers: &Answers,
-    seed: &Seed,
+    seed: &InterviewSeed,
     prompt: &Prompt,
     raw: RawAnswer,
 ) -> Result<Answer, CheckError> {
@@ -811,7 +1078,7 @@ fn check_answer(
 fn format_answer(
     template: &Template,
     answers: &Answers,
-    seed: &Seed,
+    seed: &InterviewSeed,
     q: &Question,
     kind: PromptKind,
     answer: Answer,
@@ -857,7 +1124,7 @@ fn format_answer(
 fn same_answer(
     template: &Template,
     answers: &Answers,
-    seed: &Seed,
+    seed: &InterviewSeed,
     q: &Question,
     raw: &Value,
     recorded: &Answer,
@@ -1010,7 +1277,7 @@ fn unresolved(nodes: &[Node], available: &mut HashSet<String>, t: &Template) -> 
 }
 struct Advance<'a> {
     template: &'a Template,
-    seed: Seed,
+    seed: InterviewSeed,
     answers: Answers,
     held: RawAnswers,
     skipped: Skipped,
@@ -1066,7 +1333,13 @@ impl<'a> Advance<'a> {
                         if !default_ready(q, &self.answers, self.template, &self.seed) {
                             return self.block(node);
                         }
-                        let default = render_default(q, self.template, &self.answers, &self.seed)?;
+                        let default = skipped_default(
+                            q,
+                            render_default(q, self.template, &self.answers, &self.seed)?,
+                            &self.answers,
+                            self.template,
+                            &self.seed,
+                        )?;
                         self.skip(q, default);
                         continue;
                     }
@@ -1110,12 +1383,21 @@ impl<'a> Advance<'a> {
                                 Err(CheckError::Eval(e)) => return Err(e),
                             }
                         }
+                        if let Some(error) = prompt.configured_rejection.clone() {
+                            self.batch.errors.push(error);
+                        }
                         self.batch.items.push(Item::Prompt(prompt));
                     } else {
                         if !default_ready(q, &self.answers, self.template, &self.seed) {
                             return self.block(node);
                         }
-                        let default = render_default(q, self.template, &self.answers, &self.seed)?;
+                        let default = skipped_default(
+                            q,
+                            render_default(q, self.template, &self.answers, &self.seed)?,
+                            &self.answers,
+                            self.template,
+                            &self.seed,
+                        )?;
                         self.skip(q, default);
                     }
                 }
@@ -1318,8 +1600,27 @@ fn advance(mut state: Advance<'_>) -> Result<Interview<'_>, EvalError> {
         }))
     }
 }
+fn probe_skips(mut state: Advance<'_>) -> Skipped {
+    let template = state.template;
+    let _ = state.walk(&template.interview, "", false);
+    state.skipped
+}
 impl<'a> Interview<'a> {
     pub fn start(template: &'a Template, seed: Seed) -> Result<Self, EvalError> {
+        Self::start_with_bank(
+            template,
+            InterviewSeed {
+                now: seed.now,
+                defaults: seed
+                    .defaults
+                    .into_iter()
+                    .map(|(id, value)| (id, DefaultBankEntry::Seed(value)))
+                    .collect(),
+            },
+        )
+    }
+
+    fn start_with_bank(template: &'a Template, seed: InterviewSeed) -> Result<Self, EvalError> {
         advance(Advance {
             template,
             seed,
@@ -1441,7 +1742,6 @@ impl<'a> Pending<'a> {
             }
             held.insert(id, raw);
         }
-        let answered_early = rejections.len();
         let mut next = Answers::new();
         for item in &self.batch.items {
             let Item::Prompt(p) = item else { continue };
@@ -1453,21 +1753,22 @@ impl<'a> Pending<'a> {
                 // a document answers its question.
                 (None, Some(error)) => Err(error.clone().into()),
                 (None, None) => match &p.default {
-                    Some(v) if self.seed.defaults.contains_key(&p.id) => self
-                        .check_inner(&p.id, RawAnswer(v.to_json()))
-                        .map_err(|e| match e {
-                            CheckError::Rejected(r) => rejection(
-                                &p.id,
-                                format!(
-                                    "default {} from {} is not allowed: {}",
-                                    v.to_json(),
-                                    configured_default_source(&p.id),
-                                    r.message
-                                ),
-                            )
-                            .into(),
-                            e => e,
-                        }),
+                    Some(v) if matches!(p.default_source, Some(PreparedDefaultSource::Seed)) => {
+                        self.check_inner(&p.id, RawAnswer(v.to_json()))
+                            .map_err(|e| match e {
+                                CheckError::Rejected(r) => rejection(
+                                    &p.id,
+                                    format!(
+                                        "default {} from {} is not allowed: {}",
+                                        v.to_json(),
+                                        configured_default_source(&p.id),
+                                        r.message
+                                    ),
+                                )
+                                .into(),
+                                e => e,
+                            })
+                    }
                     Some(v) => self.check_inner(&p.id, RawAnswer(v.to_json())),
                     None if !p.constraints.required => Ok(empty_answer(p.kind)),
                     None => Err(rejection(&p.id, "is required").into()),
@@ -1481,18 +1782,13 @@ impl<'a> Pending<'a> {
                 Err(CheckError::Eval(e)) => return Err(AnswerError::Eval(e)),
             }
         }
-        let other_failures = rejections.len() > unless_skipped.len();
-        let batch_failed = rejections.len() > answered_early;
         let rejected = |pending, rejections| {
             Err(AnswerError::Rejected {
                 pending,
                 rejections,
             })
         };
-        // An answer that fails a constraint before its question is reached
-        // is classified from one tentative step with this document. A batch
-        // that fails cannot take the step, so each such error stands.
-        if batch_failed || (other_failures && unless_skipped.is_empty()) {
+        if unless_skipped.is_empty() && !rejections.is_empty() {
             return rejected(self, rejections);
         }
         for id in next.keys() {
@@ -1500,11 +1796,11 @@ impl<'a> Pending<'a> {
         }
         let mut answers = self.answers.clone();
         answers.extend(next);
-        let advanced = advance(Advance {
+        let probe_skipped = probe_skips(Advance {
             template: self.template,
             seed: self.seed.clone(),
-            answers,
-            held,
+            answers: answers.clone(),
+            held: held.clone(),
             skipped: self.skipped.clone(),
             step_start: self.messages.len(),
             messages: self.messages.clone(),
@@ -1516,22 +1812,30 @@ impl<'a> Pending<'a> {
         // The error stands only when the step stops with the question
         // active or not reached. A complete interview reached and skipped
         // it; a template fault in the step is the error instead.
-        let stands = |id: &Id| match &advanced {
-            Ok(Interview::Asking(next)) => !next.skipped.contains_key(id),
-            _ => false,
-        };
+        let stands = |id: &Id| !probe_skipped.contains_key(id);
         let dropped: Vec<Id> = unless_skipped
             .into_iter()
             .filter(|id| !stands(id))
             .collect();
         rejections.retain(|r| !dropped.contains(&r.id));
-        match advanced {
-            // A rejected document never takes the step, so its fault is
-            // not reached.
-            Err(_) if !rejections.is_empty() => rejected(self, rejections),
-            Err(error) => Err(AnswerError::Eval(error)),
-            Ok(_) if !rejections.is_empty() => rejected(self, rejections),
-            Ok(next) => Ok(next),
+        if !rejections.is_empty() {
+            return rejected(self, rejections);
         }
+        // The probe is never published. Commit one fresh walk so that its
+        // messages, warnings, hooks, and template faults occur exactly once.
+        advance(Advance {
+            template: self.template,
+            seed: self.seed,
+            answers,
+            held,
+            skipped: self.skipped,
+            step_start: self.messages.len(),
+            messages: self.messages,
+            hooks: self.hooks,
+            visited: self.visited,
+            batch: Batch::default(),
+            blocked: None,
+        })
+        .map_err(AnswerError::Eval)
     }
 }

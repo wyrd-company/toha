@@ -5,11 +5,11 @@
 use crate::{
     hook::{HookError, HookOutcome, HookRunner},
     plan::{Content, Plan, PlannedHook, TargetPath, has_symlink_component},
+    staging::CanonicalTarget,
 };
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+#[cfg(test)]
+use std::path::Path;
+use std::{fs, path::PathBuf};
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ApplyOptions {
     pub force: bool,
@@ -55,7 +55,7 @@ pub enum ApplyError {
 impl Plan {
     pub fn apply(
         self,
-        target: &Path,
+        target: &CanonicalTarget,
         options: ApplyOptions,
         runner: &dyn HookRunner,
     ) -> Result<Applied, ApplyError> {
@@ -65,14 +65,16 @@ impl Plan {
     /// is written, so that a caller can report the files before any hook runs.
     pub fn apply_reporting(
         self,
-        target: &Path,
+        target: &CanonicalTarget,
         options: ApplyOptions,
         runner: &dyn HookRunner,
         on_written: &mut dyn FnMut(&TargetPath),
     ) -> Result<Applied, ApplyError> {
         let mut conflicts = self.conflicts.clone();
         for file in &self.files {
-            if target.join(file.path.as_path()).exists() && !conflicts.contains(&file.path) {
+            if target.as_path().join(file.path.as_path()).exists()
+                && !conflicts.contains(&file.path)
+            {
                 conflicts.push(file.path.clone());
             }
         }
@@ -83,18 +85,22 @@ impl Plan {
             return Ok(Applied::NeedsTrust(self));
         }
         for file in &self.files {
-            if has_symlink_component(target, &file.path).map_err(|source| ApplyError::Io {
-                path: target.join(file.path.as_path()),
-                source,
+            if has_symlink_component(target.as_path(), &file.path).map_err(|source| {
+                ApplyError::Io {
+                    path: target.as_path().join(file.path.as_path()),
+                    source,
+                }
             })? {
                 return Err(ApplyError::Symlink(file.path.clone()));
             }
         }
         for hook in &self.hooks {
             if let Some(cwd) = &hook.cwd {
-                if has_symlink_component(target, cwd).map_err(|source| ApplyError::Io {
-                    path: target.join(cwd.as_path()),
-                    source,
+                if has_symlink_component(target.as_path(), cwd).map_err(|source| {
+                    ApplyError::Io {
+                        path: target.as_path().join(cwd.as_path()),
+                        source,
+                    }
                 })? {
                     return Err(ApplyError::Symlink(cwd.clone()));
                 }
@@ -102,7 +108,7 @@ impl Plan {
         }
         let mut written = Vec::new();
         for file in &self.files {
-            let path = target.join(file.path.as_path());
+            let path = target.as_path().join(file.path.as_path());
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).map_err(|source| ApplyError::Io {
                     path: parent.into(),
@@ -152,13 +158,14 @@ impl Plan {
             written.push(file.path.clone());
         }
         for (index, hook) in self.hooks.iter().enumerate() {
-            let outcome = runner
-                .run(hook, target)
-                .map_err(|source| ApplyError::HookIo {
-                    index,
-                    hook: hook.clone(),
-                    source,
-                })?;
+            let outcome =
+                runner
+                    .run(hook, target.as_path())
+                    .map_err(|source| ApplyError::HookIo {
+                        index,
+                        hook: hook.clone(),
+                        source,
+                    })?;
             if !outcome.success {
                 return Err(ApplyError::Hook {
                     index,
@@ -235,7 +242,8 @@ mod tests {
         runner: &dyn HookRunner,
         events: &Rc<RefCell<Vec<String>>>,
     ) -> Result<Applied, ApplyError> {
-        plan.apply_reporting(target, options, runner, &mut |path| {
+        let target = crate::staging::canonical_target(target).unwrap();
+        plan.apply_reporting(&target, options, runner, &mut |path| {
             events.borrow_mut().push(format!("file {path}"))
         })
     }

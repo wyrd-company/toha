@@ -8,8 +8,10 @@ use std::{
 };
 
 use crate::{
+    fault::TemplateFault,
     interview::Completed,
     jinja::{Tmpl, context_from_answers},
+    staging::CanonicalTarget,
     template::Template,
 };
 
@@ -151,6 +153,24 @@ fn rendered(text: &str, ctx: &impl serde::Serialize, source: &Path) -> Result<St
             message: e.to_string(),
         })
 }
+fn rendered_field(
+    text: &str,
+    ctx: &impl serde::Serialize,
+    source: &Path,
+    field: impl Into<String>,
+) -> Result<String, PlanError> {
+    Tmpl::compile(text.into())
+        .and_then(|t| t.render(ctx))
+        .map_err(|error| PlanError::Render {
+            path: source.into(),
+            message: TemplateFault {
+                field: field.into(),
+                expression: Some(text.into()),
+                message: error.to_string(),
+            }
+            .to_string(),
+        })
+}
 fn read_render(path: &Path, ctx: &impl serde::Serialize) -> Result<String, PlanError> {
     let bytes = fs::read(path).map_err(|source| PlanError::Io {
         path: path.into(),
@@ -162,10 +182,15 @@ fn read_render(path: &Path, ctx: &impl serde::Serialize) -> Result<String, PlanE
     })?;
     rendered(&text, ctx, path)
 }
-fn target_path(path: &Path, ctx: &impl serde::Serialize) -> Result<Option<TargetPath>, PlanError> {
+fn target_path(
+    path: &Path,
+    source: &Path,
+    ctx: &impl serde::Serialize,
+) -> Result<Option<TargetPath>, PlanError> {
     let mut parts = Vec::new();
     for segment in path.components() {
-        let value = rendered(&segment.as_os_str().to_string_lossy(), ctx, path)?;
+        let expression = segment.as_os_str().to_string_lossy();
+        let value = rendered_field(&expression, ctx, source, "path")?;
         if value.is_empty() {
             return Ok(None);
         }
@@ -179,7 +204,7 @@ impl Plan {
     pub fn build(
         template: &Template,
         completed: &Completed,
-        target: &Path,
+        target: &CanonicalTarget,
     ) -> Result<Self, PlanError> {
         let ctx = context_from_answers(&completed.answers, &template.data, &completed.now);
         let mut plan = Self {
@@ -192,7 +217,7 @@ impl Plan {
         walk(
             &template.source_dir,
             &template.source_dir,
-            target,
+            target.as_path(),
             template,
             &ctx,
             &mut plan,
@@ -202,7 +227,12 @@ impl Plan {
             if let Some(when) = &rule.when {
                 let enabled = when.eval(&ctx).map_err(|e| PlanError::Render {
                     path: origin.clone(),
-                    message: format!("files[{i}].when: {e}"),
+                    message: TemplateFault {
+                        field: format!("files[{i}].when"),
+                        expression: Some(when.source().into()),
+                        message: e.to_string(),
+                    }
+                    .to_string(),
                 })?;
                 if !enabled.is_true() {
                     continue;
@@ -210,16 +240,26 @@ impl Plan {
             }
             let contexts = rule.each.contexts(&ctx).map_err(|e| PlanError::Render {
                 path: origin.clone(),
-                message: format!("files[{i}].each: {e}"),
+                message: TemplateFault {
+                    field: format!("files[{i}].each"),
+                    expression: Some(rule.each.expr.source().into()),
+                    message: e,
+                }
+                .to_string(),
             })?;
             for local in contexts {
                 let path_text = rule.path.render(&local).map_err(|e| PlanError::Render {
                     path: origin.clone(),
-                    message: e.to_string(),
+                    message: TemplateFault {
+                        field: format!("files[{i}].path"),
+                        expression: Some(rule.path.source().into()),
+                        message: e.to_string(),
+                    }
+                    .to_string(),
                 })?;
                 let path = TargetPath::parse(&path_text).map_err(PlanError::Path)?;
                 let content = Content::Rendered(read_render(&origin, &local)?);
-                plan.add(path, content, origin.clone(), target)?;
+                plan.add(path, content, origin.clone(), target.as_path())?;
             }
         }
         for hook in &completed.hooks {
@@ -375,7 +415,7 @@ fn walk(
             walk(root, &source, target, template, ctx, plan)?;
             continue;
         }
-        let Some(path) = target_path(relative, ctx)? else {
+        let Some(path) = target_path(relative, &source, ctx)? else {
             continue;
         };
         let content = if template.static_files.is_match(relative) {
