@@ -312,6 +312,12 @@ answers file/stdin ─► read once ─► protocol::parse_and_verify
 - `staging::canonical_target` remains the sole target constructor;
 - origin-bearing `Resolution` remains the sole configured-value carrier.
 
+The accepted Jinja-context contract restores invocation context inside start and
+each public staged replay route from the same producer-created
+`CanonicalTarget`. Recovery begins after that start or replay result. It does not
+flatten `Resolution`, create context independently, or add a second target
+carrier.
+
 ## Route contract
 
 | Route | Expected identity | Document operation | Result |

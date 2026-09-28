@@ -10,18 +10,25 @@ relationships:
 
 ## Basis
 
-- Epic source used for revised grounding: `d33245065f80e3ed9a8c75ea6526e8a9f9386f21`.
+- Current epic basis: `9a6d902a97c225069cd87d3299a5f0b2703683df`.
+- Candidate source snapshot: `d33245065f80e3ed9a8c75ea6526e8a9f9386f21`.
 - Accepted flow design SHA-256: `54827ce90a185fa24568c79a14707815e225121fbaad7c060154ae17adf5381e`.
 - Accepted flow verification SHA-256: `9167bf7a48e3c65aaee4dc1dfb7dbbae62cf8d2188b0d9ff8ffc63bc370f8d52`.
 - Accepted flow synthesis SHA-256: `52375a56c635b9be567887fb34cd73a25e3ab39981bc13ded8b68b22c2320e2e`.
 - Integrated error-attribution design SHA-256: `9560139e48798429a95e06a695dea703817b673d2e18f19e25f3fe4a3efe9b39`.
 - Integrated error-attribution verification SHA-256: `41da2344a6422c996965c134f86268a849f8705c8ffce36d132613ef9cdbef05`.
+- Accepted context design SHA-256: `2711043ef216d965bd05c8d8e477f2f0f4d2bca020b936c7f405d06b537565e9`.
+- Accepted context verification SHA-256: `c8c7a7fa8f259edcf138305d08bcf00db2b89efecee22f6f22976633367d17df`.
 - Identity candidate 1 SHA-256: `3028c72482dcf69abad2dd07527bd51490e9c9d0f9206cdc23d2ca4b1fa5ceb3`.
 - Identity candidate 2 SHA-256: `13e8a42fcaeb90a175215d11e1df27ffae7bee4379202543d964d555a587a415`.
 - Other-family judge: async session `7559ff37-b315-4755-9edc-a67fed21f79a`.
 
-The branch is refreshed again against the actual epic head before checkpoint
-publication. Any changed source citation or predecessor revision is reverified.
+The current epic advance after the candidate snapshot adds only the accepted
+Jinja-context design package. It changes no runtime source cited by grounding.
+That design keeps the public staged replay routes, extends them with the same
+producer-created `CanonicalTarget`, and consumes the origin-bearing `Resolution`.
+The recovery boundary begins after start or replay and accepts those carriers
+unchanged.
 
 ## Required identity correction
 
