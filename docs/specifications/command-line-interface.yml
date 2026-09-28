@@ -112,15 +112,19 @@ description: >-
   code 1, state that the staged interview cannot be resumed and why, and name
   `abort` followed by `stage` to start the interview over.
 
-  Flow control. When a template's flow node ends the run, `apply`, `stage`, and
-  the terminal driver write no files, run no hooks, print a one-line notice on
-  standard error that names the action and any `label`, and exit with code 0.
-  A flow `abort` additionally removes the staged record, as the `abort` command
-  does; a run with nothing staged still stops cleanly. `stage --async` and
-  `continue` instead emit the machine-readable `ended` result document with its
-  `kind`. A flow `dry-run` shows the plan and writes nothing, the same as
-  `--dry-run`, and the two compose: setting either, or both, applies nothing. A
-  failed abort removal exits with code 1.
+  Flow control. When a template's flow node ends the run, no files are written
+  and no hooks run, a one-line notice that names the action and any `label` is
+  printed on standard error, and the command exits with code 0. A flow `abort`
+  additionally removes the staged record, as the `abort` command does; a run
+  with nothing staged still stops cleanly. Every headless route — `stage
+  --async`, `continue` with an answers document, and `apply --answers` — also
+  emits the machine-readable `ended` result document with its `kind` on
+  standard output, so an agent tells a stop or abort from a completion. An
+  interactive terminal run prints only the notice. A flow `dry-run` shows the
+  plan and writes nothing, the same as `--dry-run`, and the two compose:
+  setting either, or both, applies nothing. A failed abort removal exits with
+  code 1. An answers document submitted to a staged interview a flow node
+  already ended is refused with code 1, which names starting over.
 
   Refusals. When a command refuses a valid request made at the wrong time or
   in the wrong form, and nothing is faulty, the message names the command or

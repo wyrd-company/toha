@@ -136,13 +136,25 @@ const STOP_GATE: &str = "  - { id: proceed, type: confirm, prompt: Ready? }\n  -
 const ABORT_GATE: &str = "  - { id: cancel, type: confirm, prompt: Cancel? }\n  - flow: abort\n    when: cancel\n  - { id: name, type: text, prompt: Name? }\n";
 
 #[test]
-fn apply_stop_exits_zero_with_notice_and_writes_nothing() {
+fn apply_answers_stop_emits_the_ended_document_and_writes_nothing() {
+    // P1/D1: a headless `apply --answers` reports a stop with the additive
+    // `ended` document on stdout (so an agent tells it from a completion or an
+    // abort) and the stderr notice, exit 0, nothing written.
     let case = Case::new(STOP_GATE);
     let output = case.send(
         &["apply", case.template(), case.target(), "--answers", "-"],
         r#"{"proceed": false}"#,
     );
     assert_eq!(code(&output), 0, "{}", stderr(&output));
+    let document: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
+        panic!(
+            "stdout was not the ended document: {e}\n{}",
+            String::from_utf8_lossy(&output.stdout)
+        )
+    });
+    assert_eq!(document["status"], "ended");
+    assert_eq!(document["kind"], "stop");
+    assert_eq!(document["label"], "declined at gate");
     assert!(
         stderr(&output).contains("stopped: declined at gate"),
         "{}",
@@ -150,6 +162,21 @@ fn apply_stop_exits_zero_with_notice_and_writes_nothing() {
     );
     assert!(!case.wrote_file(), "stop wrote a file");
     assert!(!case.staged(), "a fresh apply stages nothing");
+}
+
+#[test]
+fn apply_answers_abort_emits_the_ended_document_with_kind_abort() {
+    // The abort kind is distinguishable on the wire from a stop.
+    let case = Case::new(ABORT_GATE);
+    let output = case.send(
+        &["apply", case.template(), case.target(), "--answers", "-"],
+        r#"{"cancel": true}"#,
+    );
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+    let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(document["status"], "ended");
+    assert_eq!(document["kind"], "abort");
+    assert!(!case.wrote_file());
 }
 
 #[test]
@@ -253,20 +280,72 @@ fn abort_removes_the_record_under_the_canonical_key() {
 
 #[test]
 fn a_rejecting_and_aborting_continue_keeps_the_staged_record() {
-    // Behavior 21 at the driver: a document that both fails validation and
-    // would fire an abort returns the rejection (exit 4) and never removes the
-    // staged record — the removal runs only after a committed end.
-    let interview = "  - { id: code, type: text, prompt: Code?, validate: { min: 2 } }\n  - flow: abort\n    when: \"code == 'x'\"\n";
+    // Behavior 21 at the driver: the abort is triggered by a *valid* answer
+    // (`cancel`), so the tentative probe genuinely fires it, while a *separate*
+    // answer (`code`) in the same document is invalid. The rejection wins: exit
+    // 4 with the `code` error, and the staged record is never removed — the
+    // removal runs only after a committed end, not from the probe.
+    let interview = "  - { id: cancel, type: confirm, prompt: Cancel? }\n  - { id: code, type: text, prompt: Code?, validate: { min: 2 } }\n  - flow: abort\n    when: cancel\n";
     let case = Case::new(interview);
     let staged = case.run(&["stage", case.template(), case.target(), "--async"]);
     assert_eq!(code(&staged), 4, "{}", stderr(&staged));
     assert!(case.staged());
 
-    let rejected = case.send(&["continue", case.target(), "-"], r#"{"code": "x"}"#);
+    let rejected = case.send(
+        &["continue", case.target(), "-"],
+        r#"{"cancel": true, "code": "x"}"#,
+    );
     assert_eq!(code(&rejected), 4, "{}", stderr(&rejected));
     assert!(
         case.staged(),
         "a rejected document removed the staged record"
+    );
+}
+
+#[test]
+fn answers_after_a_flow_stop_are_refused() {
+    // P2/behavior 23: a stop keeps the staged record. A later `continue` with
+    // answers is a submission after a terminal interview, so it is refused
+    // (exit 1) and the record is kept.
+    let case = Case::new(STOP_GATE);
+    let staged = case.run(&["stage", case.template(), case.target(), "--async"]);
+    assert_eq!(code(&staged), 4, "{}", stderr(&staged));
+    let stopped = case.send(&["continue", case.target(), "-"], r#"{"proceed": false}"#);
+    assert_eq!(code(&stopped), 0, "{}", stderr(&stopped));
+    let document: Value = serde_json::from_slice(&stopped.stdout).unwrap();
+    assert_eq!(document["status"], "ended");
+    assert!(case.staged(), "a stop must keep the staged record");
+
+    let refused = case.send(&["continue", case.target(), "-"], r#"{"name": "late"}"#);
+    assert_ne!(code(&refused), 0, "answers after a stop were not refused");
+    assert!(
+        stderr(&refused).contains("not used"),
+        "{}",
+        stderr(&refused)
+    );
+    assert!(case.staged(), "the refusal must keep the record");
+}
+
+#[test]
+fn stage_on_an_ended_record_names_starting_over_not_apply() {
+    // P3: guidance for a stopped staged record must not offer `apply` (which
+    // would write nothing), but name starting over.
+    let case = Case::new(STOP_GATE);
+    case.run(&["stage", case.template(), case.target(), "--async"]);
+    let stopped = case.send(&["continue", case.target(), "-"], r#"{"proceed": false}"#);
+    assert_eq!(code(&stopped), 0, "{}", stderr(&stopped));
+    assert!(case.staged());
+
+    let refused = case.run(&["stage", case.template(), case.target(), "--async"]);
+    assert_ne!(code(&refused), 0);
+    let message = stderr(&refused);
+    assert!(
+        message.contains("ended by a flow node"),
+        "guidance did not report the end: {message}"
+    );
+    assert!(
+        !message.contains("toha apply"),
+        "guidance must not offer apply for an ended interview: {message}"
     );
 }
 

@@ -110,11 +110,13 @@ description: >-
   complete result.
 
   Flow control. A flow node in the interview can end or steer the run. When a
-  flow `stop` or `abort` fires, `continue` and `stage --async` emit a result
-  with `status: ended`, a `kind` of `stop` or `abort`, the optional flow
-  `label`, and the messages of that step. Both write no files and run no
-  hooks; an `abort` additionally removes the target's staged record, so a
-  later `continue` or `apply` finds nothing staged. A flow `dry-run` completes
+  flow `stop` or `abort` fires, every headless route — `stage --async`,
+  `continue`, and `apply --answers` — emits a result with `status: ended`, a
+  `kind` of `stop` or `abort`, the optional flow `label`, and the messages of
+  that step. Both write no files and run no hooks; an `abort` additionally
+  removes the target's staged record, so a later `continue` or `apply` finds
+  nothing staged. A submission to an interview a flow node already ended is the
+  terminal-replay refusal. A flow `dry-run` completes
   the interview normally but adds `disposition: dry-run` to the complete
   result and suppresses the apply, the same effect as `apply --dry-run`, with
   which it composes. An ordinary completion omits `disposition`. A flow

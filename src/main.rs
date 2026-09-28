@@ -514,18 +514,17 @@ fn progress(saved: &StagedRecord, scope: &Scope) -> Progress {
         )
         .ok()?;
         report_config_warnings(resolution.warnings());
-        // A stop/abort is terminal: no questions remain.
-        let complete = matches!(
-            saved.replay_with_resolution(&template, resolution).ok()?,
-            Interview::Complete(_) | Interview::Ended(_)
-        );
-        Some(complete)
+        // A flow stop/abort is terminal but distinct from complete: nothing can
+        // be applied, so its guidance names starting over, not `apply`.
+        Some(
+            match saved.replay_with_resolution(&template, resolution).ok()? {
+                Interview::Complete(_) => Progress::Complete,
+                Interview::Ended(_) => Progress::Ended,
+                Interview::Asking(_) => Progress::Incomplete,
+            },
+        )
     })();
-    match replayed {
-        Some(true) => Progress::Complete,
-        Some(false) => Progress::Incomplete,
-        None => Progress::Unknown,
-    }
+    replayed.unwrap_or(Progress::Unknown)
 }
 /// The refusal for `stage` or `apply` with a template when an interview is
 /// staged at the path, or `None` when `apply` names the staged template.
@@ -734,11 +733,20 @@ fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome 
         );
     }
     if let Interview::Ended(ended) = &interview {
-        // A prior submission ended the staged interview. Report it; any answers
-        // are unused. An abort also removes the record.
-        if let Outcome::Error(e) = ended_outcome(ended, &target, &store) {
+        // A prior submission ended the staged interview. An answers document is
+        // a submission after a terminal interview, so it is refused (behavior
+        // 23), like the complete case. Without answers, report the end.
+        if answers.is_some() {
+            return Outcome::Error(guidance::ended_answers_unused(
+                &path,
+                &saved.template,
+                ended.kind(),
+            ));
+        }
+        if let Err(e) = ended_removed(ended, &target, &store) {
             return Outcome::Error(e);
         }
+        eprintln!("{}", guidance::flow_ended(ended));
         return Outcome::Document(
             protocol::ended_document(ended, &context(&target, &saved)),
             0,
@@ -834,6 +842,22 @@ fn ended_outcome(ended: &Ended, target: &CanonicalTarget, store: &Store) -> Outc
     }
     eprintln!("{}", guidance::flow_ended(ended));
     Outcome::Written(vec![])
+}
+/// The headless outcome of a flow end (`apply --answers`, matching `stage
+/// --async`/`continue`): the additive `ended` document on stdout with exit 0,
+/// the stderr notice, and the staged record removed on an abort. Agents detect
+/// a stop or abort by the `ended` status and `kind`.
+fn ended_document_outcome(
+    ended: &Ended,
+    target: &CanonicalTarget,
+    store: &Store,
+    context: &Context,
+) -> Outcome {
+    if let Err(e) = ended_removed(ended, target, store) {
+        return Outcome::Error(e);
+    }
+    eprintln!("{}", guidance::flow_ended(ended));
+    Outcome::Document(protocol::ended_document(ended, context), 0)
 }
 
 fn abort(path: PathBuf, dirs: &Dirs) -> Outcome {
@@ -948,8 +972,14 @@ fn run(
                     Headless::Completed { completed, .. } => (template, completed, None),
                     Headless::Ended { ended, .. } => {
                         // A fresh apply has no staged record, so an abort's
-                        // removal is a no-op. Nothing is written.
-                        return ended_outcome(&ended, &target, &store);
+                        // removal is a no-op. Nothing is written; the `ended`
+                        // document reports the stop or abort.
+                        return ended_document_outcome(
+                            &ended,
+                            &target,
+                            &store,
+                            &context(&target, &saved),
+                        );
                     }
                     Headless::Pending {
                         pending,
@@ -1059,12 +1089,18 @@ fn run(
                             }
                             Interview::Complete(completed)
                         }
-                        // `apply` writes files or reports why it did not; a flow
-                        // end is a stderr notice and exit 0, like the terminal
-                        // route. The staged record is left as it was, except an
-                        // abort discards it.
+                        // A flow end during `apply --answers` reports the stop
+                        // or abort with the additive `ended` document and the
+                        // stderr notice, like `stage --async`/`continue`. The
+                        // staged record is left as it was, except an abort
+                        // discards it.
                         Headless::Ended { ended, .. } => {
-                            return ended_outcome(&ended, &target, &store);
+                            return ended_document_outcome(
+                                &ended,
+                                &target,
+                                &store,
+                                &context(&target, &saved),
+                            );
                         }
                         Headless::Pending {
                             pending,

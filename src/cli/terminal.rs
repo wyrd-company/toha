@@ -620,6 +620,38 @@ mod tests {
     }
 
     #[test]
+    fn terminal_drives_a_flow_stop_and_abort_to_session_ended_with_messages() {
+        // The terminal route is the one users see. Drive a stop and an abort to
+        // `Session::Ended`, asserting the kind and that the message reached
+        // after the last prompt is written. Kills the mutants that print no
+        // ended messages or return `Err` instead of `Session::Ended`.
+        for (action, kind) in [
+            ("stop", toha::EndKind::Stop),
+            ("abort", toha::EndKind::Abort),
+        ] {
+            let (_folder, template) = template(&format!(
+                "name: sample\ninterview:\n  - {{ id: proceed, type: confirm, prompt: Ready? }}\n  - message: at the {action} gate\n  - flow: {action}\n    when: \"not proceed\"\n    label: declined\n"
+            ));
+            let mut output = Vec::new();
+            let mut script = Script::new(json!({ "proceed": false }));
+            let session = drive_to(start(&template), &mut script, |_| Ok(()), &mut output).unwrap();
+            match session {
+                Session::Ended(ended) => {
+                    assert_eq!(ended.kind(), kind, "{action}");
+                    assert_eq!(ended.label(), Some("declined"), "{action}");
+                }
+                Session::Completed(_) => panic!("{action}: expected Session::Ended"),
+            }
+            assert!(
+                String::from_utf8(output)
+                    .unwrap()
+                    .contains(&format!("at the {action} gate")),
+                "{action}: the ended message was not written"
+            );
+        }
+    }
+
+    #[test]
     fn success_fixtures_match_headless_answers_records_and_trees() {
         for fixture in support::fixtures() {
             let expect = support::expectation(&fixture);

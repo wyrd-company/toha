@@ -107,12 +107,13 @@ commands:
         - code: 1
           meaning: >-
             No interview is staged at the path, or an answers document was given
-            for a complete interview; the message names the commands that fit.
-            Or the staged record does not replay against its template; the
-            message states that the staged interview cannot be resumed and why,
-            and names `abort` followed by `stage`. Or an expression in the
-            template failed to evaluate while answering; the message starts
-            with `template error in` and names the field and the expression.
+            for a complete interview, or for an interview a flow node already
+            ended; the message names the commands that fit. Or the staged record
+            does not replay against its template; the message states that the
+            staged interview cannot be resumed and why, and names `abort`
+            followed by `stage`. Or an expression in the template failed to
+            evaluate while answering; the message starts with `template error
+            in` and names the field and the expression.
         - code: 4
           meaning: Questions remain or answers were rejected; the result holds the batch.
   - name: apply
@@ -179,7 +180,8 @@ commands:
             names the command with `--trust` that runs them. Or a flow
             stop/abort ended the run, or a flow dry-run showed the plan; a
             one-line notice names the action on standard error, nothing is
-            written, and an abort removes the staged record.
+            written, and an abort removes the staged record. With `--answers`,
+            the `ended` document is also emitted on standard output.
         - code: 1
           meaning: >-
             A file conflict, render failure, or hook failure; no interview is

@@ -11,6 +11,9 @@ use std::path::Path;
 pub enum Progress {
     Incomplete,
     Complete,
+    /// A flow `stop`/`abort` ended the interview: no questions remain and there
+    /// is nothing to apply. The only way forward is to start over.
+    Ended,
     Unknown,
 }
 
@@ -337,6 +340,12 @@ fn finish(path: &Path, progress: Progress) -> String {
         Progress::Incomplete => {
             format!("to finish the staged interview: {resume}, then {apply}")
         }
+        Progress::Ended => {
+            format!(
+                "the staged interview was ended by a flow node; to start over: {}",
+                abort(path)
+            )
+        }
         Progress::Unknown => {
             format!("to finish the staged interview: {resume} if questions remain, then {apply}")
         }
@@ -402,6 +411,9 @@ pub fn already_staged(
             remaining(path),
             format!("then write its files: {}", apply_staged(path)),
         ],
+        Progress::Ended => vec![format!(
+            "an interview for {staged} staged at {p} was ended by a flow node"
+        )],
         Progress::Unknown => vec![
             format!("an interview for {staged} is already staged at {p}"),
             finish(path, progress),
@@ -487,6 +499,28 @@ pub fn complete_answers_unused(path: &Path, staged: &str) -> String {
             abort(path),
             restage.command()
         ),
+    ]
+    .join("\n")
+}
+
+/// An answers document was given for a staged interview a flow node already
+/// ended. Behavior 23: a submission after a terminal interview is refused.
+pub fn ended_answers_unused(path: &Path, staged: &str, kind: toha::EndKind) -> String {
+    let restage = Invocation::Stage {
+        template: Arg::Given(formal_for("stage", staged)),
+        path,
+        output: None,
+    };
+    let verb = match kind {
+        toha::EndKind::Stop => "was stopped by a flow node",
+        toha::EndKind::Abort => "was aborted by a flow node",
+    };
+    [
+        format!(
+            "the interview at {} {verb}, so the answers document is not used",
+            target(path)
+        ),
+        format!("to start over: {}, then {}", abort(path), restage.command()),
     ]
     .join("\n")
 }
@@ -625,6 +659,19 @@ pub fn answers_without_template(
             target(path),
             apply_staged(path)
         )),
+        Some((staged, Progress::Ended)) => {
+            lines.push(format!(
+                "the staged interview at {} was ended by a flow node; to start over: {}, then {}",
+                target(path),
+                abort(path),
+                Invocation::Stage {
+                    template: Arg::Given(formal_for("stage", staged)),
+                    path,
+                    output: None,
+                }
+                .command()
+            ));
+        }
         Some((staged, _)) => {
             lines.push(format!(
                 "to answer the staged interview: {}, then {}",

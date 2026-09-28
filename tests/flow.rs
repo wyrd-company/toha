@@ -316,23 +316,32 @@ fn b12_dry_run_disposition_rides_the_wire_complete_document() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn b14_skip_rest_skips_every_remaining_question_including_groups() {
+fn b14_skip_rest_inside_a_group_skips_questions_after_the_group() {
+    // `{ skip: rest }` fires inside group `g` and must skip both the rest of
+    // `g` (`in_group_after`) and the question after the whole group
+    // (`after_group`) — the frame-climbing that distinguishes it from
+    // `{ skip: group }`. A deeper nested group is skipped too.
     let (_dir, template) = tpl("name: sample
 interview:
-  - { id: minimal, type: confirm, prompt: Minimal? }
-  - flow: { skip: rest }
-    when: minimal
-  - { id: name, type: text, prompt: Name? }
-  - group: extra
+  - group: g
+    nodes:
+      - { id: inner, type: confirm, prompt: Inner? }
+      - flow: { skip: rest }
+        when: inner
+      - { id: in_group_after, type: text, prompt: In group after? }
+  - { id: after_group, type: text, prompt: After group? }
+  - group: deeper
     nodes:
       - { id: deep, type: text, prompt: Deep? }
 ");
-    let done = answer(start(&template), json!({ "minimal": true }));
+    let done = answer(start(&template), json!({ "inner": true }));
     let Interview::Complete(completed) = done else {
         panic!("expected complete");
     };
-    // Every skipped question records its empty/default answer.
-    assert_eq!(completed.answers[&id("name")], Answer::None);
+    // The rest of the group, the question after the group, and a later group
+    // are all skipped to their empty answers.
+    assert_eq!(completed.answers[&id("in_group_after")], Answer::None);
+    assert_eq!(completed.answers[&id("after_group")], Answer::None);
     assert_eq!(completed.answers[&id("deep")], Answer::None);
 }
 
@@ -493,41 +502,73 @@ fn b19_replay_reproduces_the_end_and_records_no_new_field() {
 #[test]
 fn b20_a_configured_default_can_fire_a_flow_action() {
     use toha::config::{ConfigEntry, ConfigLayer, ConfigOrigin, DefaultSource};
-    // `enabled` has no prompt shown here; its configured default `true` fires
-    // the stop through the flow's `when`.
-    let (_dir, template) = tpl("name: sample
+    // D2: a `when` satisfied by a configured-default answer fires the action.
+    // The document is empty, so `enabled` takes its configured default and the
+    // configured value alone decides — provenance is not reconstructed and the
+    // resolution warnings still flow.
+    const YAML: &str = "name: sample
 interview:
   - { id: enabled, type: confirm, prompt: Enabled? }
   - flow: stop
     when: enabled
   - { id: after, type: text, prompt: After? }
-");
-    let mappings = [(
-        "sample".to_string(),
+";
+    let enabled_mapping = || {
         [(
-            id("enabled"),
-            ConfigEntry {
-                value: DefaultSource::Literal(json!(true)),
-                origin: ConfigOrigin {
-                    layer: ConfigLayer::User,
-                    path: "user.yml".into(),
+            "sample".to_string(),
+            [(
+                id("enabled"),
+                ConfigEntry {
+                    value: DefaultSource::Literal(json!(true)),
+                    origin: ConfigOrigin {
+                        layer: ConfigLayer::User,
+                        path: "user.yml".into(),
+                    },
                 },
-            },
+            )]
+            .into_iter()
+            .collect(),
         )]
         .into_iter()
-        .collect(),
-    )]
-    .into_iter()
-    .collect();
-    let resolution =
-        toha::interview::configured_defaults("sample", &template, &Default::default(), &mappings)
-            .unwrap();
+        .collect()
+    };
+
+    // With the configured default `enabled: true` and an empty document, the
+    // stop fires.
+    let (_dir, template) = tpl(YAML);
+    let resolution = toha::interview::configured_defaults(
+        "sample",
+        &template,
+        &Default::default(),
+        &enabled_mapping(),
+    )
+    .unwrap();
     assert!(resolution.warnings().is_empty());
     let interview = resolution.start(&template, NOW.parse().unwrap()).unwrap();
-    // `enabled` is still asked (a default is not an answer); answering it with
-    // its default value fires the stop.
-    let ended = answer(interview, json!({ "enabled": true }));
-    assert!(matches!(ended, Interview::Ended(e) if e.kind() == EndKind::Stop));
+    let ended = answer(interview, json!({}));
+    assert!(
+        matches!(ended, Interview::Ended(e) if e.kind() == EndKind::Stop),
+        "the configured default did not fire the stop"
+    );
+
+    // Without any configured mapping, the same empty document leaves `enabled`
+    // its empty answer, so the stop does not fire and `after` is asked — the
+    // configured default, not the document, decided above.
+    let (_dir, template) = tpl(YAML);
+    let bare =
+        toha::interview::configured_defaults("sample", &template, &Default::default(), &default())
+            .unwrap();
+    let interview = bare.start(&template, NOW.parse().unwrap()).unwrap();
+    assert!(
+        matches!(answer(interview, json!({})), Interview::Asking(_)),
+        "the stop fired without a configured default"
+    );
+}
+
+/// An empty configured mapping.
+fn default()
+-> IndexMap<String, IndexMap<Id, toha::config::ConfigEntry<toha::config::DefaultSource>>> {
+    IndexMap::new()
 }
 
 // ---------------------------------------------------------------------------
@@ -536,23 +577,32 @@ interview:
 
 #[test]
 fn b21_a_document_that_rejects_and_aborts_returns_rejected_and_ends_nothing() {
-    // `cancel` triggers abort; `code` in the same document is invalid. The
-    // rejection wins: the answer returns Rejected, not Ended.
+    // The abort is triggered by a *valid* answer (`cancel`) so the tentative
+    // probe genuinely fires it (probe ends). A *separate* answer (`code`) in
+    // the same document is invalid. The rejection wins: the answer returns
+    // Rejected, never Ended, so no abort — and no staged removal — ever runs.
+    // Both questions are in the opening batch, so `code` is a hard rejection.
     let (_dir, template) = tpl("name: sample
 interview:
+  - { id: cancel, type: confirm, prompt: Cancel? }
   - { id: code, type: text, prompt: Code?, validate: { min: 2 } }
   - flow: abort
-    when: \"code == 'x'\"
+    when: cancel
 ");
     let Interview::Asking(pending) = start(&template) else {
         panic!("expected asking");
     };
-    // `code = x` is too short (min 2) and would also satisfy the abort's `when`.
-    let error = pending.answer(raw(json!({ "code": "x" }))).unwrap_err();
-    assert!(
-        matches!(error, AnswerError::Rejected { .. }),
-        "expected rejected"
-    );
+    // `cancel = true` would fire the abort; `code = x` is too short (min 2).
+    let error = pending
+        .answer(raw(json!({ "cancel": true, "code": "x" })))
+        .unwrap_err();
+    match error {
+        AnswerError::Rejected { rejections, .. } => assert!(
+            rejections.iter().any(|r| r.id.as_str() == "code"),
+            "expected the code rejection, got {rejections:?}"
+        ),
+        other => panic!("expected Rejected, got {other:?}"),
+    }
 }
 
 #[test]
