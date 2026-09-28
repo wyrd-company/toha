@@ -1789,6 +1789,20 @@ fn skipped_invalid_answer_is_dropped_beside_another_failing_answer() {
         result["errors"],
         json!({"style": ["must be a string"], "title": ["must match ^[a-z]+$"]})
     );
+    let (code, result) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"kind": "unknown", "style": 1, "title": "NO"}),
+    );
+    assert_eq!(code, 4, "{result}");
+    assert_eq!(
+        result["errors"],
+        json!({
+            "kind": ["must be one of: plain, fancy"],
+            "style": ["must be a string"],
+            "title": ["must match ^[a-z]+$"]
+        })
+    );
     assert_eq!(submissions(state.path(), target.path()), 0);
 }
 
