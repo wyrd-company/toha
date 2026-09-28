@@ -208,7 +208,19 @@ Documented at `docs/docs/configuration/scaffold-file.md:200-245`:
 
 Confirmed by `injector_test.go` (`TestInject`, lines 10-80+): cases for default/before mode preserving indentation, `after` mode, no-op on empty/whitespace-only injected data, and an error case for missing marker (`ErrInjectMarkerNotFound`, `injector.go:11`).
 
-**Nature of the mechanism**: purely line/text based (`bufio.Scanner` + `strings.Contains`), format-agnostic — works on YAML, code, anything line-oriented — but has **no structural awareness** of JSON/YAML/TOML (no parse/reserialize step; it is a textual insert, so existing formatting/comments outside the inserted region are untouched because nothing is reserialized). No update/re-sync command reruns injections — `cmd_update.go` exists (`app/commands/cmd_update.go`) but injection is invoked only from the render pipeline (`render_funcs.go:733`), i.e. injection happens at generation time against a target file that must already exist (typically from a previous scaffold run or hand-authored), not as part of a diff-based re-sync.
+**Nature of the mechanism**: purely line/text based (`bufio.Scanner` +
+`strings.Contains`), format-agnostic — works on YAML, code, anything
+line-oriented — but has **no structural awareness** of JSON/YAML/TOML. Text on
+each line is copied, and the matched line's leading indentation is reused for
+the inserted text. The rewrite is not byte-preserving: `bufio.Scanner` removes
+line terminators and `writeLine` appends `\n` to every line
+(`app/scaffold/injector.go:24-33,48-72`), so CRLF or mixed line endings become
+LF and a missing final newline becomes present. No update/re-sync command reruns
+injections — `cmd_update.go` exists (`app/commands/cmd_update.go`) but injection
+is invoked only from the render pipeline (`render_funcs.go:733`), i.e.
+injection happens at generation time against a target file that must already
+exist (typically from a previous scaffold run or hand-authored), not as part of
+a diff-based re-sync.
 
 ---
 

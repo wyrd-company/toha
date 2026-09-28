@@ -344,52 +344,196 @@ pub struct PlannedEdit {
 
 <section id="alternatives">
   <section>
-    <h2>Three ways to change an existing file</h2>
+    <h2>Four different features can look like “injection”</h2>
     <table>
-      <thead><tr><th>Approach</th><th>Good at</th><th>Tradeoff</th></tr></thead>
+      <thead><tr><th>Feature</th><th>What it changes</th><th>Tools inspected</th></tr></thead>
       <tbody>
-        <tr><td>Visible managed section</td><td>arbitrary text; clear ownership; drift detection</td><td>needs valid comment syntax</td></tr>
-        <tr><td>Structured value editor</td><td>JSON value changes; preserves surrounding text</td><td>heavier dependency; ownership is “value at path”</td></tr>
-        <tr><td>Parse and rewrite the whole document</td><td>powerful transformations</td><td>changes user formatting and loses comments</td></tr>
+        <tr><td>Direct injection</td><td>one place in an existing file</td><td>Ansible, Scaffold</td></tr>
+        <tr><td>Template update</td><td>all changes between template versions</td><td>Copier, Cruft</td></tr>
+        <tr><td>Whole-file generation</td><td>a rendered file or project tree</td><td>Cookiecutter, Kickstart</td></tr>
+        <tr><td>Hook escape hatch</td><td>anything the author's script does</td><td>Cookiecutter, Kickstart</td></tr>
       </tbody>
     </table>
-    <p><strong>Recommendation:</strong> visible sections as the base. If structured editing is approved, use a format-preserving editor. Do not use a whole-document rewrite for user-owned files.</p>
+    <p>Only the first category is a direct comparison with Toha content injection. The others solve broader or less-governed problems.</p>
   </section>
   <section>
-    <h2>Real tools: managed sections</h2>
-    <ul>
-      <li><strong>Ansible <code>blockinfile</code></strong> finds a marked block, removes it, inserts the new block, and writes only when bytes differ. This is the closest mature precedent.</li>
-      <li><strong>Ansible <code>lineinfile</code></strong> uses a regular expression for one line; safe repeat depends more on the author.</li>
-      <li><strong>scaffold</strong> inserts at a line but has no repeat guard, so another run inserts again.</li>
+    <h2>Competitor map</h2>
+    <table>
+      <thead><tr><th>Tool</th><th>What authors use</th><th>Repeat and conflict behavior</th></tr></thead>
+      <tbody>
+        <tr><td>Ansible <code>blockinfile</code></td><td>managed marker pair</td><td>repeat-safe; human edits inside are replaced</td></tr>
+        <tr><td>Scaffold <code>inject</code></td><td>insert before/after a matching line</td><td>repeats insert again; missing marker errors</td></tr>
+        <tr><td>Copier / Cruft</td><td>project update command</td><td>Git merge or rejection files</td></tr>
+        <tr><td>Cookiecutter / Kickstart</td><td>whole-file templates and hooks</td><td>no built-in region contract in inspected source</td></tr>
+      </tbody>
+    </table>
+    <p class="muted">“No built-in region contract” describes the inspected revisions and paths. It does not claim that an author cannot write a hook or external workflow.</p>
+  </section>
+  <section>
+    <h2>Ansible: the author declares a managed block</h2>
+    <pre><code class="language-yaml"># site.yml
+- name: Add generated service settings
+  ansible.builtin.blockinfile:
+    path: config/services.yml
+    marker: "# {mark} MANAGED SERVICES"
+    insertafter: "^services:$"
+    block: |2
+        - name: analytics
+          enabled: true</code></pre>
+    <pre><code class="language-sh">ansible-playbook site.yml</code></pre>
+    <p class="muted">Native fields and behavior from <a href="https://github.com/ansible/ansible/blob/7ec731bfd2dbfd7b5a11ac53bf32ad2a4bf57ed4/lib/ansible/modules/blockinfile.py#L140-L198">Ansible source at 7ec731b</a>.</p>
+  </section>
+  <section>
+    <h2>Ansible: what the target file looks like</h2>
+    <ul class="two">
+      <li><strong>BEFORE</strong><pre><code class="language-yaml">services:
+  # operator-owned entries
+  - name: gateway
+    enabled: true</code></pre></li>
+      <li><strong>AFTER</strong><pre><code class="language-yaml">services:
+# BEGIN MANAGED SERVICES
+- name: analytics
+  enabled: true
+# END MANAGED SERVICES
+  # operator-owned entries
+  - name: gateway
+    enabled: true</code></pre></li>
     </ul>
-    <p class="muted">Source evidence: Ansible <code>7ec731b</code> <code>blockinfile.py:334-367</code> and <code>lineinfile.py:295-479</code>; scaffold <code>475e9bc</code> <code>injector.go:27-82</code>.</p>
+    <p>The marker pair is the ownership record. A later run finds that pair and replaces the full block.</p>
   </section>
   <section>
-    <h2>Real tools: format-preserving editors</h2>
+    <h2>Ansible: repeat, drift, and limits</h2>
+    <ul>
+      <li><strong>Repeat:</strong> remove the old marked block, insert the declared block, and write only if the complete result differs.</li>
+      <li><strong>Human edit inside the block:</strong> no separate drift state; the next run replaces it.</li>
+      <li><strong>Placement:</strong> regular expression, beginning, or end. A missing regular-expression match falls back to end of file.</li>
+      <li><strong>Format:</strong> text lines outside the block are retained; the feature has no JSON/YAML structure awareness.</li>
+      <li><strong>Write safety:</strong> optional backup and validation; temporary-file write followed by atomic move.</li>
+    </ul>
+    <p><strong>What Toha adds:</strong> detect drift separately and require explicit <code>--force</code> before replacing it.</p>
+  </section>
+  <section>
+    <h2>Scaffold: the author declares a line insertion</h2>
+    <pre><code class="language-yaml"># .scaffolds/role/scaffold.yaml
+inject:
+  - name: "add role to site.yaml"
+    path: site.yaml
+    at: "# $Scaffold.role_name"
+    template: |
+      - name: {{ .Scaffold.role_name }}
+        role: {{ .Computed.snaked }}</code></pre>
+    <pre><code class="language-sh">scaffold new role</code></pre>
+    <p class="muted">Native example from <a href="https://github.com/hay-kot/scaffold/blob/475e9bc32b126359740c774a0ededaf5318214da/docs/docs/configuration/scaffold-file.md#L200-L245">Scaffold docs at 475e9bc</a>.</p>
+  </section>
+  <section>
+    <h2>Scaffold: what the target file looks like</h2>
+    <ul class="two">
+      <li><strong>BEFORE</strong><pre><code class="language-yaml">roles:
+  - name: gateway
+    role: gateway
+  # $Scaffold.role_name</code></pre></li>
+      <li><strong>AFTER</strong><pre><code class="language-yaml">roles:
+  - name: gateway
+    role: gateway
+  - name: analytics
+    role: analytics
+  # $Scaffold.role_name</code></pre></li>
+    </ul>
+    <p>The marker is only an insertion point. It does not surround or identify the inserted content.</p>
+  </section>
+  <section>
+    <h2>Scaffold: repeat, drift, and limits</h2>
+    <ul>
+      <li><strong>Repeat:</strong> running the template again inserts the same content again; there is no managed-region identity.</li>
+      <li><strong>Conflict:</strong> a missing marker is an error. The implementation uses the first matching line.</li>
+      <li><strong>Format:</strong> it copies line text and reuses leading indentation, but its scanner rewrites every line ending to LF and adds a final newline.</li>
+      <li><strong>Scope:</strong> available to template scaffolds that add files to an existing project, not whole-project scaffolds.</li>
+      <li><strong>Structure:</strong> text insertion only; no JSON/YAML/TOML awareness.</li>
+    </ul>
+    <p class="muted"><a href="https://github.com/hay-kot/scaffold/blob/475e9bc32b126359740c774a0ededaf5318214da/app/scaffold/injector.go#L24-L82">Injector source at 475e9bc</a>.</p>
+  </section>
+  <section>
+    <h2>Copier and Cruft: the feature is project update</h2>
+    <pre><code class="language-sh"># Copier records the template source and revision, then:
+copier update --defaults --conflict=inline
+
+# Cruft records Cookiecutter template metadata, then:
+cruft update --project-dir ./service -y</code></pre>
+    <p>Both render the old and new template versions, calculate a text difference, and apply that difference to the live project.</p>
+    <p><strong>Classification:</strong> project-wide template update, not direct injection into a named region.</p>
+    <p class="muted"><a href="https://github.com/copier-org/copier/blob/01c68328a384777da8a4297b9e511b0e2e57f8c1/docs/updating.md">Copier update docs at 01c6832</a> · <a href="https://github.com/cruft/cruft/blob/33f6b722fc6fe4b5d26a351e487372e5e4375ab2/README.md#updating-a-project">Cruft update docs at 33f6b72</a></p>
+  </section>
+  <section>
+    <h2>Project update: what a clean merge looks like</h2>
+    <ul class="two">
+      <li><strong>LIVE PROJECT BEFORE</strong><pre><code class="language-yaml">service: sample
+# operator note: keep this
+retries: 2</code></pre></li>
+      <li><strong>AFTER TEMPLATE UPDATE</strong><pre><code class="language-yaml">service: sample
+# operator note: keep this
+retries: 2
+timeout: 30</code></pre></li>
+    </ul>
+    <p>A clean Git patch can retain the operator's unrelated edit while adding the template's new line.</p>
+    <p class="muted">Illustrative target using the native update mechanism. The tools operate on template-version diffs, not YAML fields.</p>
+  </section>
+  <section>
+    <h2>Project update: repeat, conflict, and limits</h2>
+    <ul>
+      <li><strong>Repeat:</strong> when the recorded template revision has no further change, another update produces no diff.</li>
+      <li><strong>Copier conflict:</strong> default inline Git conflict markers; optional <code>.rej</code> files.</li>
+      <li><strong>Cruft conflict:</strong> try <code>git apply -3</code>, then fall back to <code>.rej</code> files.</li>
+      <li><strong>Format:</strong> untouched hunks remain untouched, but neither tool understands document structure.</li>
+      <li><strong>Ownership:</strong> the template-version diff, not a stable named region or value path.</li>
+    </ul>
+    <p class="muted"><a href="https://github.com/copier-org/copier/blob/01c68328a384777da8a4297b9e511b0e2e57f8c1/copier/_main.py#L1465-L1669">Copier merge source</a> · <a href="https://github.com/cruft/cruft/blob/33f6b722fc6fe4b5d26a351e487372e5e4375ab2/cruft/_commands/update.py#L194-L318">Cruft merge source</a></p>
+  </section>
+  <section>
+    <h2>Cookiecutter and Kickstart: whole-file generation</h2>
+    <pre><code class="language-sh">cookiecutter https://example.invalid/project-template.git
+kickstart https://example.invalid/project-template.git -o sample</code></pre>
+    <ul>
+      <li><strong>Cookiecutter:</strong> renders a file and opens the target for writing; it can skip an existing file, but the inspected generator has no built-in region merge.</li>
+      <li><strong>Kickstart:</strong> renders each file and writes through <code>File::create</code>, which replaces an existing target.</li>
+      <li><strong>Classification:</strong> whole-file generation. A target “after” is the rendered replacement, not a merge with the previous contents.</li>
+    </ul>
+    <p class="muted"><a href="https://github.com/cookiecutter/cookiecutter/blob/c88fbe921c97c58b65f1883ba90a0ab53cc91b34/cookiecutter/generate.py#L175-L260">Cookiecutter source at c88fbe9</a> · <a href="https://github.com/Keats/kickstart/blob/6f5fd80a1910ebee6c2e2039f56c59f6df2edcf2/src/generation.rs#L315-L334">Kickstart source at 6f5fd80</a></p>
+  </section>
+  <section>
+    <h2>Hooks are an escape hatch, not an injection feature</h2>
+    <ul class="two">
+      <li><strong>COOKIECUTTER</strong><pre><code class="language-sh">hooks/
+  pre_gen_project.py
+  post_gen_project.py</code></pre></li>
+      <li><strong>KICKSTART</strong><pre><code class="language-toml">post_gen_hooks = [
+  { name = "finish setup",
+    path = "finish_setup.sh" }
+]</code></pre></li>
+    </ul>
+    <p>A hook can edit an existing file because it is an arbitrary script. The author must supply placement, repeat safety, drift detection, conflicts, portability, and format preservation.</p>
+    <p><strong>Toha comparison:</strong> this design supplies those rules as product behavior. It does not propose a subprocess-based injection integration.</p>
+    <p class="muted"><a href="https://github.com/cookiecutter/cookiecutter/blob/c88fbe921c97c58b65f1883ba90a0ab53cc91b34/docs/advanced/hooks.rst">Cookiecutter hook docs</a> · <a href="https://github.com/Keats/kickstart/blob/6f5fd80a1910ebee6c2e2039f56c59f6df2edcf2/README.md#hooks">Kickstart hook docs</a></p>
+  </section>
+  <section>
+    <h2>Libraries: format-preserving structured edit</h2>
     <ul>
       <li><strong><code>jsonc-parser</code> for Rust</strong> keeps comments and whitespace in a concrete syntax tree, then changes one node. This is the recommended structured mechanism if D6b is approved.</li>
       <li><strong>VS Code's <code>node-jsonc-parser</code></strong> returns minimal offset/length/content edits. It is the TypeScript version of the same approach.</li>
       <li><strong><code>toml_edit</code></strong> stores formatting on each node. It is the mature TOML analogue.</li>
     </ul>
-    <p class="muted">Source evidence: jsonc-parser <code>c7d4cf5</code> <code>cst/mod.rs:1-5,1356</code>; node-jsonc-parser <code>dba4356</code> <code>edit.ts:15-140</code>; toml_edit <code>e4b8bda</code> <code>repr.rs:187</code>.</p>
+    <p><strong>Classification:</strong> implementation mechanisms, not competing template-author features.</p>
+    <p class="muted"><a href="https://github.com/dprint/jsonc-parser/tree/c7d4cf51f772762e00cc22a62b1454e76dfbe5a2">jsonc-parser c7d4cf5</a> · <a href="https://github.com/microsoft/node-jsonc-parser/blob/dba4356548089b594dd12b324d0547e1c2c5ddb8/src/impl/edit.ts#L15-L178">node-jsonc-parser dba4356</a> · <a href="https://github.com/toml-rs/toml/blob/e4b8bda">toml_edit e4b8bda</a></p>
   </section>
   <section>
-    <h2>Real tools: whole-document rewrite</h2>
+    <h2>Libraries: whole-document rewrite</h2>
     <ul>
       <li><strong><code>jaq</code></strong> is a capable query engine, but it drops comments while reading and prints a new document. Recommend against it for this feature.</li>
       <li><strong><code>serde_json</code></strong> has no comment model; preserving key order does not preserve the original bytes.</li>
       <li><strong><code>json5-rs</code></strong> accepts comments as input but does not retain them in an editable document model.</li>
       <li><strong>npm package-json</strong> rewrites the full document while carrying forward detected indentation and newline style.</li>
     </ul>
-    <p class="muted">Source evidence: jaq <code>f167ad4</code> <code>read.rs:10-19</code>, <code>write.rs:202-260</code>; serde_json <code>afdf6fc</code>; json5-rs <code>fd55f90</code>; npm package-json <code>a7dafdb</code>.</p>
-  </section>
-  <section>
-    <h2>Real tools: regenerate and merge</h2>
-    <ul>
-      <li><strong>Copier and Cruft</strong> render the old and new template versions, compute a difference, then use Git-style merge tools.</li>
-      <li>This approach handles broad template updates, but it is a better fit for Toha's separate project-update work than for one bounded section.</li>
-    </ul>
-    <p class="muted">Source evidence: Copier <code>01c6832</code> and Cruft <code>33f6b72</code>. Full revision, file, and symbol notes remain in the design package.</p>
+    <p><strong>Classification:</strong> implementation mechanisms. They can express broad transformations, but they do not preserve a user-owned source document.</p>
+    <p class="muted"><a href="https://github.com/01mf02/jaq/tree/f167ad43872b14ef4355922331830571ddbe7dae">jaq f167ad4</a> · source-cited details remain in the design package.</p>
   </section>
   <section>
     <h2>How the focused comparison scored</h2>
