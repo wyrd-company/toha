@@ -40,6 +40,12 @@ $defs:
           template's hooks only while its live digest still equals this value.
         type: string
         pattern: '^sha256:[0-9a-f]{64}$'
+      trusted:
+        description: >-
+          Accepted but ignored. A system or user registry from before approval
+          digests may carry this legacy field; it grants no trust, so the entry
+          reads as needing review until its hooks are approved.
+        type: boolean
   registry:
     type: object
     additionalProperties: false

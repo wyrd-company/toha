@@ -222,6 +222,66 @@ fn staged_resume_recomputes_trust_at_apply() {
     assert!(!target.path().join(RAN_MARKER).exists());
 }
 
+#[test]
+fn legacy_trusted_registry_loads_and_needs_review() {
+    // A registry written before approval digests (`trusted: true`, no approval)
+    // must load and grant no trust: the whole registry stays readable and a
+    // hooked template reads as needs-review (Decision 4, no migration).
+    let root = TempDir::new().unwrap();
+    let folder = root.path().join("tpl");
+    write_template(&folder, "  - script: hook.sh\n", marker_script());
+    let canonical = folder.canonicalize().unwrap();
+    let user_dir = support::user_data_dir(root.path());
+    fs::create_dir_all(&user_dir).unwrap();
+    fs::write(
+        user_dir.join("templates.yml"),
+        format!(
+            "templates:\n  \"{formal}\":\n    name: reviewdemo\n    source: \"{src}\"\n    path: \"{src}\"\n    aliases: [ demo ]\n    trusted: true\n",
+            formal = canonical.display(),
+            src = canonical.display(),
+        ),
+    )
+    .unwrap();
+
+    // The legacy registry loads and lists the template as untrusted.
+    let list = support::isolated_command(root.path())
+        .args(["templates", "list", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        list.status.code(),
+        Some(0),
+        "a legacy registry must still load: {}",
+        String::from_utf8_lossy(&list.stderr)
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&list.stdout)).unwrap();
+    assert_eq!(json.as_array().unwrap().len(), 1, "the entry loads");
+    assert_eq!(json[0]["trusted"], false, "legacy trusted grants no trust");
+
+    // Applying the hooked template needs review, not a run.
+    let target = tempfile::tempdir_in(root.path()).unwrap();
+    let answers = target.path().join("answers.json");
+    fs::write(&answers, "{}").unwrap();
+    let output = support::isolated_command(root.path())
+        .args([
+            "apply",
+            "demo",
+            target.path().to_str().unwrap(),
+            "--answers",
+            answers.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "legacy trust must not run hooks: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!target.path().join(RAN_MARKER).exists());
+}
+
 fn git(root: &Path, args: &[&str]) {
     let output = Command::new("git")
         .args(args)

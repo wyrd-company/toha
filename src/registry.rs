@@ -723,6 +723,35 @@ mod tests {
         assert!(merged.resolve("formal").unwrap().approval.is_none());
     }
     #[test]
+    fn legacy_trusted_field_loads_and_grants_no_trust() {
+        // A registry written before approval digests carries `trusted`. It must
+        // load (Decision 4: no migration) and grant no trust, reading as
+        // needs-review, while the local layer still forbids the field.
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("templates.yml");
+        fs::write(
+            &path,
+            "templates:\n  formal:\n    name: sample\n    source: file:///sample\n    path: /sample\n    trusted: true\n",
+        )
+        .unwrap();
+        let user = RegistryFile::load(&path, Layer::User).unwrap();
+        assert!(user.templates["formal"].approval.is_none());
+        let merged =
+            Registry::merge(&RegistryFile::default(), &user, &RegistryFile::default()).unwrap();
+        assert!(merged.resolve("sample").unwrap().approval.is_none());
+        // Rewriting the registry drops the legacy field.
+        user.write_atomic(&path).unwrap();
+        let written: Value = serde_norway::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(written["templates"]["formal"].get("trusted").is_none());
+        // The local layer never accepted a trust-granting field.
+        let local_path = root.path().join("local.yml");
+        fs::write(&local_path, "templates:\n  formal:\n    trusted: true\n").unwrap();
+        assert!(matches!(
+            RegistryFile::load(&local_path, Layer::Local),
+            Err(RegistryError::Schema { .. })
+        ));
+    }
+    #[test]
     fn discovery_reads_only_name() {
         let root = tempfile::tempdir().unwrap();
         let folder = root.path().join("sample");
