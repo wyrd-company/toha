@@ -10,6 +10,16 @@ fn run(root: &TempDir, args: &[&str]) -> std::process::Output {
         .output()
         .unwrap()
 }
+/// The persisted registry entries in a `templates list --json` array, excluding
+/// the presentation-only bundled demo descriptor (D3) that the unfiltered
+/// listing carries. Registry-behavior assertions count these, not the row.
+fn registry_entries(json: &serde_json::Value) -> Vec<&serde_json::Value> {
+    json.as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry.get("bundled") != Some(&serde_json::Value::Bool(true)))
+        .collect()
+}
 fn git(root: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .args(args)
@@ -62,7 +72,7 @@ fn add_list_alias_remove_and_shared_clone() {
     assert_exit(&first, 0);
     let list = assert_exit(&run(&root, &["templates", "list", "--json"]), 0);
     let json: serde_json::Value = serde_json::from_str(&list).unwrap();
-    assert_eq!(json.as_array().unwrap().len(), 2);
+    assert_eq!(registry_entries(&json).len(), 2);
     let first_name = format!("{url}#one");
     let second_name = format!("{url}#two");
     assert_exit(&run(&root, &["templates", "alias", &first_name, "mine"]), 0);
@@ -75,7 +85,7 @@ fn add_list_alias_remove_and_shared_clone() {
     assert_exit(&run(&root, &["templates", "remove", &first_name]), 0);
     let list = assert_exit(&run(&root, &["templates", "list", "--json"]), 0);
     let json: serde_json::Value = serde_json::from_str(&list).unwrap();
-    assert_eq!(json.as_array().unwrap().len(), 1);
+    assert_eq!(registry_entries(&json).len(), 1);
     assert_exit(&run(&root, &["templates", "remove", &second_name]), 0);
     assert_exit(&run(&root, &["templates", "remove", &second_name]), 1);
 }
@@ -155,13 +165,13 @@ fn add_rejects_multiple_with_alias_and_bad_template() {
     let url = repo(&root);
     assert_exit(&run(&root, &["templates", "add", &url, "-a", "single"]), 1);
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&assert_exit(
-            &run(&root, &["templates", "list", "--json"]),
-            0
-        ))
-        .unwrap()
-        .as_array()
-        .unwrap()
+        registry_entries(
+            &serde_json::from_str::<serde_json::Value>(&assert_exit(
+                &run(&root, &["templates", "list", "--json"]),
+                0
+            ))
+            .unwrap()
+        )
         .len(),
         0
     );
@@ -271,13 +281,9 @@ fn pinned_tag_and_commit_do_not_move() {
     assert_exit(&run(&root, &["templates", "update"]), 0);
     let output = assert_exit(&run(&root, &["templates", "list", "--json"]), 0);
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
-    assert_eq!(json.as_array().unwrap().len(), 2);
-    assert!(
-        json.as_array()
-            .unwrap()
-            .iter()
-            .all(|e| e["commit"] == commit)
-    );
+    let entries = registry_entries(&json);
+    assert_eq!(entries.len(), 2);
+    assert!(entries.iter().all(|e| e["commit"] == commit));
 }
 #[test]
 fn configured_file_host_shorthand_installs_and_round_trips() {
@@ -356,7 +362,7 @@ fn layer_lists_and_local_aliases_of_discovered_templates() {
         0,
     ))
     .unwrap();
-    assert_eq!(merged.as_array().unwrap().len(), 2);
+    assert_eq!(registry_entries(&merged).len(), 2);
     assert!(
         merged
             .as_array()

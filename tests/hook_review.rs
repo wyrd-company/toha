@@ -256,8 +256,19 @@ fn legacy_trusted_registry_loads_and_needs_review() {
     );
     let json: serde_json::Value =
         serde_json::from_str(&String::from_utf8_lossy(&list.stdout)).unwrap();
-    assert_eq!(json.as_array().unwrap().len(), 1, "the entry loads");
-    assert_eq!(json[0]["trusted"], false, "legacy trusted grants no trust");
+    // The unfiltered listing also carries the presentation-only bundled demo
+    // descriptor (D3); count the persisted registry entries, not that row.
+    let entries: Vec<_> = json
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e.get("bundled") != Some(&serde_json::Value::Bool(true)))
+        .collect();
+    assert_eq!(entries.len(), 1, "the entry loads");
+    assert_eq!(
+        entries[0]["trusted"], false,
+        "legacy trusted grants no trust"
+    );
 
     // Applying the hooked template needs review, not a run.
     let target = tempfile::tempdir_in(root.path()).unwrap();
