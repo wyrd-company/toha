@@ -224,7 +224,7 @@ commands:
           - name: trust
             flags: [ --trust ]
             kind: flag
-            description: Record the added templates as trusted in the user registry.
+            description: Approve the added templates' current hooks in the user registry.
         output:
           exit-codes:
             - code: 0

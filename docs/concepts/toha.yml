@@ -60,9 +60,12 @@ properties:
     A record of installed templates for each layer, holding each template's
     formal name, short name, source, ref, commit, location, aliases, and trust.
   trust: >-
-    Hooks run only for trusted templates. Trust comes from the user or system
-    template registry, or from the `--trust` flag on a single run. Trust in an
-    installed template carries over when the template is updated.
+    Hooks run only after the caller approves the template's executable surface:
+    its hook definitions and the bytes of the files they run. Approval is
+    recorded in the user or system template registry and authorizes the hooks
+    only while the installed content still matches it; the `--trust` flag
+    approves a single run. An update that changes the executable surface
+    withdraws trust until the template is approved again.
   staged-interviews: >-
     An interview in progress is saved in the user's state directory, keyed by
     its target path, so it continues in a later process.

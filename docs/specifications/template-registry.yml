@@ -27,7 +27,9 @@ description: >-
   resolved commit of the installed content of a git template. `path` is the
   directory that holds the template: the install directory of a git template,
   or the folder itself for a local folder template. `aliases` lists alias
-  names. `trusted: true` lets the hooks of the template run without `--trust`.
+  names. `approval` is the approved executable-surface digest; it lets the
+  template's hooks run without `--trust` only while the installed content still
+  matches that digest.
 
   Ownership. `templates add`, `templates update`, `templates remove`, and
   `templates alias` write the user registry. The system registry is provisioned
@@ -36,7 +38,7 @@ description: >-
 
   Discovery. A template found by scanning a templates path without a registry
   entry has the canonical absolute path of its folder as its formal name, and
-  is not trusted.
+  carries no approval.
 format: json-schema
 validation-criteria: >-
   Each system and user registry file validates against `#/$defs/registry` in

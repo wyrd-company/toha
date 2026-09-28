@@ -35,13 +35,19 @@ description: >-
   installed templates, with the same `templates alias` commands, and completes
   the add.
 
-  Trust. The hooks of a template run when the template is trusted in the user
-  or system template registry or when `--trust` is given. Templates from a local
-  templates path and templates given by address or folder to `stage` or
-  `apply` are trusted only through `--trust`. When the template has hooks and
-  is not trusted, `apply` performs a dry run, lists the hooks, states that
-  `--trust` is required, names the same command with `--trust`, and exits with
-  code 3. For a template resolved by name from the user or system template
+  Trust. The hooks of a template run when the caller has approved the
+  template's current executable surface in the user or system template
+  registry, or when `--trust` is given. Approval is a digest of the template's
+  hook nodes and the bytes of every executed in-tree file, and authorizes the
+  hooks only while that digest equals the installed content, so an update that
+  changes any hook or script no longer matches and the template is untrusted
+  until it is approved again. Templates from a local templates path and
+  templates given by address or folder to `stage` or `apply` are trusted only
+  through `--trust`. When the template has hooks and is not trusted, `apply`
+  performs a dry run, lists the hooks, states that `--trust` is required, names
+  the same command with `--trust`, and exits with code 3; when an approval
+  exists but no longer matches, the listing marks the hooks changed since
+  approval. For a template resolved by name from the user or system template
   registry, it also names `templates add --trust` with the formal name.
   `apply --dry-run` of a template with hooks that is not trusted prints the
   plan, then names on standard error the same command with `--trust` and
@@ -52,8 +58,10 @@ description: >-
   Updates. `templates update` fetches every installed git template, or the
   one named, whose address has no ref or names a branch, and moves it to the
   newest commit of that branch. A template pinned to a tag or a commit is left
-  unchanged. The formal name, aliases, and trust of an updated template are
-  unchanged.
+  unchanged. The formal name and aliases of an updated template are unchanged,
+  and its approval continues to authorize the hooks only while the executable
+  surface is unchanged; an update that changes the executable surface makes the
+  template untrusted until it is approved again.
 
   Staged interviews. `apply <PATH>` on an incomplete staged interview prompts
   in the terminal for the remaining questions, records each accepted batch in
