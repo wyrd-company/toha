@@ -59,7 +59,11 @@ description: >-
   order, so the interview is acyclic; toha rejects a template that references
   a later or unknown id. A skipped question takes its `default` as its answer
   when it has one; otherwise a looped `text` or a `multiselect` question takes
-  `[]`, and any other question takes `none`.
+  `[]`, and any other question takes `none`. A template-authored default must
+  satisfy the question constraints. A failing default is a template error,
+  not an answer rejection. A skipped question checks the default against each
+  constraint whose inputs are available without rendering its presentation
+  fields or forcing an unavailable dynamic constraint.
 
   Questions. `type` is one of `text`, `multiline`, `confirm`, `select`, and
   `multiselect`. `prompt` is required. `description` and `placeholder` are
@@ -91,7 +95,11 @@ description: >-
   `source` once for each item of the `each` expression. `each` has the form
   `<expression> as <name>`; the item is bound to `<name>` while `source` and
   `path` are rendered. `path` is relative to the target directory. An entry
-  with a `when` that is false generates nothing.
+  with a `when` that is false generates nothing. A render fault names the
+  authored field and value: `files[i].when`, `files[i].each`, or
+  `files[i].path`. A fault in an ordinary source path names field `path` and
+  the exact failing segment. Each fault also names the support or source file;
+  a source-content fault keeps its source-file diagnostic.
 
   Hooks. A hook runs a command after all files are written, with the target
   directory as its working directory unless `cwd` names a path relative to it.

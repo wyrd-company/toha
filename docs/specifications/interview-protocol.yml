@@ -50,11 +50,13 @@ description: >-
   document is submitted, against each constraint of its question that does
   not depend on other answers: the answer type, a literal `required`, literal
   `options`, `validate.regex`, and literal `validate` and `loop` bounds. A
-  failure is decided by applying the document in one tentative step: it
-  rejects the document when that step stops with the question active or not
-  reached, or when the batch the document answers fails; it is dropped when
-  the step skips the question; and a template fault in the step is the error
-  instead. It checks the remaining constraints when the question is
+  failure is decided by applying the valid current answers in one effect-free
+  tentative step. It rejects the document when that step leaves the question
+  active or unresolved, and drops the failure only when the step proves the
+  question skipped. Another current answer failure does not prevent that
+  classification, but a failed current answer is unavailable to the tentative
+  step. A rejected tentative step publishes no answer, message, warning, hook,
+  skip marker, or template fault. It checks the remaining constraints when the question is
   reached. When a held
   answer fails then, the question is part of that batch, and its error starts
   with `value recorded earlier is not allowed:`. That error stays on the
@@ -78,13 +80,14 @@ description: >-
   of any other question `null`; a question left out of a document for its
   batch takes its default, or that empty answer when it has none, except a
   question with an error for a value recorded earlier. A configured default
-  is validated as an answer when its question takes it; when it fails, the
-  error names its generic source after the flat value has entered the interview
-  engine: `default <JSON value> from configured default for question "<id>" is
-  not allowed:` followed by the failed constraint. Missing presets and answer-kind
-  mismatches are rejected before the engine and name their configuration files and
-  entries. Toha validates each answer and applies its `format` expression before
-  it records the answer.
+  carries its winning mapping origin, and its winning preset origin when it is
+  a reference, until constraints pass. A constraint failure removes the
+  default from the question, adds a recoverable error of the form `default
+  <JSON value> from <mapping> [→ <preset>] is not allowed: <constraint>`, and
+  lets an explicit answer replace it. Missing presets and answer-kind
+  mismatches are fatal and produce no partial configured resolution. Toha
+  validates each answer and applies its `format` expression before it records
+  the answer.
 
   Context. Each batch and result document carries `context`: the canonical
   absolute target path, the formal name of the template, and the resolved
@@ -132,7 +135,12 @@ description: >-
   `~/Library/Application Support/toha/staged/` on macOS; and
   `%LOCALAPPDATA%\toha\staged\` on Windows. The file name is the
   lowercase hexadecimal SHA-256 of the canonical absolute target path with a
-  `.json` suffix. The staged record holds the target path, the formal name and
+  `.json` suffix. The canonical path has no redundant trailing separator; a
+  filesystem root keeps its required separator. Storage, protocol, planning,
+  and apply use the same constructed target identity. A separator-keyed legacy
+  record is accepted only when its stored target canonicalizes to that identity.
+  Its next successful save writes the canonical key before removing the legacy
+  key. The staged record holds the target path, the formal name and
   resolved commit of the template, whether the argument resolved by name, the
   instant that `now()` returns for this
   interview, and every accepted answers submission, in order. Resuming replays

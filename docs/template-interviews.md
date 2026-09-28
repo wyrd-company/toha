@@ -156,6 +156,16 @@ mapping can use an inline value or refer to a named preset. Toha reads the live
 mapping and preset again when a staged interview resumes. See
 [Configuration](/docs/toha/configuration).
 
+A template default must satisfy the same options and constraints as an entered
+answer. If it does not, Toha reports a template error and stops. It does not ask
+the person to repair the template's value. When a question is skipped, Toha
+checks the default against constraints whose inputs are already available. It
+does not render the skipped question's prompt, description, or placeholder.
+
+A configured default belongs to the caller. If its answer type is correct but
+a constraint rejects it, the question has no preselected value, the error names
+the winning configuration entry, and an entered answer can replace it.
+
 ## Require and validate answers
 
 Set `required: true` to reject an empty answer. You can also use an expression

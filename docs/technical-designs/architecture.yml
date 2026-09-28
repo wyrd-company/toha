@@ -107,8 +107,12 @@ proposed-design:
     The engine is a state machine whose states are values:
     `Interview::start(template: &Template, seed: Seed) -> Result<Interview,
     EvalError>` and
-    `enum Interview { Asking(Pending), Complete(Completed) }`. `Seed` holds the
-    configured defaults and the frozen instant that `now()` returns.
+    `enum Interview { Asking(Pending), Complete(Completed) }`. `Seed` holds
+    ordinary flat defaults and the frozen instant that `now()` returns.
+    Configured defaults enter through an origin-bearing `Resolution`; its
+    consuming start and staged-replay routes keep each winning mapping and
+    preset origin beside the value until constraints pass. Converting a
+    resolution to flat defaults is an explicit provenance-dropping operation.
     `Pending::batch(&self) -> &Batch` exposes the current batch.
     `Pending::messages_reached(&self) -> usize` counts messages reached through
     that batch in `Completed.messages` order.
@@ -118,7 +122,10 @@ proposed-design:
     evaluation failures, so the terminal driver reports an error as soon as
     a question is answered.
     `Pending::answer(self, answers: RawAnswers) -> Result<Interview,
-    AnswerError>` records a whole batch or nothing. `AnswerError::Rejected`
+    AnswerError>` records a whole document or nothing. It checks valid current
+    answers in a private tentative walk to classify known-invalid early answers
+    as active, skipped, or unresolved. The tentative walk publishes no effect;
+    an accepted document performs one fresh committed walk. `AnswerError::Rejected`
     returns the same pending state and the per-id rejections.
     `AnswerError::Eval` reports a Jinja evaluation failure without recording
     answers. `EvalError` names the node id, the prompt, description, or default
@@ -166,10 +173,15 @@ proposed-design:
     process, in either modality. A template whose content changed so that
     replay rejects a recorded answer fails with that rejection, and `abort`
     clears it. `staging` writes records atomically through a temporary file
-    and rename, in the state directory resolved by the binary.
+    and rename, in the state directory resolved by the binary. The opaque
+    `CanonicalTarget` is created only by `canonical_target(&Path)`, has a
+    read-only `as_path()`, and crosses storage, protocol, plan, and apply.
+    Storage checks the canonical key before a validated legacy separator key;
+    a successful canonical save removes that legacy key.
 
   plan-and-apply: >-
-    `Plan::build(template: &Template, completed: &Completed, target: &Path) ->
+    `Plan::build(template: &Template, completed: &Completed, target:
+    &CanonicalTarget) ->
     Result<Plan, PlanError>` renders every file and path and reads nothing but
     the template folder and the target directory listing. A `Plan` holds
     `PlannedFile { path: TargetPath, content: Content }`, where `Content` is
@@ -178,7 +190,8 @@ proposed-design:
     apply messages. `TargetPath` is a newtype built only by a constructor that
     normalizes a rendered relative path and rejects `..` escapes, absolute
     paths, and any path inside `.git`, so no later code checks for them.
-    `Plan::apply(self, options: ApplyOptions, runner: &dyn HookRunner) ->
+    `Plan::apply(self, target: &CanonicalTarget, options: ApplyOptions,
+    runner: &dyn HookRunner) ->
     Result<Applied, ApplyError>` refuses to write when conflicts exist
     without `force`, returns `Applied::NeedsTrust(Plan)` without writing when
     the plan has hooks and `options.trusted` is false, and otherwise writes
@@ -212,7 +225,10 @@ proposed-design:
     library reads no environment variables. `config::load(&Dirs, cwd) ->
     Result<Config, ConfigError>` validates each layer against the embedded
     configuration schema and merges them by the rules in the configuration
-    specification.
+    specification. `ConfigEntry<T>` keeps each winning value and origin
+    together. `configured_defaults` is the sole consumer that translates those
+    entries into an origin-bearing `Resolution`; callers report its warnings
+    before consuming it through configured start or replay.
 
   outcomes-and-exit-codes: >-
     Each command returns a domain outcome, and one exhaustive match in the

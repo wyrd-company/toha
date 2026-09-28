@@ -103,6 +103,18 @@ configuration file and mapping. A wrong type from a preset also names the preset
 file and entry. Mappings for other templates and presets that are not referenced
 by the selected template are not checked during that run.
 
+If a configured value has the correct answer type but fails the selected
+question's constraints, Toha asks the question without that default. The error
+names the winning mapping file. A preset reference also names the winning
+preset file, name, and value:
+
+```text
+mode: default "legacy" from /config/local.yml: template-defaults."sample".mode → /config/user.yml: presets."display_mode" ("legacy") is not allowed: must be one of: compact, detailed
+```
+
+An answer supplied in the terminal, an answers document, or a resumed staged
+interview replaces that invalid configured value.
+
 The former `defaults:` property is rejected with conversion guidance. Move each
 value into a named preset or an inline mapping, then map it under every template
 formal name that should receive it.
