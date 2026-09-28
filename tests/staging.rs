@@ -527,6 +527,21 @@ fn canonical_targets_have_one_stable_spelling_for_every_path_class() {
 }
 
 #[test]
+fn target_consumers_do_not_construct_a_second_identity() {
+    for (name, source) in [
+        ("apply", include_str!("../src/apply.rs")),
+        ("plan", include_str!("../src/plan.rs")),
+        ("protocol", include_str!("../src/protocol.rs")),
+    ] {
+        let production = source.split("#[cfg(test)]").next().unwrap();
+        assert!(
+            !production.contains("canonical_target("),
+            "{name} must consume CanonicalTarget instead of normalizing again"
+        );
+    }
+}
+
+#[test]
 fn legacy_separator_key_migrates_only_after_a_successful_save() {
     let state = tempfile::tempdir().unwrap();
     let target_dir = tempfile::tempdir().unwrap();
