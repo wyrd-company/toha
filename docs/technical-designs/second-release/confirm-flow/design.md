@@ -431,24 +431,27 @@ to today; the `ended` document (with `kind`) is new and additive.
 
 ## Composition with approved predecessor contracts
 
-- **Answer-transaction atomicity (1072):** honored as above; holds under today's
-  emergent loop and the future `SubmissionTxn`. Depends on the contract, not merged
-  1056 runtime (producer 1056 is remediating its round‑1 review; no approved interface
-  is narrowed).
+- **Answer-transaction atomicity (1072):** honored as above. The error-attribution
+  implementation (1056) is now integrated on the epic (`8a19269`); the design composes
+  with the integrated answer transaction, and no approved interface was narrowed.
 - **Target identity (1072):** the flow node never touches the target during the walk;
-  it builds no plan on stop/abort; `Plan`/apply and the abort `Store::remove` take the
-  identity type (`&Path` now, `&CanonicalTarget` post‑1056) via the **sole**
-  `canonical_target` factory. No second normalizer.
+  it builds no plan on stop/abort; `Plan::build`/`apply` and the abort `Store::remove`
+  take the integrated `&CanonicalTarget` from the **sole**
+  `canonical_target(&Path) -> Result<CanonicalTarget, StagingError>` factory. No second
+  normalizer. Verified against the integrated `staging.rs`:
+  `Store::remove(&CanonicalTarget) -> Result<bool, StagingError>` is exactly the
+  operation the `abort` action reuses (returns `false` when no record exists;
+  surfaces `StagingError` on I/O failure).
 - **Origin-bearing consuming `Resolution`:** the flow node reads answers through
   `when` and consumes no configured defaults, so it is provenance-neutral; configured
   defaults still flow through `Resolution::warnings()`/`start`/`replay_with_resolution`.
   It reconstructs no origins and never uses the flat projection.
 - **Skip/default policy (1072):** reuses `default_ready`/`skipped_descendants_ready`
   and `Advance::skip`/`warn_if_held`; no parallel walker, no new skipped-default rule.
-- **Runtime merge order (coordination, not a decision):** the paired implementation
-  (1062) integrates **after** the error-attribution implementation (1056). Independent
-  design preparation is permitted; independent runtime integration is not. The design
-  needs no 1056 code, so this ordering needs no design rework.
+- **Runtime merge order (coordination, not a decision):** the error-attribution
+  implementation (1056) is integrated on the epic; the paired implementation (1062)
+  builds on top of it. The design composes with the integrated interfaces and needs no
+  rework for this ordering.
 
 ## Error / results contract
 

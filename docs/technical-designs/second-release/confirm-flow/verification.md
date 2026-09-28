@@ -96,12 +96,16 @@ the sibling toha designs (1058 integrated; 1072/1056 approved), addressed below.
 - **Presets 1058 (integrated):** uses the real `Seed`/`Resolution`/`configured_defaults`/
   `Interview::start` shapes; the flow node adds no configured-default consumption;
   provenance-neutral.
-- **Error-attribution 1072 (approved, unmerged 1056):** depends on the approved
-  contract only (atomicity invariant + target-identity type + origin-bearing
-  `Resolution`); adds no second normalizer, reconstructs no origins, accepts no
-  rejected answer into probe state, infers no different skip/default policy. Runtime
-  integration order after 1056 is fixed coordination, not a decision. No approved
-  interface is changed by this design.
+- **Error-attribution 1072 (integrated via 1056):** the error-attribution
+  implementation (1056) is integrated on the epic (`8a19269`). Verified against the
+  integrated code — the opaque `CanonicalTarget` + sole
+  `canonical_target(&Path) -> Result<CanonicalTarget, StagingError>` factory,
+  `Store::{path_for,load,remove}(&CanonicalTarget)`,
+  `Plan::build`/`apply(&CanonicalTarget)`, and the origin-bearing consuming `Resolution`
+  (`warnings()`/`start`/`into_flat_defaults`) — match the contract the design targeted,
+  with no drift. The design adds no second normalizer, reconstructs no origins, accepts
+  no rejected answer into probe state, and infers no different skip/default policy. No
+  approved interface was narrowed.
 
 ## Residual risks (carried to the checkpoint)
 
@@ -143,13 +147,15 @@ Type-safety: `abort` is the `Ended` terminal variant (differing only by `kind`),
 ## Approval-closure status
 
 Bob approved the flow-node shape and pre-approved abort (2026-09-28 19:37); the
-recommended choices are resolved (Decisions section of `design.md`). Base refreshed:
-the branch was rebased from `dfe7ba0` onto the current epic head `a62061f`, with
-merge-base == current epic head proved before these edits. The approved design shape
-(stop/dry-run/skip) is unchanged; the closure diff adds the pre-approved `abort`
-action, resolves the decisions, and refines titles to flow language. Independent
-design review remains required and is held until after the error-attribution producer
-(1056) publishes; the handoff records a clean exact basis and the approved evidence.
+recommended choices are resolved (Decisions section of `design.md`). The
+error-attribution producer (1056) is now integrated on the epic (`8a19269`); the
+branch was rebased onto that head, with merge-base == current epic head proved before
+these edits, and the design re-verified against the integrated producer interfaces
+(`CanonicalTarget`/`canonical_target`, `Store::remove(&CanonicalTarget)`,
+`Plan`/`apply(&CanonicalTarget)`, origin-bearing `Resolution`) with no drift. The
+approved design shape (stop/dry-run/skip/abort) is unchanged. Independent design review
+is no longer held: the task is handed off for cold review at the refreshed clean basis
+with the approved evidence recorded.
 
 ## Verdict
 
