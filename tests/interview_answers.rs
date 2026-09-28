@@ -648,6 +648,33 @@ fn staged_submissions(state: &Path, target: &Path) -> Vec<Value> {
         .unwrap_or_default()
 }
 
+fn output_tree(root: &Path) -> Vec<(String, String)> {
+    fn visit(root: &Path, path: &Path, files: &mut Vec<(String, String)>) {
+        let mut entries: Vec<_> = std::fs::read_dir(path)
+            .unwrap()
+            .map(|entry| entry.unwrap())
+            .collect();
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            if entry.file_type().unwrap().is_dir() {
+                visit(root, &path, files);
+            } else {
+                files.push((
+                    path.strip_prefix(root)
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned(),
+                    std::fs::read_to_string(path).unwrap(),
+                ));
+            }
+        }
+    }
+    let mut files = Vec::new();
+    visit(root, root, &mut files);
+    files
+}
+
 /// The exit code, batch questions, messages, errors, and recorded
 /// submissions after one answers document, with the target path as `<P>`.
 fn outcome(code: i32, document: &Value, state: &Path, target: &Path) -> Value {
@@ -660,6 +687,7 @@ fn outcome(code: i32, document: &Value, state: &Path, target: &Path) -> Value {
         "errors": document.get("errors"),
         "answers": document.get("answers"),
         "submissions": staged_submissions(state, target),
+        "output_tree": output_tree(target),
     });
     normalized(outcome, target.to_str().unwrap())
 }
@@ -1768,6 +1796,7 @@ fn skipped_invalid_answer_is_dropped_beside_another_failing_answer() {
     );
     assert_eq!(code, 4, "{result}");
     assert_eq!(result["errors"], json!({"title": ["must match ^[a-z]+$"]}));
+    assert_eq!(result["messages"], json!([]), "{result}");
     // The other failure is not an early answer: an unknown id.
     let (code, result) = continue_with(
         state.path(),
@@ -1809,6 +1838,8 @@ fn skipped_invalid_answer_is_dropped_beside_another_failing_answer() {
 #[test]
 fn early_answer_classification_matrix_is_the_same_through_all_routes() {
     let (folder, _template) = inline(CLASSIFY);
+    fs::create_dir_all(folder.path().join("template")).unwrap();
+    fs::write(folder.path().join("template/result.txt"), "{{ kind }}").unwrap();
     for kind in ["plain", "fancy"] {
         for target in ["style", "deep"] {
             for value in [json!("ok"), json!(1)] {
