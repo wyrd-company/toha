@@ -21,7 +21,7 @@ relationships:
   `067c8d2e7c95cf2b16ab3a4103f8b1a8fda331af`, design SHA-256
   `72a564799b95ab1c187c913ac14ef14938f880bf2ab24ec337c03f887991457b`.
 - Read-only producer implementation evidence was inspected at
-  `bf0b77ec13d6bb5adcad23bb790f97651e9e0969`. That branch remains owned by the
+  `807ad9cc4b510f30dc927242c214a7201d54c72c`. That branch remains owned by the
   producer task and is evidence, not a dependency or an edit surface here.
 
 The producer design is authoritative for the future composition. The integration

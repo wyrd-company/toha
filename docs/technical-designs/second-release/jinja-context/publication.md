@@ -60,7 +60,7 @@ resolver.
 
 Phase E re-grounding machine-captured the unchanged integration base above and
 the read-only active producer implementation at
-`bf0b77ec13d6bb5adcad23bb790f97651e9e0969`. The latter confirms the approved
+`807ad9cc4b510f30dc927242c214a7201d54c72c`. The latter confirms the approved
 private origin-bearing storage and consuming routes but remains independently
 owned; this design adds no implementation dependency.
 
