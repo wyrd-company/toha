@@ -19,8 +19,8 @@ comment syntax, **including JSONC and JSON5** (both permit `//`).
 makes a `.json` file invalid JSON. So the marker mechanism cannot inject into a
 strict `.json` target, even though JSON-family files (package.json,
 tsconfig.json, settings.json, composer.json) are among the most common injection
-targets. The base design deferred "structured merge" as out of scope by
-assumption; this addendum reconsiders that on evidence.
+targets. The focused design therefore needs a second, structure-aware mechanism
+for the whole JSON family.
 
 ## The three mechanism families observed in real implementations
 
@@ -137,28 +137,24 @@ surgical CST edits (VS Code) — no scaffolding tool ships structured JSON merge
 ## What this means for the design (Preserve / Change / Avoid / Risk delta)
 
 - **Preserve.** The marker base and its structural idempotency — validated by
-  Ansible `blockinfile`. It already covers JSONC/JSON5.
-- **Change (proposed).** Name the strict-JSON boundary explicitly. Bring the
-  structured-mechanism choice to Bob *now* (so the interface seam can be reserved
-  correctly) whether or not the implementation is sequenced later — a
-  recommendation for D6b, not a settled decision.
-- **Avoid (recommended).** `jaq` (and any reserialize approach) as the structured
-  mechanism — it destroys a user-owned file's comments/order/formatting, the exact
-  no-silent-overwrite hazard the grounding forbids, and jq is a language users
-  must learn for what is usually a single-value set. Avoid putting a query engine
-  on the critical path. (Recommendation for D9; Bob rules.)
-- **Risk.** A structured "owns the value at a path" mode has a genuinely weaker
-  drift story than markers: without a comment slot, strict JSON cannot carry a
-  checksum/marker, so a re-apply cannot distinguish "user edited the managed
-  value" from "first set." The honest model is *declarative convergence* (Toha
-  re-sets exactly the path it owns, touching nothing else). This is a different
-  ownership contract from markers and must be decided deliberately, which is why
-  it is deferred rather than bolted on.
+  Ansible `blockinfile` — for non-JSON text files.
+- **Change.** Route JSON, JSONC, and JSON5 through one structured mechanism:
+  `jsonc-parser` CST. JSON-family rules own a typed value at a path and do not
+  add Toha marker comments.
+- **Avoid.** `jaq` and every parse/transform/print approach as the structured
+  mechanism. They destroy source fidelity and put a query language on the path
+  for a bounded value update.
+- **Risk.** Typed-path ownership has a weaker drift story than marked regions.
+  Strict JSON cannot carry a checksum, so re-apply cannot distinguish an
+  operator edit at the owned path from any other differing value. The contract
+  is declarative convergence: Toha re-sets exactly the path it owns and
+  preserves everything else.
 
 ## Conclusion carried into the arena and synthesis
 
-The structured question is a real shape change, so it was re-framed and re-run
-as a focused arena (`02a-arena-json-family.md`) with three structurally distinct
-candidates — embedded jaq, format-preserving jsonc-parser CST, and markers-only
-via JSONC — scored by a readonly cross-judge and reconciled in
-`04a-synthesis-json-family.md`.
+The structured question was re-framed and re-run as a focused arena
+(`02a-arena-json-family.md`) with three structurally distinct candidates —
+embedded jaq, format-preserving jsonc-parser CST, and markers via JSONC — scored
+by a readonly cross-judge and reconciled in
+`04a-synthesis-json-family.md`. The final design selects jsonc-parser for the
+JSON family and retains markers for other text formats.

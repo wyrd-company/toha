@@ -1,548 +1,82 @@
 # Content injection into existing files — final design
 
-Design 1068, paired implementation 1031, epic 1065 (Toha 0.2.0). Synthesized
-from the arena (base: candidate-1 managed-region markers; grafts and rejections
-in `04-synthesis.md`). Sketch only — `not implemented` bodies and proposed
-contract edits in prose; no production code, no canonical schema/spec edits in
-this package (1031 owns those).
+This design adds two bounded mutation modes to Toha's existing plan-and-apply
+flow:
+
+- visible managed regions for non-JSON text files; and
+- typed-path mutation through embedded `jsonc-parser` for JSON, JSONC, and
+  JSON5.
+
+The arena evidence is preserved in `02-arena-rubric.md`, `03-candidates/`, and
+`04-synthesis.md`. The focused JSON-family evidence is preserved in
+`01a-grounding-addendum-json-family.md`, `02a-arena-json-family.md`, and
+`04a-synthesis-json-family.md`. This package describes interfaces and behavior;
+the paired implementation owns runtime and canonical specification changes.
 
 ## Problem
 
-Today every planned mutation replaces a whole file: `Content` is
-`Rendered(String)` or `Copied(PathBuf)`, and `Plan::add` treats a target's
-*existence* as a conflict (`plan.rs:295`). Content injection is the first write
-*into a file Toha does not own* — a bounded region of an existing file, the rest
-left to its owner. Five constraints hold at once (from `01-grounding.md`): the
-interview engine stays pure and staging replay reproduces the same result;
-injection output is a pure function of `(Template, Completed, target state at
-apply time)`; the `TargetPath` / `has_symlink_component` / `.git` guards do not
-weaken; no new timeout, permission, subprocess, or pinned-check mechanic; and
-injection composes with whole-file writes inside one `Plan`. Heuristic
-idempotency (re-matching the injected text after the user edits around it) is
-forbidden, and a jq dependency must not dictate the core.
+Every current `PlannedFile` replaces a whole target. Content injection changes
+one bounded part of a file that an operator otherwise owns. The design must keep
+five properties:
 
-Managed-region markers resolve all five: the marked span is a self-describing,
-exactly-bounded unit that re-apply finds by key and replaces, so idempotency and
-ownership are structural facts.
+1. Interview evaluation remains pure and every terminal, headless, staged,
+   direct, and crate caller follows the same plan.
+2. A repeated apply is a byte no-op when the owned content already matches.
+3. Target-path, symbolic-link, and `.git` protections apply before every read or
+   write.
+4. All mutations resolve before the first write, and hooks retain their existing
+   trust gate and after-write order.
+5. A whole-file rule and bounded mutations can compose in one plan.
 
-The JSON family (JSON/JSONC/JSON5) is the one place this mechanism meets a
-boundary, and how it is handled — including whether an embedded `jaq` or other
-structured mutator belongs here — is presented as a set of recommendations for
-Bob's ruling in its own section below (**JSON-family injection and the
-structured mode**), grounded in source-cited research
-(`01a-grounding-addendum-json-family.md`) and a focused arena (`02a`/`04a`).
-Nothing in that section is settled scope until Bob rules D6a/D6b/D9.
+One ownership mechanism does not fit every file. Most text formats can carry
+visible comment markers and a checksum. JSON-family documents need a syntax-
+aware edit because strict JSON has no comments. The selected design uses visible
+markers outside the JSON family and a full-fidelity concrete syntax tree for
+JSON, JSONC, and JSON5.
 
-## Usage (caller's view)
+## Author experience
 
-### Template author (`template.yml`)
-
-A new top-level `inject` list, sibling to `files`. Each entry names the target,
-a stable region key, and the body to place; everything else is optional.
+### Visible region in a non-JSON text file
 
 ```yaml
-name: service-scaffold
-interview:
-  - id: add_router
-    type: confirm
-    prompt: Add HTTP routes?
-    default: true
-  - id: features
-    type: multiselect
-    prompt: Feature modules
-    options: ["health", "metrics"]
-
-# Whole-file generation — unchanged.
-files:
-  - each: "[1] as _"
-    source: support/main.rs
-    path: "src/main.rs"
-
-# NEW: bounded regions written into files Toha does not own.
 inject:
-  - into: "src/app.rs"            # target -> TargetPath (same guards as files)
-    region: "routes"             # stable key; partitions one file's regions
-    when: "add_router"
-    source: support/routes.rs     # body from a support file (rendered)
-    # comment omitted -> inferred from `.rs` -> `// ...`
-    anchor: { after: "fn build_router() {", occurrence: only }  # first placement only
-
-  - into: ".gitignore"
-    region: "build-artifacts"
-    content: |                    # inline body (rendered); mutually exclusive with source
-      /target
-      *.tmp
-    # no anchor -> first placement appends at end of file
-    create: true                  # allow creating .gitignore if absent (default false)
-
   - into: "config/app.toml"
     region: "features"
-    each: "features as feature"   # one entry may fan out to N regions (keys suffixed by item)
-    marker: { open: "#", close: "" }   # explicit override instead of inference
-    content: "{{ feature }}_enabled = true"
-```
-
-First apply wraps the rendered body in comment-delimited markers and places it
-(at the anchor, or at end of file):
-
-```rust
-fn build_router() {
-// >>> toha:region routes >>>
-    router.route("/health", get(health));
-// <<< toha:end routes sha256:9f2c… <<<
-    router.finish()
-}
-```
-
-A second apply with the same answers is a **no-op**: Toha re-renders the body,
-finds the region by key, sees the on-disk body equals the desired body, writes
-nothing. A changed template body replaces only the span between the markers. A
-body the *user* edited inside the markers is drift — Toha refuses and names
-`--force`, exactly as whole-file conflicts do.
-
-### Crate / CLI view
-
-The crate surface grows by one field and one pure function; existing
-`Plan::build(..).apply(..)` callers are unchanged.
-
-```rust
-use toha::{Plan, ApplyOptions, Applied};
-
-let plan = Plan::build(&template, &completed, target)?;   // also fills plan.edits
-match plan.apply(target, ApplyOptions { force: false, trusted: true }, &runner)? {
-    Applied::Written { files, .. } => { /* `files` includes injection targets that changed */ }
-    Applied::NeedsTrust(plan)      => { /* unchanged: hooks still gate on trust */ }
-}
-```
-
-CLI behavior:
-
-- `toha apply <PATH>` — whole-file writes first, then injections. A region that
-  already matches prints nothing (idempotent). A first-placed or changed region
-  prints its path (`apply` prints each written path,
-  `command-line-interface.yml`).
-- `toha apply --dry-run <PATH>` — extends the `create <path>` vocabulary with
-  `inject <path> (<region>)` for first placement and `update <path> (<region>)`
-  for a changed region; unchanged regions print nothing; drift/missing-anchor
-  print as the error they would raise. Dry-run reads target bytes (consistent
-  with reading the target listing today).
-- `toha apply <PATH>` with a drifted region and no `--force` — writes nothing,
-  lists each drifted `path (region)` after `region drifted:`, names the same
-  command with `--force`, exit 1 (mirrors the conflict gate).
-- Missing anchor → exit 1 (names the anchor text). Ambiguous anchor
-  (`occurrence: only`, >1 match) → exit 5 (the existing "ambiguous" code).
-
-## Shape
-
-Data structures first.
-
-### Injection is a sibling to `PlannedFile`, not a `Content` variant
-
-Whole-file writes carry the bytes; an injection carries *intent resolved against
-the target's current bytes at apply time*. Folding it into `Content` would put
-"I must read the target" behind a type that today means "I already hold the
-bytes," leaking the read requirement into every `Content` match (`per
-boundary-discipline`). A sibling keeps each type honest. (Candidate-4's unified
-enum was rejected for blast radius and a whole-file semantics regression; its
-*downstream contract* instinct is preserved as a derived view below.)
-
-```rust
-// src/plan.rs — additions
-
-pub struct Plan {
-    pub files: Vec<PlannedFile>,     // whole-file writes (unchanged)
-    pub edits: Vec<PlannedEdit>,     // NEW: region injections, applied after files
-    pub conflicts: Vec<TargetPath>,  // whole-file existence conflicts (unchanged)
-    pub hooks: Vec<PlannedHook>,
-    pub before_apply: Option<String>,
-    pub after_apply: Option<String>,
-}
-
-/// One managed region to write into an existing file. A pure function of
-/// (Template, Completed): the *rendered* body plus marker/anchor policy, but
-/// NOT the target's bytes. Bytes are read only when this edit is resolved at
-/// apply / dry-run time, never in the engine.
-pub struct PlannedEdit {
-    pub path: TargetPath,     // same newtype + `.git`/symlink guards as files
-    pub region: RegionKey,    // stable key; keys partition one file's regions
-    pub body: String,         // rendered content between the markers (no markers)
-    pub marker: MarkerStyle,  // comment delimiters, resolved at build time
-    pub anchor: Option<Anchor>, // first-placement only; None => end of file
-    pub create: bool,         // may apply create the file if absent? (default false)
-    pub source: Option<PathBuf>, // support file, for diagnostics; None for inline
-}
-
-/// `^[a-z0-9_-]+$`, validated at build; embedded verbatim in one marker line.
-/// Two edits to one path with the same key are a build-time `Duplicate`.
-pub struct RegionKey(String);
-
-/// Line/block comment delimiters (a line style has `close == ""`). Resolved from
-/// the author's `comment`/`marker` or inferred from the target extension; an
-/// unknown extension with no override is a build error.
-pub struct MarkerStyle { pub open: String, pub close: String }
-
-/// Where a region goes the FIRST time (no markers yet). Once markers exist THEY
-/// are the selection, so anchor ambiguity/absence can only fail on first apply.
-pub struct Anchor { pub matcher: AnchorMatch, pub place: Place, pub occ: Occurrence }
-pub enum AnchorMatch { Literal(String), Regex(regex::Regex) }  // compiled at build
-pub enum Place { Before, After }
-pub enum Occurrence { First, Last, Only }  // `Only`: >1 match => ambiguous (exit 5)
-```
-
-On-disk managed region — the single source of truth for ownership and drift:
-
-```text
-{open} toha:region {key} {close}\n            <- begin marker, its own line
-{body}\n                                       <- Toha's body, verbatim
-{open} toha:end {key} {algo}:{hex} {close}\n   <- end marker records body checksum
-```
-
-`{hex}` is a `sha2` digest of the body bytes Toha wrote (`{algo}` names it, e.g.
-`sha256`, so the algorithm can evolve). `sha2` is already a dependency
-(`Cargo.toml:43`); no new crate. The checksum is what turns drift detection into
-a fact: it distinguishes "the on-disk body is the one Toha last wrote" (safe to
-replace) from "the user changed it" (drift).
-
-### The load-bearing pure function
-
-Apply and dry-run both route through one function. It reads no file; the caller
-passes the current bytes. Idempotency, drift, and first placement are decided
-here, and it is trivially fixture-testable (`per make-operations-idempotent`).
-
-```rust
-/// Whole-file outcome of resolving one edit against the target's current bytes.
-/// `current == None` means the file is absent.
-///
-/// Purity: `resolve_edit(read(path), edit)` depends on nothing else, so
-/// replaying a staged interview against a once-applied file yields `Unchanged`.
-pub enum Resolution { Unchanged, Write(Vec<u8>) }
-
-pub fn resolve_edit(current: Option<&[u8]>, edit: &PlannedEdit)
-    -> Result<Resolution, EditError>
-{
-    // 1. Absent file: create (markers at EOF of empty content) iff `create`,
-    //    else EditError::TargetMissing.
-    // 2. Non-UTF-8 file: EditError::NotUtf8 (markers are text).
-    // 3. Locate the region by its exact begin/end marker lines for `edit.region`:
-    //      begin without end / two begins / unparseable end => MalformedRegion.
-    //      found -> split into (before, body_on_disk, recorded_hash, after):
-    //          body_on_disk == edit.body           => Unchanged     // idempotent
-    //          sha(body_on_disk) == recorded_hash  => Write(rebuilt) // template changed
-    //          else                                => EditError::Drift // user edit
-    //      not found -> FIRST PLACEMENT:
-    //          anchor None            => append region at end of file
-    //          anchor Some, 1 match   => insert before/after the match
-    //          anchor Some, 0 matches => AnchorMissing
-    //          anchor Some, >1 & Only => AnchorAmbiguous
-    // 4. `Write(bytes)` carries the FULL new file bytes with a freshly computed
-    //    end-marker checksum, so the next resolve sees Unchanged. Splicing
-    //    preserves every byte outside the region verbatim (line endings, final
-    //    newline): the region is replaced by byte range, never via
-    //    lines().join(), which would renormalize the rest of the file.
-    todo!("not implemented")
-}
-
-pub enum EditError {
-    TargetMissing   { path: TargetPath, region: RegionKey },
-    NotUtf8         { path: TargetPath },
-    AnchorMissing   { path: TargetPath, region: RegionKey, anchor: String },
-    AnchorAmbiguous { path: TargetPath, region: RegionKey, count: usize },
-    Drift           { path: TargetPath, region: RegionKey },
-    MalformedRegion { path: TargetPath, region: RegionKey, why: String },
-}
-```
-
-**Invariant (the reason idempotency holds):** `Write` always recomputes the
-end-marker checksum over the body it emits. Therefore
-`resolve_edit(bytes_written_by_a_prior_Write, same_edit) == Unchanged`. The
-double-apply acceptance fixture is a direct consequence and survives staging
-replay because `PlannedEdit` is a pure function of `(Template, Completed)`.
-
-### Build path (pure over template + listing)
-
-`Plan::build` gains a loop mirroring the `files` loop (`plan.rs:200`). It renders
-each injection rule into `PlannedEdit`s — resolving the target through the same
-`TargetPath::parse`, rendering the body from the support file (`read_render`) or
-inline template, resolving the marker style, compiling the anchor. It reads **no
-target bytes**, recording intent only. `Plan::add_edit` checks
-`has_symlink_component` and rejects a duplicate `(path, region)` pair, the same
-way `add` guards files (`plan.rs:272`). It also rejects a rendered body that
-contains a line equal to this region's marker (a corruption vector).
-
-```rust
-// src/template.rs — new domain type, new Builder branch
-pub struct InjectionRule {
-    pub into: Tmpl,
-    pub region: Tmpl,
-    pub body: BodySource,        // Support(PathBuf) | Inline(Tmpl)
-    pub marker: MarkerSpec,      // Infer | Family(CommentFamily) | Raw { open, close }
-    pub anchor: Option<AnchorSpec>,
-    pub create: Typed<bool>,
-    pub each: Option<Each>,      // reuses `Each`; one entry -> N regions, key per item
-    pub when: Option<Expr>,
-}
-// Template gains: pub injections: Vec<InjectionRule>,
-
-/// Resolve comment delimiters at build (path known once rendered). Extension
-/// table -> comment family (`#`, `//`, `/* */`, `<!-- -->`, `--`, `;`, `%`).
-/// Unknown extension with `MarkerSpec::Infer` is a load/build error naming `comment`.
-fn resolve_marker_style(path: &TargetPath, spec: &MarkerSpec)
-    -> Result<MarkerStyle, PlanError> { todo!("not implemented") }
-```
-
-### Apply path (read-modify-write, one write per file)
-
-`apply_reporting` (`apply.rs:66`) gains a stage between the conflict gate and the
-file writes, preserving the "write nothing on conflict / needs-trust" gate:
-
-```rust
-// after the existing whole-file conflict recompute (apply.rs:73):
-let mut resolved: Vec<(TargetPath, Vec<u8>)> = Vec::new();  // only the changed ones
-let mut drift: Vec<(TargetPath, RegionKey)> = Vec::new();
-for edit in &self.edits {
-    let current = read_optional_bytes(target, &edit.path)?;   // read once
-    match resolve_edit(current.as_deref(), edit) {
-        Ok(Resolution::Unchanged)    => {}                     // idempotent skip
-        Ok(Resolution::Write(bytes)) => resolved.push((edit.path.clone(), bytes)),
-        Err(EditError::Drift { path, region }) => drift.push((path, region)),
-        Err(other) => return Err(other.into()),                // hard error, nothing written
-    }
-}
-if !options.force && (!conflicts.is_empty() || !drift.is_empty()) {
-    return Err(ApplyError::from_conflicts_and_drift(conflicts, drift));  // writes nothing
-}
-// with --force: re-resolve drifted edits as forced Write, fold into `resolved`
-// trust gate; symlink checks for files AND edit paths (unchanged in spirit)
-// write whole-file `files` first, then each `resolved` edit
-```
-
-Each `Write` goes to a sibling temp file in the target directory and is renamed
-into place (atomic), so a crash cannot leave a **user-owned** file half-written
-(D7). `on_written` fires once per changed path, preserving "print each written
-path before hooks" (`apply.rs:151`).
-
-**Ordering / coexistence.** Whole-file `files` are written first, then `edits`,
-so an injection can target a file a whole-file rule just wrote. A `PlannedFile`
-and a `PlannedEdit` to the same path are allowed and ordered (write, then
-inject) — a legitimate "generate then manage a region" flow, so it is *not*
-refused (candidate-3's blanket `InvalidMixture` was rejected). Two edits to one
-path with different keys apply in list order, each independently idempotent. Two
-edits to one path with the *same* key are a build-time `Duplicate`.
-
-### The mutation contract (for 1066 / 1031)
-
-The plan is the single source of truth for what Toha owns in each target file;
-1066 and 1031 consume a **derived** view, not a synced copy (`per
-single-source-of-truth`). The view carries candidate-4's ownership vocabulary.
-
-```rust
-/// What Toha claims to own in the target tree. Derived from the plan.
-pub enum FileMutation<'a> {
-    /// Whole file: re-apply replaces it wholesale; owner is Toha.
-    Whole  { path: &'a TargetPath },
-    /// Marked region: re-apply replaces only the marked span; the rest is the
-    /// file owner's. The end-marker checksum identifies the body Toha last
-    /// wrote, so an update/replay can tell a safe re-apply from owner drift.
-    Region { path: &'a TargetPath, region: &'a RegionKey },
-}
-impl Plan {
-    pub fn mutations(&self) -> impl Iterator<Item = FileMutation<'_>> { todo!() }
-}
-```
-
-**Stated for 1066:** *Toha owns exactly the byte span between and including a
-begin/end marker pair keyed by region id; everything else in that file belongs
-to its owner. The end marker's checksum identifies the body Toha last wrote.* An
-update or replay reasons per region: a region whose on-disk body still matches
-its recorded checksum is safe to re-apply; a drifted region is a conflict. A
-whole-file mutation replaces the file wholesale, as today.
-
-### Error / results contract
-
-- `Applied::Written.files` includes injection targets that changed; unchanged
-  regions never appear.
-- New `ApplyError` arms: `Drift(Vec<(TargetPath, RegionKey)>)` (message names
-  `--force`, exit 1); `AnchorMissing` / `MalformedRegion` / `TargetMissing` /
-  `NotUtf8` (exit 1, name file/region); `AnchorAmbiguous` (exit 5). `--force`
-  governs **drift overwrite only** — it never invents placement, so
-  anchor/malformed/missing-target errors persist even with `--force`. `--force`
-  never silently rewrites a file Toha does not own outside its own markers.
-- `PlanError` reuses `Duplicate` for `(path, region)` collisions and
-  `Path`/`Render` for bad keys and unresolvable marker styles.
-
-### Interface depth
-
-Public surface added: one `template.yml` list (`inject`), one `Plan` field
-(`edits`), one `FileMutation` view, one pure function (`resolve_edit`). Behind
-that small surface sit marker synthesis, per-extension comment inference, anchor
-placement, checksum drift detection, byte-level idempotency, and crash-safe
-writes. Callers that already `build().apply()` are untouched; authors write a
-few lines of YAML. Complexity is pulled into the callee (`per
-boundary-discipline`); `MarkerStyle` is resolved before it reaches `PlannedEdit`,
-so comment concerns never surface on the public type.
-
-## JSON-family injection and the structured mode
-
-This section presents recommendations on the JSON family (JSON/JSONC/JSON5) and
-on a structured "set a value at a path" mutator, including the embedded `jaq`
-candidate, for Bob to rule on (D6a/D6b/D9). **Nothing here is settled scope until
-he rules.** It replaces the earlier *assumption* that structured merge is out of
-scope with an explicit, evidence-backed choice Bob makes: which mechanism, and
-whether to implement a structured mode in 1031 now or sequence it later. Both the
-defer recommendation and the substantive implement-now option are on the table
-(the arena developed both). Evidence and the focused arena are in
-`01a-grounding-addendum-json-family.md`, `02a-arena-json-family.md`,
-`04a-synthesis-json-family.md`, and the preserved candidate packages under
-`03-candidates/json-family-revision/`.
-
-### Recommended for 0.2.0 (D6a, pending approval): the marker mechanism covers JSONC and JSON5
-
-JSONC and JSON5 permit `//` comments, so Toha's begin/end markers are ordinary
-comment lines and inject exactly as they do in `.rs`/`.gitignore`/`.yaml`, with
-the same `sha2` checksum idempotency and drift refusal. No new mechanism, no new
-dependency. This is the same locate-excise-splice-write-if-differs cycle proven
-for fifteen years by Ansible `blockinfile`
-(`ansible/lib/ansible/modules/blockinfile.py:334-367`, rev `7ec731b`).
-
-**Generic before / after — a `.jsonc` target.**
-
-Template config:
-
-```yaml
-inject:
-  - into: "config/app.jsonc"
-    region: "features"
     content: |
-      "analytics_enabled": true,
-      "analytics_sample_rate": 0.1
+      analytics_enabled = true
+      analytics_sample_rate = 0.1
+    anchor: { after: "[application]", occurrence: only }
 ```
 
-Target BEFORE:
+First apply places a named region. Later applies find the markers rather than
+the bootstrap anchor.
 
-```jsonc
-{
-  "app_name": "sample-service",
-  "port": 8080,
-  // operator-owned settings
-  "log_level": "info"
-}
+```toml
+[application]
+# >>> toha:region features >>>
+analytics_enabled = true
+analytics_sample_rate = 0.1
+# <<< toha:end features sha256:a7f3d… <<<
+name = "sample-service"
 ```
 
-Target AFTER first apply (markers are valid JSONC `//` comments; the operator's
-comment and keys are untouched; the region is appended at end of file because no
-anchor was given):
+Toha owns the marker pair and the bytes between them. The checksum records the
+body Toha last wrote. A matching body is unchanged. A template change replaces
+only that span. An operator edit inside the span is drift and requires
+`--force`; `--force` still cannot invent a missing anchor or repair malformed
+markers.
 
-```jsonc
-{
-  "app_name": "sample-service",
-  "port": 8080,
-  // operator-owned settings
-  "log_level": "info",
-  // >>> toha:region features >>>
-  "analytics_enabled": true,
-  "analytics_sample_rate": 0.1
-  // <<< toha:end features sha256:a7f3d… <<<
-}
-```
-
-Second apply, same answers → **no bytes change** (the on-disk body hashes to the
-recorded checksum ⇒ `Unchanged`). If the operator edits inside the markers,
-re-apply refuses and names `--force` (drift), identical to any text target. This
-is the twice-apply-changes-once acceptance, holding for the JSON family.
-
-### The strict-`.json` boundary (proposed boundary of marker injection, with guidance)
-
-Strict JSON has no comment syntax, so a `//` marker would make the file invalid
-JSON. The recommendation (part of D6a) is that a *marker* injection whose
-resolved target is a strict `.json` file (a line-comment marker with no
-comment-capable extension and no override) be **refused at build time** —
-`PlanError` naming the file, the region, and three author alternatives:
-
-1. target a `.jsonc`/`.json5` file (any JSON parser accepts JSONC), or
-2. manage the whole file with a `files:` rule, or
-3. use the structured mode below (if D6b adopts it).
-
-This is a **proposed boundary of the new injection feature, not an approved
-operator restriction** and not a settled scope cut — it applies only to the new
-marker-injection path and takes effect only if D6a is adopted. It **does not
-change how Toha renders whole JSON files today**: whole-file `files:` rules that
-generate or overwrite a `.json` target are entirely unaffected. It is not a
-regression — today Toha cannot inject at all — and it matches the ecosystem: even
-npm's own package.json editor reserializes the whole document rather than
-surgically editing strict JSON (`npm-package-json/lib/index.js:239-264`, rev
-`a7dafdb`).
-
-### Why `jaq` (or any reserialize mechanism) is recommended against for the structured path (D9, pending approval)
-
-`jaq` was evaluated as an embedded crate against its actual source; the
-recommendation is to **reject it as the structured mechanism** (D9, Bob rules).
-It discards `#` comments at lex time
-(`jaq-json/src/read.rs:10-19`, rev `f167ad4`) and regenerates all output from a
-pretty printer (`jaq-json/src/write.rs:202-260`); its object `IndexMap`
-(`lib.rs:117`) keeps order in memory but the printed bytes are fresh. `jaq` is a
-jq-language filter/query engine, not an editor: using it to change one value in a
-user-owned JSON-family file is a disguised whole-file rewrite that destroys the
-owner's comments and normalizes their formatting/order — the no-silent-overwrite
-hazard the grounding forbids — and it imposes a query language for what is
-almost always a single-value set. The same disqualifier applies to every
-reserialize approach (`serde_json`, `json5-rs`; npm mitigates only indent/newline,
-never comments). If D9 is adopted, `jaq` is retained only as the not-recommended
-alternative; the implement-now option (D6b) does not depend on jaq.
-
-### The structured mode: recommended mechanism and sequencing (Bob rules D6b)
-
-If Toha adds a structured "owns the value at a path" mode for the JSON family,
-the **recommended** mechanism is **`jsonc-parser`'s `cst` module** (crate
-`0.34.0`, feature `cst`, rev `c7d4cf5`) — the format-preserving JSON-family
-analogue of `toml_edit`, and the same pattern VS Code uses to edit
-`settings.json`. Its CST retains every comment and whitespace token and re-emits
-them verbatim; only the touched node changes
-(`jsonc-parser/src/cst/mod.rs:1-5,1356`). The arena and a readonly cross-judge
-both scored this the superior structured design (26/30 vs jaq's 17/30). On
-sequencing, the arena's **recommendation** is to defer the implementation out of
-the 0.2.0 slice — it adds a second mechanism, a new dependency, a distinct
-ownership contract, and new dry-run/error semantics to the first-ever injection
-slice, for a gain over markers that JSONC/JSON5 already deliver. **Bob may
-instead choose to implement the structured mode in 1031 now**; that
-implement-now option is a co-equal choice on D6b, is fully sketched here, and is
-not foreclosed. Neither the mechanism choice nor the sequencing is settled until
-Bob rules; 1031's scope is not narrowed by this recommendation.
-
-Proposed interface (a sibling discriminator inside the same `inject:` list, so
-adopting it — now or later — is non-breaking):
+### Typed value in a JSON-family file
 
 ```yaml
 inject:
-  - into: "package.json"        # strict JSON is fine for the STRUCTURED mode
-    struct:                      # discriminator; mutually exclusive with `region`
-      path: "scripts.build"      # owns the VALUE at this path, not a byte span
-      value: "tsc"               # rendered, then parsed as a JSON value
-    # provenance: true           # JSONC-only, optional drift-awareness comment
+  - into: "package.json"
+    struct:
+      path: "scripts.build"
+      value: "tsc"
 ```
 
-```rust
-// reserved sibling of resolve_edit; pure over (current_bytes, edit)
-pub fn resolve_struct_edit(current: Option<&[u8]>, edit: &PlannedStructEdit)
-    -> Result<Resolution, StructError>;   // Unchanged when value already equals desired
-```
-
-**Ownership / idempotency / drift for the structured mode (the contract Bob
-ratifies before it is built).** Toha owns *the value at the named path*;
-everything else — comments, key order, whitespace — is preserved byte-for-byte by
-the CST. Re-apply sets the value and is a byte no-op when it already equals the
-desired value (idempotent, replay-safe). Because strict JSON has no comment slot
-for a checksum, a re-apply cannot distinguish "the operator edited the managed
-value" from "first set": the honest model is **declarative convergence** — Toha
-re-sets exactly the path it owns and touches nothing else (the structured
-analogue of the marker span). JSONC can optionally carry an inline `// toha:struct
-<path>` provenance comment for awareness. This is a genuinely different ownership
-contract from marker drift-refusal, which is why it is a deliberate, deferred
-decision rather than a silent addition.
-
-**Generic before / after — the proposed structured mode (D6b).** A strict `.json`
-target, `struct: { path: "scripts.build", value: "tsc" }`:
-
-BEFORE:
+Before:
 
 ```json
 {
@@ -553,8 +87,7 @@ BEFORE:
 }
 ```
 
-AFTER first apply (surgical CST edit — only the touched node changes; key order
-and 2-space indent preserved):
+After:
 
 ```json
 {
@@ -566,168 +99,376 @@ and 2-space indent preserved):
 }
 ```
 
-Second apply → **no bytes change** (`scripts.build` already equals `"tsc"` ⇒
-`Unchanged`). For a `.jsonc` target the same edit preserves the operator's
-comments and trailing commas verbatim around the changed value — the property
-markers `jaq` would have destroyed. If D6b defers the structured mode, these
-fixtures belong to the fast-follow design; if D6b adopts implement-now, they are
-1031 fixtures. Bob's ruling decides which.
-led every criterion. Grafted: candidate-4's downstream ownership vocabulary as a
-*derived* `FileMutation` view (not its internal enum collapse or build-time byte
-offsets); candidate-3's "owns the value at a named path" ownership as a reserved,
-out-of-scope structured mode; candidate-2's anchor cardinality naming and its
-exact-bytes lesson (splice, don't `lines().join`). Rejections and scores in
-`04-synthesis.md`.
+Toha owns the value at `scripts.build`. The second apply changes no bytes. If an
+operator changes that owned value, a later apply converges it to `"tsc"`
+without `--force`. Strict JSON cannot store a checksum, so the author contract
+states this ownership directly. All unrelated keys and source text remain
+operator-owned.
+
+JSONC and JSON5 use this same `struct:` mode. Toha does not add marker or
+provenance comments to JSON-family documents. Existing comments, key order,
+whitespace, quote style, and trailing commas remain in the concrete syntax tree
+and are retained outside the node and punctuation range that must change.
+
+### Values and paths
+
+`struct.value` is a JSON-compatible YAML value. String values are normal
+templates and remain JSON strings after rendering. Boolean, number, null, array,
+and object literals retain their type. Strings nested inside arrays and objects
+render recursively. Planning stores the result as `serde_json::Value`, which is
+already part of Toha, so apply never infers a type from rendered text.
+
+`struct.path` uses dot-separated object keys and bracketed array indexes:
+`routes[0].name`. Backslash escapes `.`, `[`, `]`, and `\\` in a key. The path
+must begin with a key. Missing object-key parents are created as objects. Arrays
+must already exist and each index must be in range. An existing scalar where
+traversal needs an object or array is an error.
+
+Marker rules whose target ends in `.json`, `.jsonc`, or `.json5` are planning
+errors. The message directs the author to `struct:` or an existing whole-file
+`files:` rule. Whole-file JSON generation remains supported.
+
+## Caller behavior
+
+Existing crate callers keep `Plan::build(..).apply(..)`:
+
+```rust
+let plan = Plan::build(&template, &completed, target)?;
+match plan.apply(
+    target,
+    ApplyOptions { force: false, trusted: true },
+    &runner,
+)? {
+    Applied::Written { files, .. } => { /* each changed path appears once */ }
+    Applied::NeedsTrust(plan) => { /* unchanged hook trust gate */ }
+}
+```
+
+CLI behavior:
+
+- `toha apply <PATH>` reports each changed target once. Unchanged regions and
+  values produce no report.
+- `toha apply --dry-run <PATH>` reports `inject <path> (<owner>)` for a missing
+  region or value and `update <path> (<owner>)` for a changed one.
+- Marker drift without `--force` reports each `path (region)` and writes
+  nothing. JSON value convergence is not drift and does not require `--force`.
+- Missing or ambiguous marker anchors, malformed markers or JSON, invalid JSON
+  traversal, and missing targets fail before any file write.
+
+## Planned data
+
+Injection is a sibling of `PlannedFile`. A whole-file plan already carries all
+bytes to write; an injection must read and transform the target at apply time.
+Keeping those concepts separate preserves the meaning of `Content`.
+
+```rust
+pub struct Plan {
+    pub files: Vec<PlannedFile>,
+    pub edits: Vec<PlannedEdit>,
+    pub conflicts: Vec<TargetPath>,
+    pub hooks: Vec<PlannedHook>,
+    pub before_apply: Option<String>,
+    pub after_apply: Option<String>,
+}
+
+pub enum PlannedEdit {
+    Region(PlannedRegionEdit),
+    JsonValue(PlannedJsonEdit),
+}
+
+pub struct PlannedRegionEdit {
+    pub path: TargetPath,
+    pub region: RegionKey,
+    pub body: String,
+    pub marker: MarkerStyle,
+    pub anchor: Option<Anchor>,
+    pub create: bool,
+    pub source: Option<PathBuf>,
+}
+
+pub struct PlannedJsonEdit {
+    pub path: TargetPath,
+    pub json_path: JsonPath,
+    pub desired: serde_json::Value,
+    pub format: JsonFormat,
+    pub create: bool,
+}
+
+pub enum JsonFormat { Json, Jsonc, Json5 }
+
+pub struct JsonPath(Vec<JsonPathSegment>);
+pub enum JsonPathSegment { Key(String), Index(usize) }
+```
+
+`RegionKey` accepts lowercase ASCII letters, digits, `_`, and `-`. It is unique
+per target. `MarkerStyle` is resolved from the non-JSON target extension or an
+explicit override during planning. `JsonFormat` is resolved from the JSON-family
+extension and selects strict or permissive parse options.
+
+Two JSON rules with the same `(target, json_path)` are duplicates. An ancestor
+and descendant pair, such as `compilerOptions` and
+`compilerOptions.strict`, is also rejected because applying one changes the
+meaning of the other. Distinct paths and distinct marker regions may share a
+target when the file format permits them.
+
+## Pure resolvers
+
+Both modes return a complete candidate file and perform no I/O.
+
+```rust
+pub enum EditResolution {
+    Unchanged,
+    Write(Vec<u8>),
+    Drift { forced: Vec<u8> },
+}
+
+pub fn resolve_region_edit(
+    current: Option<&[u8]>,
+    edit: &PlannedRegionEdit,
+) -> Result<EditResolution, RegionError>;
+
+pub fn resolve_json_edit(
+    current: Option<&[u8]>,
+    edit: &PlannedJsonEdit,
+) -> Result<EditResolution, JsonEditError>;
+```
+
+### Region resolver
+
+The region resolver:
+
+1. Requires the target unless `create: true`.
+2. Requires UTF-8 text.
+3. Finds one exact begin/end marker pair for the region key.
+4. Returns `Unchanged` when the body already equals the desired body.
+5. Returns `Write` when the body still matches the recorded checksum and the
+   template body changed.
+6. Returns `Drift { forced }` when the operator changed the owned bytes.
+7. Uses the bootstrap anchor only when the markers do not exist.
+8. Splices byte ranges without normalizing bytes outside the region.
+
+Every `Write` and `forced` candidate contains a fresh checksum. Therefore
+resolving bytes from a successful previous apply with the same edit returns
+`Unchanged`.
+
+### JSON-family resolver
+
+The JSON resolver:
+
+1. Requires the target unless `create: true`; a created target starts as `{}`.
+2. Requires UTF-8 and parses through `jsonc_parser::cst` with the options for
+   `JsonFormat`.
+3. Traverses `JsonPath`, creating missing object-key parents and rejecting an
+   invalid scalar or array traversal.
+4. Compares the current typed value with `desired`.
+5. Returns `Unchanged` when they are equal.
+6. Sets or inserts the value through the CST and returns `Write` otherwise.
+
+It never returns `Drift`: the declared path is convergent ownership. A strict
+JSON edit emits strict JSON. JSONC and JSON5 edits preserve their existing
+comments and syntax. Replacing a value may normalize that owned value's own
+lexical spelling; source outside the changed node and required punctuation range
+is retained.
+
+## Pure planning and ordered apply
+
+`Plan::build` remains pure over the template, completed answers, and target
+listing. It renders region bodies and typed JSON values, parses keys and paths,
+chooses marker or JSON format, rejects JSON-family markers, and records edit
+intent. It does not read target bytes.
+
+Apply resolves all work before the first write:
+
+```text
+recompute whole-file conflicts
+check hook trust and every target path/symlink
+group whole-file content and edits by target path
+for each target in deterministic plan order:
+  start with planned whole-file bytes, otherwise read current bytes once
+  fold that target's edits over one in-memory byte buffer
+  collect one final changed image or one error
+if any conflict, unforced region drift, parse/path error, or trust gate: stop
+atomically replace each changed target once; report each path once
+run hooks in their existing order
+```
+
+A whole-file rule supplies the starting image before bounded edits for the same
+path. Multiple bounded edits see preceding edits in source order. One target is
+written once, even when several rules change it. A later planning failure cannot
+leave earlier changes on disk.
+
+Atomic replacement is per target: write a complete sibling temporary file,
+preserve the applicable mode, then rename it into place. A file-system failure
+during the commit loop can leave earlier targets committed, matching the current
+partial-across-files behavior. The design does not claim a multi-file
+transaction.
+
+## Ownership and downstream mutation contract
+
+The plan is the single source of truth for owned targets. Project update and the
+paired implementation consume this derived view:
+
+```rust
+pub enum FileMutation<'a> {
+    Whole {
+        path: &'a TargetPath,
+    },
+    Region {
+        path: &'a TargetPath,
+        region: &'a RegionKey,
+    },
+    JsonValue {
+        path: &'a TargetPath,
+        json_path: &'a JsonPath,
+    },
+}
+
+impl Plan {
+    pub fn mutations(&self) -> impl Iterator<Item = FileMutation<'_>>;
+}
+```
+
+The ownership rules are:
+
+- `Whole`: Toha owns and replaces the complete file.
+- `Region`: Toha owns the marker pair and enclosed byte span. The checksum
+  distinguishes a safe replay from operator drift.
+- `JsonValue`: Toha owns the typed value at the path. Replay converges that
+  value and preserves the rest of the document. There is no drift refusal.
+
+Project update must retain these identities in old-plan/new-plan comparison.
+It may reapply a region only when its checksum still describes the owned body,
+and it treats a changed owned JSON value as convergent input rather than a
+whole-file conflict. Removal of an ownership identity and three-way project
+merge behavior remain decisions of the project-update design; this design does
+not silently choose them.
+
+## Errors and results
+
+Planning errors:
+
+- invalid or duplicate region key;
+- marker style cannot be resolved;
+- marker rule targets `.json`, `.jsonc`, or `.json5`;
+- invalid typed-path syntax;
+- duplicate or ancestor/descendant JSON paths in one target;
+- structured rule targets a non-JSON-family extension;
+- a rendered JSON-compatible value cannot be represented as JSON.
+
+Apply errors:
+
+- target missing when `create: false`;
+- non-UTF-8 target;
+- missing or ambiguous anchor;
+- malformed or duplicate marker pair;
+- region drift without `--force`;
+- malformed JSON-family source under the selected format;
+- invalid object/array traversal or out-of-range array index;
+- target path contains a symbolic link or enters `.git`;
+- I/O failure while reading, staging, or replacing a file.
+
+`Applied::Written.files` contains every changed path once. Unchanged paths never
+appear. `--force` applies only to region drift; it does not alter JSON value
+ownership, make invalid paths valid, repair malformed input, or create a target
+unless the rule declares `create: true`.
+
+## Source fidelity of `jsonc-parser`
+
+The selected dependency is `jsonc-parser` with its `cst` feature. Its CST keeps
+comments and whitespace as tokens and displays the original source plus the
+requested edit (`jsonc-parser/src/cst/mod.rs:1-5,1356`, revision `c7d4cf5`). The
+same edit pattern is used by VS Code's `node-jsonc-parser`, which returns minimal
+offset/length/content edits.
+
+`jsonc-parser` is an embedded Rust library. The design adds no command,
+subprocess, permission, timeout, or runtime version check. Existing `sha2`
+remains the region checksum dependency.
 
 ## Tradeoffs accepted
 
-- **Visible marker comments in the user's file, in exchange for structural
-  idempotency and exact ownership.** Removing them forces a heuristic re-match,
-  which the grounding forbids.
-- **A `sha2` checksum in the end marker, in exchange for non-heuristic drift
-  detection.** No new dependency (`sha2` is already used). Without it Toha cannot
-  tell a template-body change from a user edit.
-- **A per-extension comment table with an explicit override, in exchange for
-  working across arbitrary text files.** There is no universal comment; the table
-  plus `comment`/`marker` covers the tail and fails loudly on the unknown.
-- **`edits` as a separate `Plan` vector, not a `Content` variant**, keeping "I
-  hold the bytes" and "I must read the target" distinct, non-leaky types.
-- **Anchors are bootstrap-only**, so ambiguity can only bite on first placement;
-  every later apply selects by marker and keeps working even if surrounding text
-  moves.
-- **Atomic temp-file-plus-rename for injection writes**, diverging from today's
-  direct `fs::write` (`apply.rs:112`) because a partial write to a *user-owned*
-  file is worse than to a generated one.
+- Visible markers in non-JSON text make ownership inspectable and enable
+  checksum drift refusal.
+- JSON-family path ownership has no visible marker and converges an edited owned
+  value. This permits strict JSON while retaining all unrelated source text.
+- Two resolvers add implementation cost, but give each format family the
+  stronger ownership mechanism.
+- Marker anchors are bootstrap-only. Later selection uses the marker key.
+- Structured paths create missing object parents but never extend arrays, which
+  avoids inventing values to reach an index.
+- Injection uses atomic replacement because partial writes to operator-owned
+  files are not acceptable.
 
 ## Alternatives considered
 
-- **Structured merge via `jaq` / serde (reserialize family).** Evaluated against
-  actual source; **recommended against** as the structured mechanism (D9, Bob
-  rules): `jaq` discards comments at lex time and regenerates all output
-  (`jaq-json/src/read.rs:10-19`, `write.rs:202-260`), so editing a user-owned file
-  is a disguised whole-file rewrite; `serde_json`/`json5-rs` share the same
-  trivia-free data model. See **JSON-family injection and the structured mode**
-  above.
-- **Structured, format-preserving CST via `jsonc-parser` (the recommended
-  structured mechanism; sequencing is D6b).** Preserves comments/order/whitespace
-  (the JSON analogue of `toml_edit`); owns the value at a path with declarative
-  convergence. Superior structured design in the arena. The recommendation is to
-  sequence it after 0.2.0 with its interface reserved, but implementing it in 1031
-  now remains a co-equal option on D6b; Bob's ruling decides, and 1031's scope is
-  not narrowed until then.
-- **Anchor-only, re-matching injected text on re-apply (candidate-2 core).**
-  Smaller footprint, but idempotency becomes a heuristic that misfires once the
-  user edits nearby. Rejected; its cardinality vocabulary was kept.
-- **A third `Content::Injected` variant.** Puts a "reads the target" requirement
-  behind a type whose other variants hold complete bytes; shallower, leaks.
-  Rejected for the `edits` sibling.
-- **One unified `FileMutation` enum as the internal representation
-  (candidate-4).** Changes whole-file conflict semantics (regression risk) and
-  enlarges blast radius; its build-time byte offsets are not replay-safe. Kept
-  only as a derived read-model.
-- **A separate `toha inject` subcommand / second apply pass.** Temporal
-  decomposition breaking the single-`Plan` contract and the write-order print
-  contract. Rejected.
+- **`jaq` or another parse/transform/print engine:** rejected. It regenerates
+  the document and loses comments or formatting.
+- **Markers in JSONC and JSON5, refusal for strict JSON:** rejected as the
+  JSON-family product boundary. It would give the same feature family two
+  ownership models based only on extension.
+- **Whole-file JSON generation only:** retained as an existing option, but it
+  cannot provide bounded ownership of a value in an operator-owned document.
+- **Anchor plus presence guard:** rejected because repeats can duplicate after
+  nearby edits and no stable owned boundary exists.
+- **A `Content::Injected` variant:** rejected because it hides a target-read
+  requirement behind a type whose current variants already carry full bytes.
+- **A separate injection command:** rejected because it creates a second apply
+  pass and breaks one-plan ordering.
 
-## Decisions needed from Bob (with recommendations)
+## Canonical artifact impact
 
-- **D1 — Visible markers.** Toha writes comment-delimited markers into
-  user-owned files as the ownership record. *Recommend: yes* — the mechanism.
-- **D2 — Author surface.** New top-level `inject` list, sibling to `files`, with
-  `into`/`region`/`body`(source|content)/`marker`/`anchor`/`create`/`each`/`when`.
-  *Recommend: adopt as shown.*
-- **D3 — Comment-style inference + override**, unknown extension without override
-  is a load error. *Recommend: yes.*
-- **D4 — Drift policy / `--force` extension.** Drift refuses without `--force`
-  (exit 1); `--force` overwrites the managed region only, never fabricates
-  placement. This *extends* `--force` to also govern drift overwrite (a new
-  behavior for `--force`, not a restriction). *Recommend: adopt.*
-- **D5 — `create` default.** `create: false` by default (injection targets an
-  existing file). *Recommend: false.*
-- **D6 (revised) — JSON family & the structured mode.** Two parts, both open for
-  Bob's ruling:
-  - **D6a — JSON family via markers.** JSONC/JSON5 inject via comment markers like
-    any text file; a strict `.json` marker injection is *proposed* to be refused
-    at build time (a boundary of the new feature, not an operator restriction and
-    not a change to existing whole-file JSON rendering), with named author
-    alternatives. *Recommend: adopt.*
-  - **D6b — Structured "owns-the-value-at-a-path" mode: mechanism and sequencing.**
-    *Recommended* mechanism is `jsonc-parser`'s format-preserving CST (not jaq),
-    with a `struct:` interface seam that lands non-breaking whenever it is built.
-    Two co-equal sequencing options: **(i) sequence after 0.2.0** as a fast-follow
-    *(recommended — keeps the first injection slice small for a gain markers
-    already deliver on JSONC/JSON5)*, or **(ii) implement in 1031 now** (fully
-    sketched, not foreclosed). Adopting D6b also ratifies its
-    *declarative-convergence* ownership contract (Toha re-sets exactly the owned
-    path; strict JSON carries no drift marker). *Recommend: option (i); Bob rules.*
-    Until he rules, neither the mechanism nor the sequencing is settled and 1031's
-    scope is not narrowed.
-- **D9 — `jaq` as the structured mechanism.** Reserialize destroys a user-owned
-  file's comments/order/formatting (cited source); if a structured mode ships, the
-  recommendation is `jsonc-parser`'s CST instead. *Recommend: reject jaq; Bob
-  rules.*
-- **D7 — Atomic temp-file+rename for injection writes.** *Recommend: yes
-  (injection only; whole-file writes unchanged).*
-- **D8 — Reuse existing `sha2`** for the region checksum. *Recommend: yes (no new
-  dependency).* A structured mode, if adopted (D6b), would add `jsonc-parser` when
-  built — an embedded, well-maintained crate (dprint/deno), no subprocess —
-  surfaced now so that adoption is evaluated as part of D6b rather than later.
+The paired implementation updates these authoritative documents in the same
+change as runtime behavior:
 
-**Explicit disclosure for the checkpoint.** This design introduces **no**
-supported-capability restriction (it only adds capability; `--force` is
-extended, not narrowed), **no** permissions/access change, **no** timeout
-mechanic, **no** pinned version check, and **no** application-subprocess
-integration. If Bob's ruling on any decision changes that, the affected item
-returns to this checkpoint for separate explicit approval.
+- `docs/specifications/template-format.yml` and its schema: `inject`, its
+  `region` and `struct` discriminators, typed JSON values, path grammar,
+  format boundary, ownership, idempotency, and create behavior.
+- `docs/specifications/command-line-interface.yml`: dry-run vocabulary,
+  region-drift output, and the bounded meaning of `--force`.
+- `docs/specifications/interview-protocol.yml`: only if the written-path result
+  shape needs clarification; no new interview state or UI belongs here.
+- `docs/technical-designs/architecture.yml`: `PlannedEdit`, pure resolvers,
+  grouped resolve-before-write, and the derived `FileMutation` view.
+- User guide and generic examples: one visible-region example and one
+  JSON-family structured example.
 
-## Proposed canonical-contract edits (described, not made here — owned by 1031)
+## Behaviors to prove
 
-- `docs/specifications/template-format.yml` + `template-format.schema.yml`: add
-  the `inject` list and its fields; extend the "Files" narrative with an
-  "Injection" section (regions, markers, anchors, idempotency, drift).
-- `docs/specifications/command-line-interface.yml`: extend "Overwriting" and the
-  dry-run vocabulary (`inject`/`update`/`region drifted:`) and the `--force`
-  semantics for drift; keep the exit-code table (5 gains anchor-ambiguity).
-- `docs/specifications/template-format.yml` (contingent on the D6 rulings):
-  document that JSONC/JSON5 inject via comment markers like any text file, that a
-  strict `.json` marker injection is refused at build time with the named
-  alternatives (D6a), and — if D6b adopts it — that a `struct:` discriminator
-  selects the format-preserving structured mode. Existing whole-file JSON
-  rendering is unchanged.
-- `docs/technical-designs/architecture.yml`: extend `plan-and-apply` with
-  `PlannedEdit`/`resolve_edit`/`FileMutation` and the marker ownership model.
-- `docs/` guides (`template-files.md`) and a fixture under `tests/fixtures/`:
-  the twice-apply acceptance fixture and the scenario matrix in `04-synthesis.md`.
+The paired implementation must prove these observable cases:
 
-## Behaviors to prove (1031 fixtures; how each can fail)
+1. A visible region applied twice changes its target only once.
+2. First placement at an anchor and at end-of-file uses the correct offset.
+3. A template-body change preserves every byte outside the marked span.
+4. Region drift refuses without `--force`; forced apply replaces only the
+   region; force never fabricates placement.
+5. Missing anchor exits as an error and `occurrence: only` rejects ambiguity.
+6. Comment inference works on generic text targets and an unknown extension
+   without an override fails loudly.
+7. A marker rule for `.json`, `.jsonc`, or `.json5` is rejected with `struct:`
+   and whole-file alternatives.
+8. Strict JSON insert and replacement are valid, typed, and byte-no-op on the
+   second apply.
+9. JSONC and JSON5 inserts and replacements preserve comments, key order,
+   whitespace, trailing commas, untouched values, and surrounding syntax.
+10. String, boolean, number, null, array, and object desired values retain their
+    JSON type.
+11. A changed owned JSON value converges without `--force`; no unrelated source
+    text changes.
+12. Missing object parents are created; scalar traversal, missing/out-of-range
+    arrays, malformed input, duplicate paths, and overlapping paths fail before
+    any write.
+13. Whole-file plus bounded edits on one target use the whole-file result as the
+    starting image and commit one final replacement.
+14. Multiple non-overlapping JSON paths in one target commit once and report the
+    path once.
+15. An error in the final planned edit leaves every target unchanged.
+16. Staged replay, headless apply, direct apply, terminal apply, and crate apply
+    produce the same mutation plan and result.
+17. Existing whole-file JSON generation still works.
 
-1. **Twice-apply changes the file once** (sole idempotency assertion): fails if
-   the second apply rewrites bytes or duplicates the region.
-2. First placement at anchor / at EOF: fails if placed at the wrong offset.
-3. Template-body change replaces only the region: fails if bytes outside the
-   markers change.
-4. User drift refuses without `--force` (exit 1) and overwrites with `--force`:
-   fails if drift is silently clobbered or `--force` fabricates placement.
-5. Missing anchor exit 1; ambiguous (`only`) exit 5: fails if the wrong code or a
-   silent first-match.
-6. Whole-file write + injection into one file in one plan: fails if order is
-   wrong or the injection reads pre-write bytes.
-7. Arbitrary text targets (`.gitignore`, `.rs`) exercise comment inference:
-   fails on unknown-extension silent guess.
-8. Staged-replay double-apply equals single apply: fails if replay is not a
-   no-op.
-9. (If D6a adopted) JSONC/JSON5 injection places valid `//` markers and is
-   twice-apply idempotent: fails if the markers invalidate the file or the second
-   apply changes bytes.
-10. (If D6a adopted) Strict `.json` marker injection is refused at build time,
-    naming the boundary and alternatives: fails if Toha writes a `//` marker into
-    strict JSON or refuses silently. (Structured-mode fixtures attach to whichever
-    D6b sequencing Bob picks — fast-follow or 1031 — not to 1031 by assumption.)
+## Implementation order
 
-## Next implementation step
-
-Write `resolve_edit` and its byte-range region parser against fixtures —
-first-placement at EOF, first-placement at anchor, byte-identical re-apply
-(`Unchanged`), template-body change (`Write`), user drift (`Drift`) — since that
-pure function is the whole contract and every apply / dry-run / mutation path
-depends on it.
+Implement the typed plan shapes and both pure resolvers first. Then add grouped
+resolve-before-write orchestration and atomic replacement. Add template/schema
+parsing, CLI reporting, canonical documentation, and the end-to-end fixtures
+against the public `Plan::build().apply()` path. The project-update design
+consumes the final `FileMutation::{Whole, Region, JsonValue}` contract.

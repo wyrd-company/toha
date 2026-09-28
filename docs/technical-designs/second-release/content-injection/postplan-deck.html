@@ -53,8 +53,8 @@
   <p class="kicker">Toha 0.2.0 · Content injection design</p>
   <h1>Add content without taking over the file</h1>
   <p>Let a template maintain one named part of an existing file while the file owner keeps control of everything else.</p>
-  <p><span class="tag warn">decision needed</span> <span class="tag">design only</span> <span class="tag">same review draft</span></p>
-  <p class="muted">This revision explains the proposed experience, choices, and tradeoffs in manager-facing language. Technical detail and source research remain in supporting slides.</p>
+  <p><span class="tag ok">approved design</span> <span class="tag">implementation next</span> <span class="tag">same review draft</span></p>
+  <p class="muted">Visible regions cover non-JSON text. JSON, JSONC, and JSON5 use one format-preserving structured editor.</p>
 </section>
 
 <section id="task">
@@ -64,9 +64,9 @@
     <li><strong>Example:</strong> add generated routes to an existing application file.</li>
     <li><strong>Keep:</strong> all text outside the generated section, byte for byte.</li>
     <li><strong>Repeat safely:</strong> applying the same template twice changes the file once.</li>
-    <li><strong>Stop on disagreement:</strong> if somebody edits the generated section, Toha reports the conflict before writing.</li>
+    <li><strong>Use the right ownership:</strong> visible regions for text; one typed value at a path for the JSON family.</li>
   </ul>
-  <p class="muted">This work designs the feature. Implementation remains in the paired build work after approval.</p>
+  <p class="muted">The design is approved. Runtime, specification, schema, guide, and fixture changes belong to the paired build work.</p>
 </section>
 
 <section id="premortem">
@@ -75,20 +75,20 @@
     <ul>
       <li>A second run adds the same content again.</li>
       <li>Toha rewrites line endings, spacing, comments, or keys that it does not own.</li>
-      <li>A person changes generated content and Toha silently replaces it.</li>
+      <li>A person changes content outside Toha's declared ownership and Toha replaces it.</li>
       <li>A crash leaves half a file on disk.</li>
-      <li>A marker is written into strict JSON, making the file invalid.</li>
+      <li>A JSON edit removes comments or reformats the whole document.</li>
     </ul>
   </section>
   <section>
     <h2>How the design prevents those failures</h2>
     <ul>
-      <li><strong>Named boundary:</strong> visible comments show exactly what Toha owns.</li>
+      <li><strong>Named ownership:</strong> visible regions for text; typed paths for JSON-family values.</li>
       <li><strong>Fingerprint:</strong> a checksum records the content Toha last wrote, so repeat and drift are facts rather than guesses.</li>
       <li><strong>Byte-preserving edit:</strong> Toha replaces only the marked range.</li>
       <li><strong>Plan before write:</strong> it resolves every edit before it changes files.</li>
       <li><strong>Atomic replace:</strong> it writes a complete temporary file, then swaps it into place.</li>
-      <li><strong>JSON boundary:</strong> strict-JSON handling stays a decision; existing whole-file JSON output still works.</li>
+      <li><strong>JSON fidelity:</strong> <code>jsonc-parser</code> changes the owned value and retains unrelated source text.</li>
     </ul>
   </section>
 </section>
@@ -111,9 +111,9 @@
     <ul>
       <li><code>template</code> reads an injection rule.</li>
       <li><code>plan</code> carries a <code>PlannedEdit</code> beside existing whole-file writes.</li>
-      <li><code>resolve_edit</code> is a pure function: current bytes in, write decision out.</li>
-      <li><code>apply</code> performs the read-modify-write after whole-file writes.</li>
-      <li><code>Plan::mutations()</code> gives the git-update work one view of whole-file and region changes.</li>
+      <li>Pure region and JSON resolvers take current bytes in and return a complete candidate file.</li>
+      <li><code>apply</code> resolves every target in memory before the first write.</li>
+      <li><code>Plan::mutations()</code> gives project-update work one view of whole-file, region, and JSON-value ownership.</li>
     </ul>
     <p class="muted">Jinja include/root-boundary work and git-update work touch this shared surface, so their implementations must coordinate before landing.</p>
   </section>
@@ -121,7 +121,17 @@
 
 <section id="interface">
   <section>
-    <h2>What a template author writes</h2>
+    <h2>What a JSON-family author writes</h2>
+    <pre><code class="language-yaml">inject:
+  - into: "package.json"
+    struct:
+      path: "scripts.build"
+      value: "tsc"</code></pre>
+    <p><code>struct</code> selects typed-path ownership for JSON, JSONC, and JSON5. Strings stay strings; boolean, number, null, array, and object values retain their type.</p>
+    <p class="muted">JSON-family targets do not receive Toha marker comments.</p>
+  </section>
+  <section>
+    <h2>What a marked-region author writes</h2>
     <pre><code class="language-yaml">inject:
   - into: "src/app.rs"
     region: "routes"
@@ -141,9 +151,10 @@
   <section>
     <h2>What callers observe</h2>
     <ul>
-      <li><strong>Dry-run:</strong> reports “inject” or “update” with the file and region name.</li>
-      <li><strong>No change:</strong> reports nothing for that region.</li>
-      <li><strong>Changed generated section:</strong> stops and names <code>--force</code>.</li>
+      <li><strong>Dry-run:</strong> reports “inject” or “update” with the file and owned region or path.</li>
+      <li><strong>No change:</strong> reports nothing for that ownership unit.</li>
+      <li><strong>Changed marked section:</strong> stops and names <code>--force</code>.</li>
+      <li><strong>Changed owned JSON value:</strong> converges that value without rewriting unrelated source text.</li>
       <li><strong>Missing anchor:</strong> fails without modifying the file.</li>
       <li><strong>Several matches when one was required:</strong> fails as ambiguous.</li>
     </ul>
@@ -151,27 +162,29 @@
   </section>
   <section>
     <h2>Technical interface appendix</h2>
-    <pre><code class="language-rust">pub enum Resolution {
+    <pre><code class="language-rust">pub enum EditResolution {
     Unchanged,
     Write(Vec&lt;u8&gt;),
+    Drift { forced: Vec&lt;u8&gt; },
 }
 
-pub fn resolve_edit(
-    current: Option&lt;&amp;[u8]&gt;,
-    edit: &amp;PlannedEdit,
-) -&gt; Result&lt;Resolution, EditError&gt;;
+pub fn resolve_region_edit(current: Option&lt;&amp;[u8]&gt;, edit: &amp;PlannedRegionEdit)
+    -&gt; Result&lt;EditResolution, RegionError&gt;;
+pub fn resolve_json_edit(current: Option&lt;&amp;[u8]&gt;, edit: &amp;PlannedJsonEdit)
+    -&gt; Result&lt;EditResolution, JsonEditError&gt;;
 
 pub enum FileMutation&lt;'a&gt; {
     Whole { path: &amp;'a TargetPath },
     Region { path: &amp;'a TargetPath, region: &amp;'a RegionKey },
+    JsonValue { path: &amp;'a TargetPath, json_path: &amp;'a JsonPath },
 }</code></pre>
-    <p class="muted">The pure function proves safe repeat without filesystem setup. The mutation view is derived; it does not replace the current whole-file model.</p>
+    <p class="muted">The pure resolvers prove safe repeat without filesystem setup. The mutation view is derived; it does not replace the current whole-file model.</p>
   </section>
 </section>
 
 <section id="data">
   <section>
-    <h2>What the plan must remember</h2>
+    <h2>What a marked-region plan remembers</h2>
     <ul>
       <li><strong>Target:</strong> which existing file to edit.</li>
       <li><strong>Region name:</strong> which section Toha owns.</li>
@@ -181,6 +194,17 @@ pub enum FileMutation&lt;'a&gt; {
       <li><strong>Create rule:</strong> whether a missing target may be created.</li>
     </ul>
     <p>It does not remember byte positions. Positions can become stale between planning and applying.</p>
+  </section>
+  <section>
+    <h2>What a JSON-family plan remembers</h2>
+    <ul>
+      <li><strong>Target:</strong> a <code>.json</code>, <code>.jsonc</code>, or <code>.json5</code> file.</li>
+      <li><strong>Typed path:</strong> object keys and existing array indexes.</li>
+      <li><strong>Typed value:</strong> string, boolean, number, null, array, or object.</li>
+      <li><strong>Format:</strong> strict JSON or permissive JSONC/JSON5 parse rules.</li>
+      <li><strong>Create rule:</strong> whether an absent file may start as an empty object.</li>
+    </ul>
+    <p>It does not store byte offsets. <code>jsonc-parser</code> finds the node in the current source during apply.</p>
   </section>
   <section>
     <h2>What appears in the file</h2>
@@ -198,16 +222,29 @@ router.route("/health", get(health));
     <h2>Technical data appendix</h2>
     <pre><code class="language-rust">pub struct Plan {
     pub files: Vec&lt;PlannedFile&gt;,  // existing whole-file writes
-    pub edits: Vec&lt;PlannedEdit&gt;,  // new managed sections
+    pub edits: Vec&lt;PlannedEdit&gt;,  // new bounded edits
     // existing conflicts and hooks remain
 }
 
-pub struct PlannedEdit {
+pub enum PlannedEdit {
+    Region(PlannedRegionEdit),
+    JsonValue(PlannedJsonEdit),
+}
+
+pub struct PlannedRegionEdit {
     pub path: TargetPath,
     pub region: RegionKey,
     pub body: String,
     pub marker: MarkerStyle,
     pub anchor: Option&lt;Anchor&gt;,
+    pub create: bool,
+}
+
+pub struct PlannedJsonEdit {
+    pub path: TargetPath,
+    pub json_path: JsonPath,
+    pub desired: serde_json::Value,
+    pub format: JsonFormat,
     pub create: bool,
 }</code></pre>
   </section>
@@ -215,59 +252,55 @@ pub struct PlannedEdit {
 
 <section id="beforeafter">
   <section>
-    <h2>Example: author asks for a JSONC section</h2>
+    <h2>Visible region: author request</h2>
     <pre><code class="language-yaml">inject:
-  - into: "config/app.jsonc"
+  - into: "config/app.toml"
     region: "features"
     content: |
-      "analytics_enabled": true,
-      "analytics_sample_rate": 0.1</code></pre>
-    <p>JSONC accepts comments, so Toha can use visible markers. The rest of the file remains owned by the operator.</p>
+      analytics_enabled = true
+      analytics_sample_rate = 0.1
+    anchor:
+      after: "[application]"
+      occurrence: only</code></pre>
+    <p>The region name becomes the visible ownership boundary. The anchor is used only for first placement.</p>
   </section>
   <section>
-    <h2>Example: target file before and after</h2>
+    <h2>Visible region: target before and after</h2>
     <ul class="two">
-      <li><strong>BEFORE</strong><pre><code class="language-json">{
-  "app_name": "sample-service",
-  "port": 8080,
-  // operator-owned settings
-  "log_level": "info"
-}</code></pre></li>
-      <li><strong>AFTER FIRST APPLY</strong><pre><code class="language-json">{
-  "app_name": "sample-service",
-  "port": 8080,
-  // operator-owned settings
-  "log_level": "info",
-  // &gt;&gt;&gt; toha:region features &gt;&gt;&gt;
-  "analytics_enabled": true,
-  "analytics_sample_rate": 0.1
-  // &lt;&lt;&lt; toha:end features sha256:a7f3d… &lt;&lt;&lt;
-}</code></pre></li>
+      <li><strong>BEFORE</strong><pre><code class="language-toml">[application]
+name = "sample-service"
+log_level = "info"</code></pre></li>
+      <li><strong>AFTER FIRST APPLY</strong><pre><code class="language-toml">[application]
+# &gt;&gt;&gt; toha:region features &gt;&gt;&gt;
+analytics_enabled = true
+analytics_sample_rate = 0.1
+# &lt;&lt;&lt; toha:end features sha256:a7f3d… &lt;&lt;&lt;
+name = "sample-service"
+log_level = "info"</code></pre></li>
     </ul>
     <p class="muted">Second apply changes no bytes. An edit between the markers produces a conflict instead of a silent overwrite.</p>
   </section>
   <section>
-    <h2>Strict JSON needs a decision</h2>
-    <p>Strict JSON has no comments, so the visible-marker approach cannot produce a valid <code>.json</code> file.</p>
+    <h2>JSON-family boundary</h2>
+    <p>JSON, JSONC, and JSON5 use one structured ownership rule. Toha does not add marker comments to any of them.</p>
     <ul>
-      <li><strong>Proposed behavior:</strong> refuse marker injection during planning.</li>
-      <li><strong>Message names alternatives:</strong> use JSONC/JSON5, let Toha manage the whole file, or use structured editing if that option is approved.</li>
-      <li><strong>Existing behavior:</strong> whole-file JSON rendering continues to work.</li>
+      <li><strong>Selected mode:</strong> <code>struct:</code> changes one typed value at one path through <code>jsonc-parser</code>.</li>
+      <li><strong>Marker rule:</strong> a JSON-family target is rejected during planning with <code>struct:</code> and whole-file guidance.</li>
+      <li><strong>Existing capability:</strong> whole-file JSON rendering continues to work.</li>
     </ul>
-    <p class="muted">This is a proposed boundary for the new injection feature. It is not approved yet.</p>
+    <p class="muted">JSONC and JSON5 comments remain operator source and are preserved by the CST.</p>
   </section>
   <section>
-    <h2>Structured editing: author request</h2>
-    <p>Structured editing changes one value by its JSON path. It works with strict JSON and does not need marker comments.</p>
+    <h2>JSON-family value: author request</h2>
     <pre><code class="language-yaml">inject:
   - into: "package.json"
     struct:
       path: "scripts.build"
       value: "tsc"</code></pre>
-    <p class="muted">This author surface and its timing are options under D6b. They are not approved scope.</p>
+    <p><strong>Ownership:</strong> Toha owns the value at <code>scripts.build</code>. Every other value and all unrelated source text remain operator-owned.</p>
   </section>
   <section>
-    <h2>Structured editing: target before and after</h2>
+    <h2>JSON-family value: target before and after</h2>
     <ul class="two">
       <li><strong>BEFORE</strong><pre><code class="language-json">{
   "name": "sample-app",
@@ -283,8 +316,18 @@ pub struct PlannedEdit {
   }
 }</code></pre></li>
     </ul>
-    <p><strong>Ownership:</strong> Toha owns the value at <code>scripts.build</code> and sets it back to the requested value on later runs.</p>
-    <p class="muted">The recommended editor changes only the necessary range. In JSONC it also preserves nearby comments, spacing, and trailing commas.</p>
+    <p>Second apply changes no bytes. If a person changes the owned value, later apply sets it back to <code>"tsc"</code>.</p>
+    <p class="muted">The selected editor changes the necessary node and punctuation. In JSONC/JSON5 it preserves unrelated comments, spacing, order, and trailing commas.</p>
+  </section>
+  <section>
+    <h2>One target is resolved and written once</h2>
+    <ol>
+      <li>Start with planned whole-file bytes, or read the current target once.</li>
+      <li>Fold each region or JSON-value edit over one in-memory image.</li>
+      <li>Stop before any write if any target has an error or unforced region drift.</li>
+      <li>Atomically replace each changed target once and report its path once.</li>
+    </ol>
+    <p class="muted">This makes whole-file-plus-injection and several edits to one file deterministic.</p>
   </section>
 </section>
 
@@ -304,17 +347,18 @@ pub struct PlannedEdit {
     </table>
   </section>
   <section>
-    <h2>JSON behavior follows the decisions</h2>
+    <h2>JSON-family behavior to prove</h2>
     <table>
-      <thead><tr><th>If approved</th><th>The proof fails if…</th></tr></thead>
+      <thead><tr><th>Promise</th><th>The proof fails if…</th></tr></thead>
       <tbody>
-        <tr><td>JSONC/JSON5 markers</td><td>the file becomes invalid or repeat apply changes bytes</td></tr>
-        <tr><td>Strict-JSON marker refusal</td><td>Toha writes invalid comments or gives no usable alternative</td></tr>
-        <tr><td>Structured value editing</td><td>unrelated comments, order, spacing, or values change</td></tr>
-        <tr><td>Structured repeat</td><td>an already-correct value causes another write</td></tr>
+        <tr><td>Typed values</td><td>string, boolean, number, null, array, or object changes type</td></tr>
+        <tr><td>Source fidelity</td><td>unrelated comments, order, spacing, punctuation, or values change</td></tr>
+        <tr><td>Convergent ownership</td><td>an edited owned value is not restored, or another path changes</td></tr>
+        <tr><td>Safe repeat</td><td>an already-correct value causes another write</td></tr>
+        <tr><td>Plan before write</td><td>a later invalid path leaves an earlier file changed</td></tr>
       </tbody>
     </table>
-    <p class="muted">The structured fixtures belong to whichever timing Bob selects: this implementation or a fast-follow.</p>
+    <p class="muted">Fixtures cover strict JSON, JSONC with comments, and JSON5 syntax in the paired implementation.</p>
   </section>
 </section>
 
@@ -323,22 +367,22 @@ pub struct PlannedEdit {
   <ul>
     <li>Combining both the human and generated edits through a three-way merge.</li>
     <li>A separate <code>toha inject</code> command or a second apply pass.</li>
-    <li>Automatic formatting of injected content.</li>
+    <li>Broad JSON query or filter programs.</li>
+    <li>Structural YAML or TOML mutation; their first release uses marked regions.</li>
     <li>Changes to the interview engine or existing whole-file conflict rules.</li>
-    <li>Canonical specification, schema, and guide edits; the paired implementation owns them after approval.</li>
+    <li>Canonical specification, schema, and guide edits in this design branch; the paired implementation owns them.</li>
   </ul>
-  <p><strong>Pending choice:</strong> structured value editing is not silently excluded. D6b keeps “build now” and “fast-follow” as live options.</p>
 </section>
 
 <section id="review">
   <h2>What reviewers should attack</h2>
   <ul>
     <li><strong>Safe repeat:</strong> can any normal replay duplicate or rewrite an unchanged section?</li>
-    <li><strong>Ownership:</strong> can Toha alter bytes outside its named section?</li>
+    <li><strong>Ownership:</strong> can Toha alter bytes outside its marked region or typed JSON value?</li>
     <li><strong>Conflict handling:</strong> can <code>--force</code> create a missing section or overwrite unrelated text?</li>
-    <li><strong>Order:</strong> if Toha creates a file and injects into it in one plan, does injection read the newly created content?</li>
+    <li><strong>Order:</strong> do all edits for one path use one current image and one final write?</li>
     <li><strong>Safety rules:</strong> do existing target-path, symbolic-link, and <code>.git</code> checks run before every read and write?</li>
-    <li><strong>JSON fidelity:</strong> does the chosen method preserve what it claims to preserve?</li>
+    <li><strong>JSON fidelity:</strong> do JSONC/JSON5 comments and untouched syntax survive inserts and replacements?</li>
   </ul>
 </section>
 
@@ -517,7 +561,7 @@ kickstart https://example.invalid/project-template.git -o sample</code></pre>
   <section>
     <h2>Libraries: format-preserving structured edit</h2>
     <ul>
-      <li><strong><code>jsonc-parser</code> for Rust</strong> keeps comments and whitespace in a concrete syntax tree, then changes one node. This is the recommended structured mechanism if D6b is approved.</li>
+      <li><strong><code>jsonc-parser</code> for Rust</strong> keeps comments and whitespace in a concrete syntax tree, then changes one node. This is the selected JSON-family mechanism.</li>
       <li><strong>VS Code's <code>node-jsonc-parser</code></strong> returns minimal offset/length/content edits. It is the TypeScript version of the same approach.</li>
       <li><strong><code>toml_edit</code></strong> stores formatting on each node. It is the mature TOML analogue.</li>
     </ul>
@@ -527,7 +571,7 @@ kickstart https://example.invalid/project-template.git -o sample</code></pre>
   <section>
     <h2>Libraries: whole-document rewrite</h2>
     <ul>
-      <li><strong><code>jaq</code></strong> is a capable query engine, but it drops comments while reading and prints a new document. Recommend against it for this feature.</li>
+      <li><strong><code>jaq</code></strong> is a capable query engine, but it drops comments while reading and prints a new document. It is rejected for this feature.</li>
       <li><strong><code>serde_json</code></strong> has no comment model; preserving key order does not preserve the original bytes.</li>
       <li><strong><code>json5-rs</code></strong> accepts comments as input but does not retain them in an editable document model.</li>
       <li><strong>npm package-json</strong> rewrites the full document while carrying forward detected indentation and newline style.</li>
@@ -540,9 +584,9 @@ kickstart https://example.invalid/project-template.git -o sample</code></pre>
     <table>
       <thead><tr><th>Candidate</th><th>Design score</th><th>Cross-check</th><th>Use in recommendation</th></tr></thead>
       <tbody>
-        <tr><td>Visible markers in JSONC/JSON5</td><td>30/30</td><td>30/30</td><td>base option</td></tr>
-        <tr><td><code>jsonc-parser</code> surgical edit</td><td>26/30</td><td>26/30</td><td>structured option</td></tr>
-        <tr><td>Embedded <code>jaq</code> rewrite</td><td>17/30</td><td>17/30</td><td>recommend against</td></tr>
+        <tr><td>Visible markers in JSONC/JSON5</td><td>30/30</td><td>30/30</td><td>not selected for JSON family</td></tr>
+        <tr><td><code>jsonc-parser</code> surgical edit</td><td>26/30</td><td>26/30</td><td>selected for JSON family</td></tr>
+        <tr><td>Embedded <code>jaq</code> rewrite</td><td>17/30</td><td>17/30</td><td>rejected</td></tr>
       </tbody>
     </table>
     <p class="muted">Three independent designs, followed by a read-only cross-check. No candidate dropped out.</p>
@@ -551,51 +595,53 @@ kickstart https://example.invalid/project-template.git -o sample</code></pre>
 
 <section id="decisions">
   <section>
-    <h2>Decisions 1–3: the author experience</h2>
-    <p><strong>D1 — Show ownership markers in the target file</strong></p>
-    <p>A. Write visible comments. <em>Recommend A so that people can see the boundary.</em><br/>B. Hide ownership elsewhere.</p>
-    <p><strong>D2 — Name the template setting <code>inject</code></strong></p>
-    <p>A. Use the top-level list shown in the examples. <em>Recommend A so that one setting describes all managed sections.</em><br/>B. Put injection under existing whole-file output.</p>
-    <p><strong>D3 — Choose comment style from the file type</strong></p>
-    <p>A. Infer known types, allow an override, and reject unknown types without one. <em>Recommend A so that Toha never guesses silently.</em><br/>B. Require every author to specify it.</p>
+    <h2>Approved author experience</h2>
+    <p><strong>D1 — A:</strong> show visible ownership markers in non-JSON text files.</p>
+    <p><strong>D2 — A:</strong> use one top-level <code>inject</code> list with <code>region:</code> and <code>struct:</code> variants.</p>
+    <p><strong>D3 — A:</strong> infer known non-JSON comment styles, allow an override, and reject an unknown style without one.</p>
+    <p class="muted">JSON-family files use typed-path ownership and do not receive Toha marker comments.</p>
   </section>
   <section>
-    <h2>Decisions 4, 5, 7, 8: safety defaults</h2>
-    <p><strong>D4 — Human edit inside the section:</strong> A. stop; <code>--force</code> replaces only that section. <em>Recommend A.</em> B. always overwrite.</p>
-    <p><strong>D5 — Missing target:</strong> A. require <code>create: true</code>. <em>Recommend A so that a spelling error cannot create a surprise file.</em> B. create by default.</p>
-    <p><strong>D7 — Write method:</strong> A. complete temporary file, then atomic rename. <em>Recommend A so that interruption cannot leave half a file.</em> B. edit in place.</p>
-    <p><strong>D8 — Region fingerprint:</strong> A. reuse the existing <code>sha2</code> library. <em>Recommend A so that no new dependency is needed.</em> B. add another checksum.</p>
+    <h2>Approved safety defaults</h2>
+    <p><strong>D4 — A:</strong> marked-region drift stops; <code>--force</code> replaces only that region.</p>
+    <p><strong>D5 — A:</strong> missing targets require <code>create: true</code>.</p>
+    <p><strong>D7 — A:</strong> resolve every target first, then replace each changed target atomically.</p>
+    <p><strong>D8 — A:</strong> reuse existing <code>sha2</code> for region fingerprints.</p>
+    <p class="muted">JSON values use declared path ownership and converge without <code>--force</code>.</p>
   </section>
   <section>
-    <h2>Decision 6a: JSON through visible markers</h2>
-    <p><strong>A. JSONC and JSON5 use comment markers; strict JSON marker injection is refused during planning.</strong></p>
-    <p>Existing whole-file JSON rendering remains available. The error names JSONC/JSON5, whole-file output, and structured editing as alternatives.</p>
-    <p><em>Recommend A so that Toha never writes invalid JSON.</em></p>
-    <p><strong>B. Do not support JSON-family marker injection.</strong></p>
-    <p class="muted">This is a proposed boundary for the new feature. Bob's decision is required.</p>
+    <h2>Approved D6a — option B</h2>
+    <p><strong>Do not support JSON-family marker injection.</strong></p>
+    <ul>
+      <li><code>.json</code>, <code>.jsonc</code>, and <code>.json5</code> use <code>struct:</code>.</li>
+      <li>A marker rule for those extensions fails during planning with structured and whole-file guidance.</li>
+      <li>Existing whole-file JSON rendering remains available.</li>
+    </ul>
   </section>
   <section>
-    <h2>Decision 6b: when to add structured JSON editing</h2>
-    <p>The sequencing options below assume the recommended <code>jsonc-parser</code> mechanism and the “Toha owns this value at this path” rule. D9 separately decides the mechanism.</p>
-    <p><strong>A. Fast-follow after 0.2.0.</strong> Reserve the <code>struct:</code> shape now; build visible sections first. <em>Recommend A so that the base feature stays medium-sized.</em></p>
-    <p><strong>B. Build it in the paired implementation now.</strong> Deliver strict-JSON value editing with the first injection release.</p>
-    <p class="muted">These are co-equal choices. The paired implementation is not narrowed until Bob decides.</p>
+    <h2>Approved D6b — option B</h2>
+    <p><strong>Build structured JSON-family editing in the paired implementation now.</strong></p>
+    <ul>
+      <li>Own one typed value at one path.</li>
+      <li>Support strict JSON, JSONC, and JSON5 in the first injection release.</li>
+      <li>Preserve unrelated comments, order, whitespace, and values.</li>
+      <li>Converge an edited owned value; repeated correct state is a byte no-op.</li>
+    </ul>
   </section>
   <section>
-    <h2>Decision 9: use jaq for structured editing?</h2>
-    <p><strong>A. Use <code>jaq</code>.</strong> Gain a powerful query language, but rewrite the whole document and lose comments and original formatting.</p>
-    <p><strong>B. Use <code>jsonc-parser</code> if structured editing is approved.</strong> Change one value while preserving unrelated source text.</p>
-    <p><em>Recommend B so that a change to one owned value does not rewrite the user's file.</em></p>
-    <p class="muted">This is a recommendation from source evidence and the design comparison. It is not a settled decision.</p>
+    <h2>Approved D9 — option B</h2>
+    <p><strong>Use embedded <code>jsonc-parser</code> for structured editing.</strong></p>
+    <p>It changes the owned node through a full-fidelity CST. It does not run a command or subprocess.</p>
+    <p><strong>Reject <code>jaq</code> for this feature.</strong> Its query engine prints a new document and cannot retain the operator's source fidelity.</p>
   </section>
   <section>
     <h2>Dependency links</h2>
     <ul>
       <li><strong>Existing and reused:</strong> <a href="https://crates.io/crates/sha2">sha2 on crates.io</a> · <a href="https://docs.rs/sha2/latest/sha2/">sha2 documentation</a></li>
-      <li><strong>Conditional on D6b:</strong> <a href="https://crates.io/crates/jsonc-parser">jsonc-parser on crates.io</a> · <a href="https://docs.rs/jsonc-parser/latest/jsonc_parser/cst/">CST module documentation</a> · <a href="https://github.com/dprint/jsonc-parser">official repository</a></li>
-      <li><strong>Compared, recommended against:</strong> <a href="https://crates.io/crates/jaq-core">jaq-core on crates.io</a> · <a href="https://github.com/01mf02/jaq">official repository</a></li>
+      <li><strong>Adopted:</strong> <a href="https://crates.io/crates/jsonc-parser">jsonc-parser on crates.io</a> · <a href="https://docs.rs/jsonc-parser/latest/jsonc_parser/cst/">CST module documentation</a> · <a href="https://github.com/dprint/jsonc-parser">official repository</a></li>
+      <li><strong>Compared and rejected:</strong> <a href="https://crates.io/crates/jaq-core">jaq-core on crates.io</a> · <a href="https://github.com/01mf02/jaq">official repository</a></li>
     </ul>
-    <p class="muted"><code>jsonc-parser</code> would be an embedded Rust library. No external command or subprocess is proposed.</p>
+    <p class="muted"><code>jsonc-parser</code> is an embedded Rust library. No external command or subprocess is proposed.</p>
   </section>
   <section>
     <h2>Approval disclosure</h2>
@@ -606,30 +652,30 @@ kickstart https://example.invalid/project-template.git -o sample</code></pre>
       <li>No application subprocess integration.</li>
       <li>No removal of an existing supported capability.</li>
     </ul>
-    <p>Strict-JSON marker refusal is part of pending D6a and affects only the new injection mode. Existing whole-file JSON output remains supported.</p>
+    <p>JSON-family marker refusal affects only the new injection mode. Structured and existing whole-file JSON output remain supported.</p>
   </section>
 </section>
 
 <section id="size">
   <h2>Expected build size</h2>
-  <p><strong>Visible-section base:</strong> medium; about one to two focused agent sessions.</p>
+  <p><strong>Approved combined build:</strong> large; about two to three focused agent sessions.</p>
   <ul>
     <li>Template parsing and validation.</li>
-    <li>One pure region resolver.</li>
-    <li>One ordered apply stage.</li>
+    <li>Pure region and JSON-family resolvers.</li>
+    <li>Grouped resolve-before-write orchestration and atomic replacement.</li>
     <li>Dry-run and error reporting.</li>
     <li>Specifications, schema, guide, and end-to-end fixtures.</li>
   </ul>
-  <p><strong>If D6b chooses “build now”:</strong> add the structured editor integration and its JSON/JSONC preservation fixtures to that estimate.</p>
+  <p>The estimate includes <code>jsonc-parser</code> integration and JSON/JSONC/JSON5 preservation fixtures.</p>
 </section>
 
 <section id="complexity">
   <h2>Where the complexity sits</h2>
-  <p>The base design concentrates the difficult rules in one pure resolver: find or place the section, compare its fingerprint, and return either no change, a complete new file, or a clear error.</p>
+  <p>The design concentrates format rules in two pure resolvers and keeps file I/O in one grouped apply stage.</p>
   <ul>
-    <li><strong>Moderate:</strong> byte preservation, comment-style selection, and ordering with whole-file writes.</li>
+    <li><strong>High:</strong> two ownership models, typed-path traversal, CST source preservation, and same-target ordering.</li>
     <li><strong>Contained:</strong> interview behavior and existing whole-file generation stay unchanged.</li>
-    <li><strong>Optional extra:</strong> structured editing adds a dependency and a second ownership rule, but uses the same plan-before-write flow.</li>
+    <li><strong>Contained:</strong> both modes use the same resolve-before-write and atomic replacement flow.</li>
   </ul>
 </section>
 

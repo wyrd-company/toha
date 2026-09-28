@@ -32,7 +32,8 @@ lower purity scores reflect defects the judge also flagged.
 
 ## Base: Candidate 1 (managed-region markers)
 
-C1 wins on every criterion. Its load-bearing move is a **pure function
+C1 wins as the format-agnostic text mechanism. Its load-bearing move is a
+**pure function
 `resolve_edit(current_bytes, edit) -> Unchanged | Write(full_bytes)`** whose
 `Write` arm always recomputes a body checksum recorded in the end marker.
 Because the checksum is recomputed over the emitted body, resolving C1's own
@@ -41,12 +42,12 @@ consequence, not a heuristic, and it survives staging replay because
 `PlannedEdit` is a pure function of `(Template, Completed)` and the only target
 read happens at apply/dry-run. Ownership is the byte span between a keyed
 begin/end marker pair; the checksum distinguishes "Toha's last body" (safe to
-replace) from "user edit" (drift). This is exactly the mutation contract 1066
-and 1031 need.
+replace) from "user edit" (drift). The JSON-family addendum selects the
+specialized `jsonc-parser` CST mechanism alongside this marker base.
 
-A future maintainer extends C1 most easily: one `template.yml` list, one
-`Plan.edits` vector, one pure function, one derived `FileMutation` view. The
-whole-file path is untouched, so no existing fixture regresses.
+Both modes share one `template.yml` list, one `Plan.edits` vector, pure
+resolvers, and one derived `FileMutation` view. The whole-file path retains its
+current conflict semantics.
 
 ## Grafts (source → what was folded in, by hand)
 
@@ -56,20 +57,16 @@ whole-file path is untouched, so no existing fixture regresses.
    `FileMutation` enum, with build-time byte offsets) is not. Graft: keep C1's
    `edits` sibling as the internal representation, and expose
    `Plan::mutations() -> FileMutation` as a **derived read-model** enriched with
-   C4's `OwnershipScope` vocabulary (`EntireFile` vs `Region { path, key }`) and
-   the region checksum, so 1066 reads a first-class ownership contract without
-   the blast radius or replay hazard of C4's collapse.
+   C4's ownership vocabulary (`EntireFile`, `Region { path, key }`, and the
+   JSON addendum's `JsonValue { path, json_path }`), so downstream project
+   update reads a first-class ownership contract without the blast radius or
+   replay hazard of C4's collapse.
 
-2. **From C3 → structured-merge is a named, reserved, out-of-scope mode with an
-   explicit ownership model.** C3's "Toha owns the value at a named path"
-   ownership is genuinely the right model *for structured documents* and worth
-   preserving. Graft: reserve a `BodySource`-free structured variant in the
-   design's type space and document the "owns the value at path" ownership, but
-   place it **out of scope for 1031** behind an explicit caveat that it
-   reserializes (destroying comments/formatting/key order), so it is never on
-   the critical path and never silently rewrites a user-owned file by default.
-   Explicit-`format` discipline (never inferred) is adopted for that future
-   mode.
+2. **From C3 → value-at-path ownership.** C3 identified the correct ownership
+   model for structured documents. The focused JSON arena replaced C3's
+   reserialize mechanism with `jsonc-parser` CST and brings that typed-path mode
+   into the paired implementation for JSON, JSONC, and JSON5. It preserves
+   unrelated source text and converges the owned value.
 
 3. **From C2 → cardinality/anchor vocabulary and the exact-bytes discipline.**
    C2's anchor cardinality naming is clear; folded into C1's `Occurrence`
@@ -95,18 +92,21 @@ whole-file path is untouched, so no existing fixture regresses.
   break idempotency of the surrounding, user-owned content. The region editor
   must splice byte ranges and preserve the rest of the file verbatim (bound as a
   verification item).
-- **C3's structured merge as the core mechanism.** Rejected: it cannot touch
+- **C3's structured merge as the universal mechanism.** Rejected: it cannot
+  touch
   arbitrary text (README, `.gitignore`, source, commented CI YAML), and it
   reserializes — a disguised whole-file rewrite of a file Toha does not own,
-  which weakens the no-silent-overwrite guarantee. Kept only as the reserved,
-  out-of-scope mode above.
+  which weakens the no-silent-overwrite guarantee. Its value-at-path ownership
+  is retained only for JSON-family files through the format-preserving CST
+  mechanism selected in `04a-synthesis-json-family.md`.
 - **C4's collapse of `Content`/`PlannedFile` into one `FileMutation` enum as the
-  internal representation, and its `IdempotencyCheck::WholeFile { expected_content }`.**
+  internal representation, and its whole-file expected-content check.**
   Rejected: the whole-file idempotency-by-content-match changes today's
   existence⇒conflict semantics and would regress existing fixtures
   (`conflict`, `conflict-force`); and folding both mutation kinds into one enum
   enlarges the blast radius for no gain over a derived view.
-- **C4's build-time byte-offset ownership (`BoundedRegion { start_byte, end_byte }`).**
+- **C4's build-time byte-offset ownership
+  (`BoundedRegion { start_byte, end_byte }`).**
   Rejected: byte offsets computed at build are invalidated by any change to the
   target between build and apply and do not survive replay. Selection is by
   marker at apply time; offsets, if surfaced at all, are derived at read time.
@@ -115,7 +115,7 @@ whole-file path is untouched, so no existing fixture regresses.
 
 - **Caller usage vs sketch.** Existing `Plan::build(..).apply(..)` callers are
   unchanged; the crate surface grows by one `Plan` field, one `template.yml`
-  list, one derived `mutations()` view, and one pure `resolve_edit`. The
+  list, one derived `mutations()` view, and pure region/JSON resolvers. The
   `apply_reporting` insertion point (resolve edits after the whole-file conflict
   recompute, before writes, folding drift into the `--force` gate) preserves the
   all-or-nothing "write nothing on conflict / needs-trust" ordering. Holds.
@@ -123,14 +123,15 @@ whole-file path is untouched, so no existing fixture regresses.
   marker steady-state) ✓; idempotency (checksum, proven) ✓; conflict behavior
   (injection is not an existence conflict; *drift* is the conflict, gated by
   `--force`) ✓; ownership/mutation contract (span between markers + checksum +
-  derived `FileMutation`) ✓; failure/recovery (error taxonomy, exit codes,
+  derived `FileMutation`) ✓; JSON-family typed-path ownership and convergence
+  ✓; failure/recovery (error taxonomy, exit codes,
   atomic write) ✓; purity/replay (pure `resolve_edit`, engine reads no target)
   ✓; `TargetPath`/symlink/`.git` reuse ✓; no new port/timeout/permission/
   subprocess/pinned-check ✓; compose with whole-file writes (files first, then
   edits; same-path write-then-inject allowed) ✓.
-- **Dependency check.** The region checksum reuses the **existing** `sha2 = "0.10"`
-  dependency (`Cargo.toml:43`, used today for staged file names). No new crate;
-  the C1 open question is resolved.
+- **Dependency check.** The region checksum reuses the existing `sha2`
+  dependency. JSON-family mutation adopts embedded `jsonc-parser` with its
+  `cst` feature; the source review and adoption case are in the JSON addendum.
 - **Falsifiable scenarios** (become 1031 fixtures): (1) *twice-apply changes the
   file once* — the acceptance fixture, sole assertion on idempotency; (2)
   first-placement at an anchor and at EOF; (3) template body change replaces only
@@ -138,12 +139,14 @@ whole-file path is untouched, so no existing fixture regresses.
   overwrites with `--force`; (5) missing anchor exit 1, ambiguous (`Only`) exit
   5; (6) whole-file write + injection into the same file in one plan; (7)
   arbitrary text targets (`.gitignore`, a `.rs` source) exercising comment-style
-  inference; (8) staged-replay double-apply equals single apply.
+  inference; (8) staged-replay double-apply equals single apply; (9) strict
+  JSON, JSONC, and JSON5 typed-path inserts and replacements are byte-no-op on
+  repeat; (10) comments and untouched syntax survive CST edits; (11) invalid,
+  duplicate, or overlapping paths fail before any write.
 - **Predecessor compatibility.** 1068 is a design root with no predecessor
   design; nothing to reconcile. Downstream 1066/1029 consume the mutation
   contract named in `05-design.md`.
 
-No problem surfaced that the arena missed; the base holds under scrutiny. Two
-refinements beyond C1 are folded into the final design: reuse existing `sha2`
-(no new dep), and an atomic temp-file-plus-rename write for injection targets
-(a user-owned file must not be left half-written), recorded as decisions D7/D8.
+The marker base holds for non-JSON text. The focused arena adds the JSON-family
+CST resolver, and both use one resolve-before-write orchestration with atomic
+replacement per changed target.

@@ -1,19 +1,13 @@
-# Synthesis addendum — JSON-family / structured mutation
+# Synthesis addendum — JSON-family structured mutation
 
-Extends `04-synthesis.md`. Base pick, scores (self + readonly cross-judge),
-grafts, rejections, verification, and the recommendation for the JSON-family
-question. Reconciles the focused re-arena (`02a-arena-json-family.md`).
-
-**Status of this record.** Its "base pick", "rejected", "chosen", and "deferred"
-verdicts are the *arena's recommendations* feeding Bob's ruling on D6a/D6b/D9
-(`05-design.md`). None of it is settled scope, an authorized structured-mode
-deferral, or a 1031 narrowing until Bob rules. The implement-now option for the
-structured mode remains co-equal on D6b.
+Extends `04-synthesis.md`. This record reconciles the focused JSON-family arena
+in `02a-arena-json-family.md` with the selected product boundary.
 
 ## Scores (1–5 per criterion)
 
-Parent self-scores (opus); cross-judge (`ocx-gpt-5-6-luna`) in brackets where it
-differs. Full judge report: `03-candidates/json-family-revision/cross-judge-report.md`.
+Parent self-scores and the readonly cross-judge agreed on every total. The full
+judge report is
+`03-candidates/json-family-revision/cross-judge-report.md`.
 
 | Criterion | A jaq | B jsonc-parser CST | C markers/JSONC |
 |---|:--:|:--:|:--:|
@@ -25,116 +19,114 @@ differs. Full judge report: `03-candidates/json-family-revision/cross-judge-repo
 | 6 Evidence quality | 5 | 5 | 5 |
 | **Total** | **17** | **26** | **30** |
 
-Self and cross-judge agreed on every total. No disagreement needed
-reconciliation: both rank C first (ready to ship, strongest ownership contract,
-zero new dependency, proven by Ansible `blockinfile`), B second (the superior
-*structured* design, format-preserving, but a heavier addition), A last (jaq
-reserializes — the disqualifier).
+Candidate C scored highest as a marker mechanism because its visible boundary
+and checksum give it the strongest drift proof. Candidate B scored highest as a
+structured mechanism and is the selected JSON-family design. The product choice
+uses the stronger mechanism for each format family instead of forcing one
+mechanism across both.
 
-## Base pick for the 0.2.0 slice (1031): Candidate C
+## Selected combination
 
-The JSON family ships **through the retained marker base**: JSONC and JSON5
-permit `//` comments, so Toha's begin/end markers are valid comment lines and
-inject exactly as they do in `.rs`/`.gitignore`/`.yaml`, with the same `sha2`
-checksum idempotency and drift refusal. Strict `.json` is a **documented
-boundary** — markers would break JSON validity — with named author alternatives
-(target a `.jsonc`, manage the whole file with `files:`, or use the deferred
-structured mode). This is not a regression: today Toha cannot inject at all, and
-the ecosystem's own package.json editor reserializes rather than surgically
-editing strict JSON.
+- **Non-JSON text:** the base managed-region marker design. Toha owns the marked
+  byte span and refuses an edited span without `--force`.
+- **JSON family (`.json`, `.jsonc`, `.json5`):** Candidate B,
+  `jsonc-parser`'s `cst` module, in the paired implementation. Toha owns the
+  value at a typed path and converges that value to the declared value.
+- **JSON-family markers:** rejected. JSONC and JSON5 could carry comments, but
+  one JSON-family contract avoids a file-extension-dependent ownership model.
+- **`jaq`:** rejected as the structured mechanism. Its reserialize model drops
+  source fidelity that the selected CST retains.
 
-## The jaq question, answered on evidence (Candidate A rejected as mechanism)
+This means visible content markers remain part of the product, but no Toha
+marker is added to a JSON-family document. Existing user comments in JSONC and
+JSON5 remain source text that `jsonc-parser` preserves.
 
-`jaq` is **rejected as the structured mechanism.** It discards `#` comments at
-lex time (`jaq-json/src/read.rs:10-19`, rev `f167ad4`) and regenerates all output
-from a pretty printer (`jaq-json/src/write.rs:202-260`); it is a jq-language
-filter/query engine, not an editor. Using it to edit a user-owned JSON-family
-file is a disguised whole-file rewrite that destroys comments and normalizes
-formatting/order — the exact no-silent-overwrite hazard the grounding forbids —
-and it imposes a query language for what is usually a single-value set. The same
-disqualifier applies to every reserialize approach (`serde_json`, `json5-rs`;
-npm's package.json editor mitigates only indent/newline, never comments). This
-confirms and hardens the base grounding's read with cited source, and supersedes
-the assumption in prior D6 that structured merge would be a jaq/serde path.
+## Candidate B contract
 
-## The structured mode, when Toha adds one: Candidate B (jsonc-parser CST)
+The embedded `jsonc-parser` CST owns **one JSON value at one typed path**. It
+preserves comments, property order, whitespace, quote style, and punctuation
+outside the node and punctuation range that the edit must change. A value that
+already equals the desired typed value returns `Unchanged`, so repeated apply is
+a byte no-op.
 
-If/when Toha ships a structured JSON-family mode, the mechanism is **`jsonc-parser`'s
-`cst` module** (rev `c7d4cf5`, crate `0.34.0`, feature `cst`), the format-
-preserving JSON-family analogue of `toml_edit` and the same pattern VS Code uses.
-It owns **the value at a named path** (not a byte region), preserves every
-comment/key/whitespace outside the touched node (`cst/mod.rs:1-5,1356`), and is a
-byte no-op when the value already equals the desired value (idempotent). Its
-honest limit: strict JSON has no comment slot for a checksum, so a re-apply
-cannot distinguish "user edited the managed value" from "first set" — the model
-is declarative convergence (Toha re-sets exactly the path it owns, touching
-nothing else); JSONC can optionally carry an inline provenance comment for
-awareness.
+Strict JSON has no place for a durable ownership checksum. The selected contract
+is therefore declarative convergence: a later apply replaces an operator edit
+at the owned path without requiring `--force`. This is not silent whole-file
+ownership. The author opted into ownership of that exact path; all unrelated
+source text remains operator-owned and is preserved.
 
-## Grafts (source → what is folded in)
+JSONC and JSON5 do not receive a Toha provenance comment. Their existing
+comments are preserved, but the ownership contract is the same typed-path
+contract as strict JSON.
 
-1. **From B → the reserved structured interface and its ownership model.** The
-   deferred structured mode is decided down to its shape: a `struct: { path,
-   value }` discriminator inside the same `inject:` list (sibling to `region`),
-   path-based ownership ("owns the value at a path"), declarative convergence for
-   idempotency, an optional JSONC `provenance` comment, and a pure resolver
-   `resolve_struct_edit(current_bytes, edit) -> Unchanged | Write` mirroring the
-   marker resolver. This is reserved in the design's type space so a fast-follow
-   lands non-breaking, exactly as the base synthesis reserved a structured mode —
-   but now with the mechanism named (jsonc-parser CST) instead of left open.
-2. **From C → the base, entire.** Markers over JSONC/JSON5 plus the documented
-   strict-JSON boundary is the 0.2.0 answer.
-3. **From A → nothing adopted.** jaq is retained only as a rejected alternative
-   with cited reasoning, and as a note that a future filter-transform mode (if
-   ever wanted for machine-generated output where reserialize is acceptable)
-   would be a distinct, opt-in, explicitly-formatted concern — never the default
-   editor for user-owned files.
+## Path and value shape
 
-## Rejections
+The author surface remains the approved `struct:` discriminator:
 
-- **jaq / any reserialize as the structured editor** — destroys comments/order/
-  formatting of a user-owned file (cited above). Rejected.
-- **Shipping the structured mode in 0.2.0/1031** — the arena and cross-judge
-  independently *recommend against* it: it adds a second mechanism, a new
-  dependency, a distinct ownership contract, and new error/dry-run semantics to
-  the first-ever injection slice, for an ergonomic gain over markers that
-  JSONC/JSON5 already deliver. Recommendation is to sequence it as a fast-follow
-  with the interface seam reserved; the implement-now option stays co-equal on
-  D6b for Bob to choose.
-- **Requiring JSONC for all JSON (never adding structured)** — too narrow: it
-  leaves strict-`.json` value management permanently to whole-file mode. The
-  recommended (pending D6b) structured mode keeps that door open without burdening
-  0.2.0.
+```yaml
+inject:
+  - into: "package.json"
+    struct:
+      path: "scripts.build"
+      value: "tsc"
+```
 
-## Verification (Phase F, delta)
+`path` is parsed during planning into key and array-index segments. Keys use dot
+notation, array indexes use brackets, and backslash escapes `.`, `[`, `]`, and
+`\\` inside a key. The path must begin with a key. Missing object-key parents
+are created as objects; arrays must already exist and an index must be in range.
+An existing scalar where traversal needs an object or array is an error.
 
-- **Requirements vs design.** JSON-family injection addressed (markers for
-  JSONC/JSON5; proposed boundary for strict JSON; a recommended structured
-  mechanism and sequencing). jaq evaluated with cited source and recommended
-  against. Structured mutations reconsidered rather than assumed out of scope —
-  the reconsideration produced a *recommended mechanism* (jsonc-parser CST) plus a
-  reserved interface, feeding the revised D6/D9 for Bob's ruling (not a settled
-  supersession).
-- **Purity/replay.** The deferred structured resolver is specified as a pure
-  function of `(current_bytes, edit)` like the marker resolver; the engine still
-  reads no target bytes. Holds.
-- **No-silent-overwrite.** The base marker refusal is unchanged. The rejection of
-  jaq is precisely to protect this guarantee. The deferred structured mode's
-  convergence is bounded to the exact owned path (never the rest of the file),
-  which is the structured analogue of the marker span; this is called out as the
-  decision Bob must ratify before that mode is built.
-- **Dependency.** No new dependency is added in 1031 (markers reuse existing
-  `sha2`). `jsonc-parser` is adopted only when the deferred structured mode is
-  built; its adoption is justified (used by dprint/deno, actively maintained, no
-  subprocess — an embedded crate) and recorded now so the fast-follow does not
-  re-litigate it.
-- **Falsifiable scenarios (delta for 1031).** Add: injection into a `.jsonc`
-  target places valid `//` markers and is twice-apply idempotent; a strict
-  `.json` marker injection is refused at build time naming the boundary and the
-  alternatives. The structured-mode scenarios (byte-preserving set into `.json`
-  and `.jsonc`, convergence, JSONC provenance) belong to the fast-follow design's
-  fixtures, not 1031.
+`value` is a JSON-compatible YAML value. Strings are ordinary templates and
+remain JSON strings after rendering. Boolean, number, null, array, and object
+literals keep their JSON type; strings nested inside arrays and objects render
+recursively. Planning stores the result as `serde_json::Value`, so apply never
+guesses a type from text.
 
-The base holds and is strengthened: the marker mechanism now has explicit
-JSON-family coverage and precedent, and the structured question is resolved with
-a decided mechanism rather than an open reservation.
+## Conflict and composition rules
+
+- Duplicate `(target, typed path)` rules are planning errors.
+- Ancestor/descendant paths in one plan are planning errors because their order
+  would change the meaning of ownership.
+- Distinct, non-overlapping paths in one file are folded in source order into
+  one in-memory file image and committed with one atomic replacement.
+- A whole-file rule for the same target supplies the starting bytes; JSON
+  mutations then apply to that in-memory result.
+- Any planning, parse, path, drift, or trust failure is found before the first
+  file write. Atomic replacement is per target; an operating-system failure
+  during the commit loop retains the existing partial-across-files behavior.
+
+## Why `jaq` remains rejected
+
+`jaq` discards `#` comments at lex time
+(`jaq-json/src/read.rs:10-19`, revision `f167ad4`) and regenerates output through
+its printer (`jaq-json/src/write.rs:202-260`). It is a query and transform
+engine. Editing one value through it would make the entire source document a
+generated result. The same disqualifier applies to `serde_json` and `json5-rs`.
+
+`jsonc-parser` retains comments and whitespace as CST tokens and writes the
+original source plus the requested edit (`jsonc-parser/src/cst/mod.rs:1-5,1356`,
+revision `c7d4cf5`). This is the selected embedded dependency; no command or
+subprocess is involved.
+
+## Verification delta
+
+The paired implementation proves all of these conditions:
+
+1. Strict JSON, JSONC, and JSON5 each accept a typed-path edit and are byte-no-op
+   on the second apply.
+2. JSONC and JSON5 comments, ordering, whitespace, and untouched values survive
+   an insert and a replacement.
+3. String, boolean, number, null, array, and object values retain their type.
+4. A changed owned value converges without `--force`; unrelated text never
+   changes.
+5. Missing object parents are created; invalid traversal, absent/out-of-range
+   arrays, malformed documents, duplicate paths, and overlapping paths fail
+   before any write.
+6. A marker rule targeting `.json`, `.jsonc`, or `.json5` is rejected during
+   planning with guidance to use `struct:` or whole-file generation.
+7. Multiple edits to one JSON-family file and a whole-file-plus-structured plan
+   produce one final in-memory image and one atomic target replacement.
+
+The focused arena evidence remains intact. The final design uses Candidate B
+for the JSON family and Candidate C's marker mechanism for other text formats.
