@@ -1,9 +1,9 @@
-# Grounding — Jinja includes within the template root (task 1076)
+# Grounding — Jinja includes within the template root
 
 Architect Phase A. Traces the actual caller-to-result flow, types, state
 ownership, error paths, and the trust seam that a `{% include %}` feature must
 integrate with. Evidence is file/symbol anchored against `epic/second-release`
-at `cfab3286`.
+at `f8880f33ea5ab73414fafd15673856ad4db42a7e`.
 
 ## The question
 
@@ -21,15 +21,15 @@ separate YAML `!include` feature.
 Every rendered string is compiled and rendered in isolation by
 `src/jinja.rs`:
 
-- `jinja::environment()` (`src/jinja.rs:19`) builds a fresh
+- `jinja::environment()` (`src/jinja.rs:18`) builds a fresh
   `minijinja::Environment` with the case filters, `toyaml`/`tojson`, `now()`,
   and `dateformat`. It sets no loader.
-- `Tmpl::compile(source)` (`src/jinja.rs:99`) creates one environment, calls
+- `Tmpl::compile(source)` (`src/jinja.rs:95`) creates one environment, calls
   `env.add_template_owned("value", source)`, and records
   `undeclared_variables(false)` as `referenced_ids`. The environment holds
   exactly one template named `"value"`.
-- `Tmpl::render(ctx)` (`src/jinja.rs:120`) renders `"value"`.
-- `Expr` (`src/jinja.rs:126`) compiles an expression, no loader, no templates.
+- `Tmpl::render(ctx)` (`src/jinja.rs:111`) renders `"value"`.
+- `Expr` (`src/jinja.rs:116`) compiles an expression, no loader, no templates.
 
 Consequence: `{% include "x" %}` in any current template resolves the name `x`
 against an environment that contains only `"value"` and has no loader, so it
@@ -57,9 +57,9 @@ Static files are copied byte-for-byte and never rendered (`plan.rs:381`,
 
 ### Load-time reference validation
 
-At load (`template.rs:825`), each `files` rule's source content is compiled via
+At load (`template.rs:845`), each `files` rule's source content is compiled via
 `b.tmpl(...)` purely to validate that referenced ids are defined earlier
-(`Builder::refs`, `template.rs:370`). Source-tree files are **not** validated at
+(`Builder::refs`, `template.rs:388`). Source-tree files are **not** validated at
 load — they are only compiled at plan time. `undeclared_variables` is a static
 per-AST analysis (`minijinja template.rs:425`); it does **not** follow
 includes. So a file that pulls variables in through an include partial cannot
@@ -72,21 +72,21 @@ at render is a real design axis.
 `template.yml` and every document pulled into it are **configuration**, not a
 render surface. The parse path never touches Jinja:
 
-- `Template::load` (`template.rs:709`) reads `template.yml` and parses it with
-  `serde_norway::from_str` into a `serde_norway::Value` (`template.rs:715`) — a
+- `Template::load` (`template.rs:727`) reads `template.yml` and parses it with
+  `serde_norway::from_str` into a `serde_norway::Value` (`template.rs:734`) — a
   data tree, not a template.
-- `resolve` (`template.rs:253`) walks that data tree and expands the YAML
+- `resolve` (`template.rs:271`) walks that data tree and expands the YAML
   `!include` tag by **reading the referenced file and deserializing it by
-  extension** — YAML/JSON/TOML (`template.rs:287`–`303`) — then splicing the
-  parsed value back into the tree (`template.rs:309`, `*value = next`) and
+  extension** — YAML/JSON/TOML (`template.rs:305`–`320`) — then splicing the
+  parsed value back into the tree (`template.rs:327`, `*value = next`) and
   recursing into it. Nothing on this path is compiled or rendered as a template;
   `!include` composes *structured data*.
 - The resolved tree is converted to JSON, schema-validated, and deserialized
-  into `RawTemplate` (`template.rs:728`–`741`). Still no Jinja.
+  into `RawTemplate` (`template.rs:746`–`759`). Still no Jinja.
 
 Only afterwards are **individual string fields** selectively turned into
-templates: `Builder::tmpl` → `Tmpl::compile` (`template.rs:381`) and
-`Builder::expr` → `Expr::compile` (`template.rs:403`). Those compile through the
+templates: `Builder::tmpl` → `Tmpl::compile` (`template.rs:399`) and
+`Builder::expr` → `Expr::compile` (`template.rs:421`). Those compile through the
 same loaderless `jinja::environment()` as every render surface above, so a
 `{% include %}` written into a configuration field (a prompt, a default, an
 apply message, a `files:` `path:`) resolves against an environment holding only
@@ -108,20 +108,27 @@ is rendered like any other body. So "includes only in file bodies" is a
 statement about *role*, and it must not become a blanket ban on any extension:
 a generated `.yml`/`.yaml` body is still a body.
 
+An include target has no required directory or filename shape. Its name may
+identify a root-level file such as `notice.txt`, a nested file such as
+`shared/legal/license.inc`, or a file with any extension. `partials/` is only a
+useful authoring convention. The template-root confinement checks are the full
+target-selection policy; a directory-prefix allowlist would narrow the approved
+capability without adding confinement.
+
 ## The two existing confinement precedents (reuse, keep separate)
 
-### YAML `!include` — `resolve()` in `template.rs:253`
+### YAML `!include` — `resolve()` in `template.rs:271`
 
 Replaces a `!include <path>` tag inside `template.yml` with parsed file
 content. Its confinement model is the template it must **not** be confused with,
 and the exact shape to mirror:
 
 - `root.join(name).canonicalize()` then `actual.starts_with(root)` else
-  `"include escapes template root"` (`template.rs:270`–`276`).
+  `"include escapes template root"` (`template.rs:288`–`296`).
 - Cycle detection via an explicit `stack: Vec<PathBuf>` of canonical paths;
-  re-entry → `"include cycle"` (`template.rs:279`).
+  re-entry → `"include cycle"` (`template.rs:297`–`300`).
 - Extension dispatch: `.yml`/`.yaml`→YAML, `.json`→JSON, `.toml`→TOML, else
-  `"unsupported include extension"` (`template.rs:299`).
+  `"unsupported include extension"` (`template.rs:305`–`320`).
 - Fixtures: `tests/fixtures/err-include-cycle` (`error_contains: ["include
   cycle"]`), `tests/fixtures/err-include-escape` (`["include escapes"]`).
 
@@ -130,7 +137,7 @@ producing parsed values. Jinja `{% include %}` is a **text** feature, evaluated
 at render, producing rendered text. The task requires they stay separate; the
 diagnostics must not collide (distinct message wording).
 
-### `confined_file()` — `template.rs:434`
+### `confined_file()` — `template.rs:452`
 
 Validates every `template.yml` path reference (file sources, script paths):
 
@@ -182,21 +189,20 @@ Read from the vendored crate; these shape what a confining loader must add.
 ## Trust and coordination seam
 
 - Jinja includes are inert template **text**: rendering an included file runs
-  no hooks, no scripts, no process. So includes introduce **no** trust
-  intersection with 1069 (hook review/trust) beyond sharing the same selected
-  template root. Recorded explicitly so the checkpoint can state it.
-- 1074 (nova-birch) owns the selected-template identity/root:
-  `ResolvedTemplate { formal_name, commit, folder, trusted, named }`. The
+  no hooks, no scripts, no process. So includes introduce **no** executable
+  trust intersection beyond sharing the same selected template root.
+- Selected-template resolution owns the identity/root:
+  `ResolvedTemplate { formal_name, commit, folder, approval, named }`. The
   `folder` is the template root; `Template::load(folder)` canonicalizes it to
-  `template.root` (`template.rs:710`) and derives `source_dir`
-  (`template.rs:743`). The include confinement boundary is derived from the
+  `template.root` (`template.rs:728`) and derives `source_dir`
+  (`template.rs:760`). The include confinement boundary is derived from the
   same `template.root`/`source_dir` this design consumes; it does not define a
-  new identity. Consuming approved revision only; 1074's implementation need
-  not exist.
+  new identity.
 
 ## Preserve / Change / Avoid / Risk
 
 **Preserve.**
+
 - Pure interview logic and all driver paths (terminal/headless/staged/direct/
   crate); rendering stays a pure function of template + answers.
 - YAML `!include` as a distinct load-time data feature with its own diagnostics.
@@ -209,13 +215,15 @@ Read from the vendored crate; these shape what a confining loader must add.
 - `static` files never rendered; `template.yml` never rendered as a source.
 
 **Change.**
+
 - The MiniJinja environment used for renderable **file** surfaces must gain a
   confining loader (or pre-registered partials) keyed to the template root.
-- `docs/template-jinja.md`'s "include … unavailable" statement, the
-  `template-format.yml` spec Jinja section, and possibly the schema — described
-  as proposed edits owned by implementation 1061, not made here.
+- `docs/template-jinja.md`'s "include … unavailable" statement and the
+  `template-format.yml` spec Jinja section — described as proposed edits owned
+  by implementation, not made here. No schema shape changes.
 
 **Avoid.**
+
 - Pointing a raw `path_loader`/filesystem loader at any directory without the
   canonicalize+confine+symlink guard (grants arbitrary read via symlink).
 - Collapsing Jinja include diagnostics into the `!include` wording.
@@ -225,6 +233,7 @@ Read from the vendored crate; these shape what a confining loader must add.
   separate approval) unless a candidate deliberately proposes one and flags it.
 
 **Risk.**
+
 - Reference validation gap: variables reached only through an include are not
   validated by today's per-template `undeclared_variables`; late render errors
   possible unless the design walks includes.
