@@ -190,7 +190,8 @@ pub enum Headless { Completed{..}, Pending{..}, Ended{..} }        // answers fi
     <h3>What the engine carries</h3>
     <pre><code class="language-rust">enum Disposition { Proceed, DryRun }   // on a completed interview
 
-struct Ended {                          // a stopped interview
+struct Ended {                          // a stopped or aborted interview
+    kind: EndKind,                      // Stop | Abort (abort also discards the saved interview)
     messages: Vec&lt;String&gt;,             // reached so far, for reporting
     label: Option&lt;String&gt;,             // no plannable value, no hooks
 }</code></pre>
@@ -198,10 +199,10 @@ struct Ended {                          // a stopped interview
   </section>
   <section>
     <h3>On the wire (for agents and scripts)</h3>
-    <pre><code class="language-json">{ "protocol": 1, "status": "ended",
+    <pre><code class="language-json">{ "protocol": 1, "status": "ended", "kind": "stop",
   "context": { "target": "/abs/out", "template": "web-service", "commit": null },
   "messages": ["Stopping: nothing was written."], "label": "declined at proceed gate" }</code></pre>
-    <p class="muted">A new <code>ended</code> status, plus an optional "dry-run" marker on a completion. Both additive; an ordinary completion looks exactly as today.</p>
+    <p class="muted">A new <code>ended</code> status carrying <code>kind</code> (<code>stop</code> or <code>abort</code>), plus an optional "dry-run" marker on a completion. Both additive; an ordinary completion looks exactly as today.</p>
   </section>
 </section>
 

@@ -1,8 +1,19 @@
 # Confirm-flow arena — synthesis
 
-## Base
+**Final design: the `flow` node (round 2, base flow-1).** This document is
+chronological — round 1 (an action attached to `confirm` types, later superseded),
+then round 2 (the `flow` node, adopted), then the approval closure. The
+authoritative statement of the outcome is the **Final synthesis (authoritative)**
+section at the end and the design itself (`design.md`); the round-1 sections below
+are retained unchanged as historical arena evidence.
 
-**C4 (confirm action as a node-level walk effect).** Final design in `design.md`.
+## Round 1 base (superseded)
+
+**C4 (confirm action as a node-level walk effect)** was the round-1 base, before
+Bob asked (19:06) to use a `flow` node instead. It is **not** the final design —
+see the Round 2 and Final synthesis sections, and `design.md`. The round-1 material
+in the sections that follow is retained unchanged as evidence of how round 1
+reasoned.
 
 ## Dropouts and blindness
 
@@ -226,3 +237,26 @@ Bob approved the flow-node design and pre-approved the `abort` disposition eithe
 - **Independent review** remains required and is **held** until the error-attribution
   producer (1056) publishes; the handoff records a clean exact basis and approved
   evidence. No merge/cleanup/DONE.
+
+---
+
+## Final synthesis (authoritative)
+
+The accepted design is the **`flow` node** (round 2). Base: arena candidate
+**flow-1** — a standalone `flow` node whose stop is the terminal `Interview::Ended`
+variant (type-unplannable), dry-run is a `Completed` disposition routed through
+`Completed::step()`, and skip reuses the existing machinery (`group` = the rest of
+the current group; `rest` = the rest of the interview). Grafted from **flow-3**: the
+`step()` routing seam, the same-batch readiness argument, and the idempotent dry-run
+raise. The pre-approved **`abort`** action (stop + discard the target's staged
+record via the existing `Store::remove(&CanonicalTarget)`) is adopted as a fourth
+action. The `confirm` type is not modified — ordinary confirms stay pure boolean by
+construction.
+
+Superseded and retained as historical evidence (not the final design): the round-1
+action-bearing-confirm shape — the C1/C2/C3/C4 arena, its parent/judge
+reconciliation, and its grafts/rejections in the sections above — and the
+synthesized round-1 design, kept as `design-round1-confirm-action.md`. Where the
+chronological round-1 and round-2 sections describe an action attached to `confirm`,
+they are history of how the final was reached, not the current contract. The
+authoritative design is `design.md`; its verification is `verification.md`.
