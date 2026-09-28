@@ -1,0 +1,113 @@
+$schema: https://refinery.systems/ontology/technical-design
+relationships:
+  realizes: toha
+  implements:
+    - template-format
+    - interview-protocol
+    - command-line-interface
+  references:
+    - template-registry
+    - architecture
+objective: >-
+  Give every terminal, headless, staged/resumed, and direct crate caller one
+  pure, replay-stable Jinja context for canonical target, selected template,
+  host, execution, and five explicitly trusted environment values, while
+  keeping config presets, target normalization, and reviewed trust in their
+  existing ownership seams.
+background:
+  current-design: >-
+    The interview and planner independently build Jinja maps from template data,
+    answers, and now. Seed carries defaults and time; Completed carries answers
+    and time. Staging replays submissions but stores no host, selected-source,
+    execution, or environment context.
+  problems:
+    - >-
+      Adding globals or plan-only values would leave readiness, interview
+      rendering, direct callers, and replay inconsistent.
+    - >-
+      Environment access must use an explicit approved trust decision and must
+      not expose the complete process environment.
+    - >-
+      The selected formal name and canonical target already have owners; a
+      second resolver or target normalizer would create conflicting policy.
+design-challenges:
+  caller-parity: >-
+    One typed value must serve terminal, headless, staged/resumed, and direct
+    crate callers through the same pure engine and every render surface.
+  replay-and-revocation: >-
+    A granted snapshot must remain deterministic, but stored values cannot be
+    evaluated after current authorization is lost.
+  exact-contract: >-
+    Seventeen names need exact Jinja types, absence behavior, collision rules,
+    host fallbacks, identity semantics, and no overlap with config presets.
+  shared-seams: >-
+    The design must consume the final configured-default formal-name/flat-seed
+    contract, approved content-bound trust, and the existing canonical-target
+    function without replacing any of them.
+proposed-design:
+  high-level-overview: >-
+    Add one immutable InvocationContext to Seed, carry it through Pending to
+    Completed, serialize it with staged state, and project it through one
+    private Jinja builder for both interview and planning. CLI adapters capture
+    process and host facts after an explicit access decision; the engine accepts
+    only domain values.
+  public-contract: >-
+    Expose seventeen always-present variables: nullable target basename; short
+    and formal template names, ordered aliases, nullable registry source; OS,
+    architecture, nullable os-release NAME/ID and array ID_LIKE; is-admin and
+    originating-is-interactive booleans; and five nullable trusted environment
+    values. Reserve only those exact names.
+  access: >-
+    Recommended option A grants the five values through either one-run --trust
+    or a current matching approval from the approved live HookSurface review.
+    Stage and continue gain --trust. A granted staged snapshot stores only the
+    five allowed values and requires current access before replay; a saved denial
+    stays denied. Option B uses --trust only and does not extend registry review
+    to environment access.
+  staging: >-
+    Store the versioned context with existing identity, target, instant, and
+    submissions. Replay checks identity and target, checks current access before
+    any granted-value evaluation, then uses recorded facts and live configured
+    defaults. Legacy records replay only when the template does not reference a
+    new name.
+  module-seam: >-
+    context owns domain types, redaction, reserved names, and Jinja projection;
+    CLI owns capture and trust; interview carries the snapshot; staging owns its
+    wire representation; plan consumes the completed snapshot. Protocol Context
+    remains separate output metadata.
+  compatibility: >-
+    Seed gains a required context in the 0.2.0 crate surface. Plan rejects a
+    target that differs from the completed canonical target without normalizing
+    it. Root and non-Unicode basenames produce null, not refusal. Existing
+    templates without exact-name collisions keep their behavior.
+  canonical-impact: >-
+    Paired implementation updates template-format and schema, the Jinja guide,
+    command-line-interface for stage/continue --trust and replay guidance, and
+    interview-protocol for the versioned staged snapshot. This design changes no
+    shared contract itself.
+  verification: >-
+    Fixtures cover all seventeen values at every interview and plan surface,
+    identity/source variants, target shapes, host failures, execution modes,
+    trust selection and revocation, redaction, exact collisions, legacy replay,
+    direct-caller parity, predecessor seams, and the complete task ci gate.
+decisions-needed:
+  environment-grant: >-
+    A — --trust or a current matching reviewed-registry approval grants the five
+    values (recommended), versus B — only --trust grants them.
+  staged-access: >-
+    Approve adding --trust to stage and continue, plaintext persistence of at
+    most the five granted values in existing staged state, current
+    reauthorization before replay, and no later elevation of a saved denial
+    (recommended and required for deterministic trusted staging).
+out-of-scope: >-
+  Runtime or shared canonical edits in this task; arbitrary environment access;
+  a new permission name; trust-command or digest changes; a second target
+  normalizer; configured-default changes; a Run façade; staged encryption or
+  file-permission changes; timeouts; pinned-version checks; application
+  subprocesses.
+detail: >-
+  Full caller usage, exact variable table, signatures, data flow, fallback and
+  replay rules, errors, compatibility, canonical impact, and fourteen
+  falsifiable behavior groups are in design.md. Evidence is in grounding.md,
+  rubric.md, candidates/, cross-judge.md, synthesis.md, rationale.md, and
+  verification.md.
