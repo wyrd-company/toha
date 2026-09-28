@@ -9,6 +9,7 @@ relationships:
     - template-registry
     - architecture
     - error-attribution
+    - jinja-includes
 ---
 
 # Toha-owned Jinja context
@@ -16,10 +17,11 @@ relationships:
 Toha supplies one immutable, typed invocation context before the first
 interview evaluation. The same value is carried by the pure interview engine,
 stored for staged replay, and used by planning. The engine never reads the
-process, registry, terminal, host files, or trust state.
+process, registry, terminal, host files, privilege state, or trust state.
 
 This is a design artifact. Runtime, shared specification, schema, and guide
-changes belong to the paired implementation after Phase C approval.
+changes belong to the paired implementation after approval of this exact
+design.
 
 ## Caller usage first
 
@@ -35,13 +37,41 @@ editor = {{ toha_env_editor }}
 {% endif %}
 ```
 
+Stage analyzes every Jinja source before it asks a question. Any possible
+environment observation requires the explicit stage flag:
+
+```console
+# No environment observation: no flag needed.
+toha stage sample ./output --async
+
+# Environment observation: the initial stage needs the flag once.
+toha stage sample ./output --async --trust
+
+# Later batches use the recorded decision and values.
+toha continue ./output answers.json
+toha apply ./output
+```
+
+The staged `apply --trust` spelling remains available for hook execution. It
+does not change the recorded Jinja environment snapshot.
+
 The command driver resolves the selected identity and canonical target once,
-decides access, captures facts, and starts the existing engine:
+loads the complete render program, admits environment access, captures facts,
+and starts the existing engine:
 
 ```rust
-let target: CanonicalTarget = staging::canonical_target(path)?;
+let target = staging::canonical_target(path)?;
 let resolved = resolve_template(operand, &config, &registry, &dirs, cwd)?;
 let template = Template::load(&resolved.folder)?;
+
+let decision = match invocation {
+    NewStage { trust: true, .. } => EnvironmentDecision::Grant,
+    NewStage { trust: false, .. } => EnvironmentDecision::RequireGrant,
+    NewApply { trust, .. } => EnvironmentDecision::from_grant(
+        trust || reviewed_environment_access(&resolved, &template, &registry)?,
+    ),
+};
+let environment = template.admit_environment(decision, &mut fixed_environment)?;
 
 let Resolution { defaults, warnings } = configured_defaults(
     &resolved.formal_name,
@@ -51,169 +81,220 @@ let Resolution { defaults, warnings } = configured_defaults(
 )?;
 report(warnings);
 
-let access = effective_environment_access(
-    trust_flag,
-    resolved.approval.as_ref(),
-    HookSurface::of(&template)?.digest(),
-    trustable(&resolved, &registry),
-);
-let context = InvocationContext::capture(
+let context = InvocationContext::new(
     target.clone(),
-    SelectedTemplate::from_resolved(&resolved),
+    SelectedTemplate::from_resolved(&resolved, &template),
     HostFacts::capture(),
-    ExecutionFacts::new(is_admin(), terminal_driver_selected),
-    access,
-);
+    ExecutionFacts::new(is_admin(), originating_driver_can_prompt),
+    environment,
+)?;
 let interview = Interview::start(
     &template,
     Seed { now, defaults, context },
 )?;
 ```
 
-The same commands cover the supported modes:
+For stage, `RequireGrant` with an environment need fails before the five values
+are read, before `Seed`, before `Interview::start`, before any question or
+message renders, and before any staged write. Target, configuration, selected
+template, and template-load failures can occur first because they supply the
+facts needed to analyze the template.
 
-```console
-# A new terminal interview; the snapshot is interactive.
-toha apply sample ./output
-
-# A new headless interview; the snapshot is not interactive.
-toha apply --answers answers.json sample ./output
-
-# A trusted asynchronous stage; repeat --trust when replay needs stored values.
-toha stage --trust sample ./output --async
-toha continue --trust ./output answers.json
-toha apply --trust ./output
-```
-
-A direct crate caller supplies equivalent domain facts and makes no process or
-registry read through the engine:
+A direct crate caller supplies equivalent typed facts and a fixed five-value
+adapter. The engine performs no ambient read:
 
 ```rust
 let target = staging::canonical_target(Path::new("./output"))?;
+let template = Template::load(folder)?;
+let environment = template.admit_environment(
+    EnvironmentDecision::Deny,
+    &mut supplied_environment,
+)?;
 let context = InvocationContext::new(
     target.clone(),
-    SelectedTemplate::new("sample", vec![], None)?,
-    HostFacts::new("linux", "x86_64", None, None, vec![]),
-    ExecutionFacts::new(false, false),
-    EnvironmentAccess::Denied,
+    selected,
+    host,
+    execution,
+    environment,
 )?;
-let seed = Seed { now, defaults, context };
-let completed = finish(Interview::start(&template, seed)?)?;
+let completed = finish(Interview::start(
+    &template,
+    Seed { now, defaults, context },
+)?)?;
 let plan = Plan::build(&template, &completed, &target)?;
 ```
 
-The canonical-target design owns target construction. Its Phase C proposal at
-revision `067c8d2e7c95cf2b16ab3a4103f8b1a8fda331af`, design SHA-256
-`72a564799b95ab1c187c913ac14ef14938f880bf2ab24ec337c03f887991457b`,
-recommends:
+## Canonical target contract
+
+The approved target producer contract is fixed at revision
+`067c8d2e7c95cf2b16ab3a4103f8b1a8fda331af`, design SHA-256
+`72a564799b95ab1c187c913ac14ef14938f880bf2ab24ec337c03f887991457b`:
 
 ```rust
 pub fn canonical_target(
     path: &Path,
 ) -> Result<CanonicalTarget, StagingError>;
+
+impl CanonicalTarget {
+    pub fn as_path(&self) -> &Path;
+}
 ```
 
-This design depicts that recommended carrier. `CanonicalTarget` has no public
-unchecked constructor and no `From<PathBuf>`. Context and plan consumers can
-only inspect `target.as_path()`; they never normalize it.
+`CanonicalTarget` has no public unchecked constructor and no `From<PathBuf>`.
+Context, storage, protocol, plan, and apply consumers receive this carrier and
+inspect it only through `as_path()`. No context code normalizes a path.
 
-The carrier restriction remains conditional on Bob approving it in the
-canonical-target checkpoint. This document does not grant that approval or
-change the producer design. If Bob retains the existing `PathBuf` carrier, the
-same fields and parameters project to `PathBuf` and `&Path`; callers pass the
-separator-free `canonical_target` result unchanged. No context behavior, Jinja
-value, or normalization owner changes between the two projections.
+`StagedRecord.target` remains serialized path text. `Store::load` receives the
+already constructed `&CanonicalTarget`, validates the stored text against it,
+and uses that carrier to reconstruct the live invocation context.
 
 ## Exact Jinja contract
 
-All seventeen values are variables, not functions. Variables make their types
-and absence visible to Jinja reference discovery and readiness checks. Every
-name is present in the context map. `null` is Jinja `none`; an absent value is
-never `undefined`. The existing `now()` function is unchanged.
+All seventeen values are variables, not functions. In the current contract,
+every name is present. `null` is Jinja `none`; an unavailable value is never
+`undefined`. The existing `now()` function is unchanged.
 
 | Name | Jinja type | Exact value |
 | --- | --- | --- |
 | `toha_target_name` | string or null | Final Unicode component of the canonical target; `null` for a filesystem root or non-Unicode component. |
-| `toha_template_name` | string | Short name from the loaded `template.yml`; this value comes only from `Template.name`. |
-| `toha_template_formal_name` | string | Stable selected `ResolvedTemplate.formal_name`, never the alias or short spelling used by the caller. |
-| `toha_template_aliases` | array of strings | Effective aliases of the selected named registry entry, in registry order; `[]` for no aliases or a folder, direct Git, or bundled selection. |
-| `toha_template_source` | string or null | `Entry.source` of the selected named registry entry; `null` when selection has no registry entry. |
+| `toha_template_name` | string | Short name captured from the loaded `template.yml`. |
+| `toha_template_formal_name` | string | Stable selected formal name, never the caller's alias or short spelling. |
+| `toha_template_aliases` | array of strings | Effective aliases of the selected named entry in registry order; `[]` for a folder, direct Git, bundled, or alias-free selection. |
+| `toha_template_source` | string or null | Selected named entry source; `null` when selection has no registry entry. |
 | `toha_host_os` | string | Lowercase Rust target OS vocabulary from `std::env::consts::OS`. |
 | `toha_host_arch` | string | Rust target architecture vocabulary from `std::env::consts::ARCH`. |
 | `toha_host_os_name` | string or null | Linux os-release `NAME`; `null` elsewhere or when unavailable. |
 | `toha_host_os_id` | string or null | Linux os-release `ID`; `null` elsewhere or when unavailable. |
-| `toha_host_os_id_like` | array of strings | Linux os-release `ID_LIKE`, unquoted and split on ASCII whitespace in source order; `[]` elsewhere or when unavailable. |
+| `toha_host_os_id_like` | array of strings | Linux os-release `ID_LIKE`, split on ASCII whitespace in source order; `[]` elsewhere or when unavailable. |
 | `toha_is_admin` | boolean | Effective administrative status captured by the caller. |
 | `toha_is_interactive` | boolean | Whether the originating interview driver was allowed to prompt a human. |
-| `toha_env_user` | string or null | Trusted user value. |
-| `toha_env_hostname` | string or null | Trusted native hostname observation. |
-| `toha_env_editor` | string or null | Trusted `EDITOR`. |
-| `toha_env_shell` | string or null | Trusted `SHELL`. |
-| `toha_env_visual` | string or null | Trusted `VISUAL`. |
+| `toha_env_user` | string or null | Captured user value. |
+| `toha_env_hostname` | string or null | Captured native hostname observation. |
+| `toha_env_editor` | string or null | Captured `EDITOR`. |
+| `toha_env_shell` | string or null | Captured `SHELL`. |
+| `toha_env_visual` | string or null | Captured `VISUAL`. |
 
 ### Identity and source rules
 
 `SelectedTemplate` is assembled at the resolution boundary. A name, alias, or
 short-name resolution carries the selected registry entry's full effective
-alias list and `Entry.source`. A folder, direct Git address, or bundled demo
-carries `[]` and `null`; its stable identity remains available through
-`toha_template_formal_name`. The bundled identity is `toha-demo`.
+alias list and source. A folder, direct Git address, or bundled demo carries
+`[]` and `null`. The bundled formal identity is `toha-demo`.
 
-The resolver adds `aliases: Vec<String>` and `source: Option<String>` to its
-existing result while preserving the final configured-default contract's
-`formal_name` field. Config `presets` and `{ preset: <name> }` remain config-side
-inputs to the flat `Seed.defaults` map. No Jinja value is named `preset` or
-`presets`.
+The resolver adds aliases and source to its existing result while preserving
+the configured-default contract's formal name. Config `presets` and
+`{ preset: <name> }` remain config-side inputs to flat `Seed.defaults`. No
+Jinja value is named `preset` or `presets`.
 
 ### Host fallback rules
 
 The command host adapter reads `/etc/os-release` only on Linux. It accepts
 standard quoted and unquoted assignments, unescapes values without executing
 the file, and uses the last valid assignment for a duplicate key. A missing key
-gets its own fallback. An absent, unreadable, non-UTF-8, or syntactically
-malformed file makes all three os-release values unavailable: `null`, `null`,
-and `[]`. Empty `NAME` or `ID` is `null`; empty `ID_LIKE` is `[]`. Host metadata
-absence never fails template load, interview, or planning.
+gets its own fallback. An absent, unreadable, non-UTF-8, or malformed file
+makes all three os-release values unavailable: `null`, `null`, and `[]`. Empty
+`NAME` or `ID` is `null`; empty `ID_LIKE` is `[]`. Host metadata absence never
+fails template load, interview, or planning.
 
 Admin is `true` only when a platform adapter positively observes effective
 administrative authority: effective UID zero on Unix or an elevated token on
-Windows. Failure or unsupported detection is `false`; no username inference or
-elevation occurs. Host capture uses platform APIs or an in-process library and
-must not spawn a command.
+Windows. Failed or unsupported detection is `false`. No username inference,
+elevation, timeout, or subprocess is used.
 
 ### Environment fallback rules
 
-The command reads the five gated sources only after access is granted. User is
-`USER` on Unix and `USERNAME` on Windows. Hostname is a native hostname
-observation, not a process-environment dump. `EDITOR`, `SHELL`, and `VISUAL`
-are independent; none falls back to another. Absent, empty, or non-Unicode
-input becomes `null`, with no lossy conversion. Denied access performs no gated
-reads and projects five `null` values. A template cannot distinguish denial
-from an unavailable value.
+The fixed adapter reads user from `USER` on Unix and `USERNAME` on Windows.
+Hostname is a native hostname observation. `EDITOR`, `SHELL`, and `VISUAL` are
+independent and have no cross-fallback. Absent, empty, or non-Unicode input is
+`null`, with no lossy conversion.
 
-No arbitrary environment lookup, environment map, dynamic variable name, or
-alias exposes another process value.
+Denied or unnecessary access performs none of these reads and projects five
+nulls. A template cannot distinguish denial, no initial need, and an unavailable
+captured value. No arbitrary environment lookup, environment map, dynamic
+environment variable name, or alias exposes another process value.
+
+## Complete pre-interview analysis
+
+`Template::load` owns one immutable in-process render program. It compiles:
+
+- every question prompt, description, placeholder, default, required rule,
+  condition, computed value, format, option expression, and numeric bound;
+- every interview message and hook Jinja field;
+- every explicit file rule expression, target, and source body;
+- every top-level hook and before/after apply message;
+- every non-static source-tree path segment and file body; and
+- every transitive literal file-body include allowed by the approved include
+  contract.
+
+Regexes, hook script paths, file-rule source paths, source-directory names,
+globs, template metadata, answers, configured defaults, and data values are not
+recursively interpreted as Jinja. YAML `!include` remains structured
+configuration loading, not a Jinja surface.
+
+Planning in the same process renders the retained compiled sources. It does not
+reopen a Jinja source after admission. A resumed invocation loads current
+folder bytes, as it does today, and applies the recorded environment snapshot.
+Named and Git selections remain commit-pinned by their existing identity.
+
+The admission analyzer uses MiniJinja's existing parser AST through its
+`unstable_machinery` feature. This adds no crate; it exposes the parser already
+used by Toha's MiniJinja dependency. The implementation isolates that unstable
+interface inside `jinja.rs`, so a dependency update produces a compile-time
+adapter change rather than a runtime version check.
+
+The private walk is control-flow insensitive and read-accurate:
+
+- it visits assignment right-hand sides before introducing targets;
+- it tracks lexical shadowing and possible aliases of environment values and
+  the built-in `debug` callable;
+- it visits macro bodies, false branches, filter/function arguments, and
+  dynamic attribute and item operands;
+- `object[toha_env_user]` is a reference, while the literal string in
+  `object["toha_env_user"]` is not a root lookup;
+- a possible call of the built-in `debug`, directly or through an alias, marks
+  all five values observable; and
+- literal include closures union their needs into the containing body.
+
+An AST form that is not proven safe is classified as able to observe all five.
+Supported syntax is not rejected to make analysis easier. A future generic
+context lookup must add an explicit sound analysis rule before it is supported.
+
+The analyzer retains the first deterministic `RenderOrigin` for an environment
+need. It carries a configuration field path or source/include path without any
+captured value.
 
 ## Data structures and signatures
 
 ```rust
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone)]
 pub struct InvocationContext {
     target: CanonicalTarget,
+    contract: ContextContract,
+}
+
+#[derive(Clone)]
+enum ContextContract {
+    Legacy,
+    Current(CurrentContext),
+}
+
+#[derive(Clone)]
+struct CurrentContext {
     selected: SelectedTemplate,
     host: HostFacts,
     execution: ExecutionFacts,
-    environment: EnvironmentAccess,
+    environment: EnvironmentSnapshot,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct SelectedTemplate {
     formal_name: String,
+    short_name: String,
     aliases: Vec<String>,
     source: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct HostFacts {
     os: String,
     arch: String,
@@ -222,25 +303,35 @@ pub struct HostFacts {
     os_id_like: Vec<String>,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug)]
 pub struct ExecutionFacts {
     is_admin: bool,
     is_interactive: bool,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-pub enum EnvironmentAccess {
-    Denied,
-    Granted(TrustedEnvironment),
+#[derive(Clone)]
+pub enum EnvironmentSnapshot {
+    Unavailable,
+    Captured(FixedEnvironment),
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-pub struct TrustedEnvironment {
+#[derive(Clone)]
+pub struct FixedEnvironment {
     user: Option<String>,
     hostname: Option<String>,
     editor: Option<String>,
     shell: Option<String>,
     visual: Option<String>,
+}
+
+pub enum EnvironmentDecision {
+    Deny,
+    Grant,
+    RequireGrant,
+}
+
+pub trait FixedEnvironmentSource {
+    fn capture(&mut self) -> FixedEnvironment;
 }
 
 pub struct Seed {
@@ -254,13 +345,21 @@ pub struct Completed {
     context: InvocationContext,
 }
 
+impl Template {
+    pub fn admit_environment(
+        &self,
+        decision: EnvironmentDecision,
+        source: &mut impl FixedEnvironmentSource,
+    ) -> Result<EnvironmentSnapshot, EnvironmentAdmissionError>;
+}
+
 impl InvocationContext {
     pub fn new(
-        canonical_target: CanonicalTarget,
+        target: CanonicalTarget,
         selected: SelectedTemplate,
         host: HostFacts,
         execution: ExecutionFacts,
-        environment: EnvironmentAccess,
+        environment: EnvironmentSnapshot,
     ) -> Result<Self, ContextError>;
 
     pub fn target(&self) -> &CanonicalTarget;
@@ -270,266 +369,286 @@ impl Plan {
     pub fn build(
         template: &Template,
         completed: &Completed,
-        canonical_target: &CanonicalTarget,
+        target: &CanonicalTarget,
     ) -> Result<Self, PlanError>;
 }
 ```
 
-`SelectedTemplate::new` rejects an empty formal name. Under the producer's
-recommended carrier, `InvocationContext::new` can receive only a
-`CanonicalTarget` made by the sole factory. `Plan::build` compares that identity
-with the completed context before any render and returns
-`PlanError::ContextTarget { expected, actual }` on mismatch. Consumers inspect
-paths only through `CanonicalTarget::as_path()` and never invoke a normalizer.
+`FixedEnvironment`, `EnvironmentSnapshot`, and their staged wire types have
+redacted `Debug` implementations. Captured values must not enter diagnostics,
+protocol output, logs, or design evidence.
 
-If the producer retains `PathBuf`, `InvocationContext::new` keeps the existing
-absolute/no-`.`/no-`..` precondition and `Plan::build` keeps the byte-for-byte
-comparison from the earlier projection. The command still passes the exact
-factory result to context, planning, and apply instead of the original CLI
-spelling.
+`Plan::build` retains the approved producer signature. For the current context,
+it compares the supplied carrier with `completed.context.target()` before any
+render and returns `PlanError::ContextTarget` on mismatch. It uses
+`target.as_path()` for path work. Legacy replay receives the same validated
+carrier but projects the pre-context Jinja contract.
 
-`EnvironmentAccess` has a redacted `Debug` implementation. Gated values must
-not enter diagnostics, protocol output, logs, or task evidence.
+## Admission behavior
+
+`Template::admit_environment` combines the immutable analysis need with one
+caller decision:
+
+| Initial need | Decision | Reads | Result |
+| --- | --- | ---: | --- |
+| none | any | 0 | `Unavailable` |
+| present | `Deny` | 0 | `Unavailable` |
+| present | `Grant` | all five once | `Captured` |
+| present | `RequireGrant` | 0 | attributed `TrustRequired` error |
+
+Direct and new-apply paths use the approved effective-trust policy. Access is
+granted by explicit `--trust`, or by a current matching reviewed approval for a
+selected named user/system registry entry. The live `HookSurface` digest must
+match through `evaluate_trust`; approval presence alone is insufficient.
+Folder, direct Git, bundled, and local-layer selections require the flag.
+
+The reviewed digest covers hook nodes and files executed by hooks. It does not
+attest every Jinja-bearing file. A matching review can therefore grant access
+to changed non-hook Jinja content. User-facing text must not describe all
+rendered content as reviewed.
+
+Stage always uses its explicit flag. A matching registry review does not
+substitute for `stage --trust`. `continue` has no trust flag. Staged apply's
+flag controls hook execution only.
+
+## Staging and replay
+
+The staged record keeps its existing target, formal name, commit, named flag,
+instant, and submissions. It gains a versioned context field whose wire form is
+separate from the live domain carrier:
+
+```rust
+#[derive(Serialize, Deserialize)]
+enum InvocationContextWire {
+    Legacy,
+    Current {
+        short_name: String,
+        aliases: Vec<String>,
+        source: Option<String>,
+        host: HostFactsWire,
+        execution: ExecutionFactsWire,
+        environment: EnvironmentWire,
+    },
+}
+
+#[derive(Serialize, Deserialize)]
+enum EnvironmentWire {
+    Unavailable,
+    Captured {
+        user: Option<String>,
+        hostname: Option<String>,
+        editor: Option<String>,
+        shell: Option<String>,
+        visual: Option<String>,
+    },
+}
+```
+
+The wire does not duplicate target or formal name. `Store::load` validates the
+record's target through its `&CanonicalTarget` parameter. The existing record
+supplies the formal name. The remaining wire fields reconstruct the current
+context without deserializing or manufacturing a target carrier.
+
+Replay uses live configured defaults, the recorded instant, context, and
+ordered accepted submissions. It does not read current host, environment,
+terminal, privilege, registry approval, or environment access. The recorded
+snapshot carries through every later batch.
+
+Captured optional strings are plaintext in the existing staged JSON. The store
+does not add a new file mode; access remains governed by its state directory and
+process umask. Values remain until successful staged apply removes the record,
+`abort` removes it, or an operator removes it. No grant credential or reusable
+permission is stored.
+
+### Mutable folder behavior
+
+No source or program identity is added to replay. A mutable folder continues to
+load current bytes.
+
+- If the initial template had no need, or direct access was denied, later-added
+  environment references see five nulls and cause no ambient read.
+- If the initial template had any admitted need, all five recorded values are
+  available to later-added references.
+
+This is why an admitted stage captures all five instead of only the names first
+referenced. It is the smallest deterministic snapshot over the closed
+five-value vocabulary that avoids a new source-change refusal.
+
+### Legacy staged records
+
+A record without the context field is decoded as `Legacy`. It replays the
+pre-context Jinja contract: template data, answers, and private time only. The
+seventeen new names are not injected, reserved, or marked available. Existing
+`debug()` output therefore cannot reveal new values, and no historical host,
+identity, interaction, or access fact is invented.
+
+Legacy is an internal staged-record mode. New stage, new apply, and direct crate
+calls always create a current context. A legacy record stays legacy through
+continuation and staged apply, then follows the existing removal lifecycle.
 
 ## Module and seam
 
 ```text
+Template::load ─► retained render program + environment need
+                                      │
+stage/direct decision + fixed source ─┴─► EnvironmentSnapshot
+
 registry/config + resolver ───► SelectedTemplate ─┐
-canonical_target factory ─► CanonicalTarget ──────┤
-CLI host adapter ─────────────► HostFacts         ├─► InvocationContext
-terminal driver ──────────────► ExecutionFacts    │          │
-effective trust decision ─────► EnvironmentAccess ┘          │
+canonical_target factory ─────► CanonicalTarget ──┤
+host adapter ─────────────────► HostFacts          ├─► InvocationContext
+originating driver ───────────► ExecutionFacts     │          │
+environment admission ────────► snapshot ──────────┘          │
                                                               ▼
-config presets ─► Resolution { defaults, warnings } ─► Seed ─► Pending
+presets ─► Resolution { defaults, warnings } ─► Seed ─► Pending
                                                               │
                     StagedRecord ◄──── serialize/replay ──────┤
                                                               ▼
                                                           Completed
                                                               │
-template data + answers + now + InvocationContext ─► one Jinja projection
-                                           │                  │
-                                           └──── interview ───┴──► Plan
+data + answers + now + InvocationContext ─► one Jinja projection
+                                      │                       │
+                                      └──── interview ────────┴─► Plan
 ```
 
-The new `context` module owns domain types, the exact reserved-name set, typed
-projection, and redaction. The CLI adapter owns host/process capture and the
-access decision. `interview` owns progression and carries the immutable value.
-`staging` owns serialization and replay. `plan` consumes only the completed
-snapshot. Protocol `Context { target, template, commit }` stays output metadata
-and does not become the Jinja context.
+`template` owns compilation, source/include discovery, the analysis walk,
+reference locations, and exact-name collision validation. `context` owns typed
+facts, projection, redaction, and wire conversion. The command adapter owns
+current trust, host/process capture, and command-specific decisions.
+`interview` carries the immutable context. `staging` owns record I/O,
+reconstruction, and replay. `plan` consumes the completed context and the
+producer carrier.
+
+Protocol `Context { target, template, commit }` remains output metadata. It is
+not the Jinja evaluation context.
 
 One private context builder combines template data, accumulated answers,
-`__toha_now`, and the typed invocation projection. Interview rendering,
-readiness, and planning all use that builder. No caller inserts individual
-Jinja values.
-
-## Permissions and access decision
-
-Bob must approve one of these exact policies before implementation:
-
-1. **A — effective template trust grants access (recommended).** The five values
-   are granted when the invocation supplies `--trust`, or when a selected named
-   user/system registry entry has a stored review digest that matches the live
-   `HookSurface` through the approved `evaluate_trust` function. Folder, direct
-   Git, local-registry, and bundled selections require `--trust`. This gives one
-   explicit meaning to trust for one template invocation and uses the approved
-   content-bound review rather than identity alone.
-2. **B — `--trust` only.** Registry approval continues to authorize hooks but
-   does not authorize the five values. Every template, including a reviewed
-   installed template, needs `--trust` for environment access. This separates
-   the permissions but asks callers to repeat trust after persistent review.
-
-Both policies use the existing `--trust` spelling. `stage` and `continue` gain
-that option because they evaluate Jinja before `apply`; `apply` keeps its
-existing option. No separate environment permission is introduced.
-
-The recommended approval includes these access semantics:
-
-- capture happens before `Interview::start` and only after the live decision;
-- only the five named optional strings cross the gate;
-- a granted staged snapshot stores those five values in the existing staged
-  record in the user's state directory;
-- every later process must have current effective access before replaying a
-  snapshot that contains granted values; a repeated `--trust` satisfies a
-  prior one-run grant;
-- a saved denial stays denied even if a later command is trusted; changing the
-  visible values requires a new interview;
-- revocation refuses replay before any template evaluation and prints no stored
-  value.
-
-This is a permissions/access expansion. Under option A, approved registry trust
-would authorize five additional values. Both options authorize their plaintext
-persistence in staged state when granted. No staged location or file-permission
-policy changes in this design.
-
-## Interactive, headless, staged, and direct semantics
-
-The snapshot describes the originating interview and is immutable:
-
-| Originating path | `toha_is_interactive` |
-| --- | --- |
-| `stage` with terminal prompting | `true` |
-| `stage --async` | `false` |
-| new `apply` with terminal prompting | `true` |
-| new `apply --answers` | `false` |
-| direct crate caller | caller-supplied boolean |
-
-Resume replays the stored value. `continue` and staged `apply` may still use any
-documented input modality; no mode is refused. A terminal continuation of an
-asynchronous stage therefore remains template-visible as noninteractive. This
-prevents a modality change from changing earlier branches during replay. Admin,
-host, selected identity, target, and environment values are frozen by the same
-rule.
-
-## Staging and replay
-
-`StagedRecord` gains a version and the complete `InvocationContext`. It retains
-its existing target, formal name, commit, named flag, instant, and submissions.
-Before replay:
-
-1. load the exact selected template revision;
-2. check the stored context target and formal name against the record;
-3. compute current access without reading the gated values;
-4. refuse with `StagingError::AccessRequired` when the snapshot is granted but
-   current access is denied;
-5. reconstruct `Seed` with live configured defaults, the recorded instant, and
-   the recorded context; then replay submissions through the ordinary engine.
-
-The configured-default design intentionally re-resolves live config on resume;
-that flat `Seed.defaults` behavior remains independent from the frozen Jinja
-context. The record is written atomically through the existing store.
-
-For a legacy staged record without context, scan every Jinja-bearing template
-field for any of the seventeen names before replay. If one is referenced, fail
-with an incompatible-record error and name `abort` then `stage` to start over.
-Otherwise synthesize an unobservable compatibility context from the record's
-target/formal name, loaded template, empty aliases, null source, host fallbacks,
-`false` execution flags, and denied environment access; save the upgraded
-record before accepting another submission. A collision still fails template
-load. No historical trusted value is invented.
+`__toha_now`, and the current invocation projection. Readiness, interview
+rendering, and planning use the same builder. Legacy mode uses the same builder
+without the new projection.
 
 ## Collision and availability contract
 
-Only the seventeen exact public names are reserved. `Template::load` rejects a
-matching top-level `data` key, question id, computed id, or `each` binding,
-including bindings in nested interview nodes, file rules, and hooks. Each
-problem is aggregated in `LoadError.problems` and names the authored location.
-Nested object properties are ordinary keys. Other `toha_` names are not
-reserved by this feature.
+For current contexts, only the seventeen exact public names are reserved.
+`Template::load` rejects a matching top-level data key, question id, computed
+id, `each` binding, or callable/global collision, including nested interview,
+file-rule, and hook positions. The aggregate load error names every authored
+location. Nested object properties remain ordinary keys. Other `toha_` names
+remain legal.
 
-The same exact set is registered as available for load-time reference checking
-and runtime readiness. Every value is therefore available in:
+The same exact set is registered as available for current load-time reference
+checking and runtime readiness. Every value is available in terminal, headless,
+staged/resumed, and direct execution at every compiled surface.
 
-- prompts, descriptions, placeholders, defaults, conditions, computed values,
-  messages, and interview hooks;
-- rendered source paths, file contents, explicit file-rule paths/conditions/
-  iteration, top-level hooks, and before/after apply messages;
-- terminal, headless, staged/resumed, and direct crate execution.
-
-Map insertion order is not conflict policy. A template with a reserved authored
-identifier never loads.
+Legacy staged loading uses the pre-context available/reserved set. It does not
+turn an existing authored identifier into a collision while the old stage is
+being completed.
 
 ## Errors and compatibility
 
 | Situation | Result |
 | --- | --- |
-| Reserved authored identifier | Existing aggregate `LoadError` with authored location. |
-| Target factory cannot construct the identity | Producer `StagingError`; no context is created. |
-| Invalid direct selected identity | `ContextError` naming the field; no process data. |
-| Plan target differs from completed context | `PlanError::ContextTarget` before rendering or I/O. |
-| Missing/malformed host metadata | Typed `null`/`[]` fallback; not an error. |
-| Denied or absent gated value | Jinja `none`; not an error. |
-| Granted staged value lacks current authorization | `StagingError::AccessRequired` before replay. |
-| Malformed or inconsistent staged context | `StagingError::Replay` with the mismatched field. |
-| Legacy record references a new name | Compatibility error with restage guidance. |
-| Interview expression/render failure | Existing attributed `EvalError`. |
-| Plan render failure | Existing attributed `PlanError::Render`. |
+| Reserved current-context identifier | Aggregate `LoadError` with authored locations. |
+| Unmodeled supported AST form | Conservatively marks all five observable. |
+| Stage need without `--trust` | `StagingError::EnvironmentTrustRequired { reference }` before capture, seed, render, or write. |
+| Target construction or stored-target mismatch | Producer `StagingError`; no consumer normalization. |
+| Invalid selected identity or context wire | Attributed context/replay error without captured values. |
+| Plan target differs from completed current context | `PlanError::ContextTarget` before render or I/O. |
+| Missing or malformed host metadata | Typed `null`/`[]` fallback. |
+| Denied, unnecessary, or absent gated value | Jinja `none`. |
+| Mutable folder changes after stage | Current bytes render under the recorded snapshot; no new access decision. |
+| Legacy record | Pre-context projection; no invented facts or access recovery. |
+| Interview or plan evaluation fails | Existing attributed evaluation/render error. |
 
-Adding `Seed.context` is a deliberate source break for 0.2.0 crate callers so
-that no supported caller silently receives different values. If the producer's
-recommended carrier is independently approved, its `CanonicalTarget`
-restriction also changes target-consuming source APIs; this design only
-consumes that decision. The public interview state machine and plan/apply result
-types otherwise remain. Existing templates that do not define a reserved name
-retain their behavior. Existing `now()` behavior remains.
+Adding required `Seed.context` is a deliberate source break for crate callers.
+The public interview state machine and apply result types otherwise remain.
+Existing `now()` behavior remains. Source-tree Jinja compilation moves to
+template load, so an attributable syntax/include error can occur earlier.
 
 ## Canonical document changes for implementation
 
-The paired implementation updates clean current contracts:
+The paired implementation updates:
 
-- `docs/specifications/template-format.yml` and its schema: exact variable
-  table, types, absence, collision locations, and evaluation surfaces;
-- `docs/template-jinja.md`: concise examples, access behavior, and staged
-  snapshot semantics;
-- `docs/specifications/command-line-interface.yml`: approved access policy,
-  `--trust` on `stage`/`continue`, reauthorization refusal, and guidance;
-- `docs/specifications/interview-protocol.yml`: versioned staged context,
-  compatibility behavior, and unchanged per-call input modality;
-- `docs/specifications/template-registry.yml` only by reference to the approved
-  live review decision; the digest algorithm is not duplicated.
+- the template format and schema with the exact variable table, types,
+  availability, collision locations, and render surfaces;
+- the Jinja guide with direct, staged, denied, mutable-folder, and legacy
+  examples;
+- the command-line contract with `stage --trust`, the pre-interview refusal,
+  no `continue --trust`, and staged apply's separate hook meaning;
+- the interview protocol with the versioned current/legacy context wire and
+  unchanged per-call input modality; and
+- the registry contract only by reference to the approved live review
+  evaluator; the digest algorithm is not duplicated.
 
 ## Behaviors to prove
 
-1. **Every surface:** one fixture references every variable from every
-   interview and plan surface; all see the same snapshot.
-2. **Identity:** an alias and formal-name selection yield the same formal name,
-   registry-order alias array, and source; zero and multiple aliases preserve
-   exact array types. Folder, direct Git, and bundled selections yield `[]` and
-   `null`; bundled formal name is `toha-demo`.
-3. **Target:** nonexistent and existing directories use the basename from the
-   single canonical identity; an existing directory has no trailing separator;
-   root and non-Unicode basenames yield `null`; a mismatched plan target fails
-   before rendering. Under producer choice 5A, raw `PathBuf` cannot enter the
-   context or plan APIs and consumers use only `as_path()`. Under choice 5B,
-   the exact separator-free factory result passes unchanged and no consumer
-   normalizes it.
-4. **Host:** Linux complete, partial, absent, unreadable, non-UTF-8, malformed,
-   empty, and duplicate-key os-release fixtures produce the stated values;
-   non-Linux reads no os-release file.
-5. **Execution:** new terminal stage/apply, asynchronous stage, answers-file
-   apply, resumed terminal/document calls, and direct callers assert exact
-   admin and originating-interactive booleans without refusing a modality
-   change.
-6. **Denied access:** a spy adapter proves the five gated sources are not read;
-   all five variables are `null`, including for alias-selected templates.
-7. **Granted access:** option A tests `--trust`, matching named approval,
-   changed digest, local alias/layer, folder, direct Git, and bundled selection;
-   option B omits the approval grant test. Only five values cross the seam.
-8. **Replay authorization:** change the live environment after staging and get
-   the recorded output; remove current approval and observe pre-replay refusal;
-   repeat `--trust` and resume; later trust never elevates a saved denial.
-9. **Redaction:** no granted value appears in `Debug`, errors, protocol output,
-   or command guidance. The staged record contains only the approved five.
-10. **Collisions:** each exact name fails independently in data, question,
-    computed, and `each` positions with location; a neighboring `toha_` name
-    loads; config `presets` remain defaults only.
-11. **Legacy records:** a record whose template has no new-name reference
-    resumes and upgrades; a referenced name refuses before replay.
-12. **Caller parity:** command terminal, headless, staged, and direct crate
-    callers produce the same answers and plan for the same typed inputs; the
-    engine performs no ambient read.
-13. **Predecessors:** configured-default `Resolution { defaults, warnings }`
-    remains exact and flat; hook trust uses the approved live digest function;
-    canonical target has one owner; both pending carrier choices use the
-    producer factory without a consumer normalizer.
-14. **Regression:** `task ci` passes with existing `now()`, protocol, presets,
-    staging, plan, apply, and hook-review fixtures.
+1. **All surfaces:** every configuration render, source path/body, explicit
+   body, and transitive literal include contributes environment needs before
+   interview start and receives the same context at render time.
+2. **Static analysis:** direct reads, self-shadowing assignment, value aliases,
+   `debug()` aliases, dynamic operands, false branches, uncalled macros, and
+   uncertain AST forms are covered. A literal property string alone is not a
+   root read.
+3. **Failure order:** stage without trust and with a need returns the attributed
+   error while spies prove zero gated reads, seed construction, interview
+   starts, renders, submissions, and store writes.
+4. **Capture matrix:** no need reads zero; denied direct reads zero; granted need
+   reads all five once; absent/empty/non-Unicode values become null.
+5. **Replay:** environment, host, approval, privilege, and terminal changes do
+   not change later batches. Continue has no trust flag. Staged apply trust
+   changes hook permission only.
+6. **Mutable folders:** no-need then added reference produces null with zero
+   read; admitted editor-only then added shell reference produces the recorded
+   shell value with zero later read.
+7. **Legacy:** a no-context record preserves pre-context availability,
+   collision, and `debug()` output across continuation and staged apply.
+8. **Target:** every identity-sensitive caller receives the sole factory
+   carrier; stored text is validated; root/non-Unicode basename is null; a
+   mismatched plan carrier fails before render.
+9. **Trust:** explicit flag, eligible matching named approval, changed digest,
+   folder, direct Git, bundled, local-layer, and stage-specific cases prove the
+   approved distinction.
+10. **Identity and host:** aliases, source, formal/short name, Linux host
+    fallbacks, admin detection, and originating interaction keep exact types
+    and remain frozen.
+11. **Collisions and presets:** every exact authored collision is attributed; a
+    neighboring `toha_` name loads; presets remain flat defaults only.
+12. **Redaction and wire:** captured strings appear only in intended rendered
+    output and staged JSON, never in `Debug`, errors, protocol metadata, or
+    guidance. The wire has no target carrier, generic map, or access token.
+13. **Caller parity:** terminal, headless, staged, resumed, and direct callers
+    with equal typed facts produce equal answers and plans.
+14. **Regression:** the repository gate covers `now()`, protocol, presets,
+    staging, plan, apply, hook review, and includes.
 
 ## Out of scope
 
-- Runtime code or shared canonical-document changes in this design task.
-- Arbitrary environment access, dynamic environment functions, or secrets.
-- New registry trust commands or a changed review digest.
-- A new target normalizer or dependency on the error-attribution
-  implementation.
+- Runtime or shared canonical-document edits in this design task.
+- Arbitrary environment access, secrets, or a dynamic environment function.
+- A changed review digest or new registry trust commands.
+- A target normalizer, unchecked carrier constructor, or target error type.
 - Configured-default behavior, provenance, or naming changes.
-- A `Run` session façade or general public-engine redesign.
-- Encryption or a new file-permission policy for staged records.
+- Encryption or a new staged-file permission policy.
 - Timeout mechanics, pinned-version checks, or application subprocesses.
+- A general public-engine/session redesign.
+
+## Decisions at the approval checkpoint
+
+The checkpoint asks for three decisions:
+
+1. Permit up to five optional plaintext values in staged JSON after an initial
+   environment need and grant. At most four can be extra when one fixed name is
+   referenced; `debug()` requires all five. No value is stored for no need or
+   denied access.
+2. Accept the frozen-decision behavior for mutable folders: later-added
+   references see nulls after an unavailable snapshot or recorded values after
+   a captured snapshot, with no new source-change refusal.
+3. Approve the exact revised design package.
+
+The direct/apply effective-trust rule, explicit stage-only flag, and producer
+target carrier are already fixed and are not reopened by this checkpoint.
 
 ## Implementation start after approval
 
-Add the context domain types and the single Jinja projection first, then thread
-the snapshot through `Seed`, completion, staging, and planning before adding
-command capture and the approved access policy. Any need for a different
-context lifetime or trust gate returns to this design checkpoint.
+Implement the complete retained render program and AST analysis first. Prove
+the admission matrix and all-surface tests before threading the current/legacy
+context through the engine and staged wire.

@@ -9,113 +9,122 @@ relationships:
     - template-registry
     - architecture
     - error-attribution
+    - jinja-includes
 objective: >-
-  Give every terminal, headless, staged/resumed, and direct crate caller one
-  pure, replay-stable Jinja context for canonical target, selected template,
-  host, execution, and five explicitly trusted environment values, while
-  keeping config presets, target normalization, and reviewed trust in their
-  existing ownership seams.
+  Give terminal, headless, staged/resumed, and direct crate callers one pure,
+  replay-stable Jinja context for canonical target, selected template, host,
+  execution, and five fixed environment values while preserving the ownership
+  of presets, trust review, includes, and canonical target identity.
 background:
   current-design: >-
-    The interview and planner independently build Jinja maps from template data,
-    answers, and now. Seed carries defaults and time; Completed carries answers
-    and time. Staging replays submissions but stores no host, selected-source,
-    execution, or environment context.
+    Interview and planning build separate maps from data, answers, and time.
+    Source-tree Jinja compiles only during planning. Staging stores submissions
+    but no invocation context.
   problems:
     - >-
-      Adding globals or plan-only values would leave readiness, interview
-      rendering, direct callers, and replay inconsistent.
+      Environment admission must occur before interview progress, but existing
+      undeclared-variable analysis misses context enumeration through debug(),
+      self-shadowing reads, and include closures.
     - >-
-      Environment access must use an explicit approved trust decision and must
-      not expose the complete process environment.
+      Later batches cannot ask for trust or reread ambient values. Mutable
+      folder templates must not gain a new source-change refusal.
     - >-
-      The selected formal name and canonical target already have owners; a
-      second resolver or target normalizer would create conflicting policy.
+      Canonical target and selected formal identity already have producers; a
+      consumer normalizer or resolver would create conflicting policy.
 design-challenges:
+  complete-analysis: >-
+    Every configuration expression/template, source-tree path and body, and
+    literal file-body include must contribute needs before Seed.
   caller-parity: >-
-    One typed value must serve terminal, headless, staged/resumed, and direct
-    crate callers through the same pure engine and every render surface.
-  replay-and-revocation: >-
-    A granted snapshot must remain deterministic, but stored values cannot be
-    evaluated after current authorization is lost.
-  exact-contract: >-
-    Seventeen names need exact Jinja types, absence behavior, collision rules,
-    host fallbacks, identity semantics, and no overlap with config presets.
-  shared-seams: >-
-    The design must consume the final configured-default formal-name/flat-seed
-    contract, approved content-bound trust, and the producer-owned
-    canonical-target identity without replacing any of them.
+    One immutable value must serve every driver and every render surface through
+    the pure engine.
+  minimal-replay: >-
+    Staged state must be deterministic without fresh access, an open-ended map,
+    or a new mutable-source restriction.
+  compatibility: >-
+    Records created before the context contract cannot supply historical host,
+    interaction, identity, or access facts.
 proposed-design:
   high-level-overview: >-
-    Add one immutable InvocationContext to Seed, carry it through Pending to
-    Completed, serialize it with staged state, and project it through one
-    private Jinja builder for both interview and planning. CLI adapters capture
-    process and host facts after an explicit access decision; the engine accepts
-    only domain values.
+    Template::load retains one complete in-process render program and computes
+    a conservative environment need. Template::admit_environment combines that
+    need with Deny, Grant, or RequireGrant. InvocationContext flows through
+    Seed, Pending, Completed, staging, and Plan through one private projection.
+  analysis: >-
+    An isolated MiniJinja AST adapter walks reads in evaluation order, lexical
+    aliases and shadowing, dynamic operands, macros, all branches, debug()
+    aliases, and literal include closures. Uncertain supported forms mark all
+    five observable instead of failing syntax. No new crate is added.
   public-contract: >-
-    Expose seventeen always-present variables: nullable target basename; short
-    and formal template names, ordered aliases, nullable registry source; OS,
-    architecture, nullable os-release NAME/ID and array ID_LIKE; is-admin and
-    originating-is-interactive booleans; and five nullable trusted environment
-    values. Reserve only those exact names.
+    Expose seventeen current-context variables with exact string, nullable,
+    array, and boolean types. Reserve only those exact names. Presets remain
+    flat defaults and are not Jinja context.
   access: >-
-    Recommended option A grants the five values through either one-run --trust
-    or a current matching approval from the approved live HookSurface review.
-    Stage and continue gain --trust. A granted staged snapshot stores only the
-    five allowed values and requires current access before replay; a saved denial
-    stays denied. Option B uses --trust only and does not extend registry review
-    to environment access.
+    Direct/new apply uses explicit --trust or a current matching reviewed
+    approval for an eligible named user/system entry. Stage requires its own
+    explicit --trust whenever analysis finds any environment need. Continue has
+    no trust option; staged apply trust remains hook-only.
+  snapshot: >-
+    No need or denied access reads nothing and records Unavailable. A need plus
+    grant captures all five optional values once and records Captured. The fixed
+    five-field structure is not an environment map.
   staging: >-
-    Store the versioned context with existing identity, target, instant, and
-    submissions. Replay checks identity and target, checks current access before
-    any granted-value evaluation, then uses recorded facts and live configured
-    defaults. Legacy records replay only when the template does not reference a
-    new name.
+    The versioned context wire stores supplemental selected identity, host,
+    execution, and environment snapshot. Target and formal name remain in their
+    existing record fields. Store::load receives CanonicalTarget, validates
+    stored path text, and reconstructs the live context without deserializing a
+    carrier. Replay performs no access or ambient read.
+  mutable-folders: >-
+    Resume continues to load current folder bytes. An unavailable snapshot
+    yields null for later-added references. A captured snapshot supplies its
+    recorded five values to later-added references. No source identity gate is
+    added.
+  legacy: >-
+    A record with no context field uses the pre-context projection and
+    available/reserved-name set. It invents no facts, exposes no new values, and
+    needs no access-related abort/restage path.
   module-seam: >-
-    context owns domain types, redaction, reserved names, and Jinja projection;
-    CLI owns capture and trust; interview carries the snapshot; staging owns its
-    wire representation; plan consumes the completed snapshot. Protocol Context
-    remains separate output metadata. The canonical-target producer owns the
-    sole factory and carrier. The recommended pending projection accepts
-    CanonicalTarget and reads it through as_path; the retained-PathBuf projection
-    accepts the same separator-free factory result. Neither projection normalizes.
+    template owns render compilation, include closure, analysis, and collision
+    locations; context owns typed facts, projection, redaction, and wire
+    conversion; command adapters own trust and capture; interview carries the
+    context; staging owns replay; plan consumes the producer carrier and
+    completed context.
   compatibility: >-
-    Seed gains a required context in the 0.2.0 crate surface. Plan rejects a
-    target that differs from the completed canonical identity without normalizing
-    it. The CanonicalTarget source-API restriction is conditional on independent
-    approval of the producer design; this design does not approve it. If the
-    producer retains PathBuf, the consumer shape projects back to PathBuf and
-    &Path without changing behavior. Root and non-Unicode basenames produce
-    null, not refusal. Existing templates without exact-name collisions keep
-    their behavior.
+    Seed gains a required context for direct callers. Source-tree syntax errors
+    can surface at template load. Existing mutable folder behavior, input
+    modality, now(), protocol metadata, configured defaults, hook review, and
+    producer target interfaces remain.
   canonical-impact: >-
-    Paired implementation updates template-format and schema, the Jinja guide,
-    command-line-interface for stage/continue --trust and replay guidance, and
-    interview-protocol for the versioned staged snapshot. This design changes no
-    shared contract itself.
+    Paired implementation updates template format/schema, the Jinja guide,
+    command-line contract, interview protocol, and a registry reference. This
+    design changes no runtime or shared canonical file.
   verification: >-
-    Fixtures cover all seventeen values at every interview and plan surface,
-    identity/source variants, target shapes, host failures, execution modes,
-    trust selection and revocation, redaction, exact collisions, legacy replay,
-    direct-caller parity, predecessor seams, and the complete task ci gate.
+    Fixtures cover every render surface; debug, alias, self-shadowing, dynamic,
+    include, and uncertain analysis; failure order; capture matrix; mutable
+    folders; legacy replay; target carrier; trust distinctions; host/admin/
+    interaction types; collisions; redaction; wire validation; and caller
+    parity.
 decisions-needed:
-  environment-grant: >-
-    A — --trust or a current matching reviewed-registry approval grants the five
-    values (recommended), versus B — only --trust grants them.
-  staged-access: >-
-    Approve adding --trust to stage and continue, plaintext persistence of at
-    most the five granted values in existing staged state, current
-    reauthorization before replay, and no later elevation of a saved denial
-    (recommended and required for deterministic trusted staging).
+  plaintext-snapshot: >-
+    Approve or reject storing up to five optional plaintext values after an
+    initial environment need and grant under the existing state-directory and
+    umask behavior, until apply, abort, or operator removal.
+  mutable-folder-result: >-
+    Approve or reject the frozen-decision behavior for later folder edits:
+    unavailable remains null; captured makes all five recorded values available;
+    no source-change refusal is introduced.
+  exact-package: >-
+    Approve or reject the exact revised design package. Direct/apply effective
+    trust, stage-only explicit trust, and CanonicalTarget/StagingError are fixed.
 out-of-scope: >-
-  Runtime or shared canonical edits in this task; arbitrary environment access;
-  a new permission name; trust-command or digest changes; a second target
-  normalizer; approval or modification of the canonical-target carrier decision;
-  configured-default changes; a Run façade; staged encryption or file-permission
-  changes; timeouts; pinned-version checks; application subprocesses.
+  Runtime or shared canonical edits; arbitrary environment access; a generic
+  environment map; a new trust command or digest; a second target normalizer;
+  configured-default changes; encryption or new staged-file permissions;
+  timeouts; pinned runtime version checks; application subprocesses; or a
+  general engine/session redesign.
 detail: >-
-  Full caller usage, exact variable table, signatures, data flow, fallback and
-  replay rules, errors, compatibility, canonical impact, and fourteen
-  falsifiable behavior groups are in design.md. Evidence is in grounding.md,
-  rubric.md, candidates/, cross-judge.md, synthesis.md, rationale.md, and
-  verification.md.
+  Full caller usage, types, source analysis, access matrix, wire, replay,
+  compatibility, errors, canonical impact, and proof are in design.md. Targeted
+  evidence is in stage-admission-grounding.md, stage-admission-rubric.md,
+  stage-admission-candidates/, stage-admission-cross-judge.md, and
+  stage-admission-synthesis.md; historical arena evidence remains unchanged.
