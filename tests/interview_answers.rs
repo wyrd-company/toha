@@ -1329,6 +1329,37 @@ fn configured_default_errors_name_mapping_and_preset_origins() {
 }
 
 #[test]
+fn configured_default_diagnostics_escape_the_formal_name() {
+    let (_folder, template) = inline("name: sample\ninterview: []\n");
+    let mappings = [(
+        "sample\"quoted".into(),
+        [(
+            toha::Id::parse("removed_question").unwrap(),
+            sourced(
+                DefaultSource::Literal(json!("unused")),
+                ConfigLayer::User,
+                "user.yml",
+            ),
+        )]
+        .into(),
+    )]
+    .into();
+    let resolution = toha::interview::configured_defaults(
+        "sample\"quoted",
+        &template,
+        &Default::default(),
+        &mappings,
+    )
+    .unwrap();
+    assert_eq!(
+        resolution.warnings,
+        [
+            "user.yml: template-defaults.\"sample\\\"quoted\".removed_question: question is not defined by the selected template; ignored"
+        ]
+    );
+}
+
+#[test]
 fn invalid_configured_default_names_its_source() {
     let template = Template::load(&early_template()).unwrap();
     let error = toha::interview::configured_defaults(
