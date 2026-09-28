@@ -1,0 +1,114 @@
+$schema: https://refinery.systems/ontology/technical-design
+relationships:
+  realizes: toha
+  implements:
+    - command-line-interface
+    - template-registry
+    - template-format
+  refines: architecture
+objective: >-
+  Make the small inspectable demo template resolvable and runnable by name,
+  offline, from any directory, on first run — with no registry entry, no cache,
+  no network, and no git setup — by embedding one maintained copy of
+  `docs/examples/demo/` into the binary behind a single CLI resolution seam,
+  leaving the pure interview engine and the plan/apply/staging pipeline
+  unchanged.
+design-challenges:
+  offline-first-run: >-
+    A bare `toha-demo` resolves to NotFound today. It must resolve and run from
+    the binary alone — `apply`, `apply --dry-run`, and `stage` then `continue`/
+    `apply` in a later process — with zero prior disk state, from any current
+    directory.
+  collision-preservation: >-
+    An installed, aliased, or discovered `toha-demo` must keep its exact current
+    meaning. The bundled demo must never shadow it, and the precedence rule must
+    be explicit, not implied.
+  offline-identity: >-
+    A staged bundled interview resumes in a later process from its staged
+    identity `(formal_name, commit)` alone, offline, and produces byte-identical
+    output. The identity is stable across runs of one build and is the shared
+    coordination surface consumed by the defaults and Jinja-context designs.
+  single-source: >-
+    The embedded content derives from exactly one source, so the embedded copy,
+    the documented example, tests, and docs cannot drift, with an enforcing
+    falsifiable check.
+  capability-envelope: >-
+    Closing the gap must introduce no capability that needs separate approval —
+    no narrowing of supported resolution, no new permission, timeout, pinned
+    check, or application subprocess — and must not leak "embedded" into the pure
+    engine, `Plan`, `apply`, `protocol`, or `staging`.
+proposed-design:
+  high-level-overview: >-
+    All embedding lives behind one new CLI-only module, `src/cli/bundled.rs`,
+    that embeds `docs/examples/demo/` with `include_dir!`, derives a content
+    digest as the identity commit, and materializes the tree on demand into the
+    ordinary git source cache. Three internal branches in `resolve_template`,
+    `formal_name`, and `resume_template` wire it in; `ResolvedTemplate` gains no
+    field or variant and no registry entry is created. Everything below the
+    resolution seam is the unchanged pipeline and never learns the demo is
+    compiled in.
+  resolution-seam: >-
+    In the `Address::Name` arm, `registry.resolve(name)` runs first and always
+    wins on any match. Only when it returns `NotFound` for exactly the reserved
+    token `toha-demo` does `bundled::resolve(dirs)` answer, so every current
+    name-resolution outcome is preserved by construction. `formal_name` mirrors
+    the same fallback so `apply toha-demo` recognizes its own staged interview.
+  identity-and-resume: >-
+    The bundled identity is `formal_name="toha-demo"` (stable) plus
+    `commit=<sha256 hex of a canonical serialization of the embedded tree>`
+    (content version, satisfying the registry commit pattern).
+    `bundled::resume(formal, commit, dirs)` returns `None` for non-bundled
+    records so existing resume paths are unchanged, and re-materializes from the
+    embedded bytes when the staged commit matches this build's digest; a mismatch
+    returns a clear offline "stage again" error.
+  materialization: >-
+    The tree is written to `<cache>/sources/toha-demo/<commit>/`, the same
+    namespace a git fetch already populates, using the `skills::export`
+    create-new write mechanics with a sibling tempdir and atomic rename. It is
+    idempotent and race-safe; a present content-addressed slot is reused. Writing
+    the cache is not a new capability.
+  discoverability: >-
+    `templates list` (unfiltered) appends one read-only row built from the
+    bundled module — not a registry entry, never consulted by resolution,
+    aliasing, or ambiguity, and absent from the file-backed `--system/--user/
+    --local` views. (Product decision D3.)
+  verification: >-
+    `include_dir!` makes the embed the source; the runtime-derived commit cannot
+    go stale relative to it. Falsifiable checks: `embed_equals_source`,
+    `commit_derives_from_source`, and an offline end-to-end fixture that also
+    exercises the cross-process staged resume. Package presence is already
+    guaranteed by the Cargo `include` set.
+  canonical-impact: >-
+    Owned by paired implementation 1059, described here: document `toha-demo` as
+    a reserved fallback name and the offline first-run guarantee in the
+    command-line-interface and template-registry specifications; extend the
+    architecture's embedded-skills note to include the bundled demo; refresh
+    README, getting-started, overview, and the demo tape/GIF to the by-name
+    first-run flow.
+decisions-needed:
+  D1-precedence: >-
+    Fallback-only (recommended; preserves every current outcome, no approval) vs
+    reserved-name-wins (shadows an installed/aliased `toha-demo`; narrows
+    resolution; requires explicit approval).
+  D2-cache-unwritable: >-
+    Fail with a clear error (recommended; all writes stay inside the documented
+    cache) vs degrade to a temp dir (more resilient on a read-only cache but
+    introduces a runtime write location outside the documented cache — a
+    disclosable capability question).
+  D3-discoverability: >-
+    Show one read-only bundled row in unfiltered `templates list` (recommended)
+    vs keep it invisible.
+  D4-downstream-identity: >-
+    Confirm `formal_name="toha-demo"` + `commit=<content digest>` is the
+    coordination surface designs 1073 and 1075 key configuration on.
+out-of-scope: >-
+  The pure interview engine, `Template`, `Plan`, `apply`, `protocol`, `staging`,
+  the `ResolvedTemplate` shape, the `<TEMPLATE>` classification order, the trust
+  model, path safety, no-overwrite-without-`--force`, and the `toha` library
+  crate. No new subcommand and no `preview` command. No production or
+  specification/schema edits in this design task.
+detail: >-
+  Full caller usage, signatures, data shapes, seam map, precedence rule, error
+  contract, and behaviors-to-prove are in design.md alongside this record.
+  Evidence: grounding.md, rubric.md, candidates/, cross-judge.md, synthesis.md,
+  verification.md.
