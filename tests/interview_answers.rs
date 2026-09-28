@@ -1597,7 +1597,7 @@ fn skipped_template_default_checks_ready_rules_without_rendering_presentation() 
     );
 
     let (_folder, template) = inline(
-        "name: sample\ndata: { skip_all: true }\ninterview:\n  - { id: length, type: text, prompt: Length? }\n  - group: hidden\n    when: not skip_all\n    nodes:\n      - { id: label, type: text, prompt: \"{{ 'bad' | dateformat }}\", default: x, validate: { min: \"length | int\" } }\n",
+        "name: sample\ndata: { skip_all: true }\ninterview:\n  - { id: length, type: text, prompt: Length? }\n  - group: hidden\n    when: not skip_all\n    nodes:\n      - { id: label, type: text, prompt: \"{{ 'bad' | dateformat }}\", default: x, validate: { min: \"length | int + 2\" } }\n",
     );
     let Interview::Asking(pending) = Interview::start(&template, seed()).unwrap() else {
         panic!("the unavailable dynamic constraint must not block the first batch")
