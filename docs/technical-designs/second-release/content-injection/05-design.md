@@ -203,7 +203,25 @@ pub enum JsonPathSegment { Key(String), Index(usize) }
 `RegionKey` accepts lowercase ASCII letters, digits, `_`, and `-`. It is unique
 per target. `MarkerStyle` is resolved from the non-JSON target extension or an
 explicit override during planning. `JsonFormat` is resolved from the JSON-family
-extension and selects strict or permissive parse options.
+extension and selects one named `jsonc_parser::ParseOptions` bundle:
+
+| `ParseOptions` field | `Json` | `Jsonc` | `Json5` |
+|---|:---:|:---:|:---:|
+| `allow_comments` | false | true | true |
+| `allow_loose_object_property_names` | false | false | true |
+| `allow_trailing_commas` | false | true | true |
+| `allow_missing_commas` | false | false | true |
+| `allow_single_quoted_strings` | false | false | true |
+| `allow_hexadecimal_numbers` | false | false | true |
+| `allow_unary_plus_numbers` | false | false | true |
+| `allow_bare_decimal_point_numbers` | false | false | true |
+| `allow_non_finite_numbers` | false | false | true |
+| `allow_extended_string_escapes` | false | false | true |
+
+The implementation constructs every bundle explicitly instead of inheriting
+the dependency's all-enabled default. The `Json5` bundle is a JSON5-compatible
+superset because it also permits missing commas; it is not strict JSON5 grammar
+validation.
 
 Two JSON rules with the same `(target, json_path)` are duplicates. An ancestor
 and descendant pair, such as `compilerOptions` and
@@ -374,10 +392,25 @@ unless the rule declares `create: true`.
 
 ## Source fidelity of `jsonc-parser`
 
-The selected dependency is `jsonc-parser` with its `cst` feature. Its CST keeps
-comments and whitespace as tokens and displays the original source plus the
-requested edit (`jsonc-parser/src/cst/mod.rs:1-5,1356`, revision `c7d4cf5`). The
-same edit pattern is used by VS Code's `node-jsonc-parser`, which returns minimal
+The selected dependency is `jsonc-parser` with its `cst` and `serde_json`
+features. Its CST keeps comments and whitespace as tokens and displays the
+original source plus the requested edit
+(`jsonc-parser/src/cst/mod.rs:1-5,1356`, revision `c7d4cf5`). The
+`serde_json` feature supplies CST-to-`serde_json::Value` conversion for the
+owned-value equality check. The crate has no reverse
+`From<serde_json::Value>` implementation, so Toha owns this conversion:
+
+```rust
+fn json_value_to_cst_input(
+    value: &serde_json::Value,
+) -> jsonc_parser::cst::CstInputValue
+```
+
+The converter recursively maps null, Boolean, number, string, array, and object
+values. Numbers use `serde_json::Number::to_string()`, and objects retain the
+map's iteration order when building `CstInputValue::Object`
+(`jsonc-parser/src/cst/input.rs:1-102`, revision `c7d4cf5`). The same edit
+pattern is used by VS Code's `node-jsonc-parser`, which returns minimal
 offset/length/content edits.
 
 `jsonc-parser` is an embedded Rust library. The design adds no command,

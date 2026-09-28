@@ -1,5 +1,14 @@
 # Cross-judge report — JSON-family content injection arena
 
+> [!IMPORTANT]
+> **Historical arena evidence:** This report preserves the judge's scores and
+> sequencing recommendation. It is not the final design. Bob approved
+> Candidate B's embedded `jsonc-parser` structured mutation for JSON, JSONC,
+> and JSON5 in this release, with no JSON-family marker injection. See the
+> [final JSON-family synthesis](../../04a-synthesis-json-family.md) and the
+> [authoritative design](../../05-design.md). The report below remains the
+> judge's original verdict.
+
 ## Executive Summary
 
 Three candidates compete for Toha's structured JSON-family injection mechanism:
