@@ -3,7 +3,7 @@
 Architect Phase A. Traces the actual caller-to-result flow, types, state
 ownership, error paths, and the trust seam that a `{% include %}` feature must
 integrate with. Evidence is file/symbol anchored against `epic/second-release`
-at `f8880f33ea5ab73414fafd15673856ad4db42a7e`.
+at `4738042a766dc7b2d1d3c76a9c83c41c03e803d2`.
 
 ## The question
 

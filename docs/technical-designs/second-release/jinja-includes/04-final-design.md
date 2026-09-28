@@ -4,7 +4,7 @@ Synthesized design for Toha's second release. Design only:
 signatures with `not implemented` bodies, proposed (not applied) contract edits,
 described fixtures. No production code, spec, or schema is edited here. Base
 evidence is verified against `epic/second-release` at
-`f8880f33ea5ab73414fafd15673856ad4db42a7e`.
+`4738042a766dc7b2d1d3c76a9c83c41c03e803d2`.
 
 Base candidate: C2 (capability-by-type spine). Selected graft: C1's
 compile-time confined closure (precise diagnostics + load-time validation). See
