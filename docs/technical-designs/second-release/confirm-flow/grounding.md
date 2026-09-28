@@ -100,6 +100,21 @@ emergent loop or the future `SubmissionTxn`, and whether the target is `&Path`
 (now) or `&CanonicalTarget` (post-1056). The paired implementation (1062)
 sequences relative to 1056; see Risk.
 
+**Producer-composition correction (authoritative).** The flat
+`Resolution { defaults, warnings }` observed at `a62061f` is **current-state
+grounding only**. The **final configured contract** confirm-flow targets is the
+1072/1056 **origin-bearing consuming `Resolution`**: configured defaults are
+consumed *through* it via `Resolution::warnings()`, `Resolution::start(template,
+now)`, and `StagedRecord::replay_with_resolution(template, resolution)` — the
+resolution carries its origins to the consuming boundary and is **not** flattened
+en route. `into_flat_defaults()` is the *only* sanctioned provenance-shedding
+escape, and the ordinary flat `Seed` route is unchanged and independent. Confirm-
+flow must therefore, wherever it touches configured-default consumption (start,
+replay, headless), route through the origin-bearing `Resolution` and must **not**
+reconstruct configured origins or re-derive an id-only key from the flat
+projection. The analogous flat-projection text was corrected and held on sibling
+design 1075; this design must not reintroduce it.
+
 ## Interview engine: caller-to-result flow and state ownership
 
 - State machine: `enum Interview<'a> { Asking(Pending<'a>), Complete(Completed) }`
