@@ -444,6 +444,22 @@ pub fn dry_run_incomplete(invocation: &Invocation, path: &Path) -> String {
     .join("\n")
 }
 
+/// A flow `stop`/`abort` ended the interview. The notice names what did not
+/// happen, and for an abort that the staged interview was discarded.
+pub fn flow_ended(ended: &toha::Ended) -> String {
+    let (verb, tail) = match ended.kind() {
+        toha::EndKind::Stop => ("stopped", "no files were written and no hooks ran"),
+        toha::EndKind::Abort => (
+            "aborted",
+            "no files were written, no hooks ran, and the staged interview was discarded",
+        ),
+    };
+    match ended.label() {
+        Some(label) => format!("{verb}: {label} — {tail}"),
+        None => format!("{verb} — {tail}"),
+    }
+}
+
 /// `continue` found the staged interview complete.
 pub fn complete(path: &Path) -> String {
     format!(

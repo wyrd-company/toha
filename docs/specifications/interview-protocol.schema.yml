@@ -9,6 +9,7 @@ description: Documents exchanged by `stage --async`, `continue`, and `--answers`
 oneOf:
   - $ref: "#/$defs/batch"
   - $ref: "#/$defs/complete"
+  - $ref: "#/$defs/ended"
 $defs:
   identifier:
     type: string
@@ -87,5 +88,33 @@ $defs:
         $ref: "#/$defs/context"
       answers:
         $ref: "#/$defs/answers"
+      messages:
+        $ref: "#/$defs/messages"
+      disposition:
+        description: >-
+          Present only when a flow `dry-run` fired: the completion still plans,
+          but writes nothing. Composes with `apply --dry-run`. Omitted for an
+          ordinary completion, so its bytes are unchanged.
+        const: dry-run
+  ended:
+    description: >-
+      A flow `stop` or `abort` ended the interview. No files were written and no
+      hooks ran; an `abort` additionally removed the target's staged record.
+    type: object
+    additionalProperties: false
+    required: [ protocol, status, context, kind, messages ]
+    properties:
+      protocol:
+        const: 1
+      status:
+        const: ended
+      context:
+        $ref: "#/$defs/context"
+      kind:
+        description: Whether the flow node stopped the run or also discarded the staged record.
+        enum: [ stop, abort ]
+      label:
+        description: The diagnostic label of the flow node that ended the interview.
+        type: string
       messages:
         $ref: "#/$defs/messages"

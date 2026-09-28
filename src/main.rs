@@ -26,10 +26,10 @@ use cli::{
     resolve::{ResolveError, ResolvedTemplate},
 };
 use toha::{
-    AnswerError, Applied, ApplyOptions, Interview, Plan, Template,
+    AnswerError, Applied, ApplyOptions, EndKind, Ended, Interview, Plan, Step, Template,
     hook::ProcessRunner,
     protocol::{self, Context, Headless},
-    staging::{self, StagedRecord, Store},
+    staging::{self, CanonicalTarget, StagedRecord, Store},
 };
 
 /// Generate projects and files from templates.
@@ -514,9 +514,10 @@ fn progress(saved: &StagedRecord, scope: &Scope) -> Progress {
         )
         .ok()?;
         report_config_warnings(resolution.warnings());
+        // A stop/abort is terminal: no questions remain.
         let complete = matches!(
             saved.replay_with_resolution(&template, resolution).ok()?,
-            Interview::Complete(_)
+            Interview::Complete(_) | Interview::Ended(_)
         );
         Some(complete)
     })();
@@ -614,7 +615,7 @@ fn stage(template: String, path: PathBuf, output: Option<Option<String>>, dirs: 
             store.save(&target, &saved).map_err(|e| e.to_string())
         });
         return match completed {
-            Ok(_) => {
+            Ok(terminal::Session::Completed(_)) => {
                 // An interview without prompts still needs a staged record.
                 if saved.submissions.is_empty() {
                     if let Err(e) = store.save(&target, &saved) {
@@ -623,6 +624,7 @@ fn stage(template: String, path: PathBuf, output: Option<Option<String>>, dirs: 
                 }
                 Outcome::Saved(0)
             }
+            Ok(terminal::Session::Ended(ended)) => ended_outcome(&ended, &target, &store),
             Err(error) => Outcome::Error(error),
         };
     }
@@ -636,6 +638,25 @@ fn stage(template: String, path: PathBuf, output: Option<Option<String>>, dirs: 
             protocol::complete_document(&completed, &context(&target, &saved)),
             0,
         ),
+        // A stop/abort at the first batch of an async stage ends the interview:
+        // nothing is staged, an abort removes any record, and the `ended`
+        // document reports it. Emit it without saving a resumable record.
+        Interview::Ended(ended) => {
+            if let Outcome::Error(e) = ended_outcome(&ended, &target, &store) {
+                return Outcome::Error(e);
+            }
+            let document = protocol::ended_document(&ended, &context(&target, &saved));
+            return match output {
+                Some(file) => match fs::write(
+                    file,
+                    serde_json::to_vec_pretty(&document).expect("JSON value"),
+                ) {
+                    Ok(()) => Outcome::Saved(0),
+                    Err(e) => Outcome::Error(e.to_string()),
+                },
+                None => Outcome::Document(document, 0),
+            };
+        }
     };
     if let Err(e) = store.save(&target, &saved) {
         return Outcome::Error(e.to_string());
@@ -712,6 +733,17 @@ fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome 
             0,
         );
     }
+    if let Interview::Ended(ended) = &interview {
+        // A prior submission ended the staged interview. Report it; any answers
+        // are unused. An abort also removes the record.
+        if let Outcome::Error(e) = ended_outcome(ended, &target, &store) {
+            return Outcome::Error(e);
+        }
+        return Outcome::Document(
+            protocol::ended_document(ended, &context(&target, &saved)),
+            0,
+        );
+    }
     if answers.is_none() {
         if !io::stdin().is_terminal() {
             return Outcome::Error(guidance::continue_no_terminal(&path));
@@ -720,7 +752,8 @@ fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome 
             saved.submissions.push(submission);
             store.save(&target, &saved).map_err(|e| e.to_string())
         }) {
-            Ok(_) => Outcome::Saved(0),
+            Ok(terminal::Session::Completed(_)) => Outcome::Saved(0),
+            Ok(terminal::Session::Ended(ended)) => ended_outcome(&ended, &target, &store),
             Err(error) => Outcome::Error(error),
         };
     }
@@ -751,6 +784,16 @@ fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome 
                     protocol::complete_document(&c, &context(&target, &saved)),
                     0,
                 ),
+                Interview::Ended(ended) => {
+                    // The submission was saved above; an abort now removes it.
+                    if let Outcome::Error(e) = ended_outcome(&ended, &target, &store) {
+                        return Outcome::Error(e);
+                    }
+                    Outcome::Document(
+                        protocol::ended_document(&ended, &context(&target, &saved)),
+                        0,
+                    )
+                }
             }
         }
         Err(AnswerError::Rejected {
@@ -771,6 +814,28 @@ fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome 
         Err(AnswerError::Eval(e)) => Outcome::Error(e.to_string()),
     }
 }
+/// The outcome of a flow `stop`/`abort` at any driver. Both write nothing and
+/// exit 0; `Abort` additionally removes the target's staged record via the
+/// existing `Store::remove` (a no-op when none exists; a removal I/O failure
+/// surfaces as an error and exits nonzero). The engine reached this only after
+/// a committed `Interview::Ended`, so a rejected document never removes a
+/// record.
+fn ended_removed(ended: &Ended, target: &CanonicalTarget, store: &Store) -> Result<(), String> {
+    if ended.kind() == EndKind::Abort {
+        store.remove(target).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+/// The terminal/direct outcome of a flow end: a stderr notice and exit 0, with
+/// the staged record removed on an abort.
+fn ended_outcome(ended: &Ended, target: &CanonicalTarget, store: &Store) -> Outcome {
+    if let Err(e) = ended_removed(ended, target, store) {
+        return Outcome::Error(e);
+    }
+    eprintln!("{}", guidance::flow_ended(ended));
+    Outcome::Written(vec![])
+}
+
 fn abort(path: PathBuf, dirs: &Dirs) -> Outcome {
     let (target, store) = match setup(&path, dirs) {
         Ok(v) => v,
@@ -881,6 +946,11 @@ fn run(
                 };
                 match result {
                     Headless::Completed { completed, .. } => (template, completed, None),
+                    Headless::Ended { ended, .. } => {
+                        // A fresh apply has no staged record, so an abort's
+                        // removal is a no-op. Nothing is written.
+                        return ended_outcome(&ended, &target, &store);
+                    }
                     Headless::Pending {
                         pending,
                         rejections,
@@ -905,12 +975,13 @@ fn run(
                     }
                 }
             } else {
-                let completed =
-                    match terminal::drive(interview, &mut terminal::InquireAsk, |_| Ok(())) {
-                        Ok(v) => v,
-                        Err(e) => return Outcome::Error(e),
-                    };
-                (template, completed, None)
+                match terminal::drive(interview, &mut terminal::InquireAsk, |_| Ok(())) {
+                    Ok(terminal::Session::Completed(completed)) => (template, completed, None),
+                    Ok(terminal::Session::Ended(ended)) => {
+                        return ended_outcome(&ended, &target, &store);
+                    }
+                    Err(e) => return Outcome::Error(e),
+                }
             }
         }
         (None, Some(mut saved)) => {
@@ -952,6 +1023,11 @@ fn run(
                     ));
                 }
             };
+            if let Interview::Ended(ended) = &interview {
+                // The staged submissions replay to a stop/abort. Report it; an
+                // abort removes the record.
+                return ended_outcome(ended, &target, &store);
+            }
             let interview = match (interview, answers) {
                 (Interview::Complete(_), Some(_)) => {
                     return Outcome::Error(guidance::complete_answers_unused(
@@ -983,6 +1059,24 @@ fn run(
                             }
                             Interview::Complete(completed)
                         }
+                        Headless::Ended { ended, accepted } => {
+                            saved.submissions.extend(accepted);
+                            // A stop leaves the recorded submissions resumable;
+                            // an abort discards the record entirely.
+                            if ended.kind() == EndKind::Abort {
+                                if let Err(e) = ended_removed(&ended, &target, &store) {
+                                    return Outcome::Error(e);
+                                }
+                            } else if !dry_run {
+                                if let Err(e) = store.save(&target, &saved) {
+                                    return Outcome::Error(e.to_string());
+                                }
+                            }
+                            return Outcome::Document(
+                                protocol::ended_document(&ended, &context(&target, &saved)),
+                                0,
+                            );
+                        }
                         Headless::Pending {
                             pending,
                             rejections,
@@ -1012,6 +1106,8 @@ fn run(
                         }
                     }
                 }
+                // A flow end returned above, before this match.
+                (Interview::Ended(_), Some(_)) => unreachable!("a flow end returned above"),
                 (interview, None) => interview,
             };
             match interview {
@@ -1028,9 +1124,12 @@ fn run(
                         },
                     );
                     match completed {
-                        Ok(c) => {
+                        Ok(terminal::Session::Completed(c)) => {
                             terminal_run = true;
                             (template, c, Some(saved))
+                        }
+                        Ok(terminal::Session::Ended(ended)) => {
+                            return ended_outcome(&ended, &target, &store);
                         }
                         Err(e) => return Outcome::Error(e),
                     }
@@ -1043,6 +1142,8 @@ fn run(
                     );
                 }
                 Interview::Complete(c) => (template, c, Some(saved)),
+                // Handled before this match by the post-replay end check.
+                Interview::Ended(_) => unreachable!("a flow end returned above"),
             }
         }
         (None, None) => {
@@ -1051,6 +1152,9 @@ fn run(
         (Some(_), Some(_)) => unreachable!("a named template resumes its staged interview"),
     };
     let completed = interview;
+    // A flow `dry-run` composes with the CLI `--dry-run` by union: either
+    // suppresses the apply.
+    let dry_run = dry_run || matches!(completed.step(), Step::Plan { apply: false });
     // Trust is the live executable surface matching the stored approval; the
     // one flag `--trust` overrides for a single run. This is the only place a
     // template becomes trusted from stored state.

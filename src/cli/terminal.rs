@@ -6,9 +6,18 @@ use indexmap::IndexMap;
 use inquire::{Confirm, Editor, MultiSelect, Select, Text};
 use serde_json::{Value, json};
 use toha::{
-    Answer, AnswerError, CheckError, Completed, Interview, Item, Prompt, PromptKind, RawAnswer,
-    RawAnswers,
+    Answer, AnswerError, CheckError, Completed, Ended, Interview, Item, Prompt, PromptKind,
+    RawAnswer, RawAnswers,
 };
+
+/// The terminal outcome of a driven interview: a normal completion, or a flow
+/// `stop`/`abort` that ended it.
+#[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum Session {
+    Completed(Completed),
+    Ended(Ended),
+}
 
 pub(crate) trait Ask {
     fn text(&mut self, prompt: &Prompt, title: &str) -> Result<String, String>;
@@ -196,7 +205,7 @@ pub(crate) fn drive<'a>(
     interview: Interview<'a>,
     ask: &mut impl Ask,
     accepted: impl FnMut(IndexMap<String, Value>) -> Result<(), String>,
-) -> Result<Completed, String> {
+) -> Result<Session, String> {
     drive_to(interview, ask, accepted, &mut std::io::stdout())
 }
 
@@ -205,7 +214,7 @@ fn drive_to<'a>(
     ask: &mut impl Ask,
     mut accepted: impl FnMut(IndexMap<String, Value>) -> Result<(), String>,
     output: &mut impl std::io::Write,
-) -> Result<Completed, String> {
+) -> Result<Session, String> {
     let mut reached_before = 0;
     loop {
         let pending = match interview {
@@ -213,7 +222,13 @@ fn drive_to<'a>(
                 for message in completed.messages.iter().skip(reached_before) {
                     writeln!(output, "{message}").map_err(|e| e.to_string())?;
                 }
-                return Ok(completed);
+                return Ok(Session::Completed(completed));
+            }
+            Interview::Ended(ended) => {
+                for message in ended.messages.iter().skip(reached_before) {
+                    writeln!(output, "{message}").map_err(|e| e.to_string())?;
+                }
+                return Ok(Session::Ended(ended));
             }
             Interview::Asking(pending) => pending,
         };
@@ -378,6 +393,19 @@ mod tests {
         )
         .unwrap()
     }
+    /// Drives to a completion, panicking on a flow end. Used by the tests that
+    /// exercise ordinary interviews with no flow node.
+    fn driven<'a>(
+        interview: Interview<'a>,
+        ask: &mut impl Ask,
+        accepted: impl FnMut(IndexMap<String, Value>) -> Result<(), String>,
+    ) -> Result<Completed, String> {
+        match drive(interview, ask, accepted) {
+            Ok(Session::Completed(completed)) => Ok(completed),
+            Ok(Session::Ended(_)) => panic!("unexpected flow end"),
+            Err(error) => Err(error),
+        }
+    }
 
     #[test]
     fn terminal_answer_replaces_a_constraint_invalid_configured_default() {
@@ -412,7 +440,7 @@ mod tests {
             .unwrap();
         let mut script = Script::new(json!({"mode": "fast"}));
         let mut records = Vec::new();
-        let completed = drive(interview, &mut script, |raw| {
+        let completed = driven(interview, &mut script, |raw| {
             records.push(raw);
             Ok(())
         })
@@ -436,7 +464,7 @@ mod tests {
         let mut script = Script::new(json!({}));
         script.text_responses = VecDeque::from(["x".into(), "ok".into()]);
         let mut records = Vec::new();
-        let completed = drive(start(&template), &mut script, |raw| {
+        let completed = driven(start(&template), &mut script, |raw| {
             records.push(raw);
             Ok(())
         })
@@ -460,7 +488,7 @@ mod tests {
             ));
             let mut script = Script::new(json!({}));
             script.text_responses = responses.into_iter().map(str::to_owned).collect();
-            let completed = drive(start(&template), &mut script, |_| Ok(())).unwrap();
+            let completed = driven(start(&template), &mut script, |_| Ok(())).unwrap();
             assert_eq!(script.attempts, wanted_attempts);
             assert_eq!(
                 completed.answers[&toha::Id::parse("items").unwrap()],
@@ -477,7 +505,7 @@ mod tests {
         let mut script = Script::new(json!({}));
         script.text_responses = VecDeque::from(["".into(), "".into()]);
         let mut records = Vec::new();
-        let completed = drive(start(&template), &mut script, |raw| {
+        let completed = driven(start(&template), &mut script, |raw| {
             records.push(raw);
             Ok(())
         })
@@ -532,7 +560,7 @@ mod tests {
         );
         let mut script =
             Script::new(json!({"label": "First", "code": "abc", "flavor": "slow-rich"}));
-        let completed = drive(saved.replay(&template).unwrap(), &mut script, |_| Ok(())).unwrap();
+        let completed = driven(saved.replay(&template).unwrap(), &mut script, |_| Ok(())).unwrap();
         assert_eq!(script.asked, ["label", "code", "flavor", "items", "extras"]);
         assert_eq!(
             completed.answers[&toha::Id::parse("enabled").unwrap()],
@@ -609,7 +637,7 @@ mod tests {
             };
             let mut script = Script::new(document);
             let mut submissions = Vec::new();
-            let completed = drive(
+            let completed = driven(
                 Interview::start(&template, seed.clone()).unwrap(),
                 &mut script,
                 |raw| {
@@ -653,6 +681,7 @@ mod tests {
             let replayed = |submissions| match staged(submissions).replay(&template).unwrap() {
                 Interview::Complete(completed) => completed.answers,
                 Interview::Asking(_) => panic!("{name}: replay incomplete"),
+                Interview::Ended(_) => panic!("{name}: replay ended"),
             };
             assert_eq!(replayed(submissions), replayed(accepted), "{name}");
             let target = tempfile::tempdir().unwrap();

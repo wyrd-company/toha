@@ -571,6 +571,7 @@ fn unanswered_list_questions_are_empty_lists_and_others_are_null() {
     let completed = loop {
         match interview {
             Interview::Complete(completed) => break completed,
+            Interview::Ended(_) => panic!("unexpected flow end"),
             Interview::Asking(pending) => {
                 interview = pending.answer(std::mem::take(&mut document)).unwrap()
             }
@@ -800,6 +801,7 @@ fn same_outcome_through_all_routes(template: &Path, prior: &[Value], document: &
                 protocol::batch_document(pending.batch(), &context, Some(&rejections)),
                 accepted,
             ),
+            Ok(protocol::Headless::Ended { .. }) => panic!("unexpected flow end"),
             Err(_) => (1, Value::Null, vec![]),
         };
         let mut crate_result = outcome(code, &result, state.path(), target.path());

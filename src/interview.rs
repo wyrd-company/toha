@@ -5,7 +5,7 @@
 use crate::{
     config::{ConfigEntry, DefaultSource, PresetName},
     jinja::{Expr, Typed, context_from_answers, is_global},
-    template::{Id, Node, Question, QuestionKind, Template},
+    template::{FlowAction, Id, Node, Question, QuestionKind, SkipScope, Template},
 };
 use indexmap::IndexMap;
 use serde_json::Value;
@@ -54,6 +54,54 @@ enum DefaultBankEntry {
 pub enum Interview<'a> {
     Asking(Pending<'a>),
     Complete(Completed),
+    /// A flow `stop` or `abort` ended the interview. No `Completed` exists, so
+    /// there is no API path to a plan or apply.
+    Ended(Ended),
+}
+/// How a completed interview's plan step is treated. A `dry-run` flow action
+/// rides here as [`Disposition::DryRun`]; re-derived on every walk, never
+/// persisted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Disposition {
+    #[default]
+    Proceed,
+    DryRun,
+}
+/// How a flow terminated the interview. Both write no files and run no hooks;
+/// `Abort` additionally asks the driver to remove the staged record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndKind {
+    Stop,
+    Abort,
+}
+/// The routing outcome of a completed interview. Stop/abort are not here — they
+/// are [`Interview::Ended`], handled before any [`Completed`] exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    Plan { apply: bool },
+}
+/// A stop or abort. Carries only what a driver prints; nothing a plan consumes.
+#[derive(Debug)]
+pub struct Ended {
+    /// `Abort` instructs the driver to remove the target's staged record.
+    pub kind: EndKind,
+    /// Every message reached, in interview order.
+    pub messages: Vec<String>,
+    /// The messages reached by the step that ended the interview.
+    pub last_messages: Vec<String>,
+    /// The diagnostic label of the flow node that ended the interview.
+    pub label: Option<String>,
+}
+impl Ended {
+    pub fn kind(&self) -> EndKind {
+        self.kind
+    }
+    pub fn messages(&self) -> &[String] {
+        &self.messages
+    }
+    pub fn label(&self) -> Option<&str> {
+        self.label.as_deref()
+    }
 }
 #[derive(Debug)]
 pub struct Pending<'a> {
@@ -76,6 +124,8 @@ pub struct Completed {
     pub last_messages: Vec<String>,
     pub hooks: Vec<RenderedHook>,
     pub now: jiff::Zoned,
+    /// Whether a flow `dry-run` fired; re-derived each walk, never persisted.
+    pub disposition: Disposition,
     skipped: Skipped,
     step_start: usize,
 }
@@ -83,6 +133,16 @@ pub struct Completed {
 /// number of messages reached before it was skipped.
 type Skipped = IndexMap<Id, usize>;
 impl Completed {
+    pub fn disposition(&self) -> Disposition {
+        self.disposition
+    }
+    /// The one policy seam: how a completed interview's plan step is treated.
+    pub fn step(&self) -> Step {
+        match self.disposition {
+            Disposition::Proceed => Step::Plan { apply: true },
+            Disposition::DryRun => Step::Plan { apply: false },
+        }
+    }
     /// Adds the warning for each answer in `unused` whose question was
     /// skipped, at the position the question was skipped.
     pub(crate) fn warn_unused(&mut self, unused: &RawAnswers) {
@@ -1059,7 +1119,7 @@ fn skipped_descendants_ready(
                         return false;
                     }
                 }
-                Node::Message(_) | Node::Hook(_) => {}
+                Node::Message(_) | Node::Hook(_) | Node::Flow(_) => {}
             }
         }
         true
@@ -1244,6 +1304,10 @@ fn expressions(node: &Node) -> (Id, Vec<Expression<'_>>) {
             out.push(tmpl("message", &m.text));
             Id::parse("message").unwrap()
         }
+        Node::Flow(f) => {
+            out.extend(f.when.as_ref().map(|v| expr("when", v)));
+            Id::parse("flow").unwrap()
+        }
     };
     (id, out)
 }
@@ -1284,6 +1348,19 @@ fn unresolved(nodes: &[Node], available: &mut HashSet<String>, t: &Template) -> 
     }
     None
 }
+/// The outcome of one frame of the walk. Replaces the earlier `bool`, which
+/// was `true` for [`Walk::Complete`] and `false` for [`Walk::Blocked`].
+enum Walk {
+    /// The frame walked to its end.
+    Complete,
+    /// The walk stopped at a node that waits for an answer.
+    Blocked,
+    /// A flow `stop`/`abort` ended the interview.
+    Ended(EndKind),
+    /// A flow `{ skip: rest }` fired; the frame and every ancestor skip the
+    /// rest of their nodes.
+    SkipRest,
+}
 struct Advance<'a> {
     template: &'a Template,
     seed: InterviewSeed,
@@ -1298,12 +1375,18 @@ struct Advance<'a> {
     batch: Batch,
     /// The node that stopped the walk before its references had answers.
     blocked: Option<&'a Node>,
+    /// Raised by a fired flow `dry-run`; re-derived each walk.
+    disposition: Disposition,
+    /// Set by a fired flow `stop`/`abort`, with its label.
+    ended: Option<(EndKind, Option<String>)>,
+    /// A flow `{ skip: rest }` fired; propagates to every frame.
+    skip_rest: bool,
 }
 impl<'a> Advance<'a> {
     /// Stops the walk at `node`, which waits for an answer.
-    fn block(&mut self, node: &'a Node) -> Result<bool, EvalError> {
+    fn block(&mut self, node: &'a Node) -> Result<Walk, EvalError> {
         self.blocked = Some(node);
-        Ok(false)
+        Ok(Walk::Blocked)
     }
     /// Reaches `message` in interview order.
     fn message(&mut self, message: String) {
@@ -1327,8 +1410,20 @@ impl<'a> Advance<'a> {
             self.message(skipped_warning(id));
         }
     }
-    fn walk(&mut self, nodes: &'a [Node], prefix: &str, skip: bool) -> Result<bool, EvalError> {
+    fn walk(
+        &mut self,
+        nodes: &'a [Node],
+        prefix: &str,
+        ancestor_skip: bool,
+    ) -> Result<Walk, EvalError> {
+        // A flow `{ skip: group }` raises `skip` for the rest of this frame; a
+        // `{ skip: rest }` raises `self.skip_rest`, which forces skip here and
+        // in every ancestor frame on return.
+        let mut skip = ancestor_skip;
         for (i, node) in nodes.iter().enumerate() {
+            if self.skip_rest {
+                skip = true;
+            }
             let key = format!("{prefix}/{i}");
             match node {
                 Node::Question(q) => {
@@ -1479,8 +1574,13 @@ impl<'a> Advance<'a> {
                     {
                         return self.block(node);
                     }
-                    if !self.walk(&g.nodes, &key, !active)? {
-                        return Ok(false);
+                    match self.walk(&g.nodes, &key, !active)? {
+                        Walk::Blocked => return Ok(Walk::Blocked),
+                        Walk::Ended(kind) => return Ok(Walk::Ended(kind)),
+                        // A `{ skip: rest }` inside the group is carried on
+                        // `self.skip_rest`, which this frame observes at the top
+                        // of the next iteration.
+                        Walk::Complete | Walk::SkipRest => {}
                     }
                 }
                 Node::Hook(h) => {
@@ -1563,14 +1663,78 @@ impl<'a> Advance<'a> {
                         }
                     }
                 }
+                Node::Flow(f) => {
+                    // Same-batch readiness: a flow whose `when` references a
+                    // question still pending in this batch is not ready and
+                    // blocks, so it fires only after that answer commits.
+                    if !skip
+                        && f.when
+                            .as_ref()
+                            .is_some_and(|w| !expr_ready(w, &self.answers, self.template))
+                    {
+                        return self.block(node);
+                    }
+                    // Inert under an ancestor skip or a skip raised earlier in
+                    // this frame.
+                    if skip {
+                        continue;
+                    }
+                    let ctx = context(self.template, &self.answers, &self.seed);
+                    let active = f
+                        .when
+                        .as_ref()
+                        .map(|w| {
+                            w.eval(&ctx).map(|v| v.is_true()).map_err(|e| {
+                                fault(&Id::parse("flow").unwrap(), "when", Some(w.source()), e)
+                            })
+                        })
+                        .transpose()?
+                        .unwrap_or(true);
+                    if active {
+                        match f.action {
+                            FlowAction::Stop => {
+                                self.ended = Some((EndKind::Stop, f.label.clone()));
+                                return Ok(Walk::Ended(EndKind::Stop));
+                            }
+                            FlowAction::Abort => {
+                                self.ended = Some((EndKind::Abort, f.label.clone()));
+                                return Ok(Walk::Ended(EndKind::Abort));
+                            }
+                            // Idempotent raise: re-derived on every walk.
+                            FlowAction::DryRun => self.disposition = Disposition::DryRun,
+                            // Rest of the current group's siblings.
+                            FlowAction::Skip(SkipScope::Group) => skip = true,
+                            // Rest of the whole interview, climbing every frame.
+                            FlowAction::Skip(SkipScope::Rest) => {
+                                self.skip_rest = true;
+                                skip = true;
+                            }
+                        }
+                    }
+                }
             }
         }
-        Ok(true)
+        Ok(if self.skip_rest {
+            Walk::SkipRest
+        } else {
+            Walk::Complete
+        })
     }
 }
 fn advance(mut state: Advance<'_>) -> Result<Interview<'_>, EvalError> {
     let template = state.template;
-    let complete = state.walk(&template.interview, "", false)?;
+    let outcome = state.walk(&template.interview, "", false)?;
+    if let Walk::Ended(kind) = outcome {
+        let label = state.ended.take().and_then(|(_, label)| label);
+        return Ok(Interview::Ended(Ended {
+            kind,
+            last_messages: state.messages[state.step_start..].to_vec(),
+            messages: state.messages,
+            label,
+        }));
+    }
+    // A `{ skip: rest }` walked the whole interview in skip mode; both finish it.
+    let complete = matches!(outcome, Walk::Complete | Walk::SkipRest);
     let has_prompt = state
         .batch
         .items
@@ -1596,6 +1760,7 @@ fn advance(mut state: Advance<'_>) -> Result<Interview<'_>, EvalError> {
             messages: state.messages,
             hooks: state.hooks,
             now: state.seed.now,
+            disposition: state.disposition,
             skipped: state.skipped,
             step_start: state.step_start,
         }))
@@ -1613,10 +1778,16 @@ fn advance(mut state: Advance<'_>) -> Result<Interview<'_>, EvalError> {
         }))
     }
 }
-fn probe_skips(mut state: Advance<'_>) -> Skipped {
+/// Walks tentatively to classify a step's early-answer failures: which
+/// questions it skips, and whether a flow `stop`/`abort` ends it (which drops
+/// the early failures for every question the end prevents reaching).
+fn probe_skips(mut state: Advance<'_>) -> (Skipped, bool) {
     let template = state.template;
-    let _ = state.walk(&template.interview, "", false);
-    state.skipped
+    let ended = matches!(
+        state.walk(&template.interview, "", false),
+        Ok(Walk::Ended(_))
+    );
+    (state.skipped, ended)
 }
 impl<'a> Interview<'a> {
     pub fn start(template: &'a Template, seed: Seed) -> Result<Self, EvalError> {
@@ -1646,6 +1817,9 @@ impl<'a> Interview<'a> {
             visited: HashSet::new(),
             batch: Batch::default(),
             blocked: None,
+            disposition: Disposition::default(),
+            ended: None,
+            skip_rest: false,
         })
     }
 }
@@ -1814,7 +1988,7 @@ impl<'a> Pending<'a> {
         }
         let mut answers = self.answers.clone();
         answers.extend(next);
-        let probe_skipped = probe_skips(Advance {
+        let (probe_skipped, probe_ended) = probe_skips(Advance {
             template: self.template,
             seed: self.seed.clone(),
             answers: answers.clone(),
@@ -1826,11 +2000,16 @@ impl<'a> Pending<'a> {
             visited: self.visited.clone(),
             batch: Batch::default(),
             blocked: None,
+            disposition: Disposition::default(),
+            ended: None,
+            skip_rest: false,
         });
-        // The error stands only when the step stops with the question
-        // active or not reached. A complete interview reached and skipped
-        // it; a template fault in the step is the error instead.
-        let stands = |id: &Id| !probe_skipped.contains_key(id);
+        // The error stands only when the step stops with the question active
+        // or not reached. A complete interview reached and skipped it; a
+        // template fault in the step is the error instead. A flow stop/abort
+        // ends the step, so an early failure for a question the end prevents
+        // reaching is dropped and the stop/abort stands.
+        let stands = |id: &Id| !probe_ended && !probe_skipped.contains_key(id);
         let dropped: Vec<Id> = unless_skipped
             .into_iter()
             .filter(|id| !stands(id))
@@ -1853,6 +2032,9 @@ impl<'a> Pending<'a> {
             visited: self.visited,
             batch: Batch::default(),
             blocked: None,
+            disposition: Disposition::default(),
+            ended: None,
+            skip_rest: false,
         })
         .map_err(AnswerError::Eval)
     }

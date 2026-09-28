@@ -151,6 +151,7 @@ fn one_shot(path: &Path, target: &Path) -> Value {
     let completed = loop {
         match interview {
             Interview::Complete(completed) => break completed,
+            Interview::Ended(_) => panic!("unexpected flow end"),
             Interview::Asking(pending) => {
                 interview = pending
                     .answer(std::mem::take(&mut raw))
@@ -773,6 +774,7 @@ fn explicit_null_differs_from_missing_in_one_shot_and_staged() {
         let one_shot = loop {
             match interview {
                 Interview::Complete(completed) => break completed,
+                Interview::Ended(_) => panic!("unexpected flow end"),
                 Interview::Asking(pending) => {
                     interview = pending.answer(Default::default()).unwrap()
                 }

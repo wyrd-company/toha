@@ -32,6 +32,8 @@ fn run(fixture: &Path, target: &Path) -> Result<Vec<String>, (u8, String)> {
     let completed = loop {
         match interview {
             Interview::Complete(completed) => break completed,
+            // A flow stop/abort ends without a plan; report its messages, exit 0.
+            Interview::Ended(ended) => return Ok(ended.messages),
             Interview::Asking(pending) => {
                 interview =
                     pending
@@ -387,6 +389,7 @@ fn basic_example_batch_by_batch_matches_single_submission() {
     let one = loop {
         match state {
             Interview::Complete(c) => break c.answers,
+            Interview::Ended(_) => panic!("unexpected flow end"),
             Interview::Asking(p) => state = p.answer(RawAnswers::new()).unwrap(),
         }
     };
@@ -394,6 +397,7 @@ fn basic_example_batch_by_batch_matches_single_submission() {
     let batches = loop {
         match state {
             Interview::Complete(c) => break c.answers,
+            Interview::Ended(_) => panic!("unexpected flow end"),
             Interview::Asking(p) => {
                 let ids: Vec<_> = p
                     .batch()

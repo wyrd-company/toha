@@ -19,12 +19,15 @@ pub mod template;
 
 pub use apply::{Applied, ApplyError, ApplyOptions};
 pub use interview::{
-    Answer, AnswerError, Answers, Batch, CheckError, Completed, EvalError, Interview, Item,
-    Pending, Prompt, PromptKind, RawAnswer, RawAnswers, Rejection, RejectionKind, Rejections, Seed,
+    Answer, AnswerError, Answers, Batch, CheckError, Completed, Disposition, EndKind, Ended,
+    EvalError, Interview, Item, Pending, Prompt, PromptKind, RawAnswer, RawAnswers, Rejection,
+    RejectionKind, Rejections, Seed, Step,
 };
 pub use plan::{Content, Plan, PlanError, PlannedFile, PlannedHook, PlannedProgram, TargetPath};
 pub use review::{
     HookSurface, HookSurfaceDiff, HookView, ReviewDigest, ReviewError, ScriptDigest, Trust,
     evaluate_trust,
 };
-pub use template::{Id, LoadError, Node, Problem, Question, QuestionKind, Template};
+pub use template::{
+    FlowAction, FlowNode, Id, LoadError, Node, Problem, Question, QuestionKind, SkipScope, Template,
+};

@@ -96,6 +96,7 @@ $defs:
       - $ref: "#/$defs/group"
       - $ref: "#/$defs/hook-node"
       - $ref: "#/$defs/message-node"
+      - $ref: "#/$defs/flow-node"
   question:
     type: object
     additionalProperties: false
@@ -228,6 +229,34 @@ $defs:
     properties:
       message:
         $ref: "#/$defs/template"
+      when:
+        $ref: "#/$defs/when"
+  flow-node:
+    description: >-
+      A control node that steers the interview. It carries one control action
+      and the usual `when`/`label` siblings; it has no id and records no answer.
+      The exact action value and the placement of `{ skip: group }` (only inside
+      a group) are validated when the template loads, with a message that names
+      the corrective form.
+    type: object
+    required: [ flow ]
+    properties:
+      flow:
+        description: >-
+          The control action: `stop`, `abort` (stop and remove the staged
+          record), `dry-run` (plan without writing), `{ skip: rest }`, or
+          `{ skip: group }`.
+        oneOf:
+          - type: string
+          - type: object
+            additionalProperties: false
+            required: [ skip ]
+            properties:
+              skip:
+                type: string
+      label:
+        description: A diagnostic name reported when the action fires.
+        type: string
       when:
         $ref: "#/$defs/when"
   file-rule:

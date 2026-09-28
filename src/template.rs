@@ -90,6 +90,36 @@ pub enum Node {
     Group(Group),
     Message(Message),
     Hook(HookNode),
+    Flow(FlowNode),
+}
+/// A control node: a peer of message/hook/computed. It has no id, records no
+/// answer, and fires once at its position when its `when` is true (or always,
+/// when `when` is absent). The action is declared data, never inferred.
+#[derive(Debug)]
+pub struct FlowNode {
+    /// Reused `when`; `None` ⇒ always fires at its position.
+    pub when: Option<Expr>,
+    /// Optional diagnostic name; the node has no id.
+    pub label: Option<String>,
+    pub action: FlowAction,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlowAction {
+    /// End the interview: write no files, run no hooks.
+    Stop,
+    /// Stop, and additionally remove the target's staged record.
+    Abort,
+    /// Complete normally but suppress the apply (plan only).
+    DryRun,
+    Skip(SkipScope),
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkipScope {
+    /// Skip every remaining question in the interview.
+    Rest,
+    /// Skip the remaining siblings of the enclosing group; a load error at the
+    /// top level, which names `{ skip: rest }`.
+    Group,
 }
 #[derive(Debug)]
 pub struct Question {
@@ -563,7 +593,46 @@ impl Builder {
         }
         builder.build().expect("validated globs")
     }
-    fn nodes(&mut self, values: &[Value], prefix: &str) -> Vec<Node> {
+    /// Parses a `flow` action value. `in_group` is true when the flow node is
+    /// inside a group, which `{ skip: group }` requires.
+    fn flow_action(
+        &mut self,
+        value: Option<&Value>,
+        path: &str,
+        in_group: bool,
+    ) -> Option<FlowAction> {
+        let unknown = |b: &mut Self| {
+            problem(
+                &mut b.problems,
+                path,
+                "flow action must be stop, abort, dry-run, or { skip: rest | group }",
+            );
+            None
+        };
+        match value {
+            Some(Value::String(action)) => match action.as_str() {
+                "stop" => Some(FlowAction::Stop),
+                "abort" => Some(FlowAction::Abort),
+                "dry-run" => Some(FlowAction::DryRun),
+                _ => unknown(self),
+            },
+            Some(Value::Object(map)) => match map.get("skip").and_then(Value::as_str) {
+                Some("rest") => Some(FlowAction::Skip(SkipScope::Rest)),
+                Some("group") if in_group => Some(FlowAction::Skip(SkipScope::Group)),
+                Some("group") => {
+                    problem(
+                        &mut self.problems,
+                        path,
+                        "skip: group needs an enclosing group; use { skip: rest } to skip the rest of the interview",
+                    );
+                    None
+                }
+                _ => unknown(self),
+            },
+            _ => unknown(self),
+        }
+    }
+    fn nodes(&mut self, values: &[Value], prefix: &str, in_group: bool) -> Vec<Node> {
         let mut result = Vec::new();
         for (i, value) in values.iter().enumerate() {
             let path = format!("{prefix}[{i}]");
@@ -571,6 +640,31 @@ impl Builder {
                 continue;
             };
             let when = self.expr(map.get("when"), &format!("{path}.when"), &[]);
+            if map.contains_key("flow") {
+                // `flow` is a node kind; it carries only `when` and `label`.
+                for key in [
+                    "id", "type", "prompt", "computed", "group", "nodes", "message", "hook",
+                ] {
+                    if map.contains_key(key) {
+                        problem(
+                            &mut self.problems,
+                            format!("{path}.flow"),
+                            format!("flow is a node kind; it cannot be combined with {key}"),
+                        );
+                    }
+                }
+                if let Some(action) =
+                    self.flow_action(map.get("flow"), &format!("{path}.flow"), in_group)
+                {
+                    let label = map.get("label").and_then(Value::as_str).map(str::to_owned);
+                    result.push(Node::Flow(FlowNode {
+                        when,
+                        label,
+                        action,
+                    }));
+                }
+                continue;
+            }
             if map.contains_key("hook") {
                 if let Some(hook) = map
                     .get("hook")
@@ -586,7 +680,7 @@ impl Builder {
                 let children = map
                     .get("nodes")
                     .and_then(Value::as_array)
-                    .map(|v| self.nodes(v, &format!("{path}.nodes")))
+                    .map(|v| self.nodes(v, &format!("{path}.nodes"), true))
                     .unwrap_or_default();
                 if let Some(name) = name {
                     result.push(Node::Group(Group {
@@ -800,7 +894,11 @@ impl Template {
                 }
             }
         }
-        let interview = b.nodes(raw.interview.as_deref().unwrap_or_default(), "interview");
+        let interview = b.nodes(
+            raw.interview.as_deref().unwrap_or_default(),
+            "interview",
+            false,
+        );
         // Output expressions see the complete interview, including computed answers.
         fn collect_answers(nodes: &[Node], names: &mut HashSet<String>) {
             for node in nodes {
@@ -812,7 +910,7 @@ impl Template {
                         names.insert(c.id.as_str().into());
                     }
                     Node::Group(g) => collect_answers(&g.nodes, names),
-                    Node::Message(_) | Node::Hook(_) => {}
+                    Node::Message(_) | Node::Hook(_) | Node::Flow(_) => {}
                 }
             }
         }

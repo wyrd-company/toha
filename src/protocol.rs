@@ -3,8 +3,8 @@
 //   implements: interview-protocol
 // ---
 use crate::{
-    AnswerError, Batch, Completed, EvalError, Id, Interview, Item, Pending, Prompt, PromptKind,
-    RawAnswer, RawAnswers, Rejections, Template,
+    AnswerError, Batch, Completed, Disposition, EndKind, Ended, EvalError, Id, Interview, Item,
+    Pending, Prompt, PromptKind, RawAnswer, RawAnswers, Rejections, Template,
     staging::{CanonicalTarget, StagedRecord},
 };
 use indexmap::IndexMap;
@@ -157,8 +157,29 @@ pub fn complete_document(completed: &Completed, context: &Context) -> Value {
         .iter()
         .map(|(id, answer)| (id.to_string(), answer.to_json()))
         .collect();
-    json!({"protocol":1, "status":"complete", "context":context_value(context),
-        "answers":values, "messages":completed.last_messages})
+    let mut document = json!({"protocol":1, "status":"complete", "context":context_value(context),
+        "answers":values, "messages":completed.last_messages});
+    // Omitted for `Proceed`, so an ordinary completion is byte-identical to a
+    // pre-feature build.
+    if completed.disposition() == Disposition::DryRun {
+        document["disposition"] = json!("dry-run");
+    }
+    document
+}
+/// The document for a flow `stop`/`abort`. The only serializer of an end, used
+/// by the headless and staged drivers, so their bytes match for identical
+/// submissions.
+pub fn ended_document(ended: &Ended, context: &Context) -> Value {
+    let kind = match ended.kind() {
+        EndKind::Stop => "stop",
+        EndKind::Abort => "abort",
+    };
+    let mut document = json!({"protocol":1, "status":"ended", "context":context_value(context),
+        "kind":kind, "messages":ended.last_messages});
+    if let Some(label) = ended.label() {
+        document["label"] = json!(label);
+    }
+    document
 }
 
 static SCHEMA: LazyLock<Value> = LazyLock::new(|| {
@@ -209,6 +230,11 @@ pub enum Headless<'a> {
         rejections: Rejections,
         accepted: Vec<IndexMap<String, Value>>,
     },
+    /// A flow `stop`/`abort` ended the interview.
+    Ended {
+        ended: Ended,
+        accepted: Vec<IndexMap<String, Value>>,
+    },
 }
 pub fn answer_headless<'a>(
     template: &Template,
@@ -221,27 +247,30 @@ pub fn answer_headless<'a>(
     // questions are reached. Later batches take their defaults.
     let mut remaining = document;
     loop {
-        let Interview::Asking(pending) = interview else {
-            let Interview::Complete(mut completed) = interview else {
-                unreachable!()
-            };
-            // Only an interview complete before any submission leaves answers.
-            if let Some(id) = remaining.keys().find(|id| !template.has_question_id(id)) {
-                return Err(EvalError {
-                    id: id.clone(),
-                    field: "answer",
-                    message: "is not a question in this template".into(),
-                    expression: None,
-                    config_key: None,
+        let pending = match interview {
+            Interview::Asking(pending) => pending,
+            Interview::Complete(mut completed) => {
+                // Only an interview complete before any submission leaves answers.
+                if let Some(id) = remaining.keys().find(|id| !template.has_question_id(id)) {
+                    return Err(EvalError {
+                        id: id.clone(),
+                        field: "answer",
+                        message: "is not a question in this template".into(),
+                        expression: None,
+                        config_key: None,
+                    });
+                }
+                // An interview complete before any submission skipped each of
+                // its questions, so none of these answers is used.
+                completed.warn_unused(&remaining);
+                return Ok(Headless::Completed {
+                    completed,
+                    accepted,
                 });
             }
-            // An interview complete before any submission skipped each of
-            // its questions, so none of these answers is used.
-            completed.warn_unused(&remaining);
-            return Ok(Headless::Completed {
-                completed,
-                accepted,
-            });
+            // A flow stop/abort ended the interview; any remaining answers are
+            // unused. The driver removes the staged record on `Abort`.
+            Interview::Ended(ended) => return Ok(Headless::Ended { ended, accepted }),
         };
         let submission = std::mem::take(&mut remaining);
         let raw: IndexMap<String, Value> = submission
