@@ -217,8 +217,8 @@ template-defaults:                 # keyed by stable template identity
 
 <section id="tested">
   <h2>Behaviors to prove</h2>
-  <section class="scrollable">
-    <h2>Falsifiable behaviors (B1–B14)</h2>
+  <section>
+    <h2>Falsifiable behaviors (B1–B7)</h2>
     <table>
       <thead><tr><th>Test</th><th>Proves</th><th>Fails if</th></tr></thead>
       <tbody>
@@ -229,6 +229,14 @@ template-defaults:                 # keyed by stable template identity
         <tr><td>B5 type_mismatch_is_attributed</td><td>ref mismatch → mapping file + winning preset file</td><td>either origin lost</td></tr>
         <tr><td>B6 only_used_is_validated</td><td>broken mapping for another template does not error</td><td>eager whole-config validation</td></tr>
         <tr><td>B7 cycles_impossible</td><td>preset store rejects a reference-shaped leaf</td><td>presets accepts a reference</td></tr>
+      </tbody>
+    </table>
+  </section>
+  <section>
+    <h2>Falsifiable behaviors (B8–B14)</h2>
+    <table>
+      <thead><tr><th>Test</th><th>Proves</th><th>Fails if</th></tr></thead>
+      <tbody>
         <tr><td>B8 identity_selects</td><td>duplicate short names stay separate by formal name</td><td>selection keys on short name</td></tr>
         <tr><td>B9 bundled_demo_selector</td><td>"toha-demo" key reaches the bundled demo</td><td>the reserved identity is not matched</td></tr>
         <tr><td>B10 precedence_total</td><td>local wins per key with its origin; siblings kept</td><td>value/origin split or destructive merge</td></tr>
