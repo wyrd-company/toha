@@ -55,17 +55,31 @@ deciding the confinement boundary for that mapping.
 Static files are copied byte-for-byte and never rendered (`plan.rs:381`,
 `Content::Copied`), so includes never apply to `static` matches.
 
-### Load-time reference validation
+### Load-time reference validation and ownership
 
-At load (`template.rs:845`), each `files` rule's source content is compiled via
-`b.tmpl(...)` purely to validate that referenced ids are defined earlier
-(`Builder::refs`, `template.rs:388`). Source-tree files are **not** validated at
-load — they are only compiled at plan time. `undeclared_variables` is a static
-per-AST analysis (`minijinja template.rs:425`); it does **not** follow
-includes. So a file that pulls variables in through an include partial cannot
-have those references validated by the current per-template analysis. Whether
-includes are validated at load (by walking the include graph) or only surface
-at render is a real design axis.
+At load (`template.rs:842`–`846`), each `files` rule's source content is read and
+compiled via `b.tmpl(...)` purely to validate that referenced ids are defined
+earlier (`Builder::refs`, `template.rs:388`). The compiled value is discarded;
+`FileRule` keeps only the source path (`template.rs:171`–`176`). `Plan::build`
+then reads and compiles that file again through `read_render` (`plan.rs:221`).
+This split is important: giving only the plan-time call an include-capable
+compiler cannot provide the promised pre-interview missing-partial and
+include-reference failures.
+
+The load-time caller order is concrete: command drivers call `Template::load`
+before `Interview::start` (`main.rs:830`–`840`) and before replay
+(`main.rs:901`–`909`). The include design must therefore make the loaded
+`Template` own the root-bound include capability, make each `FileRule` own its
+compiled include-capable body, and have `Builder` validate that body's unioned
+references while its `each` binding is in scope. `Plan::build` can render the
+stored body without rereading or recompiling it. Source-tree files remain
+undiscovered until `walk`, so they are still compiled at plan time through the
+same capability owned by `Template`.
+
+`undeclared_variables` is a static per-AST analysis (`minijinja
+template.rs:425`); it does **not** follow includes. A file that pulls variables
+in through a partial therefore needs the closure builder to union references
+from the selected transitive include graph before `Builder::refs` runs.
 
 ### Configuration documents are parsed as data, never rendered
 
@@ -87,10 +101,13 @@ render surface. The parse path never touches Jinja:
 Only afterwards are **individual string fields** selectively turned into
 templates: `Builder::tmpl` → `Tmpl::compile` (`template.rs:399`) and
 `Builder::expr` → `Expr::compile` (`template.rs:421`). Those compile through the
-same loaderless `jinja::environment()` as every render surface above, so a
-`{% include %}` written into a configuration field (a prompt, a default, an
-apply message, a `files:` `path:`) resolves against an environment holding only
-`"value"` and no loader — MiniJinja's own `TemplateNotFound`, never a partial.
+same loaderless `jinja::environment()` as every render surface above. Today,
+`multi_template` is disabled and the statement grammar is absent. Enabling that
+feature crate-wide would make “no loader” an insufficient boundary because the
+environment registers its current template as `"value"`. The design therefore
+adds a loaderless AST mode that rejects every multi-template statement before
+compilation; a `{% include %}` in a prompt, default, apply message, or `files:`
+`path:` is unavailable outside file bodies and never becomes a partial.
 
 Consequence for this design: the include capability is a property of the
 **render surface**, and configuration documents are not one. A field's origin —
@@ -154,6 +171,47 @@ Validates every `template.yml` path reference (file sources, script paths):
 `plan.rs:287` (`has_symlink_component`). So the codebase's standing policy is:
 **canonicalize and confine, and refuse symlinks rather than follow them.**
 
+## MiniJinja include grammar and feature gates (minijinja 2.24.0)
+
+Toha declares `minijinja` with `default-features = false` and currently enables
+only `builtins`, `serde`, `json`, `macros`, and `loop_controls` (`Cargo.toml:30`).
+The current `cargo tree -e features -i minijinja` has neither feature required by
+the selected design:
+
+- `unstable_machinery` exposes `machinery::parse` and the AST (`lib.rs:253`–`267`).
+- The separate `multi_template` feature exposes the parser arms and AST variants
+  for `block`, `extends`, `include`, `import`, and `from ... import`
+  (`parser.rs:865`–`874`; `ast.rs:67`–`76`). It also enables include execution
+  (`vm/mod.rs:830`). `unstable_machinery` does not imply `multi_template`.
+
+The implementation therefore needs both features. Because `multi_template`
+widens MiniJinja's grammar as a group, the include-capable compiler must walk
+every statement, including nested statement bodies, and reject `block`,
+`extends`, `import`, and `from ... import`. This preserves the approved change:
+only `include` becomes available on file bodies. Merely omitting names from the
+pre-registered closure is insufficient because an import or extends can name a
+template that an include has already caused the closure to register.
+
+The feature is crate-wide, so the loaderless `Tmpl::compile` path also begins to
+parse these statements. That environment registers the current template as the
+publicly guessable name `"value"` (`jinja.rs:98`), so “no loader” alone is not a
+complete capability boundary: `{% include "value" %}` or a sibling statement
+could reach the current template. The type boundary therefore needs two AST
+modes. Ordinary `Tmpl` rejects every multi-template statement; `FileTmpl`
+admits `include` and rejects `block`, `extends`, `import`, and
+`from ... import`. `Expr` cannot contain statements and needs no change.
+
+The parsed `Include` has `name: Expr` and `ignore_missing: bool`
+(`ast.rs:357`–`364`). MiniJinja accepts `with context` and `without context` for
+syntax compatibility but deliberately gives both no separate meaning
+(`parser.rs:1185`–`1202`, `1240`–`1245`). At execution it treats a sequence as
+ordered candidates, requires each tried candidate to be a string, selects the
+first template found, and suppresses only the all-not-found result when
+`ignore_missing` is true (`vm/mod.rs:838`–`864`, `900`–`915`). These semantics
+can be reproduced by the static closure without a render-time loader: select
+and register the first confined candidate that exists; missing earlier
+candidates are fallbacks, while an error opening an existing candidate is not.
+
 ## MiniJinja loader internals (minijinja 2.24.0)
 
 Read from the vendored crate; these shape what a confining loader must add.
@@ -183,8 +241,9 @@ Read from the vendored crate; these shape what a confining loader must add.
   non-existing template" (`vm/mod.rs:902`). Precise cycle diagnostics require
   static graph walking; lazy loading gives only the generic recursion message.
   This is a distinguishing design axis.
-- `{% include %}` supports `ignore missing` and a list of candidate names
-  (`vm/mod.rs:840`), which the design may or may not choose to expose.
+- `{% include %}` supports `ignore missing` and an ordered list of candidate
+  names (`vm/mod.rs:838`–`915`). The final design preserves those literal forms
+  while continuing to reject computed names.
 
 ## Trust and coordination seam
 
