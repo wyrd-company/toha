@@ -1,0 +1,302 @@
+<section id="title">
+  <p class="kicker">Toha 0.2.0 · Design brief · Postplan</p>
+  <h1>Template-specific configured defaults</h1>
+  <p>Scope a default answer to a template <em>identity</em>, so two templates that both ask <code>title</code> can get different defaults — while global-by-id defaults stay unchanged and the pure interview engine learns nothing new.</p>
+  <p>
+    <span class="tag">task 1073</span>
+    <span class="tag">role: architect</span>
+    <span class="tag warn">Phase C — awaiting Bob's approval</span>
+    <span class="tag">paired impl 1058</span>
+  </p>
+  <p class="muted">Design revision: git 46b8acb · base epic/second-release bbebb35 · consumes bundled-demo f949b6a</p>
+</section>
+
+<section id="task">
+  <h2>Task</h2>
+  <p>Design template-specific configured defaults for Toha 0.2.0 and obtain Bob's explicit approval of the exact design revision before the paired implementation (1058) starts. This task produces a reviewed design package and this brief; it does not implement the feature.</p>
+  <p><strong>The problem.</strong> Toha's <code>defaults</code> config maps a <em>question id</em> to a value; that value replaces the matching question's <code>default</code> in <em>every</em> template that asks that id. Two templates that both ask <code>title</code> are forced to share one default. There is no way to say "for template X default title = A; for template Y default title = B."</p>
+  <p><strong>The shape.</strong> Add an identity-scoped tier — <code>template-defaults</code>, keyed by a template's stable <code>formal_name</code> — that overlays the preserved global-by-id tier. All identity resolution happens at the config/resolve boundary and flattens into the same <code>Seed.defaults: IndexMap&lt;Id, RawAnswer&gt;</code> the engine already consumes.</p>
+</section>
+
+<section id="pre-mortem">
+  <h2>Pre-mortem — it failed. Why?</h2>
+  <ul>
+    <li><strong>Keyed on the wrong thing.</strong> Defaults keyed on a short name or an ambiguous selector let two templates collide, or made a config key raise the exit-5 ambiguity error. <span class="muted">Mitigation: key on <code>formal_name</code>, matched by equality against the already-resolved identity — never re-resolved through the registry.</span></li>
+    <li><strong>Precedence was not total.</strong> A question id matched by both a global and a scoped default, in different layers, resolved differently across runs. <span class="muted">Mitigation: total <code>(specificity, layer)</code> order; only the winner is validated; same-layer/same-specificity ties are refused, not guessed.</span></li>
+    <li><strong>The engine drifted.</strong> Identity leaked into the pure engine, so the driver paths diverged or resume froze stale defaults. <span class="muted">Mitigation: resolver lives in a boundary module; engine gains only an extracted pure validator; defaults re-resolve on resume.</span></li>
+    <li><strong>A supported capability was narrowed silently.</strong> Global-by-id was removed or reinterpreted without approval. <span class="muted">Mitigation: global-by-id kept unchanged as the base tier (D3); any narrowing is flagged for explicit approval.</span></li>
+    <li><strong>Defaults vanished on a version bump.</strong> A ref-pinned template lost its defaults when the ref changed. <span class="muted">Surfaced as decision D4, not silently decided.</span></li>
+  </ul>
+</section>
+
+<section id="seams">
+  <h2>Module and seam</h2>
+  <p>Three boundary files touched, one new module (<code>src/cli/defaults.rs</code>). The engine is untouched except for one extracted pure validator it already contained. Below <code>resolve_defaults</code> the flow is byte-for-byte the existing path.</p>
+  <pre><code class="language-text">   config file(s): defaults + template-defaults
+        |  parse ONCE at the boundary (ids -> Id; selectors -> domain form)
+        v
+   src/config.rs -- Config { defaults, template_defaults, .. }        [+1 field]
+        v
+   src/cli/resolve.rs -- ResolvedTemplate (UNCHANGED) + Registry
+        |  TemplateIdentity::of(&resolved, &registry)   <- identity derived, not stored
+        v
+   src/cli/defaults.rs (NEW) -- resolve_defaults(template, identity, config)
+        |   match identity against scoped entries -> overlay onto global
+        |   validate only the WINNING value per id (via interview::validate_default)
+        |   -> IndexMap&lt;Id, RawAnswer&gt;          <- identity flattened away here
+        v
+   src/main.rs::seed / continue / apply / progress
+        v
+   Seed { now, defaults }
+        v
+   src/interview.rs -- PURE ENGINE, identity-UNAWARE               [behavior UNCHANGED]</code></pre>
+</section>
+
+<section id="interface">
+  <h2>Public interfaces expected</h2>
+  <section>
+    <h2>Boundary resolver (new)</h2>
+    <pre><code class="language-rust">/// Resolve the effective configured defaults for ONE resolved template.
+/// Total & deterministic; only the WINNING value per id is validated; re-runnable
+/// so all driver paths and resume agree.
+pub fn resolve_defaults(
+    template: &Template,
+    identity: &TemplateIdentity<'_>,
+    config: &Config,
+) -> Result&lt;IndexMap&lt;Id, RawAnswer&gt;, DefaultsError&gt;;
+
+impl TemplateIdentity&lt;'_&gt; {
+    pub fn of&lt;'a&gt;(resolved: &'a ResolvedTemplate, registry: &'a Registry)
+        -> TemplateIdentity&lt;'a&gt;;
+}</code></pre>
+  </section>
+  <section>
+    <h2>Pure helper extracted from the engine</h2>
+    <pre><code class="language-rust">/// Validate one configured-default value against question `id`'s answer type.
+/// Ok(None) when the template does not define `id`. Pure; NO key attribution.
+/// configured_defaults is reimplemented on this and keeps its exact
+/// `configuration key defaults.&lt;id&gt;` text (UNCHANGED). EvalError gains no field.
+pub fn validate_default(template: &Template, id: &Id, value: &Value)
+    -> Result&lt;Option&lt;RawAnswer&gt;, String&gt;;</code></pre>
+  </section>
+  <section>
+    <h2>Errors and wiring</h2>
+    <pre><code class="language-rust">pub enum DefaultsError {
+    /// Winning value wrong type. key = defaults | template-defaults["&lt;sel&gt;"] (+layer/file)
+    Kind { key: String, id: Id, message: String },
+    /// Equal-specificity, equal-layer tie (D2=qualified only). Refused, never guessed.
+    Conflict { id: Id, layer: ConfigLayer, first: String, second: String },
+}
+
+// src/main.rs — the four call sites already hold `resolved` and `registry`:
+let identity = TemplateIdentity::of(&resolved, &registry);
+let defaults = cli::defaults::resolve_defaults(&template, &identity, &config)?;
+// seed :422, continue :664, apply-staged :902, progress :496</code></pre>
+  </section>
+</section>
+
+<section id="data">
+  <h2>Data structures expected</h2>
+  <section>
+    <h2>Config (+1 field; defaults unchanged)</h2>
+    <pre><code class="language-rust">pub struct Config {
+    pub templates_paths: Vec&lt;PathBuf&gt;,
+    pub local_templates_paths: Vec&lt;PathBuf&gt;,
+    pub defaults: IndexMap&lt;Id, Value&gt;,             // UNCHANGED: global-by-id base tier
+    pub template_defaults: Vec&lt;TemplateDefault&gt;,   // NEW: system, then user, then local
+    pub hosts: IndexMap&lt;String, String&gt;,
+    pub local_config_name: String,
+}
+
+pub struct TemplateDefault {
+    pub selector: Selector,           // how this block names a template
+    pub layer: ConfigLayer,           // System | User | Local — layer tiebreak
+    pub values: IndexMap&lt;Id, Value&gt;,  // ids parsed at load
+}
+
+pub enum Selector {                   // D2 = minimal: Formal only
+    Formal(String),                   // matched by equality against the resolved identity
+    // reserved for D2 = qualified: Alias(String), Name(String), Path(PathBuf)
+}
+
+enum Specificity { Global = 0, /* future Glob/Tag = 1, */ Identity = 2 }</code></pre>
+  </section>
+  <section>
+    <h2>Config surface the user writes</h2>
+    <pre><code class="language-yaml">defaults:                       # global-by-id — UNCHANGED
+  title: Untitled
+  include_summary: false
+
+template-defaults:              # NEW — keyed by stable identity
+  "gh:owner/collection":
+    title: Team Notes
+    include_summary: true
+  "toha-demo":                  # the reserved bundled-demo identity
+    title: Demo Title
+  "/home/me/work/note-template":
+    title: Work Note</code></pre>
+    <p class="muted">A template-specific default beats a global default of the same id; within each tier, local &gt; user &gt; system.</p>
+  </section>
+  <section>
+    <h2>Proposed schema edit (applied by 1058)</h2>
+    <pre><code class="language-yaml">$defs:
+  template-selector:            # D2=minimal: non-empty identity string
+    type: string
+    minLength: 1
+  template-defaults:
+    type: object
+    propertyNames: { $ref: "#/$defs/template-selector" }
+    additionalProperties: { $ref: "#/$defs/defaults" }   # reuse inner id shape
+# add template-defaults to shared-config AND local-config properties</code></pre>
+  </section>
+</section>
+
+<section id="tested">
+  <h2>Behaviors to prove</h2>
+  <section class="scrollable">
+    <h2>Falsifiable behaviors (B1–B14)</h2>
+    <table>
+      <thead><tr><th>Test</th><th>What it proves</th><th>Fails if</th></tr></thead>
+      <tbody>
+        <tr><td>B1 two_templates_one_id_two_defaults</td><td>distinct identities get distinct defaults</td><td>a bare id still forces one shared default</td></tr>
+        <tr><td>B2 global_preserved</td><td>global-only config byte-identical to today, all paths</td><td>global-by-id was narrowed</td></tr>
+        <tr><td>B3 specificity_beats_global</td><td>scoped overrides global for the same id</td><td>overlay direction is wrong</td></tr>
+        <tr><td>B4 layer_within_scope</td><td>local scoped beats system scoped</td><td>layer order is not local&gt;user&gt;system</td></tr>
+        <tr><td>B5 specificity_dominates_layer</td><td>pins decision D1</td><td>layer-primary was chosen instead</td></tr>
+        <tr><td>B6 nonmatching_identity_silent</td><td>unmatched scoped key is inert</td><td>unknown-key matching leaks or errors</td></tr>
+        <tr><td>B7 invalid_scoped_type_attribution</td><td>error names template-defaults["&lt;I&gt;"].id + file</td><td>error says defaults.id or omits the file</td></tr>
+        <tr><td>B8 duplicate_short_name_isolation</td><td>defaults key on formal name, not short name</td><td>defaults key on short name</td></tr>
+        <tr><td>B9 re_resolution_on_resume</td><td>defaults re-read from live config on resume</td><td>defaults were frozen into the staged record</td></tr>
+        <tr><td>B10 bundled_demo_identity</td><td>"toha-demo" key seeds the bundled demo, offline</td><td>the reserved identity is not keyable</td></tr>
+        <tr><td>B11 driver_parity</td><td>identical output across all five paths</td><td>any path bypasses resolve_defaults</td></tr>
+        <tr><td>B12 local_layer_participates</td><td>local .toha.yml scoped block applies</td><td>scoping is silently system/user-only</td></tr>
+        <tr><td>B13 only_the_winner_is_validated</td><td>shadowed wrong-typed value does not raise</td><td>shadowed values are parsed</td></tr>
+        <tr><td>B14 engine_purity</td><td>configured_defaults/Seed unchanged; crate build identical</td><td>any engine-surface change</td></tr>
+      </tbody>
+    </table>
+  </section>
+</section>
+
+<section id="out-of-scope">
+  <h2>Out of scope</h2>
+  <ul>
+    <li>The pure interview engine and its <code>Seed.defaults</code> contract; <code>configured_defaults</code>'s signature; <code>Template</code>, <code>Plan</code>, <code>apply</code>, <code>protocol</code>, <code>staging</code>, <code>StagedRecord</code>.</li>
+    <li><code>ResolvedTemplate</code>'s shape and the <code>&lt;TEMPLATE&gt;</code> classification order.</li>
+    <li>The trust model — a scoped default never influences trust and never runs a hook to produce a value.</li>
+    <li>Registry writes — defaults live in config, not <code>templates.yml</code>.</li>
+    <li>Glob / tag / profile mechanisms (future tier, not built).</li>
+    <li>Any new subcommand, flag, trust, permission, timeout, pinned-version check, or subprocess.</li>
+    <li>Any production or shared schema/spec edits in this design task — described only; applied by 1058.</li>
+  </ul>
+</section>
+
+<section id="review">
+  <h2>Reviewer focus</h2>
+  <p>What the adversarial reviewer should attack:</p>
+  <ul>
+    <li><strong>Is the precedence total?</strong> Find a <code>(id)</code> that resolves to two values or none, or that depends on config-file read order outside the refused tie.</li>
+    <li><strong>Is the engine actually pure?</strong> Find a path where identity leaks past <code>resolve_defaults</code>, or where <code>validate_default</code> extraction changes an existing message or signature.</li>
+    <li><strong>Is any selection form ambiguous?</strong> Find a config key that can raise exit-5, or two templates that still collide.</li>
+    <li><strong>Does resume freeze defaults?</strong> Find a path where a staged record carries a default instead of re-resolving.</li>
+    <li><strong>Is a supported capability narrowed?</strong> Confirm global-by-id is untouched under the recommended decisions.</li>
+    <li><strong>D4 blast radius.</strong> Is the ref-sensitive key behavior coherent and documented across git / installed / folder templates?</li>
+  </ul>
+</section>
+
+<section id="alternatives">
+  <h2>Alternatives explored</h2>
+  <section>
+    <h2>Arena candidates (base + grafts)</h2>
+    <table>
+      <thead><tr><th>Candidate</th><th>Shape</th><th>Score</th><th>Outcome</th></tr></thead>
+      <tbody>
+        <tr><td>C1 overlay</td><td><code>template-defaults</code> map keyed by formal name</td><td>28</td><td><strong>base</strong></td></tr>
+        <tr><td>C2 rule-list</td><td>ordered <code>[{match, set}]</code>, selector normalized through registry</td><td>27</td><td>graft: specificity ordinal; rejected as base (reintroduces ambiguity)</td></tr>
+        <tr><td>C3 qualified keys</td><td><code>formal:</code>/<code>alias:</code>/<code>name:</code>/<code>path:</code> enum</td><td>28</td><td>graft: boundary-owned validation, identity match, path portability; qualifiers deferred (D2)</td></tr>
+      </tbody>
+    </table>
+    <p class="muted">Orchestrator scores matched the readonly cross-judge exactly. gpt-5.6 runner slots dropped out (unavailable); re-run on inherit-parent — cross-family diversity lost this run.</p>
+  </section>
+  <section>
+    <h2>Broader reusable-default mechanisms</h2>
+    <table>
+      <thead><tr><th>Mechanism</th><th>Accidental cross-template</th><th>Author dependence</th><th>Identity stability</th></tr></thead>
+      <tbody>
+        <tr><td>Identity-scoped (this design)</td><td>none</td><td>none</td><td>high</td></tr>
+        <tr><td>Formal-name glob (recommended future)</td><td>bounded to a typed namespace</td><td>none</td><td>high</td></tr>
+        <tr><td>Tags / traits</td><td>wide</td><td>high</td><td>low</td></tr>
+        <tr><td>Named answer profiles</td><td>none (explicit)</td><td>none</td><td>high</td></tr>
+      </tbody>
+    </table>
+    <p class="muted">Recommended future direction: formal-name glob as the reserved <code>Specificity::Glob(1)</code> tier — additive, not a reshape. Not built in this slice.</p>
+  </section>
+</section>
+
+<section id="decisions">
+  <h2>Decisions needed first (Bob)</h2>
+  <section>
+    <h2>D1 — Precedence primary axis</h2>
+    <p><strong>Specificity primary</strong> (recommended) vs layer primary.</p>
+    <p>A template-specific default beats a global one even from a higher layer — precision states intent. Consequence: a <em>system</em> scoped default beats a <em>local</em> global default. All three candidates recommend specificity primary; pinned by B5 either way. <span class="tag warn">low-reversibility once shipped</span></p>
+  </section>
+  <section>
+    <h2>D2 — Selector surface</h2>
+    <p><strong>Minimal</strong> (recommended): keys are the stable formal identity only — smallest vocabulary, zero new ambiguity, solves the stated problem.</p>
+    <p>vs <strong>qualified</strong> (<code>formal:</code>/<code>alias:</code>/<code>name:</code>/<code>path:</code>): richer — alias addressing and an intentional short-name broadcast — but wider vocabulary, with <code>alias:</code>/<code>name:</code> registry-relative. The base architecture makes qualified an additive later change. <span class="tag">additive either way</span></p>
+  </section>
+  <section>
+    <h2>D3 — Global-by-id disposition</h2>
+    <p><strong>Keep <code>defaults</code> unchanged as the base tier</strong> (recommended): purely additive, no narrowing, no approval needed.</p>
+    <p>vs deprecate/fold it away — <span class="tag err">removes a supported capability; requires explicit approval</span>. Not recommended. This design proposes <strong>no</strong> supported-capability restriction.</p>
+  </section>
+  <section>
+    <h2>D4 — What defines a default's identity key across versions</h2>
+    <p>The key is the resolved <code>formal_name</code>. A ref-pinned git address (<code>gh:a/b@v1</code> vs <code>@v2</code>) is a <em>different</em> key, so a ref bump silently drops its scoped defaults; an installed template updated in place keeps its key.</p>
+    <p><strong>Recommend (i)</strong> ref-sensitive exact <code>formal_name</code>, documented (users key on the unpinned/installed formal name for stability) vs (ii) a ref-insensitive convenience key. Local path keys resolve relative to the config file, so committed <code>.toha.yml</code> stays portable. <span class="tag warn">cross-judge-flagged risk</span></p>
+  </section>
+</section>
+
+<section id="risks">
+  <h2>Risks and disclosures</h2>
+  <ul>
+    <li><strong>No supported-capability restriction, permission/access change, timeout, pinned check, or application subprocess</strong> is introduced — provided D2 = minimal or qualified (both additive) and D3 = keep unchanged. Deck inclusion is disclosure, not approval.</li>
+    <li><strong>D1 and D4</strong> are the low-reversibility choices; both are put to Bob with a recommendation and a pinning test, not silently decided.</li>
+    <li><strong>Cross-family judging unavailable</strong> this run; base pick rests on one family's scoring plus the orchestrator's independent read, which agreed exactly. Recorded limitation.</li>
+    <li>The <strong>global-by-id capability is preserved</strong> unless Bob separately approves a specific restriction.</li>
+  </ul>
+</section>
+
+<section id="size">
+  <h2>Size and complexity</h2>
+  <div class="two">
+    <div>
+      <h3>Size — ~M</h3>
+      <ul>
+        <li>One new boundary module <code>src/cli/defaults.rs</code></li>
+        <li><code>Selector</code>/<code>TemplateDefault</code>/<code>ConfigLayer</code> + one fold loop in <code>config.rs</code></li>
+        <li>One extracted pure <code>validate_default</code> in <code>interview.rs</code></li>
+        <li>Four one-line wiring changes in <code>main.rs</code></li>
+        <li>Schema/doc edits (owned by 1058); B1–B14 tests</li>
+        <li>Expected agent implementation time: ~a focused day</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Complexity — low–moderate</h3>
+      <ul>
+        <li>Hard part: the precedence table — a small total order over two enums</li>
+        <li>Everything else is pure matching and an overlay fold</li>
+        <li>No new concurrency, capability, or engine state</li>
+        <li>Engine purity preserved; grounding-proven seam</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section id="next">
+  <h2>Next</h2>
+  <ul>
+    <li>Bob reviews this exact revision and rules on D1–D4.</li>
+    <li>On approval, the design is marked complete; implementation 1058 is bound to the approved artifact revision, exact scope, interfaces, doc/schema impact, and the B1–B14 validation; both dependency graphs are rechecked.</li>
+    <li>If Bob requests changes, the same Postplan draft is revised, the new exact revision recorded, and Bob re-notified — approval of an old revision does not approve a changed one.</li>
+  </ul>
+</section>
