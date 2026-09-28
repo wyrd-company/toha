@@ -1059,23 +1059,12 @@ fn run(
                             }
                             Interview::Complete(completed)
                         }
-                        Headless::Ended { ended, accepted } => {
-                            saved.submissions.extend(accepted);
-                            // A stop leaves the recorded submissions resumable;
-                            // an abort discards the record entirely.
-                            if ended.kind() == EndKind::Abort {
-                                if let Err(e) = ended_removed(&ended, &target, &store) {
-                                    return Outcome::Error(e);
-                                }
-                            } else if !dry_run {
-                                if let Err(e) = store.save(&target, &saved) {
-                                    return Outcome::Error(e.to_string());
-                                }
-                            }
-                            return Outcome::Document(
-                                protocol::ended_document(&ended, &context(&target, &saved)),
-                                0,
-                            );
+                        // `apply` writes files or reports why it did not; a flow
+                        // end is a stderr notice and exit 0, like the terminal
+                        // route. The staged record is left as it was, except an
+                        // abort discards it.
+                        Headless::Ended { ended, .. } => {
+                            return ended_outcome(&ended, &target, &store);
                         }
                         Headless::Pending {
                             pending,
