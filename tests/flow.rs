@@ -275,6 +275,30 @@ fn drive_headless<'a>(template: &'a Template, document: Value) -> Interview<'a> 
 }
 
 #[test]
+fn b12_dry_run_disposition_is_re_derived_across_batches() {
+    // The dry-run flow fires in an early batch (its outcome is not stored on the
+    // pending interview) and must re-fire on the final walk so the completion
+    // still carries it. This is why the flow node is not `visited`-gated.
+    let (_dir, template) = tpl(
+        "name: sample
+interview:
+  - { id: mode, type: select, options: [apply, preview], prompt: Mode? }
+  - flow: dry-run
+    when: \"mode == 'preview'\"
+  - { id: name, type: text, prompt: Name? }
+",
+    );
+    // Batch 1 asks `mode` (the flow blocks on the pending reference).
+    let asking = answer(start(&template), json!({ "mode": "preview" }));
+    // Batch 2 asks `name`; the dry-run has fired but is not stored on `Pending`.
+    let done = answer(asking, json!({ "name": "x" }));
+    let Interview::Complete(completed) = done else {
+        panic!("expected complete");
+    };
+    assert_eq!(completed.disposition(), Disposition::DryRun);
+}
+
+#[test]
 fn b12_dry_run_disposition_rides_the_wire_complete_document() {
     let (dir, template) = tpl(
         "name: sample\ninterview:\n  - { id: mode, type: text, prompt: Mode? }\n  - flow: dry-run\n",
