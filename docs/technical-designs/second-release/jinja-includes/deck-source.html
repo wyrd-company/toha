@@ -14,6 +14,7 @@
   <h2>Task</h2>
   <p>Let a template author factor shared text into a <strong>partial</strong> and pull it in at render time with <code>{% include "partials/frontmatter.md" %}</code>. Today Jinja <code>include</code>/<code>import</code>/<code>extends</code> are disabled: every string compiles as a lone template named <code>"value"</code> in a fresh MiniJinja environment with no loader.</p>
   <ul>
+    <li><strong>Rendered file bodies only.</strong> <code>template.yml</code> and any document loaded through its YAML <code>!include</code> get no Jinja include processing — they are configuration, parsed as data. A file's role (body vs configuration) follows how it is referenced, not its extension: a generated <code>.yml</code>/<code>.yaml</code> body still gets includes.</li>
     <li>Included content stays <strong>inside the selected template root</strong>; no arbitrary filesystem access through the loader.</li>
     <li>Reject absolute paths, <code>..</code> traversal, and symlink escapes — including a symlink <em>inside</em> the root that resolves outside it.</li>
     <li>Preserve the YAML <code>!include</code> tag as a separate feature with its own diagnostics.</li>
@@ -38,6 +39,8 @@
   <p>One value object owns the single confinement seam; two file-body call sites in <code>plan.rs</code> construct the include-capable template. Everything else stays loaderless, so includes are inert there by construction.</p>
   <pre><code class="language-text">Template::load (template.rs)
   └─ root = folder.canonicalize()                    [existing]
+  └─ template.yml + YAML !include ─▶ serde_norway DATA (no Jinja) [existing]
+  └─ config string fields         ─▶ Tmpl / Expr (loaderless)  includes inert
 Plan::build (plan.rs)
   └─ let partials = Partials::rooted(&template.root)  ← built once, single source of truth
   ├─ walk() source file    ─▶ read_render(path, ctx, &partials)
@@ -126,6 +129,7 @@ fn read_render(path: &Path, ctx: &impl Serialize, partials: &Partials)
         <tr><td><code>include-nested</code></td><td>transitive composition; partials not emitted</td></tr>
         <tr><td><code>include-files-source</code></td><td><code>files:</code> rule source includes a partial</td></tr>
         <tr><td><code>include-partial-under-source-ignored</code></td><td>partial in source dir, <code>ignore</code>d: included, not emitted</td></tr>
+        <tr><td><code>include-yaml-body</code></td><td>a generated <code>.yaml</code> file body includes a partial — capability is by role, not extension (no YAML ban)</td></tr>
       </tbody>
     </table>
   </section>
@@ -147,6 +151,8 @@ fn read_render(path: &Path, ctx: &impl Serialize, partials: &Partials)
     <h2>Inertness &amp; separation guards</h2>
     <ul>
       <li>A source <em>file name</em> and an apply message / interview default each containing <code>{% include %}</code> render as today (no partial resolution) — proves the loaderless <code>Tmpl</code> path is untouched.</li>
+      <li><code>include-config-field-inert</code>: a <code>template.yml</code> string field containing <code>{% include "partials/x.md" %}</code> where the target <em>exists in the root</em> still does not resolve it — MiniJinja's generic <code>TemplateNotFound</code>, never Toha's <code>jinja include</code> wording. Proves configuration is not a render surface.</li>
+      <li><code>include-yaml-include-field-inert</code>: the same string delivered into a field <em>through a YAML <code>!include</code>-loaded fragment</em> behaves identically — <code>!include</code> composes data, the field stays loaderless.</li>
       <li>No Jinja-include message equals a YAML <code>!include</code> message; the existing <code>err-include-cycle</code>/<code>err-include-escape</code> fixtures still pass.</li>
       <li><strong>Sole-kill</strong>: invert <code>starts_with(root)</code>, drop the symlink refusal, drop absolute/<code>..</code> rejection each in turn → the matching negative fixture fails by name (symlink fixture holds an <em>in-root</em> symlink, the exhaustive shape).</li>
     </ul>
@@ -157,8 +163,9 @@ fn read_render(path: &Path, ctx: &impl Serialize, partials: &Partials)
   <h2>Out of scope</h2>
   <ul>
     <li><code>import</code>, <code>extends</code>; dynamic include targets (mode A).</li>
+    <li>Jinja include processing of <code>template.yml</code> and any document loaded through its YAML <code>!include</code> tag — configuration is parsed as data, never rendered.</li>
     <li>Includes on interview fields, expressions, path segments, hook fields, and (pending decision) apply messages.</li>
-    <li>Any change to YAML <code>!include</code>, <code>static</code>, <code>ignore</code>, or path/target confinement.</li>
+    <li>Any change to YAML <code>!include</code>, <code>static</code>, <code>ignore</code>, or path/target confinement; any extension-based rule on which files may be bodies or partials.</li>
     <li>Any <code>template.yml</code> schema key. Pure interview logic and all terminal/headless/staged/direct/crate paths are preserved.</li>
   </ul>
 </section>
@@ -168,6 +175,7 @@ fn read_render(path: &Path, ctx: &impl Serialize, partials: &Partials)
   <ul>
     <li><strong>Every escape vector at the one seam</strong>: absolute, <code>..</code>, and a symlink <em>inside</em> the root resolving outside it. Try to reach a file outside the root.</li>
     <li><strong>Surface leakage</strong>: can <code>{% include %}</code> resolve a partial from any non-file surface (path segment, interview field, message, hook)? It must not.</li>
+    <li><strong>Configuration boundary</strong>: does a <code>{% include %}</code> in a <code>template.yml</code> field — or one delivered through YAML <code>!include</code> — ever resolve a partial? It must not; configuration is data, not a render surface. And conversely, is a generated <code>.yml</code>/<code>.yaml</code> body wrongly denied includes by an extension rule?</li>
     <li><strong>Diagnostic collision</strong>: does any Jinja message read like the YAML <code>!include</code> feature?</li>
     <li><strong>Reference/cycle claims</strong> (mode A): is an include-only variable really validated at load? Is the cycle path real, or does it degrade to a recursion limit?</li>
     <li><strong>Driver purity</strong>: does anything attach a loader to the interview engine?</li>
@@ -224,7 +232,7 @@ fn read_render(path: &Path, ctx: &impl Serialize, partials: &Partials)
   <table>
     <thead><tr><th>Dimension</th><th>Estimate</th></tr></thead>
     <tbody>
-      <tr><td><strong>Size</strong> (agent implementation time)</td><td>Medium. One new value object + error enum in <code>src/jinja.rs</code>, two <code>plan.rs</code> call-site changes, the confined-closure/loader, ~10 fixtures, and the doc/spec edits.</td></tr>
+      <tr><td><strong>Size</strong> (agent implementation time)</td><td>Medium. One new value object + error enum in <code>src/jinja.rs</code>, two <code>plan.rs</code> call-site changes, the confined-closure/loader, ~13 fixtures (incl. configuration/<code>!include</code>-field inertness and a generated-YAML body), and the doc/spec edits.</td></tr>
       <tr><td><strong>Complexity</strong> (with this plan)</td><td>Moderate. The confinement model is a direct reuse of three existing precedents (<code>resolve</code>, <code>confined_file</code>, <code>has_symlink_component</code>); the risk concentrates in the static graph walk / literal extraction (mode A) and the sole-kill of the one seam.</td></tr>
     </tbody>
   </table>

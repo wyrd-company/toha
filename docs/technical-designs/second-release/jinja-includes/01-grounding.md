@@ -67,6 +67,47 @@ have those references validated by the current per-template analysis. Whether
 includes are validated at load (by walking the include graph) or only surface
 at render is a real design axis.
 
+### Configuration documents are parsed as data, never rendered
+
+`template.yml` and every document pulled into it are **configuration**, not a
+render surface. The parse path never touches Jinja:
+
+- `Template::load` (`template.rs:709`) reads `template.yml` and parses it with
+  `serde_norway::from_str` into a `serde_norway::Value` (`template.rs:715`) — a
+  data tree, not a template.
+- `resolve` (`template.rs:253`) walks that data tree and expands the YAML
+  `!include` tag by **reading the referenced file and deserializing it by
+  extension** — YAML/JSON/TOML (`template.rs:287`–`303`) — then splicing the
+  parsed value back into the tree (`template.rs:309`, `*value = next`) and
+  recursing into it. Nothing on this path is compiled or rendered as a template;
+  `!include` composes *structured data*.
+- The resolved tree is converted to JSON, schema-validated, and deserialized
+  into `RawTemplate` (`template.rs:728`–`741`). Still no Jinja.
+
+Only afterwards are **individual string fields** selectively turned into
+templates: `Builder::tmpl` → `Tmpl::compile` (`template.rs:381`) and
+`Builder::expr` → `Expr::compile` (`template.rs:403`). Those compile through the
+same loaderless `jinja::environment()` as every render surface above, so a
+`{% include %}` written into a configuration field (a prompt, a default, an
+apply message, a `files:` `path:`) resolves against an environment holding only
+`"value"` and no loader — MiniJinja's own `TemplateNotFound`, never a partial.
+
+Consequence for this design: the include capability is a property of the
+**render surface**, and configuration documents are not one. A field's origin —
+inline in `template.yml` or spliced in through a YAML `!include` — makes no
+difference: both are data, and both yield loaderless field templates. The
+existing `tests/fixtures/includes` fixture is exactly this shape
+(`data: !include data/a.yml`, plus `.json`/`.toml`), and it confirms `!include`
+carries parsed values into `data`, not text into a renderer.
+
+A file's **role** is set by how it is referenced, not by its extension. The same
+`.yml` file is configuration when it is `template.yml` or reached through
+`!include`; it is a **file body** when it sits in the walked source tree
+(`plan.rs:384`) or is named as a `files:` `source:` (`plan.rs:221`), and then it
+is rendered like any other body. So "includes only in file bodies" is a
+statement about *role*, and it must not become a blanket ban on any extension:
+a generated `.yml`/`.yaml` body is still a body.
+
 ## The two existing confinement precedents (reuse, keep separate)
 
 ### YAML `!include` — `resolve()` in `template.rs:253`
@@ -159,6 +200,10 @@ Read from the vendored crate; these shape what a confining loader must add.
 - Pure interview logic and all driver paths (terminal/headless/staged/direct/
   crate); rendering stays a pure function of template + answers.
 - YAML `!include` as a distinct load-time data feature with its own diagnostics.
+- Configuration parsing as a data-only path: `template.yml` and every document
+  reached through its YAML `!include` are deserialized (`serde_norway`), never
+  Jinja-rendered; the include capability never reaches them, and their string
+  fields stay loaderless.
 - The canonicalize-and-confine + refuse-symlink policy already applied to
   sources, targets, `!include`, and `confined_file`.
 - `static` files never rendered; `template.yml` never rendered as a source.
