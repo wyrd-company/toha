@@ -12,29 +12,29 @@ relationships:
 
 - Postplan URL: <https://t30jlda1nnbd.postplan.dev>
 - Draft ID: `t30jlda1nnbd`
-- Version: 5
+- Version: 6
 - Approved design revision:
-  `6531546a113f672a10d47c19c54ed700b75c9165`
+  `df80b79e2d21740c667d15892541b995b70219cc`
 - Epic base and merge-base:
   `a62061fdce74b6b1a743c70565dd9fbeec2413bb`
 - Portable source: `brief.source.html`
 - Built deck: `brief.deck.html`
 - Design SHA-256:
-  `50511d19f2a533b4a88e3e7a5b068159d4b5263f3516163a33cfa96d8a3c5fe4`
+  `18dcbee04289d4a05463178ae091f52654cef1c106e871a0586d5a062d60fbc0`
 - Verification SHA-256:
-  `6721d4953e7bee77ac59858e17a99ca37d2290a27ff8a6c2e49c1d1af689626b`
+  `ad3c7c0d8e52815467d6eedf2fdce20039b2e57aaeeb707a26c1aa4295dfc020`
 - Brief source SHA-256:
-  `0b25c446cd96ca5db49432219686735e60c46cba9d9190b939826c1de61c87f4`
+  `0220427f74c76d1b25a316106cac51ef682f66464f0f4764beaf0c1e855b764f`
 - Built and published raw SHA-256:
-  `d8e842d6c253a048b78dc7984d75515a51accd86ac7cba5a24407b9adc73860b`
-- Built and published raw bytes: 318477
+  `841e59f3c89a4f5feac489ad48d62ca8221a6d989e5ffc17d9e637801eb97f40`
+- Built and published raw bytes: 319768
 - Published `Reveal.initialize` count: 1
 - Published horizontal positions: 14
-- Published slide count: 34
+- Published slide count: 35
 
 The committed source rebuilds byte-for-byte to the committed deck. The local
 deck, published raw response, and published deck response are byte-identical.
-All 34 horizontal and vertical slides were rendered after the Reveal transition
+All 35 horizontal and vertical slides were rendered after the Reveal transition
 settled and inspected at 1280×720. Programmatic bounds checks found no viewport,
 document-body, slide-section, or visible-descendant overflow. Dense seam,
 interface, trust, data, replay, analysis, arena, and closure slides were also
@@ -57,6 +57,12 @@ Configured start and replay consume that `Resolution` into
 `DefaultBankEntry::Configured` with the invocation context; only the separate
 ordinary `Seed.defaults` route stays flat. Context adds no second origin map or
 resolver.
+
+Phase E re-grounding machine-captured the unchanged integration base above and
+the read-only active producer implementation at
+`bf0b77ec13d6bb5adcad23bb790f97651e9e0969`. The latter confirms the approved
+private origin-bearing storage and consuming routes but remains independently
+owned; this design adds no implementation dependency.
 
 The include binding is revision
 `b87a5482b97e81524272bee1e526698c862754db`, final-design SHA-256
