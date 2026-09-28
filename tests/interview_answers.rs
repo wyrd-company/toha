@@ -6,7 +6,12 @@
 mod support;
 
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+};
+use toha::config::{ConfigEntry, ConfigLayer, ConfigOrigin, DefaultSource, PresetName};
 use toha::{AnswerError, Interview, Seed, Template, protocol};
 
 fn seed() -> Seed {
@@ -1111,23 +1116,231 @@ fn rejected_document_keeps_the_error_of_an_answer_recorded_earlier() {
     assert_eq!(result["answers"]["flavor"], json!("fast-rich"));
 }
 
-fn configured(values: Value) -> indexmap::IndexMap<toha::Id, Value> {
-    values
+fn configured(
+    values: Value,
+) -> indexmap::IndexMap<String, indexmap::IndexMap<toha::Id, ConfigEntry<DefaultSource>>> {
+    let values = values
         .as_object()
         .unwrap()
         .iter()
-        .map(|(id, value)| (toha::Id::parse(id).unwrap(), value.clone()))
-        .collect()
+        .map(|(id, value)| {
+            (
+                toha::Id::parse(id).unwrap(),
+                ConfigEntry {
+                    value: DefaultSource::Literal(value.clone()),
+                    origin: ConfigOrigin {
+                        layer: ConfigLayer::User,
+                        path: PathBuf::from("user.yml"),
+                    },
+                },
+            )
+        })
+        .collect();
+    [("sample".into(), values)].into()
+}
+
+fn sourced<T>(value: T, layer: ConfigLayer, path: &str) -> ConfigEntry<T> {
+    ConfigEntry {
+        value,
+        origin: ConfigOrigin {
+            layer,
+            path: PathBuf::from(path),
+        },
+    }
 }
 
 #[test]
-fn invalid_configured_default_names_its_configuration_key() {
-    let template = Template::load(&early_template()).unwrap();
-    let error = toha::interview::configured_defaults(&template, &configured(json!({"enabled": 3})))
-        .unwrap_err();
+fn configured_defaults_require_an_explicit_identity_mapping() {
+    let (_first_folder, first) = inline(
+        "name: first\ninterview:\n  - { id: email, type: text, prompt: Email? }\n  - { id: license, type: text, prompt: License? }\n",
+    );
+    let (_second_folder, second) =
+        inline("name: second\ninterview: [{ id: contact, type: text, prompt: Contact? }]\n");
+    let preset_name = PresetName::parse("primary_contact").unwrap();
+    let presets = [(
+        preset_name.clone(),
+        sourced(
+            json!("contact@example.invalid"),
+            ConfigLayer::User,
+            "user.yml",
+        ),
+    )]
+    .into();
+    let mappings = [
+        (
+            "first-template".into(),
+            [
+                (
+                    toha::Id::parse("email").unwrap(),
+                    sourced(
+                        DefaultSource::Ref(preset_name.clone()),
+                        ConfigLayer::User,
+                        "user.yml",
+                    ),
+                ),
+                (
+                    toha::Id::parse("license").unwrap(),
+                    sourced(
+                        DefaultSource::Literal(json!("primary_contact")),
+                        ConfigLayer::User,
+                        "user.yml",
+                    ),
+                ),
+                (
+                    toha::Id::parse("removed_question").unwrap(),
+                    sourced(
+                        DefaultSource::Literal(json!("unused")),
+                        ConfigLayer::Local,
+                        "local.yml",
+                    ),
+                ),
+            ]
+            .into(),
+        ),
+        (
+            "second-template".into(),
+            [(
+                toha::Id::parse("contact").unwrap(),
+                sourced(
+                    DefaultSource::Ref(preset_name),
+                    ConfigLayer::User,
+                    "user.yml",
+                ),
+            )]
+            .into(),
+        ),
+    ]
+    .into();
+
+    let first_resolution =
+        toha::interview::configured_defaults("first-template", &first, &presets, &mappings)
+            .unwrap();
+    assert_eq!(
+        first_resolution.defaults[&toha::Id::parse("email").unwrap()].0,
+        json!("contact@example.invalid")
+    );
+    assert_eq!(
+        first_resolution.defaults[&toha::Id::parse("license").unwrap()].0,
+        json!("primary_contact")
+    );
+    assert_eq!(
+        first_resolution.warnings,
+        [
+            "local.yml: template-defaults.\"first-template\".removed_question: question is not defined by the selected template; ignored"
+        ]
+    );
+
+    let second_resolution =
+        toha::interview::configured_defaults("second-template", &second, &presets, &mappings)
+            .unwrap();
+    assert_eq!(
+        second_resolution.defaults[&toha::Id::parse("contact").unwrap()].0,
+        json!("contact@example.invalid")
+    );
+
+    let unmapped =
+        toha::interview::configured_defaults("first", &first, &presets, &mappings).unwrap();
+    assert!(unmapped.defaults.is_empty());
+    assert!(unmapped.warnings.is_empty());
+}
+
+#[test]
+fn configured_default_errors_name_mapping_and_preset_origins() {
+    let (_folder, template) =
+        inline("name: sample\ninterview: [{ id: enabled, type: confirm, prompt: Enabled? }]\n");
+    let missing_mapping = [(
+        "sample".into(),
+        [(
+            toha::Id::parse("enabled").unwrap(),
+            sourced(
+                DefaultSource::Ref(PresetName::parse("missing_value").unwrap()),
+                ConfigLayer::Local,
+                "local.yml",
+            ),
+        )]
+        .into(),
+    )]
+    .into();
+    let error = toha::interview::configured_defaults(
+        "sample",
+        &template,
+        &Default::default(),
+        &missing_mapping,
+    )
+    .unwrap_err();
     assert_eq!(
         error.to_string(),
-        "configuration key defaults.enabled: must be true or false"
+        "local.yml: template-defaults.\"sample\".enabled: no preset named \"missing_value\""
+    );
+
+    let preset_name = PresetName::parse("enabled_value").unwrap();
+    let presets = [(
+        preset_name.clone(),
+        sourced(json!("yes"), ConfigLayer::System, "system.yml"),
+    )]
+    .into();
+    let referenced_mapping = [(
+        "sample".into(),
+        [(
+            toha::Id::parse("enabled").unwrap(),
+            sourced(
+                DefaultSource::Ref(preset_name),
+                ConfigLayer::User,
+                "user.yml",
+            ),
+        )]
+        .into(),
+    )]
+    .into();
+    let error =
+        toha::interview::configured_defaults("sample", &template, &presets, &referenced_mapping)
+            .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "user.yml: template-defaults.\"sample\".enabled\n→ system.yml: presets.\"enabled_value\" (\"yes\"): must be true or false"
+    );
+
+    let unused_bad_preset = [(
+        PresetName::parse("unused_value").unwrap(),
+        sourced(json!(42), ConfigLayer::System, "system.yml"),
+    )]
+    .into();
+    let other_identity = [(
+        "other-template".into(),
+        [(
+            toha::Id::parse("enabled").unwrap(),
+            sourced(
+                DefaultSource::Ref(PresetName::parse("missing_value").unwrap()),
+                ConfigLayer::User,
+                "user.yml",
+            ),
+        )]
+        .into(),
+    )]
+    .into();
+    let resolution = toha::interview::configured_defaults(
+        "sample",
+        &template,
+        &unused_bad_preset,
+        &other_identity,
+    )
+    .unwrap();
+    assert!(resolution.defaults.is_empty());
+}
+
+#[test]
+fn invalid_configured_default_names_its_source() {
+    let template = Template::load(&early_template()).unwrap();
+    let error = toha::interview::configured_defaults(
+        "sample",
+        &template,
+        &Default::default(),
+        &configured(json!({"enabled": 3})),
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "user.yml: template-defaults.\"sample\".enabled: must be true or false"
     );
     let (_folder, template) =
         inline("name: sample\ninterview: [{ id: word, type: text, prompt: W? }]\n");
@@ -1138,7 +1351,7 @@ fn invalid_configured_default_names_its_configuration_key() {
     let error = Interview::start(&template, seed).unwrap_err();
     assert_eq!(
         error.to_string(),
-        "configuration key defaults.word: must be a string"
+        "configured default for question \"word\": must be a string"
     );
 }
 
@@ -1147,10 +1360,13 @@ fn configured_default_that_fails_a_constraint_is_attributed_to_configuration() {
     let template = Template::load(&early_template()).unwrap();
     let seed = Seed {
         defaults: toha::interview::configured_defaults(
+            "sample",
             &template,
+            &Default::default(),
             &configured(json!({"mode": "medium"})),
         )
-        .unwrap(),
+        .unwrap()
+        .defaults,
         ..seed()
     };
     let Interview::Asking(pending) = Interview::start(&template, seed).unwrap() else {
@@ -1169,7 +1385,7 @@ fn configured_default_that_fails_a_constraint_is_attributed_to_configuration() {
     assert_eq!(
         messages,
         [
-            "mode: default \"medium\" from configuration key defaults.mode is not allowed: must be one of: fast, slow"
+            "mode: default \"medium\" from configured default for question \"mode\" is not allowed: must be one of: fast, slow"
         ]
     );
 }

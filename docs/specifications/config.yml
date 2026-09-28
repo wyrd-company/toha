@@ -21,10 +21,11 @@ description: >-
   user layer over the system layer.
 
   Merging. `templates-paths` lists from every layer are concatenated, local
-  first. `defaults` and `hosts` maps are merged key by key, and
-  the value from the layer with higher precedence wins. `local-config-name` and
-  `hosts` are read from the user and system layers only, so a formal name
-  always resolves to the same source.
+  first. `presets` and `hosts` maps are merged key by key. `template-defaults`
+  is merged by template formal name and question id. The value and source file
+  from the layer with higher precedence win together. `local-config-name` and
+  `hosts` are read from the user and system layers only, so a formal name always
+  resolves to the same source.
 
   Template paths. Each templates path is a directory scanned for templates:
   every directory in it with a `template.yml` is a template. Each layer
@@ -38,9 +39,27 @@ description: >-
   templates, their aliases, and their trust are recorded in the template
   registry defined by `docs/specifications/template-registry.yml`.
 
-  Defaults. `defaults` maps a question id to a value. A configured default
-  replaces the question `default` of every template that defines that id, and
-  follows the same type rules.
+  Presets and template defaults. `presets` is a named store of reusable string,
+  boolean, and string-array values. `template-defaults` maps one template formal
+  name and question id to either a bare literal or `{ preset: <name> }`. A bare
+  value is always a literal, even when it equals a preset name. A mapping applies
+  only when its key exactly equals the selected template's formal name; aliases,
+  short names, and matching question ids do not select it. The bundled template's
+  formal name is `toha-demo`. A preset reference resolves once against the fully
+  merged preset store. Presets cannot reference presets.
+
+  Values are validated against the question type when that question is defined by
+  the selected template. A mapping for an id the template does not define is
+  ignored with a warning that names the mapping file and site. A missing preset or
+  invalid answer type is an error that names the winning mapping file and site; a
+  referenced invalid type also names the winning preset file and entry. Mappings
+  for other templates and unreferenced presets are not validated. Live
+  configuration is resolved again when a staged interview resumes.
+
+  The former `defaults` property is refused with conversion guidance. Each value
+  must be given a preset name or written as a literal under an explicit
+  `template-defaults` mapping, because a global question id does not identify a
+  template.
 
   Hosts. `hosts` maps a git host shorthand prefix to a base URL. The built-in
   prefixes are `gh` (`https://github.com`), `gl` (`https://gitlab.com`), `bb`

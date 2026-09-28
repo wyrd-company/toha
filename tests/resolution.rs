@@ -92,6 +92,13 @@ fn alias_short_ambiguous_and_address_forms() {
         ],
         0,
     );
+    write_config(
+        &root,
+        &format!(
+            "hosts:\n  local: {}\ntemplate-defaults:\n  {first:?}: {{ label: Formal }}\n  chosen: {{ label: Alias }}\n",
+            support::file_url(root.path())
+        ),
+    );
     let target = root.path().join("target");
     let batch = document(&run(
         &root,
@@ -100,6 +107,7 @@ fn alias_short_ambiguous_and_address_forms() {
     ));
     assert_eq!(batch["context"]["template"], first);
     assert_eq!(batch["context"]["commit"], commit);
+    assert_eq!(batch["schema"]["properties"]["label"]["default"], "Formal");
     run(&root, &["abort", target.to_str().unwrap()], 0);
     let short = document(&run(
         &root,
@@ -239,19 +247,32 @@ fn cached_commit_survives_source_disappearance() {
 fn configured_default_is_visible_and_answers_win() {
     let root = TempDir::new().unwrap();
     let (url, _) = repository(&root);
-    write_config(&root, "defaults:\n  label: Configured\n");
     let address = format!("{url}#one");
+    let config = |value: &str| {
+        format!(
+            "presets:\n  label_value: {value}\ntemplate-defaults:\n  {address:?}:\n    label: {{ preset: label_value }}\n    removed_question: unused\n"
+        )
+    };
+    write_config(&root, &config("Configured"));
     let target = root.path().join("staged");
-    let batch = document(&run(
+    let staged = run(
         &root,
         &["stage", &address, target.to_str().unwrap(), "--async"],
         4,
-    ));
+    );
+    assert!(
+        String::from_utf8_lossy(&staged.stderr).contains(&format!(
+            "warning: {}: template-defaults.\"{}\".removed_question: question is not defined by the selected template; ignored",
+            root.path().join("config/toha/config.yml").display(),
+            address
+        ))
+    );
+    let batch = document(&staged);
     assert_eq!(
         batch["schema"]["properties"]["label"]["default"],
         "Configured"
     );
-    write_config(&root, "defaults:\n  label: Resumed\n");
+    write_config(&root, &config("Resumed"));
     let empty = root.path().join("empty.json");
     fs::write(&empty, "{}").unwrap();
     let resumed = document(&run(
@@ -264,7 +285,7 @@ fn configured_default_is_visible_and_answers_win() {
         0,
     ));
     assert_eq!(resumed["answers"]["label"], "Resumed");
-    write_config(&root, "defaults:\n  label: Configured\n");
+    write_config(&root, &config("Configured"));
     let answers = root.path().join("answers.json");
     fs::write(&answers, "{}").unwrap();
     run(
@@ -298,7 +319,22 @@ fn configured_default_is_visible_and_answers_win() {
         fs::read_to_string(root.path().join("overridden/result.txt")).unwrap(),
         "old Override"
     );
-    write_config(&root, "defaults:\n  label: [wrong]\n");
+    run(
+        &root,
+        &[
+            "apply",
+            &format!("{url}#two"),
+            root.path().join("unmapped").to_str().unwrap(),
+            "--answers",
+            empty.to_str().unwrap(),
+        ],
+        0,
+    );
+    assert_eq!(
+        fs::read_to_string(root.path().join("unmapped/result.txt")).unwrap(),
+        "second Template"
+    );
+    write_config(&root, &config("[wrong]"));
     let wrong = run(
         &root,
         &[
@@ -309,7 +345,12 @@ fn configured_default_is_visible_and_answers_win() {
         ],
         1,
     );
-    assert!(String::from_utf8_lossy(&wrong.stderr).contains("configuration key defaults.label: "));
+    let error = String::from_utf8_lossy(&wrong.stderr);
+    assert!(error.contains("template-defaults."), "{error}");
+    assert!(
+        error.contains("presets.\"label_value\" ([\"wrong\"]): must be a string"),
+        "{error}"
+    );
 }
 
 #[test]

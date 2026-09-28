@@ -412,17 +412,30 @@ fn read_answers(path: &str) -> Result<toha::RawAnswers, String> {
     }
     protocol::parse_answers(&text).map_err(|e| invalid(&e))
 }
-fn seed(template: &Template, config: &toha::config::Config) -> Result<Seed, String> {
+fn report_config_warnings(warnings: &[String]) {
+    for warning in warnings {
+        eprintln!("warning: {warning}");
+    }
+}
+fn seed(
+    formal_name: &str,
+    template: &Template,
+    config: &toha::config::Config,
+) -> Result<Seed, String> {
     let now = match std::env::var("TOHA_NOW") {
         Ok(value) => value.parse().map_err(|e: jiff::Error| e.to_string())?,
         Err(std::env::VarError::NotPresent) => jiff::Zoned::now(),
         Err(e) => return Err(e.to_string()),
     };
-    Ok(Seed {
-        now,
-        defaults: toha::interview::configured_defaults(template, &config.defaults)
-            .map_err(|e| e.to_string())?,
-    })
+    let toha::interview::Resolution { defaults, warnings } = toha::interview::configured_defaults(
+        formal_name,
+        template,
+        &config.presets,
+        &config.template_defaults,
+    )
+    .map_err(|e| e.to_string())?;
+    report_config_warnings(&warnings);
+    Ok(Seed { now, defaults })
 }
 fn setup(path: &Path, dirs: &Dirs) -> Result<(PathBuf, Store), String> {
     let target = staging::canonical_target(path).map_err(|e| e.to_string())?;
@@ -493,8 +506,15 @@ fn progress(saved: &StagedRecord, scope: &Scope) -> Progress {
         )
         .ok()?;
         let template = load_template(&resolved).ok()?;
-        let defaults =
-            toha::interview::configured_defaults(&template, &scope.config.defaults).ok()?;
+        let toha::interview::Resolution { defaults, warnings } =
+            toha::interview::configured_defaults(
+                &saved.template,
+                &template,
+                &scope.config.presets,
+                &scope.config.template_defaults,
+            )
+            .ok()?;
+        report_config_warnings(&warnings);
         let complete = matches!(
             saved.replay_with_defaults(&template, defaults).ok()?,
             Interview::Complete(_)
@@ -579,7 +599,7 @@ fn stage(template: String, path: PathBuf, output: Option<Option<String>>, dirs: 
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
     };
-    let seed = match seed(&template, &config) {
+    let seed = match seed(&resolved.formal_name, &template, &config) {
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
     };
@@ -662,10 +682,17 @@ fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome 
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
     };
-    let defaults = match toha::interview::configured_defaults(&template, &config.defaults) {
-        Ok(v) => v,
-        Err(e) => return Outcome::Error(e.to_string()),
-    };
+    let toha::interview::Resolution { defaults, warnings } =
+        match toha::interview::configured_defaults(
+            &resolved.formal_name,
+            &template,
+            &config.presets,
+            &config.template_defaults,
+        ) {
+            Ok(v) => v,
+            Err(e) => return Outcome::Error(e.to_string()),
+        };
+    report_config_warnings(&warnings);
     let interview = match saved.replay_with_defaults(&template, defaults) {
         Ok(v) => v,
         Err(e) => {
@@ -831,7 +858,7 @@ fn run(
                 Ok(v) => v,
                 Err(e) => return Outcome::Error(e),
             };
-            let seed = match seed(&template, &config) {
+            let seed = match seed(&resolved.formal_name, &template, &config) {
                 Ok(v) => v,
                 Err(e) => return Outcome::Error(e),
             };
@@ -902,10 +929,17 @@ fn run(
                 Ok(v) => v,
                 Err(e) => return Outcome::Error(e),
             };
-            let defaults = match toha::interview::configured_defaults(&template, &config.defaults) {
-                Ok(v) => v,
-                Err(e) => return Outcome::Error(e.to_string()),
-            };
+            let toha::interview::Resolution { defaults, warnings } =
+                match toha::interview::configured_defaults(
+                    &resolved.formal_name,
+                    &template,
+                    &config.presets,
+                    &config.template_defaults,
+                ) {
+                    Ok(v) => v,
+                    Err(e) => return Outcome::Error(e.to_string()),
+                };
+            report_config_warnings(&warnings);
             let interview = match saved.replay_with_defaults(&template, defaults) {
                 Ok(v) => v,
                 Err(e) => {

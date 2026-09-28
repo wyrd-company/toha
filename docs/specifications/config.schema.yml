@@ -17,10 +17,40 @@ $defs:
     type: array
     items:
       type: string
-  defaults:
+  preset-name:
+    $ref: "#/$defs/identifier"
+  literal:
+    oneOf:
+      - type: string
+      - type: boolean
+      - type: array
+        items:
+          type: string
+  reference:
+    type: object
+    additionalProperties: false
+    required: [ preset ]
+    properties:
+      preset:
+        $ref: "#/$defs/preset-name"
+  presets:
     type: object
     propertyNames:
-      $ref: "#/$defs/identifier"
+      $ref: "#/$defs/preset-name"
+    additionalProperties:
+      $ref: "#/$defs/literal"
+  default-source:
+    oneOf:
+      - $ref: "#/$defs/reference"
+      - $ref: "#/$defs/literal"
+  template-defaults:
+    type: object
+    additionalProperties:
+      type: object
+      propertyNames:
+        $ref: "#/$defs/identifier"
+      additionalProperties:
+        $ref: "#/$defs/default-source"
   hosts:
     type: object
     propertyNames:
@@ -37,8 +67,10 @@ $defs:
         default: .toha.yml
       templates-paths:
         $ref: "#/$defs/templates-paths"
-      defaults:
-        $ref: "#/$defs/defaults"
+      presets:
+        $ref: "#/$defs/presets"
+      template-defaults:
+        $ref: "#/$defs/template-defaults"
       hosts:
         $ref: "#/$defs/hosts"
   local-config:
@@ -47,5 +79,7 @@ $defs:
     properties:
       templates-paths:
         $ref: "#/$defs/templates-paths"
-      defaults:
-        $ref: "#/$defs/defaults"
+      presets:
+        $ref: "#/$defs/presets"
+      template-defaults:
+        $ref: "#/$defs/template-defaults"

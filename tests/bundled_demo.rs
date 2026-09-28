@@ -58,6 +58,31 @@ fn applies_offline_from_any_directory() {
 }
 
 #[test]
+fn bundled_identity_selects_its_configured_defaults() {
+    let root = TempDir::new().unwrap();
+    let cwd = root.path().join("scratch");
+    fs::create_dir_all(&cwd).unwrap();
+    let config = root.path().join("config/toha/config.yml");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(
+        config,
+        "presets: { sample_title: Configured Title }\ntemplate-defaults:\n  toha-demo:\n    title: { preset: sample_title }\n    topic: Configured Topic\n",
+    )
+    .unwrap();
+    fs::write(cwd.join("empty.json"), "{}").unwrap();
+    run(
+        &root,
+        &cwd,
+        &["apply", "--answers", "empty.json", "toha-demo", "./out"],
+        0,
+    );
+    assert_eq!(
+        fs::read_to_string(cwd.join("out/note.txt")).unwrap(),
+        "Configured Title\nTopic: Configured Topic\n"
+    );
+}
+
+#[test]
 fn dry_run_previews_without_writing() {
     let root = TempDir::new().unwrap();
     let cwd = root.path().join("scratch");

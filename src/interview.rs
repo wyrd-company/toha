@@ -3,6 +3,7 @@
 //   implements: architecture
 // ---
 use crate::{
+    config::{ConfigEntry, DefaultSource, PresetName},
     jinja::{Expr, Typed, context_from_answers, is_global},
     template::{Id, Node, Question, QuestionKind, Template},
 };
@@ -223,17 +224,22 @@ pub struct EvalError {
     pub field: &'static str,
     pub message: String,
     pub expression: Option<String>,
+    pub config_key: Option<String>,
 }
 /// The `field` of an [`EvalError`] in a configured default.
 pub const CONFIGURED_DEFAULT: &str = "configured default";
-/// The configuration key that holds the configured default of `id`.
-fn configuration_key(id: &Id) -> String {
-    format!("configuration key defaults.{id}")
+/// Generic attribution retained after the flat configured value enters the engine.
+fn configured_default_source(id: &Id) -> String {
+    format!("configured default for question \"{id}\"")
 }
 impl fmt::Display for EvalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.field == CONFIGURED_DEFAULT {
-            return write!(f, "{}: {}", configuration_key(&self.id), self.message);
+            let key = self
+                .config_key
+                .clone()
+                .unwrap_or_else(|| configured_default_source(&self.id));
+            return write!(f, "{key}: {}", self.message);
         }
         match &self.expression {
             Some(source) => write!(
@@ -266,6 +272,7 @@ fn eval_error(id: &Id, field: &'static str, error: impl ToString) -> EvalError {
         field,
         message: error.to_string(),
         expression: None,
+        config_key: None,
     }
 }
 /// A fault in the template expression `source` at `id`.`field`.
@@ -674,20 +681,68 @@ fn validate(id: &Id, rules: &Rules, value: Value) -> Result<Answer, Rejection> {
     }
     Ok(answer)
 }
+#[derive(Debug)]
+pub struct Resolution {
+    pub defaults: IndexMap<Id, RawAnswer>,
+    pub warnings: Vec<String>,
+}
+
 pub fn configured_defaults(
+    formal_name: &str,
     template: &Template,
-    values: &IndexMap<Id, Value>,
-) -> Result<IndexMap<Id, RawAnswer>, EvalError> {
+    presets: &IndexMap<PresetName, ConfigEntry<Value>>,
+    mappings: &IndexMap<String, IndexMap<Id, ConfigEntry<DefaultSource>>>,
+) -> Result<Resolution, EvalError> {
     let mut defaults = IndexMap::new();
-    for (id, value) in values {
+    let mut warnings = Vec::new();
+    let Some(values) = mappings.get(formal_name) else {
+        return Ok(Resolution { defaults, warnings });
+    };
+    for (id, entry) in values {
+        let mapping_key = format!(
+            "{}: template-defaults.\"{}\".{id}",
+            entry.origin.path.display(),
+            formal_name
+        );
         let Some(question) = question_by_id(&template.interview, id) else {
+            warnings.push(format!(
+                "{mapping_key}: question is not defined by the selected template; ignored"
+            ));
             continue;
         };
-        parse_kind(id, prompt_kind(question), value.clone())
-            .map_err(|error| eval_error(id, CONFIGURED_DEFAULT, error.message))?;
+        let (value, config_key) = match &entry.value {
+            DefaultSource::Literal(value) => (value, mapping_key),
+            DefaultSource::Ref(name) => {
+                let Some(preset) = presets.get(name) else {
+                    return Err(EvalError {
+                        id: id.clone(),
+                        field: CONFIGURED_DEFAULT,
+                        message: format!("no preset named \"{name}\""),
+                        expression: None,
+                        config_key: Some(mapping_key),
+                    });
+                };
+                (
+                    &preset.value,
+                    format!(
+                        "{mapping_key}\n→ {}: presets.\"{}\" ({})",
+                        preset.origin.path.display(),
+                        name,
+                        preset.value
+                    ),
+                )
+            }
+        };
+        parse_kind(id, prompt_kind(question), value.clone()).map_err(|error| EvalError {
+            id: id.clone(),
+            field: CONFIGURED_DEFAULT,
+            message: error.message,
+            expression: None,
+            config_key: Some(config_key),
+        })?;
         defaults.insert(id.clone(), RawAnswer(value.clone()));
     }
-    Ok(defaults)
+    Ok(Resolution { defaults, warnings })
 }
 fn question_by_id<'a>(nodes: &'a [Node], id: &Id) -> Option<&'a Question> {
     for n in nodes {
@@ -1405,7 +1460,7 @@ impl<'a> Pending<'a> {
                                 format!(
                                     "default {} from {} is not allowed: {}",
                                     v.to_json(),
-                                    configuration_key(&p.id),
+                                    configured_default_source(&p.id),
                                     r.message
                                 ),
                             )

@@ -79,10 +79,12 @@ description: >-
   batch takes its default, or that empty answer when it has none, except a
   question with an error for a value recorded earlier. A configured default
   is validated as an answer when its question takes it; when it fails, the
-  error names the configuration key: `default <JSON value> from configuration
-  key defaults.<id> is not allowed:` followed by the failed constraint. Toha
-  validates each answer and applies its `format` expression before it records
-  the answer.
+  error names its generic source after the flat value has entered the interview
+  engine: `default <JSON value> from configured default for question "<id>" is
+  not allowed:` followed by the failed constraint. Missing presets and answer-kind
+  mismatches are rejected before the engine and name their configuration files and
+  entries. Toha validates each answer and applies its `format` expression before
+  it records the answer.
 
   Context. Each batch and result document carries `context`: the canonical
   absolute target path, the formal name of the template, and the resolved

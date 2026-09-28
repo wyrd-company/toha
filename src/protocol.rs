@@ -222,6 +222,7 @@ pub fn answer_headless<'a>(
                     field: "answer",
                     message: "is not a question in this template".into(),
                     expression: None,
+                    config_key: None,
                 });
             }
             // An interview complete before any submission skipped each of

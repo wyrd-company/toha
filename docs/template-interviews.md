@@ -150,8 +150,11 @@ literals or Jinja expressions that return the required type:
 ```
 
 Here the quoted value is evaluated as a boolean expression; Toha does not
-render it as text. Configuration can replace a question's default by its id.
-See [Configuration](/docs/toha/configuration).
+render it as text. Configuration can replace a question's default only through
+a `template-defaults` mapping for the selected template's formal name. The
+mapping can use an inline value or refer to a named preset. Toha reads the live
+mapping and preset again when a staged interview resumes. See
+[Configuration](/docs/toha/configuration).
 
 ## Require and validate answers
 
