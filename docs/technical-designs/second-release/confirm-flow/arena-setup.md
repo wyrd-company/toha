@@ -67,3 +67,31 @@ unworkable (that rejection is itself signal).
 Candidates receive: the common task (`runner-task.md`), grounding
 (`grounding.md`), runner discipline (`runner-prompt.md`, `rationale-template.md`),
 and read-only source. Nothing else.
+
+## Erratum — reachability framing corrected
+
+This erratum narrows two claims above; the original text and its verified facts
+are preserved unchanged. Scope exception: correcting `arena-setup.md` is outside
+this correction's original findings (the deck, the final synthesis, and the
+round-2 audit), and is authorized only for this narrow reachability correction —
+no other change to the round-1 evidence.
+
+- **"reachable from a capsule" and "absent and unreachable" overstate isolation.**
+  The verified facts stand: the shared export is a `.git`-free `git archive` of
+  `a62061f` that contains no `confirm-flow` package, no rubric, no scores, and no
+  candidate output, and none of this arena's scoring material was copied into any
+  capsule. What does not follow is *unreachable*: a capsule was a directory on a
+  shared filesystem, and the candidate runners were `general-purpose` subagents
+  with full filesystem tools. This arena's `rubric.md` (committed to the design
+  worktree before the candidates launched) and the sibling capsules' outputs
+  existed on the same filesystem and were reachable in principle. Blindness rested
+  on the **supplied input set** (no rubric, scores, or candidate output copied
+  into a capsule) plus **runner discipline** (the launch prompt's instruction to
+  stay inside the capsule), **not** on filesystem isolation, and is not proven by
+  isolation.
+- **Transcript evidence (retrospective).** The four round-1 candidate transcripts
+  survive; each references `rubric.md` zero times. A small number of
+  sibling-capsule and `/workspaces` confirm-flow path strings also appear in each
+  transcript; these have not been classified as genuine reads versus launch-prompt
+  or echoed text, so whether any round-1 candidate read outside its capsule is not
+  established either way. Nothing enforced confinement.
