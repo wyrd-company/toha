@@ -25,6 +25,13 @@ Managed-region markers resolve all five: the marked span is a self-describing,
 exactly-bounded unit that re-apply finds by key and replaces, so idempotency and
 ownership are structural facts.
 
+The JSON family (JSON/JSONC/JSON5) is the one place this mechanism meets a
+boundary, and how it is handled — including whether an embedded `jaq` or other
+structured mutator belongs here — is resolved in its own section below
+(**JSON-family injection and the structured mode**), grounded in source-cited
+research (`01a-grounding-addendum-json-family.md`) and a focused arena
+(`02a`/`04a`).
+
 ## Usage (caller's view)
 
 ### Template author (`template.yml`)
@@ -373,9 +380,182 @@ few lines of YAML. Complexity is pulled into the callee (`per
 boundary-discipline`); `MarkerStyle` is resolved before it reaches `PlannedEdit`,
 so comment concerns never surface on the public type.
 
-## Synthesis decision
+## JSON-family injection and the structured mode
 
-Base: candidate-1 (managed-region markers), which scored 30/30 (judge 29/30) and
+This section resolves the JSON family (JSON/JSONC/JSON5) and the question of a
+structured "set a value at a path" mutator, including the embedded `jaq`
+candidate. It supersedes the earlier assumption that structured merge is simply
+out of scope: the mechanism is now *decided*, and only its *implementation* is
+deferred. Evidence and the focused arena are in
+`01a-grounding-addendum-json-family.md`, `02a-arena-json-family.md`,
+`04a-synthesis-json-family.md`, and the preserved candidate packages under
+`03-candidates/json-family-revision/`.
+
+### What ships in 0.2.0: the marker mechanism covers JSONC and JSON5
+
+JSONC and JSON5 permit `//` comments, so Toha's begin/end markers are ordinary
+comment lines and inject exactly as they do in `.rs`/`.gitignore`/`.yaml`, with
+the same `sha2` checksum idempotency and drift refusal. No new mechanism, no new
+dependency. This is the same locate-excise-splice-write-if-differs cycle proven
+for fifteen years by Ansible `blockinfile`
+(`ansible/lib/ansible/modules/blockinfile.py:334-367`, rev `7ec731b`).
+
+**Generic before / after — a `.jsonc` target.**
+
+Template config:
+
+```yaml
+inject:
+  - into: "config/app.jsonc"
+    region: "features"
+    content: |
+      "analytics_enabled": true,
+      "analytics_sample_rate": 0.1
+```
+
+Target BEFORE:
+
+```jsonc
+{
+  "app_name": "sample-service",
+  "port": 8080,
+  // operator-owned settings
+  "log_level": "info"
+}
+```
+
+Target AFTER first apply (markers are valid JSONC `//` comments; the operator's
+comment and keys are untouched; the region is appended at end of file because no
+anchor was given):
+
+```jsonc
+{
+  "app_name": "sample-service",
+  "port": 8080,
+  // operator-owned settings
+  "log_level": "info",
+  // >>> toha:region features >>>
+  "analytics_enabled": true,
+  "analytics_sample_rate": 0.1
+  // <<< toha:end features sha256:a7f3d… <<<
+}
+```
+
+Second apply, same answers → **no bytes change** (the on-disk body hashes to the
+recorded checksum ⇒ `Unchanged`). If the operator edits inside the markers,
+re-apply refuses and names `--force` (drift), identical to any text target. This
+is the twice-apply-changes-once acceptance, holding for the JSON family.
+
+### The strict-`.json` boundary (explicit, with guidance)
+
+Strict JSON has no comment syntax, so a `//` marker would make the file invalid
+JSON. A marker injection whose resolved target is a strict `.json` file (a
+line-comment marker with no comment-capable extension and no override) is
+**refused at build time** — `PlanError` naming the file, the region, and the
+three author alternatives:
+
+1. target a `.jsonc`/`.json5` file (any JSON parser accepts JSONC), or
+2. manage the whole file with a `files:` rule, or
+3. use the structured mode below (once it ships).
+
+This is not a regression — today Toha cannot inject at all — and it matches the
+ecosystem: even npm's own package.json editor reserializes the whole document
+rather than surgically editing strict JSON
+(`npm-package-json/lib/index.js:239-264`, rev `a7dafdb`).
+
+### Why not `jaq` (or any reserialize mechanism) for the structured path
+
+`jaq` was evaluated as an embedded crate against its actual source and
+**rejected as the structured mechanism**. It discards `#` comments at lex time
+(`jaq-json/src/read.rs:10-19`, rev `f167ad4`) and regenerates all output from a
+pretty printer (`jaq-json/src/write.rs:202-260`); its object `IndexMap`
+(`lib.rs:117`) keeps order in memory but the printed bytes are fresh. `jaq` is a
+jq-language filter/query engine, not an editor: using it to change one value in a
+user-owned JSON-family file is a disguised whole-file rewrite that destroys the
+owner's comments and normalizes their formatting/order — the no-silent-overwrite
+hazard the grounding forbids — and it imposes a query language for what is
+almost always a single-value set. The same disqualifier applies to every
+reserialize approach (`serde_json`, `json5-rs`; npm mitigates only indent/newline,
+never comments). `jaq` is retained only as a rejected alternative.
+
+### The structured mode: decided mechanism, deferred implementation
+
+When Toha does add a structured "owns the value at a path" mode for the JSON
+family, the mechanism is **`jsonc-parser`'s `cst` module** (crate `0.34.0`,
+feature `cst`, rev `c7d4cf5`) — the format-preserving JSON-family analogue of
+`toml_edit`, and the same pattern VS Code uses to edit `settings.json`. Its CST
+retains every comment and whitespace token and re-emits them verbatim; only the
+touched node changes (`jsonc-parser/src/cst/mod.rs:1-5,1356`). The arena and a
+readonly cross-judge both scored this the superior structured design (26/30 vs
+jaq's 17/30) but recommended **deferring the implementation** out of the 0.2.0
+slice: it adds a second mechanism, a new dependency, a distinct ownership
+contract, and new dry-run/error semantics to the first-ever injection slice, for
+a gain over markers that JSONC/JSON5 already deliver. So 1031 ships markers; the
+structured mode is a decided fast-follow with its interface seam reserved.
+
+Reserved interface (a sibling discriminator inside the same `inject:` list, so
+adopting it later is non-breaking):
+
+```yaml
+inject:
+  - into: "package.json"        # strict JSON is fine for the STRUCTURED mode
+    struct:                      # discriminator; mutually exclusive with `region`
+      path: "scripts.build"      # owns the VALUE at this path, not a byte span
+      value: "tsc"               # rendered, then parsed as a JSON value
+    # provenance: true           # JSONC-only, optional drift-awareness comment
+```
+
+```rust
+// reserved sibling of resolve_edit; pure over (current_bytes, edit)
+pub fn resolve_struct_edit(current: Option<&[u8]>, edit: &PlannedStructEdit)
+    -> Result<Resolution, StructError>;   // Unchanged when value already equals desired
+```
+
+**Ownership / idempotency / drift for the structured mode (the contract Bob
+ratifies before it is built).** Toha owns *the value at the named path*;
+everything else — comments, key order, whitespace — is preserved byte-for-byte by
+the CST. Re-apply sets the value and is a byte no-op when it already equals the
+desired value (idempotent, replay-safe). Because strict JSON has no comment slot
+for a checksum, a re-apply cannot distinguish "the operator edited the managed
+value" from "first set": the honest model is **declarative convergence** — Toha
+re-sets exactly the path it owns and touches nothing else (the structured
+analogue of the marker span). JSONC can optionally carry an inline `// toha:struct
+<path>` provenance comment for awareness. This is a genuinely different ownership
+contract from marker drift-refusal, which is why it is a deliberate, deferred
+decision rather than a silent addition.
+
+**Generic before / after — the deferred structured mode.** A strict `.json`
+target, `struct: { path: "scripts.build", value: "tsc" }`:
+
+BEFORE:
+
+```json
+{
+  "name": "sample-app",
+  "scripts": {
+    "start": "node index.js"
+  }
+}
+```
+
+AFTER first apply (surgical CST edit — only the touched node changes; key order
+and 2-space indent preserved):
+
+```json
+{
+  "name": "sample-app",
+  "scripts": {
+    "start": "node index.js",
+    "build": "tsc"
+  }
+}
+```
+
+Second apply → **no bytes change** (`scripts.build` already equals `"tsc"` ⇒
+`Unchanged`). For a `.jsonc` target the same edit preserves the operator's
+comments and trailing commas verbatim around the changed value — the property
+markers `jaq` would have destroyed. These structured-mode fixtures belong to the
+fast-follow design, not 1031.
 led every criterion. Grafted: candidate-4's downstream ownership vocabulary as a
 *derived* `FileMutation` view (not its internal enum collapse or build-time byte
 offsets); candidate-3's "owns the value at a named path" ownership as a reserved,
@@ -405,10 +585,18 @@ exact-bytes lesson (splice, don't `lines().join`). Rejections and scores in
 
 ## Alternatives considered
 
-- **Structured merge via jaq / serde (candidate-3).** Deep for structured
-  targets, but reserializes (drops comments, key order, formatting) — a disguised
-  whole-file rewrite of a user-owned file — and cannot touch arbitrary text.
-  Reserved as an optional, out-of-scope mode; not the core.
+- **Structured merge via `jaq` / serde (reserialize family).** Evaluated against
+  actual source and rejected as the structured mechanism: `jaq` discards comments
+  at lex time and regenerates all output (`jaq-json/src/read.rs:10-19`,
+  `write.rs:202-260`), so editing a user-owned file is a disguised whole-file
+  rewrite; `serde_json`/`json5-rs` share the same trivia-free data model. Not the
+  structured mechanism, and never the core. See **JSON-family injection and the
+  structured mode** above.
+- **Structured, format-preserving CST via `jsonc-parser` (the chosen structured
+  mechanism, deferred).** Preserves comments/order/whitespace (the JSON analogue
+  of `toml_edit`); owns the value at a path with declarative convergence. Superior
+  structured design in the arena, but deferred out of the 0.2.0 slice with its
+  interface reserved; the implementation is a fast-follow, not part of 1031.
 - **Anchor-only, re-matching injected text on re-apply (candidate-2 core).**
   Smaller footprint, but idempotency becomes a heuristic that misfires once the
   user edits nearby. Rejected; its cardinality vocabulary was kept.
@@ -438,12 +626,28 @@ exact-bytes lesson (splice, don't `lines().join`). Rejections and scores in
   behavior for `--force`, not a restriction). *Recommend: adopt.*
 - **D5 — `create` default.** `create: false` by default (injection targets an
   existing file). *Recommend: false.*
-- **D6 — Structured-merge mode out of scope for 1031**, reserved for a future
-  design. *Recommend: yes.*
+- **D6 (revised) — JSON family & the structured mode.** Two parts:
+  - **D6a — JSON family via markers now.** JSONC/JSON5 inject via comment markers
+    like any text file (in scope, 1031); strict `.json` is a build-time-refused,
+    documented boundary with named author alternatives. *Recommend: adopt.*
+  - **D6b — Structured "owns-the-value-at-a-path" mode: decided but deferred.**
+    The mechanism is `jsonc-parser`'s format-preserving CST (not jaq); the
+    implementation is a fast-follow after 0.2.0, with the `struct:` interface seam
+    reserved so it lands non-breaking. Ratifying D6b also ratifies its
+    *declarative-convergence* ownership contract (Toha re-sets exactly the owned
+    path; strict JSON carries no drift marker). *Recommend: defer with the
+    mechanism decided.* (Option to pull it into 1031 now exists; not recommended —
+    it enlarges the first injection slice for a gain markers already deliver on
+    JSONC/JSON5.)
+- **D9 — `jaq` rejected as the structured mechanism.** Reserialize destroys a
+  user-owned file's comments/order/formatting (cited source). If a structured
+  mode ships, it uses `jsonc-parser`'s CST. *Recommend: reject jaq.*
 - **D7 — Atomic temp-file+rename for injection writes.** *Recommend: yes
   (injection only; whole-file writes unchanged).*
 - **D8 — Reuse existing `sha2`** for the region checksum. *Recommend: yes (no new
-  dependency).*
+  dependency).* The deferred structured mode would add `jsonc-parser` when built —
+  an embedded, well-maintained crate (dprint/deno), no subprocess — recorded now
+  so the fast-follow does not re-litigate adoption.
 
 **Explicit disclosure for the checkpoint.** This design introduces **no**
 supported-capability restriction (it only adds capability; `--force` is
@@ -460,6 +664,10 @@ returns to this checkpoint for separate explicit approval.
 - `docs/specifications/command-line-interface.yml`: extend "Overwriting" and the
   dry-run vocabulary (`inject`/`update`/`region drifted:`) and the `--force`
   semantics for drift; keep the exit-code table (5 gains anchor-ambiguity).
+- `docs/specifications/template-format.yml`: document that JSONC/JSON5 inject via
+  comment markers like any text file, that strict `.json` marker injection is
+  refused at build time with the named alternatives, and that a `struct:`
+  discriminator is reserved for the deferred format-preserving structured mode.
 - `docs/technical-designs/architecture.yml`: extend `plan-and-apply` with
   `PlannedEdit`/`resolve_edit`/`FileMutation` and the marker ownership model.
 - `docs/` guides (`template-files.md`) and a fixture under `tests/fixtures/`:
@@ -482,6 +690,12 @@ returns to this checkpoint for separate explicit approval.
    fails on unknown-extension silent guess.
 8. Staged-replay double-apply equals single apply: fails if replay is not a
    no-op.
+9. JSONC/JSON5 injection places valid `//` markers and is twice-apply idempotent:
+   fails if the markers invalidate the file or the second apply changes bytes.
+10. Strict `.json` marker injection is refused at build time, naming the boundary
+    and alternatives: fails if Toha writes a `//` marker into strict JSON or
+    refuses silently. (Structured-mode fixtures belong to the deferred
+    fast-follow, not 1031.)
 
 ## Next implementation step
 
