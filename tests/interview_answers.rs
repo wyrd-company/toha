@@ -1189,7 +1189,7 @@ fn configured_defaults_require_an_explicit_identity_mapping() {
                 (
                     toha::Id::parse("removed_question").unwrap(),
                     sourced(
-                        DefaultSource::Literal(json!("unused")),
+                        DefaultSource::Ref(PresetName::parse("missing_value").unwrap()),
                         ConfigLayer::Local,
                         "local.yml",
                     ),
