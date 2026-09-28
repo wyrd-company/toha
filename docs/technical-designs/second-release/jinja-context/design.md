@@ -19,9 +19,8 @@ interview evaluation. The same value is carried by the pure interview engine,
 stored for staged replay, and used by planning. The engine never reads the
 process, registry, terminal, host files, privilege state, or trust state.
 
-This is a design artifact. Runtime, shared specification, schema, and guide
-changes belong to the paired implementation after approval of this exact
-design.
+This is an approved design artifact. Runtime, shared specification, schema,
+and guide changes belong to the paired implementation.
 
 ## Caller usage first
 
@@ -41,10 +40,10 @@ Stage analyzes every Jinja source before it asks a question. Any possible
 environment observation requires the explicit stage flag:
 
 ```console
-# No environment observation: no flag needed.
+# No environment observation and no flag: record unavailable.
 toha stage sample ./output --async
 
-# Environment observation: the initial stage needs the flag once.
+# An explicit stage grant is captured even when no reference exists yet.
 toha stage sample ./output --async --trust
 
 # Later batches use the recorded decision and values.
@@ -65,21 +64,21 @@ let resolved = resolve_template(operand, &config, &registry, &dirs, cwd)?;
 let template = Template::load(&resolved.folder)?;
 
 let decision = match invocation {
-    NewStage { trust: true, .. } => EnvironmentDecision::Grant,
-    NewStage { trust: false, .. } => EnvironmentDecision::RequireGrant,
-    NewApply { trust, .. } => EnvironmentDecision::from_grant(
+    NewStage { trust: true, .. } => EnvironmentDecision::CarryStageGrant,
+    NewStage { trust: false, .. } => EnvironmentDecision::RequireStageGrant,
+    NewApply { trust, .. } => EnvironmentDecision::grant_if_needed(
         trust || reviewed_environment_access(&resolved, &template, &registry)?,
     ),
 };
 let environment = template.admit_environment(decision, &mut fixed_environment)?;
 
-let Resolution { defaults, warnings } = configured_defaults(
+let resolution = configured_defaults(
     &resolved.formal_name,
     &template,
     &config.presets,
     &config.template_defaults,
 )?;
-report(warnings);
+report(resolution.warnings());
 
 let context = InvocationContext::new(
     target.clone(),
@@ -88,17 +87,16 @@ let context = InvocationContext::new(
     ExecutionFacts::new(is_admin(), originating_driver_can_prompt),
     environment,
 )?;
-let interview = Interview::start(
-    &template,
-    Seed { now, defaults, context },
-)?;
+let interview = resolution.start_with_context(&template, now, context)?;
 ```
 
-For stage, `RequireGrant` with an environment need fails before the five values
-are read, before `Seed`, before `Interview::start`, before any question or
-message renders, and before any staged write. Target, configuration, selected
-template, and template-load failures can occur first because they supply the
-facts needed to analyze the template.
+For stage, `RequireStageGrant` with an environment need fails before the five
+values are read, before `Seed`, before `Interview::start`, before any question
+or message renders, and before any staged write. `CarryStageGrant` captures all
+five values once even when the loaded program has no initial environment need,
+so the explicit decision survives a later mutable-folder edit. Target,
+configuration, selected-template, and template-load failures can occur first
+because they supply the facts needed to analyze the template.
 
 A direct crate caller supplies equivalent typed facts and a fixed five-value
 adapter. The engine performs no ambient read:
@@ -126,9 +124,12 @@ let plan = Plan::build(&template, &completed, &target)?;
 
 ## Canonical target contract
 
-The approved target producer contract is fixed at revision
+The approved target producer contract is anchored at revision
 `067c8d2e7c95cf2b16ab3a4103f8b1a8fda331af`, design SHA-256
-`72a564799b95ab1c187c913ac14ef14938f880bf2ab24ec337c03f887991457b`:
+`72a564799b95ab1c187c913ac14ef14938f880bf2ab24ec337c03f887991457b`,
+and integrated at revision `dfe7ba017ebef525310db8b8ab4ead58fae2d147`,
+design SHA-256
+`9560139e48798429a95e06a695dea703817b673d2e18f19e25f3fe4a3efe9b`:
 
 ```rust
 pub fn canonical_target(
@@ -326,8 +327,9 @@ pub struct FixedEnvironment {
 
 pub enum EnvironmentDecision {
     Deny,
-    Grant,
-    RequireGrant,
+    GrantIfNeeded,
+    RequireStageGrant,
+    CarryStageGrant,
 }
 
 pub trait FixedEnvironmentSource {
@@ -351,6 +353,15 @@ impl Template {
         decision: EnvironmentDecision,
         source: &mut impl FixedEnvironmentSource,
     ) -> Result<EnvironmentSnapshot, EnvironmentAdmissionError>;
+}
+
+impl Resolution {
+    pub fn start_with_context<'a>(
+        self,
+        template: &'a Template,
+        now: jiff::Zoned,
+        context: InvocationContext,
+    ) -> Result<Interview<'a>, EvalError>;
 }
 
 impl InvocationContext {
@@ -387,14 +398,15 @@ carrier but projects the pre-context Jinja contract.
 ## Admission behavior
 
 `Template::admit_environment` combines the immutable analysis need with one
-caller decision:
+caller decision. The complete matrix is:
 
 | Initial need | Decision | Reads | Result |
 | --- | --- | ---: | --- |
-| none | any | 0 | `Unavailable` |
+| none | `Deny`, `GrantIfNeeded`, or `RequireStageGrant` | 0 | `Unavailable` |
+| none | `CarryStageGrant` | all five once | `Captured` |
 | present | `Deny` | 0 | `Unavailable` |
-| present | `Grant` | all five once | `Captured` |
-| present | `RequireGrant` | 0 | attributed `TrustRequired` error |
+| present | `GrantIfNeeded` or `CarryStageGrant` | all five once | `Captured` |
+| present | `RequireStageGrant` | 0 | attributed `TrustRequired` error |
 
 Direct and new-apply paths use the approved effective-trust policy. Access is
 granted by explicit `--trust`, or by a current matching reviewed approval for a
@@ -408,8 +420,10 @@ to changed non-hook Jinja content. User-facing text must not describe all
 rendered content as reviewed.
 
 Stage always uses its explicit flag. A matching registry review does not
-substitute for `stage --trust`. `continue` has no trust flag. Staged apply's
-flag controls hook execution only.
+substitute for `stage --trust`. The absence of the flag records `Unavailable`
+when no need exists and refuses when a need exists. The presence of the flag
+records a fixed-five snapshot in both cases. `continue` has no trust flag.
+Staged apply's flag controls hook execution only.
 
 ## Staging and replay
 
@@ -465,14 +479,16 @@ permission is stored.
 No source or program identity is added to replay. A mutable folder continues to
 load current bytes.
 
-- If the initial template had no need, or direct access was denied, later-added
-  environment references see five nulls and cause no ambient read.
-- If the initial template had any admitted need, all five recorded values are
-  available to later-added references.
+- If stage had no initial need and no flag, later-added environment references
+  see five nulls and cause no ambient read or access gate.
+- If stage had the explicit flag, all five recorded values are available to
+  later-added references whether or not the initial template had a need.
+- A direct/new-apply denial remains unavailable and performs no ambient read.
 
-This is why an admitted stage captures all five instead of only the names first
-referenced. It is the smallest deterministic snapshot over the closed
-five-value vocabulary that avoids a new source-change refusal.
+This is why an explicit stage grant captures all five instead of only the names
+first referenced. It is the smallest deterministic snapshot over the closed
+five-value vocabulary that carries the approved decision without a new
+source-change refusal.
 
 ### Legacy staged records
 
@@ -499,11 +515,12 @@ host adapter ─────────────────► HostFacts   
 originating driver ───────────► ExecutionFacts     │          │
 environment admission ────────► snapshot ──────────┘          │
                                                               ▼
-presets ─► Resolution { defaults, warnings } ─► Seed ─► Pending
-                                                              │
-                    StagedRecord ◄──── serialize/replay ──────┤
-                                                              ▼
-                                                          Completed
+presets + ConfigEntry origins ─► Resolution ─► configured start ─► Pending
+flat defaults ───────────────────────────────► Seed ────────────┤
+                                                                │
+                      StagedRecord ◄──── serialize/replay ──────┤
+                                                                ▼
+                                                            Completed
                                                               │
 data + answers + now + InvocationContext ─► one Jinja projection
                                       │                       │
@@ -549,7 +566,9 @@ being completed.
 | --- | --- |
 | Reserved current-context identifier | Aggregate `LoadError` with authored locations. |
 | Unmodeled supported AST form | Conservatively marks all five observable. |
-| Stage need without `--trust` | `StagingError::EnvironmentTrustRequired { reference }` before capture, seed, render, or write. |
+| Stage need without `--trust` | `StagingError::EnvironmentTrustRequired { reference }` before capture, seed, interview, render, submission, or write. |
+| Stage without need or `--trust` | `Unavailable`, zero environment reads; later-added references remain null. |
+| Stage with `--trust` | Capture all five once, even without an initial reference; carry them through replay. |
 | Target construction or stored-target mismatch | Producer `StagingError`; no consumer normalization. |
 | Invalid selected identity or context wire | Attributed context/replay error without captured values. |
 | Plan target differs from completed current context | `PlanError::ContextTarget` before render or I/O. |
@@ -559,10 +578,13 @@ being completed.
 | Legacy record | Pre-context projection; no invented facts or access recovery. |
 | Interview or plan evaluation fails | Existing attributed evaluation/render error. |
 
-Adding required `Seed.context` is a deliberate source break for crate callers.
-The public interview state machine and apply result types otherwise remain.
-Existing `now()` behavior remains. Source-tree Jinja compilation moves to
-template load, so an attributable syntax/include error can occur earlier.
+Adding required `Seed.context` is a deliberate source break for ordinary crate
+callers, but `Seed.defaults` remains the flat application-default route.
+Configured start and replay keep the origin-bearing `Resolution` through engine
+entry; they do not coordinate or flatten a second origin map. The public
+interview state machine and apply result types otherwise remain. Existing
+`now()` behavior remains. Source-tree Jinja compilation moves to template load,
+so an attributable syntax/include error can occur earlier.
 
 ## Canonical document changes for implementation
 
@@ -588,17 +610,26 @@ The paired implementation updates:
    `debug()` aliases, dynamic operands, false branches, uncalled macros, and
    uncertain AST forms are covered. A literal property string alone is not a
    root read.
-3. **Failure order:** stage without trust and with a need returns the attributed
-   error while spies prove zero gated reads, seed construction, interview
-   starts, renders, submissions, and store writes.
-4. **Capture matrix:** no need reads zero; denied direct reads zero; granted need
-   reads all five once; absent/empty/non-Unicode values become null.
+3. **Failure order:** `stage_refs_without_trust_fails_before_progress` returns
+   the attributed error while spies prove zero gated reads, seed construction,
+   interview starts, renders, submissions, and store writes.
+4. **Capture matrix:**
+   `stage_no_refs_without_trust_records_unavailable_without_reads` proves the
+   no-flag/no-need result;
+   `stage_no_refs_with_trust_captures_fixed_five_once` proves the carried grant;
+   `stage_refs_with_trust_captures_fixed_five_once` proves the admitted need;
+   and `direct_denial_reads_nothing` proves denial. Empty and non-Unicode values
+   become null.
 5. **Replay:** environment, host, approval, privilege, and terminal changes do
    not change later batches. Continue has no trust flag. Staged apply trust
    changes hook permission only.
-6. **Mutable folders:** no-need then added reference produces null with zero
-   read; admitted editor-only then added shell reference produces the recorded
-   shell value with zero later read.
+6. **Mutable folders:**
+   `mutable_folder_no_flag_added_reference_stays_null` proves no-need/no-flag
+   replay with zero read or gate;
+   `mutable_folder_carried_grant_supplies_later_reference` proves that an
+   explicit no-need stage grant supplies its recorded value after an edit; and
+   an initially referenced editor followed by a shell reference uses the same
+   fixed-five snapshot.
 7. **Legacy:** a no-context record preserves pre-context availability,
    collision, and `debug()` output across continuation and staged apply.
 8. **Target:** every identity-sensitive caller receives the sole factory
@@ -611,7 +642,9 @@ The paired implementation updates:
     fallbacks, admin detection, and originating interaction keep exact types
     and remain frozen.
 11. **Collisions and presets:** every exact authored collision is attributed; a
-    neighboring `toha_` name loads; presets remain flat defaults only.
+    neighboring `toha_` name loads; presets remain answer defaults only;
+    configured start/replay preserve winning `ConfigEntry` origin while the
+    ordinary `Seed.defaults` route stays flat.
 12. **Redaction and wire:** captured strings appear only in intended rendered
     output and staged JSON, never in `Debug`, errors, protocol metadata, or
     guidance. The wire has no target carrier, generic map, or access token.
@@ -631,23 +664,21 @@ The paired implementation updates:
 - Timeout mechanics, pinned-version checks, or application subprocesses.
 - A general public-engine/session redesign.
 
-## Decisions at the approval checkpoint
+## Approved contract closure
 
-The checkpoint asks for three decisions:
+The approved contract permits the bounded plaintext fixed-five snapshot in the
+existing staged JSON. A stage without an initial need or flag records no value.
+An explicit `stage --trust` records all five optional values even without an
+initial reference. The existing state-directory and process-umask behavior
+applies; values remain until successful staged apply, `abort`, or operator
+removal.
 
-1. Permit up to five optional plaintext values in staged JSON after an initial
-   environment need and grant. At most four can be extra when one fixed name is
-   referenced; `debug()` requires all five. No value is stored for no need or
-   denied access.
-2. Accept the frozen-decision behavior for mutable folders: later-added
-   references see nulls after an unavailable snapshot or recorded values after
-   a captured snapshot, with no new source-change refusal.
-3. Approve the exact revised design package.
+Mutable folders render current bytes under the recorded decision. Unavailable
+stays null; a carried grant supplies the recorded fixed-five snapshot. Replay
+performs no live environment read, trust check, or access abort/retry, and adds
+no source/program identity refusal.
 
-The direct/apply effective-trust rule, explicit stage-only flag, and producer
-target carrier are already fixed and are not reopened by this checkpoint.
-
-## Implementation start after approval
+## Implementation handoff
 
 Implement the complete retained render program and AST analysis first. Prove
 the admission matrix and all-surface tests before threading the current/legacy

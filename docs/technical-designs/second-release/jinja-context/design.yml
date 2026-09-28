@@ -48,8 +48,9 @@ proposed-design:
   high-level-overview: >-
     Template::load retains one complete in-process render program and computes
     a conservative environment need. Template::admit_environment combines that
-    need with Deny, Grant, or RequireGrant. InvocationContext flows through
-    Seed, Pending, Completed, staging, and Plan through one private projection.
+    need with Deny, GrantIfNeeded, RequireStageGrant, or CarryStageGrant.
+    InvocationContext flows through Seed, Pending, Completed, staging, and Plan
+    through one private projection.
   analysis: >-
     An isolated MiniJinja AST adapter walks reads in evaluation order, lexical
     aliases and shadowing, dynamic operands, macros, all branches, debug()
@@ -59,15 +60,21 @@ proposed-design:
     Expose seventeen current-context variables with exact string, nullable,
     array, and boolean types. Reserve only those exact names. Presets remain
     flat defaults and are not Jinja context.
+  configured-origin: >-
+    Configured start and replay retain the origin-bearing Resolution through
+    engine entry so winning ConfigEntry file/layer provenance is not flattened.
+    Ordinary direct callers keep the flat Seed.defaults route with context.
   access: >-
     Direct/new apply uses explicit --trust or a current matching reviewed
     approval for an eligible named user/system entry. Stage requires its own
-    explicit --trust whenever analysis finds any environment need. Continue has
-    no trust option; staged apply trust remains hook-only.
+    explicit --trust whenever analysis finds any environment need. An explicit
+    stage flag carries its grant even when the initial program has no reference.
+    Continue has no trust option; staged apply trust remains hook-only.
   snapshot: >-
-    No need or denied access reads nothing and records Unavailable. A need plus
-    grant captures all five optional values once and records Captured. The fixed
-    five-field structure is not an environment map.
+    Stage without a need or flag reads nothing and records Unavailable. Explicit
+    stage --trust captures all five optional values once even without a need. A
+    direct/new-apply grant captures only when needed; denial reads nothing. The
+    fixed five-field structure is not an environment map.
   staging: >-
     The versioned context wire stores supplemental selected identity, host,
     execution, and environment snapshot. Target and formal name remain in their
@@ -75,10 +82,10 @@ proposed-design:
     stored path text, and reconstructs the live context without deserializing a
     carrier. Replay performs no access or ambient read.
   mutable-folders: >-
-    Resume continues to load current folder bytes. An unavailable snapshot
-    yields null for later-added references. A captured snapshot supplies its
-    recorded five values to later-added references. No source identity gate is
-    added.
+    Resume continues to load current folder bytes. A no-flag Unavailable
+    snapshot yields null for later-added references. A carried stage grant or
+    other Captured snapshot supplies its recorded five values to later-added
+    references. No source identity gate or later access gate is added.
   legacy: >-
     A record with no context field uses the pre-context projection and
     available/reserved-name set. It invents no facts, exposes no new values, and
@@ -91,7 +98,8 @@ proposed-design:
     completed context.
   compatibility: >-
     Seed gains a required context for direct callers. Source-tree syntax errors
-    can surface at template load. Existing mutable folder behavior, input
+    can surface at template load. Origin-bearing configured Resolution and flat
+    Seed defaults remain distinct. Existing mutable folder behavior, input
     modality, now(), protocol metadata, configured defaults, hook review, and
     producer target interfaces remain.
   canonical-impact: >-
@@ -104,18 +112,22 @@ proposed-design:
     folders; legacy replay; target carrier; trust distinctions; host/admin/
     interaction types; collisions; redaction; wire validation; and caller
     parity.
-decisions-needed:
+approved-decisions:
   plaintext-snapshot: >-
-    Approve or reject storing up to five optional plaintext values after an
-    initial environment need and grant under the existing state-directory and
-    umask behavior, until apply, abort, or operator removal.
+    Store at most five optional plaintext values after an explicit carried stage
+    grant or an admitted direct/new-apply need. Existing state-directory and
+    process-umask behavior applies until apply, abort, or operator removal.
+  stage-matrix: >-
+    No refs/no flag is Unavailable with zero reads; no refs/explicit flag
+    captures five once; refs/no flag fails before interview or state progress;
+    refs/flag captures five once. Continue performs no access operation.
   mutable-folder-result: >-
-    Approve or reject the frozen-decision behavior for later folder edits:
-    unavailable remains null; captured makes all five recorded values available;
-    no source-change refusal is introduced.
-  exact-package: >-
-    Approve or reject the exact revised design package. Direct/apply effective
-    trust, stage-only explicit trust, and CanonicalTarget/StagingError are fixed.
+    Current bytes render under the recorded decision: unavailable stays null and
+    a captured fixed-five snapshot supplies later-added references. No source or
+    program identity refusal is introduced.
+  target: >-
+    Consume the sole producer CanonicalTarget factory result and StagingError;
+    use as_path() only and add no unchecked constructor or consumer normalizer.
 out-of-scope: >-
   Runtime or shared canonical edits; arbitrary environment access; a generic
   environment map; a new trust command or digest; a second target normalizer;

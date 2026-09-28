@@ -27,9 +27,10 @@ includes, and registry review already have separate owners.
 The [design](design.md) starts with terminal, headless, staged, and crate call
 sites. A caller loads one complete render program, crosses one environment
 admission method, constructs one typed context, and starts the existing engine.
-Stage uses `--trust` once when analysis finds an environment need. Continue and
-staged apply replay the recorded snapshot without a trust option or ambient
-read.
+Stage uses `--trust` once. A missing flag is acceptable only when analysis finds
+no environment need; an explicit flag captures all five even with no initial
+need. Continue and staged apply replay the recorded snapshot without a trust
+option or ambient read.
 
 ## Shape
 
@@ -48,6 +49,9 @@ and privilege decisions. The pure engine accepts only domain values.
 
 The staged wire is separate from the live target carrier. The producer's sole
 factory and `Store::load(&CanonicalTarget)` remain the only target authority.
+Configured callers retain the origin-bearing `Resolution` through start and
+replay, while ordinary callers keep the flat `Seed.defaults` route. Context
+threading does not split defaults from their winning `ConfigEntry` origin.
 
 ## Synthesis decision
 
@@ -62,9 +66,10 @@ Candidate 3's public analysis pipeline and program wrapper are rejected.
 
 The architect and read-only cross-judge reject every source/program-identity
 replay gate. Such a gate would make a mutable folder stage fail after an edit,
-which is a new restriction unrelated to access. Capturing all five values after
-any admitted need is the smallest deterministic snapshot over the closed
-vocabulary that preserves current folder replay without later access.
+which is a new restriction unrelated to access. Capturing all five values for
+an explicit carried stage grant, including when no initial reference exists, is
+the smallest deterministic snapshot over the closed vocabulary that preserves
+current folder replay without later access.
 
 The architect adds a legacy context contract. A staged record without context
 uses the pre-context projection, so it exposes no new fact and needs no
@@ -72,7 +77,10 @@ access-related abort/restage path.
 
 The target shape consumes approved producer revision
 `067c8d2e7c95cf2b16ab3a4103f8b1a8fda331af`, design SHA-256
-`72a564799b95ab1c187c913ac14ef14938f880bf2ab24ec337c03f887991457b`.
+`72a564799b95ab1c187c913ac14ef14938f880bf2ab24ec337c03f887991457b`,
+integrated at `dfe7ba017ebef525310db8b8ab4ead58fae2d147` with design
+SHA-256
+`9560139e48798429a95e06a695dea703817b673d2e18f19e25f3fe4a3efe9b`.
 It uses `CanonicalTarget`, `StagingError`, `as_path()`, and no unchecked
 constructor or consumer normalization.
 
@@ -83,13 +91,13 @@ constructor or consumer normalization.
 - We accept conservative all-five classification for uncertain AST forms and
   possible `debug()` calls in exchange for preserving supported syntax.
 - We accept a required `Seed.context` migration in exchange for explicit facts
-  on every supported caller path.
-- We propose plaintext persistence of up to five optional values in exchange
-  for deterministic later batches without ambient reads or a source-change
-  refusal. This remains an explicit checkpoint decision.
-- We propose that later folder edits use the frozen decision: unavailable stays
-  null; captured supplies all five recorded values. This remains an explicit
-  checkpoint decision.
+  on every supported ordinary-caller path; configured start/replay use the
+  origin-bearing `Resolution` continuation.
+- We accept approved plaintext persistence of up to five optional values in
+  exchange for deterministic later batches without ambient reads or a
+  source-change refusal.
+- We accept the approved mutable-folder result: unavailable stays null; a
+  carried grant or other captured snapshot supplies all five recorded values.
 - We accept a snapshot of originating interaction, host, privilege, and selected
   identity in exchange for stable branches across every continuation modality.
 - We accept a private legacy projection in exchange for no invented historical
@@ -117,13 +125,8 @@ constructor or consumer normalization.
 - A generic environment map or dynamic lookup exceeds the fixed contract.
 - A consumer target wrapper duplicates the producer's identity policy.
 
-## Open questions and risks
+## Residual risks
 
-- Will the manager approve storing up to five optional plaintext values under
-  the existing staged-state directory and umask until apply, abort, or operator
-  removal?
-- Will the manager approve the two mutable-folder outcomes under the frozen
-  decision, with no source-change refusal?
 - Can every supported MiniJinja AST form be conservatively classified without
   an unacceptable false-positive rate? The verification suite must include
   shadowed `debug`, callable aliases, dynamic operands, and an uncertainty
@@ -132,8 +135,8 @@ constructor or consumer normalization.
   the include design integrates? Any plan-time reopen of Jinja source would
   break the admission invariant.
 
-## Next implementation step
+## Implementation handoff
 
-After approval of the exact checkpoint, implement the retained render program
-and AST need analysis, then prove the admission matrix before threading current
-and legacy contexts through staging and planning.
+Implement the retained render program and AST need analysis, then prove the
+four-case stage matrix before threading current and legacy contexts through
+staging and planning.

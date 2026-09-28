@@ -9,12 +9,13 @@ relationships:
     - jinja-includes
 -->
 <section id="title">
-  <p class="kicker">Toha 0.2.0 · Revised design checkpoint</p>
+  <p class="kicker">Toha 0.2.0 · Approved design closure</p>
   <h1>Trust once at stage; replay one context</h1>
   <p>Toha finds every possible environment reference before the interview and carries one recorded decision through later batches.</p>
   <p>
     <span class="tag">architect design</span>
-    <span class="tag warn">3 DECISIONS REQUIRED</span>
+    <span class="tag">APPROVED CONTRACT</span>
+    <span class="tag">READY FOR REVIEW</span>
     <span class="tag">no runtime changes</span>
   </p>
 </section>
@@ -58,7 +59,7 @@ relationships:
         <pre><code class="language-sh">toha stage sample ./output --async --trust
 toha continue ./output answers.json
 toha apply ./output</code></pre>
-        <p class="muted">Stage decides once. Continue never asks again.</p>
+        <p class="muted">The explicit grant is captured once. Continue never asks again.</p>
       </div>
     </div>
   </section>
@@ -150,14 +151,15 @@ impl CanonicalTarget {
     pub fn as_path(&amp;self) -&gt; &amp;Path;
 }</code></pre>
     <p>No unchecked constructor. No <code>From&lt;PathBuf&gt;</code>. No consumer normalizer.</p>
-    <p class="muted">Approved producer revision <code>067c8d2e7c95cf2b16ab3a4103f8b1a8fda331af</code>.</p>
+    <p class="muted">Approved at <code>067c8d2e…</code>; integrated at <code>dfe7ba0…</code>.</p>
   </section>
   <section>
     <h2>Public interface — one deep admission call</h2>
     <pre><code class="language-rust">pub enum EnvironmentDecision {
     Deny,
-    Grant,
-    RequireGrant,
+    GrantIfNeeded,
+    RequireStageGrant,
+    CarryStageGrant,
 }
 
 pub fn admit_environment(
@@ -199,7 +201,7 @@ Seed → interview → stage</code></pre>
       <li>Explicit <code>--trust</code> grants the fixed environment values.</li>
       <li>An eligible named user/system entry can use a current matching reviewed approval.</li>
       <li>Folder, direct Git, bundled, and local-layer selections still need the flag.</li>
-      <li><strong>Stage is different:</strong> any need requires its explicit <code>stage --trust</code>.</li>
+      <li><strong>Stage is different:</strong> any need requires its explicit flag; a supplied flag is carried even without a need.</li>
       <li>Staged <code>apply --trust</code> controls hooks only; it cannot elevate the recorded Jinja snapshot.</li>
     </ul>
   </section>
@@ -234,7 +236,7 @@ struct FixedEnvironment {
     shell: Option&lt;String&gt;,
     visual: Option&lt;String&gt;,
 }</code></pre>
-    <p>No need or denial reads and stores nothing. Any admitted need captures the closed set of five once.</p>
+    <p>No flag and no need stores nothing. Explicit <code>stage --trust</code> captures the closed set of five once, even without an initial reference.</p>
   </section>
   <section>
     <h2>Data — what the staged record stores</h2>
@@ -259,17 +261,17 @@ struct FixedEnvironment {
     </div>
   </section>
   <section>
-    <h2>Mutable folders — frozen decision examples</h2>
+    <h2>Mutable folders — the recorded decision wins</h2>
     <div class="two">
       <div>
-        <p><strong>No initial need</strong></p>
+        <p><strong>No initial need, no flag</strong></p>
         <pre><code class="language-text">stage: Unavailable
 later edit: adds editor reference
 resume: editor = null
 ambient reads: 0</code></pre>
       </div>
       <div>
-        <p><strong>Initial admitted need</strong></p>
+        <p><strong>No initial need, explicit flag</strong></p>
         <pre><code class="language-text">stage: captures fixed five
 later edit: adds shell reference
 resume: recorded shell value
@@ -299,8 +301,10 @@ ambient reads: 0</code></pre>
     <h2>Behaviors to prove — admission and replay</h2>
     <ul>
       <li>Missing stage trust: named error and zero reads, questions, renders, submissions, or writes.</li>
-      <li>No need: zero reads for every caller decision.</li>
-      <li>Granted need: all five captured exactly once.</li>
+      <li>No refs, no flag: unavailable and zero reads.</li>
+      <li>No refs, explicit stage flag: all five captured exactly once.</li>
+      <li>Refs, no flag: refusal before interview or state progress.</li>
+      <li>Refs, flag: all five captured exactly once.</li>
       <li>Continue: no trust option and no host, registry, privilege, terminal, or environment read.</li>
       <li>Staged apply trust: hook permission changes; Jinja snapshot does not.</li>
       <li>Legacy record: old availability, collisions, and <code>debug()</code> output remain.</li>
@@ -311,7 +315,8 @@ ambient reads: 0</code></pre>
     <ul>
       <li>Every target-sensitive call receives the sole producer carrier.</li>
       <li>Only the 17 exact names collide; neighboring <code>toha_</code> names remain legal.</li>
-      <li>Configured presets become flat answer defaults, never Jinja metadata.</li>
+      <li>Configured <code>Resolution</code> keeps winning file/layer origin; ordinary <code>Seed.defaults</code> stays flat.</li>
+      <li>Configured presets become answer defaults, never Jinja metadata.</li>
       <li>Captured strings appear only in intended render output and staged JSON.</li>
       <li>Terminal, headless, staged, resumed, and direct callers agree for equal typed facts.</li>
       <li>The full repository gate covers hooks, includes, presets, protocol, plan, and apply.</li>
@@ -338,9 +343,10 @@ ambient reads: 0</code></pre>
     <li><strong>Analysis gap:</strong> can any supported Jinja form observe an environment value without admission?</li>
     <li><strong>Failure order:</strong> can state progress before missing stage trust fails?</li>
     <li><strong>Replay drift:</strong> can any later batch read ambient facts again?</li>
-    <li><strong>Storage consequence:</strong> is fixed-five plaintext persistence acceptable?</li>
-    <li><strong>Folder behavior:</strong> are both frozen-decision outcomes acceptable?</li>
-    <li><strong>Ownership:</strong> did context duplicate target, presets, include, or hook-review policy?</li>
+    <li><strong>Storage binding:</strong> does the wire remain a fixed five fields rather than a map?</li>
+    <li><strong>Folder behavior:</strong> do both approved recorded-decision outcomes remain exact?</li>
+      <li><strong>Ownership:</strong> did context duplicate target, presets, include, or hook-review policy?</li>
+      <li><strong>Origin:</strong> does configured start/replay preserve winning <code>ConfigEntry</code> provenance?</li>
   </ul>
 </section>
 
@@ -385,38 +391,39 @@ ambient reads: 0</code></pre>
 
 <section id="decisions">
   <section>
-    <h2>Fixed decision — effective trust for direct and apply</h2>
+    <h2>Approved — effective trust for direct and apply</h2>
     <p><span class="tag">APPROVED</span></p>
     <p>Explicit <code>--trust</code> or an eligible current matching reviewed approval can grant the five values.</p>
     <p>The review digest covers hook surfaces, not every Jinja-bearing file. User-facing text must not claim that all rendered content was reviewed.</p>
   </section>
   <section>
-    <h2>Fixed decision — stage trust happens once</h2>
+    <h2>Approved — stage trust happens once</h2>
     <p><span class="tag">APPROVED</span></p>
     <ul>
       <li>Find all possible environment references before the interview.</li>
       <li>Require explicit <code>stage --trust</code> when any need exists.</li>
+      <li>When supplied, capture all five once even if no initial need exists.</li>
       <li>Fail before interview and staged-state progress when the flag is missing.</li>
       <li>Carry the decision through later batches.</li>
       <li>No <code>continue --trust</code>, later access check, or access abort/retry.</li>
     </ul>
   </section>
   <section>
-    <h2>Decision 1 — plaintext snapshot</h2>
-    <p><span class="tag warn">APPROVAL REQUIRED</span></p>
-    <p><strong>Proposal:</strong> after an admitted need, store up to five optional plaintext values in the existing staged JSON.</p>
+    <h2>Approved — bounded plaintext snapshot</h2>
+    <p><span class="tag">APPROVED</span></p>
+    <p>Store up to five optional plaintext values in the existing staged JSON after a carried stage grant or admitted direct/apply need.</p>
     <ul>
       <li>At most four may be extra when one fixed name is referenced.</li>
       <li><code>debug()</code> requires all five.</li>
-      <li>No need means no environment values are stored.</li>
+      <li>No flag and no need means no environment values are stored.</li>
       <li>Existing state-directory and process-umask behavior applies.</li>
       <li>Values remain until apply, abort, or operator removal.</li>
     </ul>
   </section>
   <section>
-    <h2>Decision 2 — mutable-folder replay</h2>
-    <p><span class="tag warn">APPROVAL REQUIRED</span></p>
-    <p><strong>Proposal:</strong> current folder bytes render under the recorded decision.</p>
+    <h2>Approved — mutable-folder replay</h2>
+    <p><span class="tag">APPROVED</span></p>
+    <p>Current folder bytes render under the recorded decision.</p>
     <ul>
       <li>Unavailable stays unavailable; later references receive null.</li>
       <li>Captured makes the recorded fixed-five snapshot available.</li>
@@ -425,10 +432,10 @@ ambient reads: 0</code></pre>
     </ul>
   </section>
   <section>
-    <h2>Decision 3 — exact revised package</h2>
-    <p><span class="tag warn">APPROVAL REQUIRED</span></p>
-    <p>Approve or reject this exact revised design after the storage and mutable-folder choices are explicit.</p>
-    <p class="muted">The producer target carrier, direct/apply trust rule, and stage-only trust rule are fixed and are not reopened.</p>
+    <h2>Approved closure — exact binding</h2>
+    <p><span class="tag">APPROVED</span></p>
+    <p>The prior exact deck approved bounded fixed-five storage and immutable replay. The stage-only amendment supplies the four-case matrix and removes later authorization.</p>
+    <p class="muted">The producer target carrier, direct/apply trust rule, stage-only trust rule, storage bound, and mutable-folder outcomes are closed.</p>
   </section>
 </section>
 
@@ -469,17 +476,17 @@ ambient reads: 0</code></pre>
 
 <section id="next">
   <section>
-    <h2>Phase C checkpoint — decisions requested</h2>
+    <h2>Approved closure — review handoff</h2>
     <ol>
-      <li>Approve or reject the fixed-five plaintext staged snapshot.</li>
-      <li>Approve or reject both frozen mutable-folder outcomes.</li>
-      <li>Approve or reject this exact revised design package.</li>
+      <li>Verify the four-case stage matrix in every authoritative artifact.</li>
+      <li>Verify the producer carrier and configured-default origins remain exact.</li>
+      <li>Verify every named sole-kill obligation is implementation-ready.</li>
+      <li>Accept the design-only review handoff.</li>
     </ol>
-    <p>A standalone permissions and storage disclosure accompanies this deck.</p>
-    <p class="muted">Publishing, technical verification, silence, or elapsed time is not approval.</p>
+    <p class="muted">No new product or access decision is requested.</p>
   </section>
   <section>
-    <h2>After approval</h2>
+    <h2>After design review</h2>
     <ol>
       <li>Bind the exact approved artifacts to the paired implementation.</li>
       <li>Implement the retained render program and AST analysis first.</li>

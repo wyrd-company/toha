@@ -64,8 +64,9 @@ Callers cross one admission interface:
 ```rust
 pub enum EnvironmentDecision {
     Deny,
-    Grant,
-    RequireGrant,
+    GrantIfNeeded,
+    RequireStageGrant,
+    CarryStageGrant,
 }
 
 impl Template {
@@ -77,11 +78,13 @@ impl Template {
 }
 ```
 
-`RequireGrant` is the stage decision when `--trust` is absent. With any need it
-returns an attributed error before reading, seed construction, interview
-progress, or a staged write. `Deny` is a valid direct/new-apply decision and
-reads nothing. `Grant` reads all five optional values once only when a need is
-present. No-need admission reads nothing for every decision.
+`RequireStageGrant` is the stage decision when `--trust` is absent. With any
+need it returns an attributed error before reading, seed construction,
+interview progress, or a staged write; with no need it records `Unavailable`
+without a read. `CarryStageGrant` is the explicit stage decision and reads all
+five optional values once even without a need. `Deny` is a valid
+direct/new-apply decision and reads nothing. `GrantIfNeeded` captures all five
+only when the direct/new-apply program needs them.
 
 The immutable snapshot is either `Unavailable` or `Captured(FixedEnvironment)`.
 The latter has exactly five named `Option<String>` fields, not a map. It flows
@@ -92,10 +95,11 @@ state-directory and umask behavior.
 
 Replay uses the recorded snapshot without a trust option, registry check, host
 read, environment read, or privilege read. Mutable folder templates continue
-to load current bytes as they do today. A snapshot captured after any initial
-need contains the entire closed five-value vocabulary, so later edits need no
-access decision. An unavailable snapshot stays unavailable, so later edits see
-five nulls. There is no content-identity refusal.
+to load current bytes as they do today. An explicit carried stage grant captures
+the entire closed five-value vocabulary even without an initial reference, so
+later edits need no access decision. A no-flag unavailable snapshot stays
+unavailable, so later edits see five nulls. There is no content-identity
+refusal.
 
 The staged wire does not contain `CanonicalTarget`. `StagedRecord.target`
 remains path text. `Store::load(&CanonicalTarget)` receives the producer-created
@@ -134,6 +138,8 @@ Architect corrections:
 - remove every program/source-identity replay gate;
 - preserve the approved `Plan::build(..., &CanonicalTarget)` signature rather
   than deriving a replacement target interface;
+- preserve origin-bearing configured `Resolution` through start/replay while
+  retaining flat `Seed.defaults` for ordinary callers;
 - avoid duplicate target and formal-name fields in the context wire;
 - give legacy records a behavior-preserving legacy context instead of
   inventing facts or requiring access recovery.
@@ -147,15 +153,20 @@ Rejected:
 - any later trust check, ambient capture, generic environment map, or second
   target authority.
 
-## Manager decisions at the revised checkpoint
+## Approved closure correction
 
-1. Approve or reject storing up to five optional plaintext values after any
-   admitted environment need. At most four can be extra when one fixed name is
-   referenced; `debug()` needs all five. No values are stored when there was no
-   need or access was denied.
-2. Approve or reject mutable-folder replay under the frozen decision: a stage
-   that originally had no need exposes nulls to later added references; a stage
-   that captured values exposes that recorded five-value snapshot to later
-   added references. No new source-change refusal is introduced.
-3. Approve or reject the exact revised design package. Approved option 1A,
-   explicit `stage --trust`, and the producer target interface are not reopened.
+The exact prior deck approval already covered bounded plaintext fixed-five
+storage and immutable replay. The stage-only amendment fixes how that snapshot
+is selected:
+
+1. No references and no flag records `Unavailable` with zero reads. Later-added
+   references receive null without a live read or access gate.
+2. No references and explicit `stage --trust` captures all five once and carries
+   the grant to later batches.
+3. References without the flag fail before interview or staged-state progress.
+4. References with the flag capture all five once.
+
+Continue has no trust flag, live environment read, reauthorization, or access
+abort/retry. The correction adds no source/program identity refusal, generic
+environment map, new permission, timeout, pinned check, subprocess, or
+dependency.
