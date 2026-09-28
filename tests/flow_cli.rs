@@ -327,6 +327,48 @@ fn answers_after_a_flow_stop_are_refused() {
 }
 
 #[test]
+fn apply_answers_after_a_flow_stop_is_refused_but_no_answers_shows_the_notice() {
+    // R2/behavior 23: the terminal-interview refusal holds on *every* answers
+    // route, not just `continue`. `apply TEMPLATE PATH --answers` on a staged
+    // interview a flow node already ended is refused (exit 1) and keeps the
+    // record; `apply TEMPLATE PATH` without answers keeps the notice (exit 0).
+    let case = Case::new(STOP_GATE);
+    let staged = case.run(&["stage", case.template(), case.target(), "--async"]);
+    assert_eq!(code(&staged), 4, "{}", stderr(&staged));
+    let stopped = case.send(&["continue", case.target(), "-"], r#"{"proceed": false}"#);
+    assert_eq!(code(&stopped), 0, "{}", stderr(&stopped));
+    assert!(case.staged(), "a stop must keep the staged record");
+
+    // The named-template answers route must refuse, not exit 0 discarding them.
+    let refused = case.send(
+        &["apply", case.template(), case.target(), "--answers", "-"],
+        r#"{"name": "late"}"#,
+    );
+    assert_eq!(
+        code(&refused),
+        1,
+        "apply --answers on an ended record was not refused: {}",
+        stderr(&refused)
+    );
+    assert!(
+        stderr(&refused).contains("not used"),
+        "{}",
+        stderr(&refused)
+    );
+    assert!(refused.stdout.is_empty(), "a refusal emits no document");
+    assert!(case.staged(), "the refusal must keep the record");
+
+    // The no-answers route is unchanged: the notice, exit 0.
+    let notice = case.run(&["apply", case.template(), case.target()]);
+    assert_eq!(code(&notice), 0, "{}", stderr(&notice));
+    assert!(
+        stderr(&notice).contains("stopped: declined at gate"),
+        "{}",
+        stderr(&notice)
+    );
+}
+
+#[test]
 fn stage_on_an_ended_record_names_starting_over_not_apply() {
     // P3: guidance for a stopped staged record must not offer `apply` (which
     // would write nothing), but name starting over.

@@ -1053,17 +1053,28 @@ fn run(
                     ));
                 }
             };
-            if let Interview::Ended(ended) = &interview {
-                // The staged submissions replay to a stop/abort. Report it; an
-                // abort removes the record.
-                return ended_outcome(ended, &target, &store);
-            }
             let interview = match (interview, answers) {
                 (Interview::Complete(_), Some(_)) => {
                     return Outcome::Error(guidance::complete_answers_unused(
                         path,
                         &saved.template,
                     ));
+                }
+                // A staged interview a flow node already ended is terminal. An
+                // answers document is a submission after a terminal interview,
+                // so it is refused (behavior 23), exactly as the complete case
+                // above — on every answers route, not just `continue`. Without
+                // answers, the notice reports the end (an abort removes the
+                // record).
+                (Interview::Ended(ended), Some(_)) => {
+                    return Outcome::Error(guidance::ended_answers_unused(
+                        path,
+                        &saved.template,
+                        ended.kind(),
+                    ));
+                }
+                (Interview::Ended(ended), None) => {
+                    return ended_outcome(&ended, &target, &store);
                 }
                 (Interview::Asking(pending), Some(answers_file)) => {
                     let raw = match read_answers(&answers_file) {
@@ -1131,8 +1142,6 @@ fn run(
                         }
                     }
                 }
-                // A flow end returned above, before this match.
-                (Interview::Ended(_), Some(_)) => unreachable!("a flow end returned above"),
                 (interview, None) => interview,
             };
             match interview {
