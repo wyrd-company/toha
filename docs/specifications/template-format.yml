@@ -54,7 +54,8 @@ description: >-
   optional `when` expression; a node whose `when` is false is skipped, with all
   of its children. A node kind is identified by its key: a question has `id`
   and `type`; a computed value has `id` and `computed`; a group has `group` and
-  `nodes`; a hook has `hook`; a message has `message`. Each expression and
+  `nodes`; a hook has `hook`; a message has `message`; a flow node has `flow`. Each
+  expression and
   template in a node references only ids defined by earlier nodes in document
   order, so the interview is acyclic; toha rejects a template that references
   a later or unknown id. A skipped question takes its `default` as its answer
@@ -123,6 +124,20 @@ description: >-
   `before-apply` is shown before any file is written, and `after-apply` is
   shown after the last hook. A dry run does not show `after-apply`. A message
   that renders to an empty or whitespace-only string is not shown.
+
+  Flow control. A flow node carries one control action in `flow`, an optional
+  `when`, and an optional `label`. It has no `id` and records no answer. When
+  its position is reached and its `when` is true, or it has no `when`, its
+  action fires; under an ancestor `when` that is false it is inert, like any
+  skipped node. The action is one of `stop`, `abort`, `dry-run`,
+  `{ skip: rest }`, or `{ skip: group }`. `stop` ends the interview where it
+  fires, writing no files and running no hooks; `abort` also removes the
+  target's staged record; `dry-run` completes the interview but suppresses the
+  apply, composing with `apply --dry-run`; `{ skip: rest }` skips every
+  remaining question, and `{ skip: group }` skips the rest of the enclosing
+  group. A skipped question takes the same answer it takes under a false
+  `when`. The `confirm` question type is unchanged; a flow node reads answers
+  only through `when`.
 format: json-schema
 validation-criteria: >-
   A conforming `template.yml` validates against
@@ -131,6 +146,9 @@ validation-criteria: >-
   duplicate identifier, an `each` name equal to an identifier, an expression or template that references an id not
   defined earlier in interview order, a `loop` on a question whose type is not
   `text`, `options` on a question whose type is not `select` or `multiselect`,
+  a `flow` value that is not `stop`, `abort`, `dry-run`, or
+  `{ skip: rest | group }`, a `{ skip: group }` on a flow node outside any
+  group, a `flow` combined with another node key,
   an `!include` or `script` path outside the template root, and a `source`
   path that does not exist. Rendering fails when a rendered target path leaves
   the target directory or enters the target's `.git` directory. Every example

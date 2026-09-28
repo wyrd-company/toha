@@ -109,6 +109,18 @@ description: >-
   `continue` without an answers argument on a complete interview emits that
   complete result.
 
+  Flow control. A flow node in the interview can end or steer the run. When a
+  flow `stop` or `abort` fires, `continue` and `stage --async` emit a result
+  with `status: ended`, a `kind` of `stop` or `abort`, the optional flow
+  `label`, and the messages of that step. Both write no files and run no
+  hooks; an `abort` additionally removes the target's staged record, so a
+  later `continue` or `apply` finds nothing staged. A flow `dry-run` completes
+  the interview normally but adds `disposition: dry-run` to the complete
+  result and suppresses the apply, the same effect as `apply --dry-run`, with
+  which it composes. An ordinary completion omits `disposition`. A flow
+  `{ skip: rest }` or `{ skip: group }` skips the questions in its scope, which
+  take their skipped answers as under a false `when`.
+
   Modality. The modality is chosen by each call. `continue` with an answers
   file, or `-` for standard input, answers the current batch. `continue`
   without an answers argument prompts in the terminal for every remaining

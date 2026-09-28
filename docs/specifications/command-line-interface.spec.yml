@@ -53,7 +53,10 @@ commands:
           machine-readable: true
       exit-codes:
         - code: 0
-          meaning: The interview is complete and staged.
+          meaning: >-
+            The interview is complete and staged, or a flow stop/abort ended it
+            (with `--async`, the `ended` result document is emitted; an abort
+            leaves nothing staged).
         - code: 1
           meaning: >-
             The template failed to load, or an interview is already staged at
@@ -97,7 +100,10 @@ commands:
           machine-readable: true
       exit-codes:
         - code: 0
-          meaning: The interview is complete.
+          meaning: >-
+            The interview is complete, or a flow stop/abort ended it; the
+            `ended` result document carries the `kind`, and an abort leaves
+            nothing staged.
         - code: 1
           meaning: >-
             No interview is staged at the path, or an answers document was given
@@ -170,12 +176,16 @@ commands:
           meaning: >-
             Files were written and every hook succeeded, or the dry run
             completed; after a dry run of untrusted hooks, standard error
-            names the command with `--trust` that runs them.
+            names the command with `--trust` that runs them. Or a flow
+            stop/abort ended the run, or a flow dry-run showed the plan; a
+            one-line notice names the action on standard error, nothing is
+            written, and an abort removes the staged record.
         - code: 1
           meaning: >-
             A file conflict, render failure, or hook failure; no interview is
             staged at the path; an interview for another template is staged at
             the path; an answers document was given for a complete interview;
+            a flow abort could not remove the staged record;
             or the staged record does not replay against its template, and the
             message names `abort` followed by `stage`.
         - code: 3

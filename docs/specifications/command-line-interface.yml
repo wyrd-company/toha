@@ -112,6 +112,16 @@ description: >-
   code 1, state that the staged interview cannot be resumed and why, and name
   `abort` followed by `stage` to start the interview over.
 
+  Flow control. When a template's flow node ends the run, `apply`, `stage`, and
+  the terminal driver write no files, run no hooks, print a one-line notice on
+  standard error that names the action and any `label`, and exit with code 0.
+  A flow `abort` additionally removes the staged record, as the `abort` command
+  does; a run with nothing staged still stops cleanly. `stage --async` and
+  `continue` instead emit the machine-readable `ended` result document with its
+  `kind`. A flow `dry-run` shows the plan and writes nothing, the same as
+  `--dry-run`, and the two compose: setting either, or both, applies nothing. A
+  failed abort removal exits with code 1.
+
   Refusals. When a command refuses a valid request made at the wrong time or
   in the wrong form, and nothing is faulty, the message names the command or
   commands that do what the caller meant. A named command is built from the

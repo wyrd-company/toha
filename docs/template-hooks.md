@@ -100,6 +100,9 @@ An interview hook is added to the plan when Toha reaches that node. It still
 runs after files are written. Interview hooks run in interview order before
 top-level hooks. A hook node can appear inside a group.
 
+A flow `stop` or `abort`, or a flow `dry-run`, writes no files, so no hooks
+run. See [Controlling the interview](/docs/toha/template-flow).
+
 ## Trust a template before running hooks
 
 Hooks execute programs, so Toha requires trust. A dry run lists every planned

@@ -94,6 +94,73 @@ them. A hook node can use `when` and can appear inside a group. See
 [Hooks and messages](/docs/toha/template-hooks) for hook
 syntax and trust.
 
+## Steer the run with a flow node
+
+A `flow` node carries one control action and an optional `when`. When Toha
+reaches it and its `when` is true — or it has no `when` — the action fires.
+Like a message or a hook, it has no `id` and records no answer; the action is
+data you declare, never inferred from a prompt. An optional `label` names the
+node in the notice Toha prints.
+
+```yaml
+interview:
+  - id: proceed
+    type: confirm
+    prompt: Ready to scaffold?
+  - flow: stop
+    when: "not proceed"
+    label: declined at the proceed gate
+
+  - id: mode
+    type: select
+    options: [apply, preview]
+    prompt: Mode?
+  - flow: dry-run
+    when: "mode == 'preview'"
+```
+
+The actions are:
+
+- `stop` ends the run where it fires. Toha writes no files and runs no hooks,
+  and exits 0 with a short notice. Any staged interview stays and can be
+  resumed.
+- `abort` stops **and** discards the staged interview for the target, for a
+  "cancel and throw this away" gate. It is the same removal the `abort`
+  command performs. On a run with nothing staged it simply stops.
+- `dry-run` completes the interview and shows the plan without writing
+  anything, exactly as the `apply --dry-run` flag does. Setting both still
+  writes nothing.
+- `{ skip: rest }` skips every remaining question in the interview.
+- `{ skip: group }` skips the rest of the current group. It is only valid
+  inside a group; at the top level, use `{ skip: rest }`.
+
+Because the trigger is the ordinary `when`, a flow node reads any earlier
+answer or computed value, not just one confirm — and an ordinary `confirm`
+question keeps its plain true/false behavior. A flow node whose `when` reads a
+question still in the current batch waits until that answer is given, so it
+never races the answer it depends on.
+
+```yaml
+interview:
+  - group: telemetry
+    when: features.telemetry
+    nodes:
+      - id: configure_now
+        type: confirm
+        prompt: Configure telemetry now?
+      - flow: { skip: group }
+        when: "not configure_now"
+      - id: telemetry_key
+        type: text
+        prompt: Telemetry write key
+  - flow: { skip: rest }
+    when: minimal
+```
+
+A question skipped by a flow node takes the same answer a `when`-skipped
+question takes: its `default`, or the empty answer when it has none. See
+[Asking questions](/docs/toha/template-interviews).
+
 ## Use values in order
 
 A question, computed expression, or template in an interview node can refer to

@@ -253,9 +253,10 @@ only when it is true:
 If `include_summary` is false, Toha skips `summary`. A skipped question uses
 its `default` when it has one. Without a default, Toha records an empty list
 for a repeated `text` or `multiselect` question, and `none` for the other
-types. Generated files can use that value to decide what to render.
+types. Generated files can use that value to decide what to render. A question
+skipped by a flow `{ skip: rest }` or `{ skip: group }` takes the same value.
 
-For groups and calculated values, continue with
+For groups, calculated values, and flow control, continue with
 [Controlling the interview](/docs/toha/template-flow). For the expression
 syntax used by `when`, `default`, and other fields, see
 [Jinja and values](/docs/toha/template-jinja).
