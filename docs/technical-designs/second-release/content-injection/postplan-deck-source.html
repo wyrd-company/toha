@@ -7,7 +7,7 @@
     <span class="tag warn">awaiting Bob's exact-revision approval</span>
     <span class="tag">no runtime / canonical edits</span>
   </p>
-  <p class="muted">Revision scope: <code>jaq</code> and every alternative JSON-family mutator evaluated against actual cloned source; structured mutation reconsidered (no longer assumed out of scope). The marker base holds; the JSON-family answer and the decided-but-deferred structured mechanism are new.</p>
+  <p class="muted">Revision scope: <code>jaq</code> and every alternative JSON-family mutator evaluated against actual cloned source; structured mutation reconsidered (no longer assumed out of scope). The JSON-family handling and the structured-mode mechanism/sequencing are presented as recommendations for Bob's ruling (D6a/D6b/D9) — nothing settled, and 1031 not narrowed, until he rules.</p>
 </section>
 
 <section id="task">
@@ -26,8 +26,8 @@
   <ul>
     <li><strong>Idempotency was heuristic.</strong> Re-matching injected text drifted once the user edited nearby, so a second apply duplicated or clobbered. <span class="tag">killed by</span> a recomputed checksum in the end marker: resolving Toha's own output is <code>Unchanged</code> by construction.</li>
     <li><strong>Replay diverged.</strong> Ownership computed from build-time byte offsets was invalidated by any pre-apply change. <span class="tag">killed by</span> selecting the region by marker at apply time; the plan holds no offsets.</li>
-    <li><strong>A user-owned file was silently rewritten.</strong> <code>jaq</code> discards comments at lex time (<code>jaq-json/src/read.rs:10-19</code>) and reserializes all output (<code>write.rs:202-260</code>) — a disguised whole-file rewrite. <span class="tag">killed by</span> rejecting jaq/reserialize for user-owned files; the structured mode, when it ships, uses <code>jsonc-parser</code>'s format-preserving CST.</li>
-    <li><strong>Strict JSON was corrupted by a comment marker.</strong> A <code>//</code> marker makes a <code>.json</code> file invalid. <span class="tag">killed by</span> a build-time refusal that names the boundary and the author alternatives; JSONC/JSON5 (which allow comments) inject normally.</li>
+    <li><strong>A user-owned file was silently rewritten.</strong> <code>jaq</code> discards comments at lex time (<code>jaq-json/src/read.rs:10-19</code>) and reserializes all output (<code>write.rs:202-260</code>) — a disguised whole-file rewrite. <span class="tag">recommended fix</span> recommend against jaq/reserialize for user-owned files (D9); the recommended structured mechanism, if D6b adopts one, is <code>jsonc-parser</code>'s format-preserving CST.</li>
+    <li><strong>Strict JSON was corrupted by a comment marker.</strong> A <code>//</code> marker makes a <code>.json</code> file invalid. <span class="tag">recommended fix</span> a proposed build-time refusal (D6a) that names the boundary and the author alternatives; JSONC/JSON5 (which allow comments) inject normally. Existing whole-file JSON rendering is unchanged.</li>
     <li><strong>Line endings were renormalized.</strong> Editing via <code>lines().join("\n")</code> changed bytes outside the region. <span class="tag">killed by</span> byte-range splicing; everything outside the region is preserved verbatim.</li>
     <li><strong>A half-written user file after a crash.</strong> <span class="tag">killed by</span> atomic temp-file-plus-rename for injection writes.</li>
     <li><strong>Whole-file behavior regressed.</strong> Collapsing every mutation into one enum changed existence⇒conflict semantics. <span class="tag">killed by</span> keeping injection a <code>Plan.edits</code> sibling; the whole-file path is untouched.</li>
@@ -159,7 +159,7 @@ pub enum EditError {
 <section id="beforeafter">
   <h2>Before / after — generic examples</h2>
   <section>
-    <h2>JSONC injection (ships in 0.2.0)</h2>
+    <h2>JSONC injection (recommended for 0.2.0 — D6a)</h2>
     <p>Template config:</p>
     <pre><code class="language-yaml">inject:
   - into: "config/app.jsonc"
@@ -187,18 +187,18 @@ pub enum EditError {
     <p class="muted">Markers are valid JSONC <code>//</code> comments; operator lines untouched. Second apply with the same answers changes nothing (body hashes to the recorded checksum). Operator edit inside the markers → drift → refuse, name <code>--force</code>.</p>
   </section>
   <section>
-    <h2>Strict .json — refused at build time</h2>
+    <h2>Strict .json — proposed build-time refusal (D6a)</h2>
     <pre><code class="language-json">{
   "version": "1.0",
   // &gt;&gt;&gt; toha:region config &gt;&gt;&gt;   &lt;- would make this INVALID JSON
   "enabled": true
   // &lt;&lt;&lt; toha:end config … &lt;&lt;&lt;
 }</code></pre>
-    <p>Strict JSON has no comment syntax, so marker injection is <strong>refused at build time</strong>, naming three author alternatives: target a <code>.jsonc</code>/<code>.json5</code>, manage the whole file with <code>files:</code>, or use the deferred structured mode. Not a regression (today Toha cannot inject at all); even npm's own package.json editor reserializes rather than surgically editing strict JSON (<code>npm-package-json/lib/index.js:239-264</code>).</p>
+    <p>Strict JSON has no comment syntax, so marker injection is <strong>proposed</strong> to be refused at build time, naming three author alternatives: target a <code>.jsonc</code>/<code>.json5</code>, manage the whole file with <code>files:</code>, or use the structured mode if D6b adopts it. A <strong>proposed boundary of the new feature, not an approved operator restriction</strong>, and no change to existing whole-file JSON rendering. Not a regression (today Toha cannot inject at all); even npm's own package.json editor reserializes rather than surgically editing strict JSON (<code>npm-package-json/lib/index.js:239-264</code>).</p>
   </section>
   <section>
-    <h2>Structured mode (decided mechanism, deferred impl)</h2>
-    <p>Reserved <code>struct:</code> surface — <code>jsonc-parser</code> CST, owns the value at a path:</p>
+    <h2>Structured mode (recommended mechanism; sequencing is Bob's call — D6b)</h2>
+    <p>Proposed <code>struct:</code> surface — recommended mechanism <code>jsonc-parser</code> CST, owns the value at a path (Bob rules mechanism + whether to build in 1031 now or defer):</p>
     <pre><code class="language-yaml">inject:
   - into: "package.json"       # strict JSON is fine for STRUCTURED mode
     struct: { path: "scripts.build", value: "tsc" }</code></pre>
@@ -216,7 +216,7 @@ pub enum EditError {
     "build": "tsc"
   }
 }</code></pre>
-    <p class="muted">Second apply: no bytes change (value already equals desired). For a <code>.jsonc</code> target, comments and trailing commas around the value are preserved verbatim — the property markers <code>jaq</code> would destroy. Ownership = the value at the path; declarative convergence (Toha re-sets exactly its path; strict JSON carries no drift marker). These fixtures belong to the fast-follow, not 1031.</p>
+    <p class="muted">Second apply: no bytes change (value already equals desired). For a <code>.jsonc</code> target, comments and trailing commas around the value are preserved verbatim — the property markers <code>jaq</code> would destroy. Ownership = the value at the path; declarative convergence (Toha re-sets exactly its path; strict JSON carries no drift marker) — the contract Bob ratifies if D6b adopts this mode. These fixtures attach to whichever D6b sequencing Bob picks (fast-follow or 1031).</p>
   </section>
 </section>
 
@@ -238,13 +238,13 @@ pub enum EditError {
       <tr><td>Strict .json marker injection refused at build time, names alternatives</td><td>Toha writes a // marker into strict JSON, or refuses silently</td></tr>
     </tbody>
   </table>
-  <p class="muted">Structured-mode fixtures (byte-preserving set, convergence, JSONC provenance) belong to the deferred fast-follow, not 1031.</p>
+  <p class="muted">JSON-family behaviors above are contingent on the D6a ruling. Structured-mode fixtures (byte-preserving set, convergence, JSONC provenance) attach to whichever D6b sequencing Bob picks — fast-follow or 1031.</p>
 </section>
 
 <section id="outofscope">
   <h2>Out of scope</h2>
   <ul>
-    <li><strong>Implementing the structured "owns-the-value-at-a-path" mode in 1031.</strong> The mechanism is <em>decided</em> — <code>jsonc-parser</code>'s format-preserving CST — but the implementation is a deferred fast-follow with its <code>struct:</code> interface reserved. 1031 ships markers (which already cover JSONC/JSON5). Not <em>out</em> of scope by assumption; deliberately sequenced.</li>
+    <li><strong>Structured "owns-the-value-at-a-path" mode — sequencing is Bob's call (D6b), not a settled cut.</strong> Recommended mechanism is <code>jsonc-parser</code>'s format-preserving CST; recommended sequencing is a fast-follow after 0.2.0 with the <code>struct:</code> seam reserved, so 1031 would ship markers (which already cover JSONC/JSON5). Implementing it in 1031 now stays a co-equal option on D6b. Listed here as the <em>recommended</em> deferral, not an authorized 1031 exclusion.</li>
     <li>A three-way merge of user edits against the managed region.</li>
     <li>A <code>toha inject</code> subcommand or a second apply pass.</li>
     <li>Formatter/hook integration for injected content (hooks already exist and gate on trust).</li>
@@ -284,8 +284,8 @@ pub enum EditError {
     <table>
       <thead><tr><th>Tool (rev)</th><th>Family</th><th>Comments / order / format</th><th>Verdict</th></tr></thead>
       <tbody>
-        <tr><td><code>jaq</code> jaq-json 2.0.3 (<code>f167ad4</code>)</td><td>reserialize</td><td class="tag err">lost — discards # comments at lex (<code>read.rs:10-19</code>), regenerates output (<code>write.rs:202-260</code>)</td><td>rejected: query engine, not editor</td></tr>
-        <tr><td><code>jsonc-parser</code> 0.34.0 <code>cst</code> (<code>c7d4cf5</code>)</td><td>CST (surgical)</td><td class="tag">preserved — "keeps every comment and every piece of whitespace" (<code>cst/mod.rs:1-5,1356</code>)</td><td>chosen structured mechanism (deferred)</td></tr>
+        <tr><td><code>jaq</code> jaq-json 2.0.3 (<code>f167ad4</code>)</td><td>reserialize</td><td class="tag err">lost — discards # comments at lex (<code>read.rs:10-19</code>), regenerates output (<code>write.rs:202-260</code>)</td><td>recommend against (D9): query engine, not editor</td></tr>
+        <tr><td><code>jsonc-parser</code> 0.34.0 <code>cst</code> (<code>c7d4cf5</code>)</td><td>CST (surgical)</td><td class="tag">preserved — "keeps every comment and every piece of whitespace" (<code>cst/mod.rs:1-5,1356</code>)</td><td>recommended structured mechanism (D6b)</td></tr>
         <tr><td><code>toml_edit</code> 0.25.15 (<code>e4b8bda</code>)</td><td>CST (surgical)</td><td class="tag">preserved — <code>Decor</code> on every node (<code>repr.rs:187</code>)</td><td>gold-standard pattern (not JSON)</td></tr>
         <tr><td><code>serde_json</code> 1.0.151 (<code>afdf6fc</code>)</td><td>reserialize</td><td class="tag err">lost — no comments; <code>preserve_order</code> = insertion only (<code>map.rs:26</code>)</td><td>rejected</td></tr>
         <tr><td><code>json5-rs</code> 1.3.1 (<code>fd55f90</code>)</td><td>reserialize</td><td class="tag err">lost — parses then discards comments (<code>de.rs:156-178</code>); no DOM</td><td>rejected</td></tr>
@@ -311,9 +311,9 @@ pub enum EditError {
     <table>
       <thead><tr><th>Candidate</th><th>Self</th><th>Cross-judge</th><th>Role</th></tr></thead>
       <tbody>
-        <tr><td>A — embedded jaq (reserialize)</td><td>17/30</td><td>17/30</td><td>rejected mechanism</td></tr>
-        <tr><td>B — jsonc-parser CST (format-preserving)</td><td>26/30</td><td>26/30</td><td>chosen structured mechanism, deferred</td></tr>
-        <tr><td>C — markers via JSONC/JSON5 + strict-JSON boundary</td><td>30/30</td><td>30/30</td><td>base for 0.2.0</td></tr>
+        <tr><td>A — embedded jaq (reserialize)</td><td>17/30</td><td>17/30</td><td>recommend against (D9)</td></tr>
+        <tr><td>B — jsonc-parser CST (format-preserving)</td><td>26/30</td><td>26/30</td><td>recommended structured mechanism (D6b)</td></tr>
+        <tr><td>C — markers via JSONC/JSON5 + strict-JSON boundary</td><td>30/30</td><td>30/30</td><td>recommended base for 0.2.0 (D6a)</td></tr>
       </tbody>
     </table>
     <p class="muted">Three foreground cross-family candidates; readonly cross-judge on a different family; no dropouts. Full packages + judge report + four research reports under <code>03-candidates/json-family-revision/</code>.</p>
@@ -329,9 +329,9 @@ pub enum EditError {
     <li><strong>D3 Comment inference + override</strong>; unknown extension without override is a load error. <em>Recommend: yes.</em></li>
     <li><strong>D4 Drift / --force</strong> — drift refuses (exit 1); <code>--force</code> overwrites the managed region only, never fabricates placement. Extends --force (not a restriction). <em>Recommend: adopt.</em></li>
     <li><strong>D5 <code>create</code> default false.</strong> <em>Recommend: false.</em></li>
-    <li><strong>D6a JSON family via markers now.</strong> JSONC/JSON5 inject via comment markers (in scope, 1031); strict <code>.json</code> is a build-time-refused, documented boundary with named alternatives. <em>Recommend: adopt.</em></li>
-    <li><strong>D6b Structured "owns-the-value-at-a-path" mode — decided but deferred.</strong> Mechanism = <code>jsonc-parser</code> CST (format-preserving), not jaq; implementation is a fast-follow with the <code>struct:</code> seam reserved. Ratifying D6b also ratifies its <em>declarative-convergence</em> ownership contract (Toha re-sets exactly the owned path; strict JSON carries no drift marker). <em>Recommend: defer with mechanism decided.</em> <span class="muted">Option to pull into 1031 now exists; not recommended.</span></li>
-    <li><strong>D9 jaq rejected as the structured mechanism.</strong> Reserialize destroys a user-owned file's comments/order/format (cited). If structured ships, it uses <code>jsonc-parser</code>'s CST. <em>Recommend: reject jaq.</em></li>
+    <li><strong>D6a JSON family via markers.</strong> JSONC/JSON5 inject via comment markers; strict <code>.json</code> marker injection is <em>proposed</em> to be refused at build time (a boundary of the new feature, not an operator restriction; no change to existing whole-file JSON rendering) with named alternatives. <em>Recommend: adopt.</em></li>
+    <li><strong>D6b Structured "owns-the-value-at-a-path" mode — mechanism &amp; sequencing (Bob rules).</strong> Recommended mechanism = <code>jsonc-parser</code> CST (format-preserving), not jaq, with a <code>struct:</code> seam that lands non-breaking whenever built. Two co-equal options: <em>(i)</em> sequence after 0.2.0 as a fast-follow <em>(recommended)</em>, or <em>(ii)</em> implement in 1031 now (fully sketched, not foreclosed). Adopting D6b also ratifies its <em>declarative-convergence</em> ownership contract (Toha re-sets exactly the owned path; strict JSON carries no drift marker). <em>Recommend: option (i); nothing settled and 1031 not narrowed until Bob rules.</em></li>
+    <li><strong>D9 jaq as the structured mechanism.</strong> Reserialize destroys a user-owned file's comments/order/format (cited); if a structured mode ships, recommend <code>jsonc-parser</code>'s CST instead. <em>Recommend: reject jaq; Bob rules.</em></li>
     <li><strong>D7 Atomic temp-file+rename</strong> for injection writes. <em>Recommend: yes.</em></li>
     <li><strong>D8 Reuse existing <code>sha2</code></strong> for the checksum (no new dependency in 1031). The deferred structured mode would add <code>jsonc-parser</code> (embedded, dprint/deno, no subprocess). <em>Recommend: yes.</em></li>
   </ul>

@@ -1,8 +1,14 @@
 # Synthesis addendum — JSON-family / structured mutation
 
 Extends `04-synthesis.md`. Base pick, scores (self + readonly cross-judge),
-grafts, rejections, verification, and the revised decision for the JSON-family
+grafts, rejections, verification, and the recommendation for the JSON-family
 question. Reconciles the focused re-arena (`02a-arena-json-family.md`).
+
+**Status of this record.** Its "base pick", "rejected", "chosen", and "deferred"
+verdicts are the *arena's recommendations* feeding Bob's ruling on D6a/D6b/D9
+(`05-design.md`). None of it is settled scope, an authorized structured-mode
+deferral, or a 1031 narrowing until Bob rules. The implement-now option for the
+structured mode remains co-equal on D6b.
 
 ## Scores (1–5 per criterion)
 
@@ -88,25 +94,27 @@ awareness.
 
 - **jaq / any reserialize as the structured editor** — destroys comments/order/
   formatting of a user-owned file (cited above). Rejected.
-- **Shipping the structured mode in 0.2.0/1031** — rejected by all three
-  candidates and the cross-judge independently: it adds a second mechanism, a new
+- **Shipping the structured mode in 0.2.0/1031** — the arena and cross-judge
+  independently *recommend against* it: it adds a second mechanism, a new
   dependency, a distinct ownership contract, and new error/dry-run semantics to
   the first-ever injection slice, for an ergonomic gain over markers that
-  JSONC/JSON5 already deliver. Deferred with the mechanism decided and the
-  interface seam reserved.
+  JSONC/JSON5 already deliver. Recommendation is to sequence it as a fast-follow
+  with the interface seam reserved; the implement-now option stays co-equal on
+  D6b for Bob to choose.
 - **Requiring JSONC for all JSON (never adding structured)** — too narrow: it
   leaves strict-`.json` value management permanently to whole-file mode. The
-  decided-but-deferred structured mode keeps that door open without burdening
+  recommended (pending D6b) structured mode keeps that door open without burdening
   0.2.0.
 
 ## Verification (Phase F, delta)
 
-- **Requirements vs design.** JSON-family injection resolved (markers for
-  JSONC/JSON5; documented boundary for strict JSON; structured mode decided and
-  deferred). jaq evaluated with cited source and rejected. Structured mutations
-  reconsidered rather than assumed out of scope — the reconsideration produced a
-  *decided mechanism* (jsonc-parser CST) plus a reserved interface, superseding
-  prior D6.
+- **Requirements vs design.** JSON-family injection addressed (markers for
+  JSONC/JSON5; proposed boundary for strict JSON; a recommended structured
+  mechanism and sequencing). jaq evaluated with cited source and recommended
+  against. Structured mutations reconsidered rather than assumed out of scope —
+  the reconsideration produced a *recommended mechanism* (jsonc-parser CST) plus a
+  reserved interface, feeding the revised D6/D9 for Bob's ruling (not a settled
+  supersession).
 - **Purity/replay.** The deferred structured resolver is specified as a pure
   function of `(current_bytes, edit)` like the marker resolver; the engine still
   reads no target bytes. Holds.

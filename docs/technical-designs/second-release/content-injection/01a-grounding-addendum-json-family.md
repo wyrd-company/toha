@@ -138,14 +138,15 @@ surgical CST edits (VS Code) — no scaffolding tool ships structured JSON merge
 
 - **Preserve.** The marker base and its structural idempotency — validated by
   Ansible `blockinfile`. It already covers JSONC/JSON5.
-- **Change.** Name the strict-JSON boundary explicitly. Decide the structured
-  mechanism *now* (so the interface seam is reserved correctly) even if the
-  implementation is deferred.
-- **Avoid.** `jaq` (and any reserialize approach) as the structured mechanism —
-  it destroys a user-owned file's comments/order/formatting, the exact
+- **Change (proposed).** Name the strict-JSON boundary explicitly. Bring the
+  structured-mechanism choice to Bob *now* (so the interface seam can be reserved
+  correctly) whether or not the implementation is sequenced later — a
+  recommendation for D6b, not a settled decision.
+- **Avoid (recommended).** `jaq` (and any reserialize approach) as the structured
+  mechanism — it destroys a user-owned file's comments/order/formatting, the exact
   no-silent-overwrite hazard the grounding forbids, and jq is a language users
-  must learn for what is usually a single-value set. Avoid putting a query
-  engine on the critical path.
+  must learn for what is usually a single-value set. Avoid putting a query engine
+  on the critical path. (Recommendation for D9; Bob rules.)
 - **Risk.** A structured "owns the value at a path" mode has a genuinely weaker
   drift story than markers: without a comment slot, strict JSON cannot carry a
   checksum/marker, so a re-apply cannot distinguish "user edited the managed
