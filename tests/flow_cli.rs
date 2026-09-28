@@ -12,13 +12,14 @@
 #[allow(dead_code)]
 mod support;
 
+use indexmap::IndexMap;
 use serde_json::Value;
 use std::{
     io::Write,
     path::PathBuf,
     process::{Command, Output, Stdio},
 };
-use toha::staging::{Store, canonical_target};
+use toha::staging::{StagedRecord, Store, canonical_target};
 
 struct Case {
     state: tempfile::TempDir,
@@ -103,6 +104,22 @@ impl Case {
 
     fn wrote_file(&self) -> bool {
         self.target.path().join("hello.txt").exists()
+    }
+
+    /// Writes a staged record for this case's template and target directly,
+    /// so `apply <target>` resumes it without a preceding save.
+    fn seed_record(&self, submissions: Vec<IndexMap<String, Value>>) {
+        let store = Store::new(support::staged_dir(self.state.path()));
+        let target = canonical_target(self.target.path()).unwrap();
+        let record = StagedRecord::new(
+            &target,
+            self.template().to_string(),
+            String::new(),
+            false,
+            "2026-01-02T03:04:05+00:00[UTC]".into(),
+            submissions,
+        );
+        store.save(&target, &record).unwrap();
     }
 }
 
@@ -194,19 +211,27 @@ fn abort_on_a_fresh_apply_is_a_no_op_removal_without_error() {
 #[test]
 fn abort_removal_io_failure_surfaces_nonzero() {
     // Behavior 10: when `Store::remove` cannot delete the record, the failure
-    // surfaces and exits nonzero. A read-only staged directory makes the
-    // unlink fail with a permission error.
+    // surfaces and exits nonzero. A seeded record replays straight to the
+    // abort, so `apply` reaches the removal with no preceding write; a
+    // read-only staged directory then makes the unlink fail.
     use std::os::unix::fs::PermissionsExt;
     let case = Case::new(ABORT_GATE);
-    let staged = case.run(&["stage", case.template(), case.target(), "--async"]);
-    assert_eq!(code(&staged), 4, "{}", stderr(&staged));
+    case.seed_record(vec![IndexMap::from([("cancel".into(), Value::Bool(true))])]);
+    assert!(case.staged());
     let dir = support::staged_dir(case.state.path());
     let original = std::fs::metadata(&dir).unwrap().permissions();
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
-    let ended = case.send(&["continue", case.target(), "-"], r#"{"cancel": true}"#);
+    // `apply <target>` resumes the staged interview and reaches the abort's
+    // removal directly.
+    let output = case.run(&["apply", case.target()]);
     // Restore before asserting so the tempdir can be cleaned up.
     std::fs::set_permissions(&dir, original).unwrap();
-    assert_ne!(code(&ended), 0, "abort removal I/O failure did not surface");
+    assert_ne!(
+        code(&output),
+        0,
+        "abort removal I/O failure did not surface: {}",
+        stderr(&output)
+    );
 }
 
 #[test]
