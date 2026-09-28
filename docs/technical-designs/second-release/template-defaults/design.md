@@ -120,8 +120,8 @@ error: ~/.config/toha/config.yml: template-defaults."gh:owner/collection".agree
        must be true or false
 ```
 
-The attribution names the config **file**, the mapping site, and — when the value
-came through a reference — the preset it resolved through, so the author knows
+The attribution names the mapping **file** and site and — when the value came
+through a reference — the winning preset file and entry, so the author knows
 exactly what to fix. The kind message (`must be true or false`, `must be a string`,
 `must be an array of strings`) is the engine's existing `parse_kind` sentence.
 
@@ -368,8 +368,8 @@ alias/short is not offered — those are not stable identity).
 | Situation | Result |
 | --- | --- |
 | Mapping id resolves, kind matches | inserted into `Seed.defaults` |
-| Ref to a name absent from merged `presets` | `EvalError`, `<file>: template-defaults."<formal>".<id>: no preset named "<name>"`, exit 1 |
-| Value kind ≠ question kind (literal) | `EvalError`, `<file>: template-defaults."<formal>".<id>: <parse_kind message>`, exit 1 |
+| Ref to a name absent from merged `presets` | `EvalError`, `<mapping-file>: template-defaults."<formal>".<id>: no preset named "<name>"`, exit 1 |
+| Value kind ≠ question kind (literal) | `EvalError`, `<mapping-file>: template-defaults."<formal>".<id>: <parse_kind message>`, exit 1 |
 | Value kind ≠ question kind (via ref) | `EvalError`, `<mapping-file>: template-defaults."<formal>".<id> → <preset-file>: presets."<name>" ("<value>"): <parse_kind message>`, exit 1 |
 | Mapping id the selected template does not define | skipped; one stderr warning naming the winning mapping file/site; non-fatal |
 | Mapping for a non-selected identity | ignored |
