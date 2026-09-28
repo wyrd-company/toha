@@ -274,6 +274,60 @@ fn error(path: impl Into<String>, message: impl Into<String>) -> LoadError {
         }],
     }
 }
+/// The node-kind keys a flow node cannot be combined with.
+const FLOW_CONFLICT_KEYS: [&str; 8] = [
+    "id", "type", "prompt", "computed", "group", "nodes", "message", "hook",
+];
+/// Parses a `flow` action value, or returns the load message that names the
+/// corrective form. `in_group` is true inside a group, which `{ skip: group }`
+/// requires. This is the sole reading of the four-action set; the machine
+/// schema states the same contract, and the loader reports it in prose.
+fn flow_action_of(value: Option<&Value>, in_group: bool) -> Result<FlowAction, String> {
+    let unknown =
+        || "flow action must be stop, abort, dry-run, or { skip: rest | group }".to_string();
+    match value {
+        Some(Value::String(action)) => match action.as_str() {
+            "stop" => Ok(FlowAction::Stop),
+            "abort" => Ok(FlowAction::Abort),
+            "dry-run" => Ok(FlowAction::DryRun),
+            _ => Err(unknown()),
+        },
+        Some(Value::Object(map)) => match map.get("skip").and_then(Value::as_str) {
+            Some("rest") => Ok(FlowAction::Skip(SkipScope::Rest)),
+            Some("group") if in_group => Ok(FlowAction::Skip(SkipScope::Group)),
+            Some("group") => Err("skip: group needs an enclosing group; use { skip: rest } to skip the rest of the interview".to_string()),
+            _ => Err(unknown()),
+        },
+        _ => Err(unknown()),
+    }
+}
+/// Checks the flow nodes of a raw interview before schema validation, so a flow
+/// load error names the corrective form instead of a generic schema `oneOf`
+/// failure. Recurses into group `nodes`.
+fn check_flow(values: &[Value], in_group: bool, prefix: &str, problems: &mut Vec<Problem>) {
+    for (i, value) in values.iter().enumerate() {
+        let path = format!("{prefix}[{i}]");
+        let Some(map) = value.as_object() else {
+            continue;
+        };
+        if map.contains_key("flow") {
+            for key in FLOW_CONFLICT_KEYS {
+                if map.contains_key(key) {
+                    problem(
+                        problems,
+                        format!("{path}.flow"),
+                        format!("flow is a node kind; it cannot be combined with {key}"),
+                    );
+                }
+            }
+            if let Err(message) = flow_action_of(map.get("flow"), in_group) {
+                problem(problems, format!("{path}.flow"), message);
+            }
+        } else if let Some(nodes) = map.get("nodes").and_then(Value::as_array) {
+            check_flow(nodes, true, &format!("{path}.nodes"), problems);
+        }
+    }
+}
 #[derive(Deserialize)]
 struct RawTemplate {
     name: String,
@@ -593,43 +647,19 @@ impl Builder {
         }
         builder.build().expect("validated globs")
     }
-    /// Parses a `flow` action value. `in_group` is true when the flow node is
-    /// inside a group, which `{ skip: group }` requires.
+    /// Parses a `flow` action value, recording the load message on failure.
     fn flow_action(
         &mut self,
         value: Option<&Value>,
         path: &str,
         in_group: bool,
     ) -> Option<FlowAction> {
-        let unknown = |b: &mut Self| {
-            problem(
-                &mut b.problems,
-                path,
-                "flow action must be stop, abort, dry-run, or { skip: rest | group }",
-            );
-            None
-        };
-        match value {
-            Some(Value::String(action)) => match action.as_str() {
-                "stop" => Some(FlowAction::Stop),
-                "abort" => Some(FlowAction::Abort),
-                "dry-run" => Some(FlowAction::DryRun),
-                _ => unknown(self),
-            },
-            Some(Value::Object(map)) => match map.get("skip").and_then(Value::as_str) {
-                Some("rest") => Some(FlowAction::Skip(SkipScope::Rest)),
-                Some("group") if in_group => Some(FlowAction::Skip(SkipScope::Group)),
-                Some("group") => {
-                    problem(
-                        &mut self.problems,
-                        path,
-                        "skip: group needs an enclosing group; use { skip: rest } to skip the rest of the interview",
-                    );
-                    None
-                }
-                _ => unknown(self),
-            },
-            _ => unknown(self),
+        match flow_action_of(value, in_group) {
+            Ok(action) => Some(action),
+            Err(message) => {
+                problem(&mut self.problems, path, message);
+                None
+            }
         }
     }
     fn nodes(&mut self, values: &[Value], prefix: &str, in_group: bool) -> Vec<Node> {
@@ -642,9 +672,9 @@ impl Builder {
             let when = self.expr(map.get("when"), &format!("{path}.when"), &[]);
             if map.contains_key("flow") {
                 // `flow` is a node kind; it carries only `when` and `label`.
-                for key in [
-                    "id", "type", "prompt", "computed", "group", "nodes", "message", "hook",
-                ] {
+                // The load rules are also enforced before schema validation by
+                // `check_flow`, so a bad flow node is reported there first.
+                for key in FLOW_CONFLICT_KEYS {
                     if map.contains_key(key) {
                         problem(
                             &mut self.problems,
@@ -839,6 +869,14 @@ impl Template {
         }
         let doc: Value =
             serde_json::to_value(yaml).map_err(|e| error("template.yml", e.to_string()))?;
+        // Report flow load rules before the schema, so a bad flow node names
+        // the corrective form rather than a generic schema `oneOf` failure.
+        if let Some(interview) = doc.get("interview").and_then(Value::as_array) {
+            check_flow(interview, false, "template.yml/interview", &mut problems);
+        }
+        if !problems.is_empty() {
+            return Err(LoadError { problems });
+        }
         for e in SCHEMA.iter_errors(&doc) {
             problem(
                 &mut problems,

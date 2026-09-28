@@ -233,12 +233,13 @@ $defs:
         $ref: "#/$defs/when"
   flow-node:
     description: >-
-      A control node that steers the interview. It carries one control action
-      and the usual `when`/`label` siblings; it has no id and records no answer.
-      The exact action value and the placement of `{ skip: group }` (only inside
-      a group) are validated when the template loads, with a message that names
-      the corrective form.
+      A control node that steers the interview. It carries one of exactly four
+      control actions and the usual `when`/`label` siblings; it has no id and
+      records no answer. The placement of `{ skip: group }` (only inside a
+      group) is checked when the template loads, with a message that names the
+      corrective form.
     type: object
+    additionalProperties: false
     required: [ flow ]
     properties:
       flow:
@@ -247,13 +248,15 @@ $defs:
           record), `dry-run` (plan without writing), `{ skip: rest }`, or
           `{ skip: group }`.
         oneOf:
-          - type: string
+          - const: stop
+          - const: abort
+          - const: dry-run
           - type: object
             additionalProperties: false
             required: [ skip ]
             properties:
               skip:
-                type: string
+                enum: [ rest, group ]
       label:
         description: A diagnostic name reported when the action fires.
         type: string
