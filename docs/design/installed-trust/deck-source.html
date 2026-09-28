@@ -1,0 +1,236 @@
+<section id="title">
+  <p class="kicker">Toha 0.2.0 · Design brief · task 1071</p>
+  <h1>Trust management for installed templates</h1>
+  <p>Grant and revoke hook-trust for a template you already installed — reading only the installed folder, never fetching or moving the commit — with two plain verbs.</p>
+  <p>
+    <span class="tag">architect · phase C</span>
+    <span class="tag warn">awaiting approval</span>
+    <span class="tag">consumes design 1069</span>
+    <span class="tag">paired impl 1054</span>
+  </p>
+</section>
+
+<section id="task">
+  <h2>Task</h2>
+  <p>Design the command surface a caller uses to grant and revoke hook-trust for an <strong>already-installed</strong> template, consuming the approved 1069 trust policy without redefining it.</p>
+  <ul>
+    <li><strong>The gap today:</strong> after 1069, trust is <code>entry.approval: Option&lt;ReviewDigest&gt;</code>, granted for a fresh install by <code>templates add --trust</code>. There is no way to (re)approve an <em>installed</em> template — the only path, <code>templates add --trust &lt;formal&gt;</code>, re-clones and in fact refuses a bare installed name. The untrusted-hooks refusal points there anyway.</li>
+    <li><strong>The fix:</strong> two verbs — <code>templates trust &lt;name&gt;</code> records the digest of the installed executable surface; <code>templates untrust &lt;name&gt;</code> clears it. No fetch, no reclone, no commit change. The refusal names the new operation.</li>
+    <li>This task produces the reviewed design and this brief; the paired task 1054 implements it.</li>
+  </ul>
+</section>
+
+<section id="premortem">
+  <h2>Pre-mortem — the design and implementation failed. Why?</h2>
+  <ul>
+    <li><strong>Trust fetched or moved the template.</strong> A grant re-cloned or rewrote <code>commit</code>, so "trust" silently changed what would run. <span class="muted">Addressed: <code>trust</code> loads <code>entry.path</code> only and <code>set_approval</code> touches no field but <code>approval</code>; no arm reaches <code>source::</code> or <code>set_commit</code>. Proved by a byte-identical commit/path test run offline.</span></li>
+    <li><strong>The trust rule was re-implemented</strong> in the command (raw <code>approval == digest</code>), and a later edit diverged it from the gate. <span class="muted">Addressed: idempotency routes through <code>evaluate_trust</code>; the command holds no equality. This is exactly the regression that sank a rejected candidate.</span></li>
+    <li><strong>Blind approval:</strong> a caller trusted hooks they never saw. <span class="muted">Addressed: the path to <code>trust</code> runs through the exit-3 refusal / <code>apply --dry-run</code> that list the hooks; the grant echoes the approved surface to stderr.</span></li>
+    <li><strong>A system-only template gained a user approval,</strong> or the local layer granted trust. <span class="muted">Addressed: <code>resolve_user</code> keys off the user file; local schema forbids <code>approval</code>. A system/local-only name is refused not-in-user-registry.</span></li>
+    <li><strong>Scriptability broke</strong> — a new interactive gate a CI run could not pass. <span class="muted">Addressed: both verbs are non-interactive; stdout stays the result line; the surface echo is advisory on stderr.</span></li>
+  </ul>
+</section>
+
+<section id="seams">
+  <h2>Module and seam</h2>
+  <p>No new module. Two command functions in <code>src/cli/templates.rs</code> and one new immutable mutator in <code>src/registry.rs</code>, over the 1069 library. The interview engine gains nothing.</p>
+  <pre><code class="language-text"> clap TemplatesCommand::{Trust,Untrust}{ template }
+        │  run()  (short chain: dispatch → fn → library)
+        ▼
+ ┌──────────────── src/cli/templates.rs ─────────────────┐
+ │ trust(ctx, name)                 untrust(ctx, name)    │
+ │   resolve_user ───────────────────── resolve_user      │  exit 1 not-in-user / exit 5 ambiguous
+ │   Template::load(entry.path)  [installed; NO fetch]     │
+ │   HookSurface::of ─┐                     │              │
+ │   evaluate_trust ──┤               (no surface read)    │
+ │   set_approval(Some)               set_approval(None)   │
+ │   eprintln! approved_surface (stderr)                   │
+ └────────┬───────────┴──────────────────┬────────────────┘
+          ▼                              ▼
+   src/review.rs (1069)            src/registry.rs (1071 mutator)
+   HookSurface::of / digest        RegistryFile::set_approval
+   evaluate_trust (the ONE         (writes user templates.yml,
+   trust equality)                  atomic, sparse; approval only)</code></pre>
+  <p class="muted">No arm touches <code>source::</code> (fetch/clone) or <code>set_commit</code>; "no reclone / no commit change" is structural, not a runtime check.</p>
+</section>
+
+<section id="interface">
+  <h2>Public interfaces expected</h2>
+  <section>
+    <h3>Two clap subcommands (new arms)</h3>
+    <pre><code class="language-rust">/// Approve the installed hooks of a template so its apply runs them.
+Trust   { template: String },   // formal, short, or alias name
+/// Revoke approval of a template's hooks.
+Untrust { template: String },
+// No options, no groups, no runtime exclusivity check.
+// A missing operand is clap's own exit 2.</code></pre>
+  </section>
+  <section>
+    <h3>Command functions (crate seam via run())</h3>
+    <pre><code class="language-rust">fn trust(ctx: &Context, name: &str) -> Result&lt;Vec&lt;String&gt;, CommandError&gt;;
+fn untrust(ctx: &Context, name: &str) -> Result&lt;Vec&lt;String&gt;, CommandError&gt;;
+// trust:   resolve_user → Template::load(entry.path) → HookSurface::of
+//          → evaluate_trust (idempotency) → set_approval(Some(digest)) → stderr echo
+// untrust: resolve_user → set_approval(None)   [no HookSurface call]</code></pre>
+  </section>
+  <section>
+    <h3>Registry mutator (new; single writer of the field)</h3>
+    <pre><code class="language-rust">impl RegistryFile {
+    /// Copy with `formal`'s approval set (Some) or cleared (None), marking
+    /// FieldPresence for the sparse round-trip. Errs if `formal` is absent.
+    /// Touches no other field — source/ref/commit/path/aliases unchanged.
+    pub fn set_approval(&self, formal: &str, approval: Option&lt;ReviewDigest&gt;)
+        -> Result&lt;RegistryFile, RegistryError&gt;;
+}</code></pre>
+    <p class="muted"><code>ReviewDigest</code>, <code>HookSurface</code>, <code>evaluate_trust</code>, <code>Entry.approval</code> are the 1069 types, consumed unchanged.</p>
+  </section>
+  <section>
+    <h3>Refusal wording (resolves Question 3)</h3>
+    <pre><code class="language-text">hooks will not run without --trust
+  hook 1  script: scripts/postgen.sh  args: [--ci]
+  hook 2  run: [git, init]
+to run them this time: toha apply --trust acme-service ./out
+to trust acme-service for every run: toha templates trust acme-service</code></pre>
+    <p class="muted"><code>trust_lines</code> names <code>templates trust &lt;formal&gt;</code> in place of <code>templates add --trust</code>; <code>retry()</code> and <code>formal_for</code> gain the <code>trust</code>/<code>untrust</code> arms (registry-lookup form, like <code>remove</code>/<code>alias</code>).</p>
+  </section>
+</section>
+
+<section id="data">
+  <h2>Data structures expected</h2>
+  <section>
+    <h3>No new domain type — the 1069 field, a new writer</h3>
+    <pre><code class="language-rust">// Entry (from 1069, consumed unchanged):
+pub struct Entry { /* name, source, ref, commit, path, aliases */
+    pub approval: Option&lt;ReviewDigest&gt;,   // "sha256:&lt;64 hex&gt;", constructor-guarded
+}
+// Absent approval == untrusted. untrust writes absence (sparse omit, never null).</code></pre>
+  </section>
+  <section>
+    <h3>Result / error contract</h3>
+    <table>
+      <thead><tr><th>Situation</th><th>Result (stdout)</th><th>Exit</th></tr></thead>
+      <tbody>
+        <tr><td>trusted / untrusted (write happened)</td><td><code>trusted {formal}</code> / <code>untrusted {formal}</code></td><td>0</td></tr>
+        <tr><td>already trusted (evaluate_trust == Trusted) / already untrusted</td><td>no-op line, no write</td><td>0</td></tr>
+        <tr><td>name not in user registry</td><td><code>not_in_user_registry</code></td><td>1</td></tr>
+        <tr><td>installed surface missing/unreadable/escaping (trust only)</td><td><code>surface_unreadable</code></td><td>1</td></tr>
+        <tr><td>ambiguous name</td><td><code>ambiguous</code> + retry</td><td>5</td></tr>
+        <tr><td>missing operand</td><td>clap usage</td><td>2</td></tr>
+      </tbody>
+    </table>
+    <p class="muted">Idempotency is defined <em>through</em> <code>evaluate_trust</code>: a surface changed since approval is not "already trusted" — <code>trust</code> re-records and reports <code>trusted</code>.</p>
+  </section>
+</section>
+
+<section id="tested">
+  <h2>Behaviors to prove (falsifiable)</h2>
+  <section>
+    <h3>Central behaviors</h3>
+    <ul>
+      <li><strong>Grant records the installed surface, no fetch.</strong> <code>trust</code> writes <code>approval == HookSurface::of(installed).digest()</code>; <code>commit</code>/<code>path</code>/<code>source</code> byte-identical; succeeds offline.</li>
+      <li><strong>Revoke clears and reads nothing.</strong> <code>untrust</code> omits the <code>approval</code> key and succeeds even with an absent/unreadable folder.</li>
+      <li><strong>Idempotency through the chokepoint.</strong> Second <code>trust</code> on an unchanged surface → <code>already trusted</code>, no write; after a change → re-records, <code>trusted</code>.</li>
+      <li><strong>Update → lapse → re-trust.</strong> A surface-changing update lapses effective trust (next apply exits 3); <code>trust</code> re-approves with no fetch; a doc-only update keeps trust.</li>
+      <li><strong>Refusal names the new op</strong> in every adapter; ambiguous name re-offers <code>templates trust &lt;each&gt;</code> (exit 5).</li>
+      <li><strong>Layer boundary.</strong> System/local/discovered/unknown name → not-in-user-registry (exit 1), no write.</li>
+    </ul>
+  </section>
+  <section>
+    <h3>Sole-kill matrix (for implementation 1054)</h3>
+    <table>
+      <thead><tr><th>Mutation</th><th>Named test that must fail</th></tr></thead>
+      <tbody>
+        <tr><td>idempotency via raw <code>==</code> not <code>evaluate_trust</code></td><td>re-trust-after-surface-change re-records</td></tr>
+        <tr><td><code>set_approval</code> also writes <code>commit</code>/<code>path</code></td><td>commit/path byte-identical after grant</td></tr>
+        <tr><td><code>untrust</code> gains a <code>HookSurface::of</code> call</td><td>untrust succeeds with unreadable folder</td></tr>
+        <tr><td><code>trust_lines</code> keeps naming <code>add --trust</code></td><td>refusal names <code>templates trust</code></td></tr>
+        <tr><td>key off merged registry not user file</td><td>system-only template refused not-in-user</td></tr>
+      </tbody>
+    </table>
+  </section>
+</section>
+
+<section id="scope">
+  <h2>Out of scope</h2>
+  <ul>
+    <li>The trust <strong>policy</strong> and the digest / <code>evaluate_trust</code> / <code>HookSurface</code> library — owned by 1069 / 1033; consumed here.</li>
+    <li>The apply gate, exit-3 contract, and dry-run listing — unchanged.</li>
+    <li>A dedicated read-only <code>templates review</code> verb — the hook listing is already <code>apply --dry-run</code> and the exit-3 refusal.</li>
+    <li>The <code>--digest &lt;sha&gt;</code> freshness pin and diff-since-approval display — recorded as future extensions (Decision B).</li>
+    <li>Trusting a system-only template from the user side — every mutating <code>templates</code> command is user-registry only; unchanged.</li>
+  </ul>
+</section>
+
+<section id="review">
+  <h2>Reviewer focus — what the adversarial reviewer will attack</h2>
+  <ul>
+    <li>Does any path re-implement the trust equality outside <code>evaluate_trust</code> (the raw-<code>==</code> regression that sank Candidate 1)?</li>
+    <li>Does <code>set_approval</code> touch any field but <code>approval</code>, or does any path reach <code>source::</code> / <code>set_commit</code>, so a grant could move or re-fetch the template?</li>
+    <li>Is the not-in-user-registry boundary keyed off the <em>user</em> file, not the merged registry, so a system-only template cannot silently gain a user approval?</li>
+    <li>Does the refusal name <code>templates trust</code> in every adapter (interactive, dry-run, ambiguous retry), and does the sparse round-trip truly omit a cleared approval (never <code>approval: null</code>)?</li>
+  </ul>
+</section>
+
+<section id="alternatives">
+  <h2>Alternatives explored</h2>
+  <p>Three structurally distinct candidates; independent cross-judge and orchestrator scored six criteria and agreed cell-for-cell (24 / 26 / 27).</p>
+  <table>
+    <thead><tr><th>Candidate</th><th>Shape</th><th>Why not the base</th></tr></thead>
+    <tbody>
+      <tr><td>C1 · toggle</td><td><code>trust &lt;name&gt;</code> / <code>trust --remove &lt;name&gt;</code> (mirror <code>alias</code>)</td><td>Degenerate mirror (drops <code>alias</code>'s all-or-none group); <code>--remove &lt;TEMPLATE&gt;</code> reads awkwardly; raw-<code>==</code> idempotency leak.</td></tr>
+      <tr><td>C2 · verb pair</td><td><code>trust &lt;name&gt;</code> / <code>untrust &lt;name&gt;</code></td><td><strong>Chosen base.</strong> Cleanest spine; strict <code>evaluate_trust</code>; least surface.</td></tr>
+      <tr><td>C3 · review</td><td><code>review &lt;name&gt; [--approve[=digest]|--revoke]</code></td><td>Read-named verb that mutates; redundant with <code>apply --dry-run</code>; widest surface. Its <code>--digest</code> pin grafted as an optional decision.</td></tr>
+    </tbody>
+  </table>
+  <p class="muted"><strong>Grafts:</strong> C1's stderr surface echo on grant; C3's see-what-you-approve (served by the existing dry-run) and its <code>--digest</code> pin (offered, Decision B). <strong>Dropout:</strong> all non-Claude proxy models failed with terminal API errors, so candidates + judge ran on the Claude family — no cross-family perspective (recorded limitation).</p>
+</section>
+
+<section id="decisions">
+  <h2>Decisions needed first</h2>
+  <section>
+    <h3>Decision 1 — command shape <span class="tag warn">product decision</span></h3>
+    <ul>
+      <li><strong>A. Verb pair <code>templates trust</code> + <code>templates untrust</code> — recommended.</strong> Flagless, legible; less clap machinery than a toggle for a one-operand inverse pair; makes the trust-reads / untrust-reads-nothing asymmetry visible; clean refusal breadcrumb. Scored highest on fidelity, scriptability, legibility.</li>
+      <li>B. Dual-mode <code>templates trust &lt;name&gt;</code> / <code>--remove</code> (the task's first-listed option). Rejected: degenerate mirror of <code>alias</code>; awkward <code>--remove</code>.</li>
+      <li>C. <code>templates review &lt;name&gt; [--approve|--revoke]</code>. Rejected: overloads a read name; duplicates <code>apply --dry-run</code>.</li>
+    </ul>
+  </section>
+  <section>
+    <h3>Decision 2 — scriptable freshness pin <code>--digest &lt;sha&gt;</code></h3>
+    <ul>
+      <li><strong>A. Defer — recommended.</strong> Baseline stays the clean verb pair; the atomic read→digest→write already closes the review→approve window, and <code>evaluate_trust</code> re-checks at apply. Adding <code>--digest</code> later is backward-compatible.</li>
+      <li>B. Include now, with a distinct exit code for drift.</li>
+    </ul>
+  </section>
+  <section>
+    <h3>Decision 3 — refusal wording (Question 3)</h3>
+    <p>The untrusted-hooks refusal names <code>templates trust &lt;formal&gt;</code> in place of <code>templates add --trust</code>, with the hooks listed above it. Resolves Question 3 as "yes, name the new operation." Question 2 is settled by 1069 (approval binds the surface digest, not the commit) and is not reopened.</p>
+  </section>
+  <section>
+    <h3>Permissions / access — disclosed separately <span class="tag err">needs explicit approval</span></h3>
+    <ul>
+      <li><strong>Permissions/access:</strong> these commands grant and revoke the permission to run a template's hooks (write/clear <code>entry.approval</code> in the user registry) — a new operator surface for a security-relevant permission. It grants no permission the operator lacked (<code>add --trust</code> / <code>apply --trust</code> already do); it adds a no-fetch way to manage it and a revoke where none cleanly existed.</li>
+      <li><strong>Filesystem read scope:</strong> <code>trust</code> reads the installed template's executed-file bytes via <code>HookSurface::of</code> — within <code>entry.path</code> only; no write beyond the user registry, no network.</li>
+      <li><strong>No capability removed</strong>, no new timeout, no pinned-version check, no application-subprocess integration.</li>
+    </ul>
+  </section>
+</section>
+
+<section id="size">
+  <h2>Size</h2>
+  <p>Expected agent implementation time (task 1054): <strong>about half a day to a day</strong> once 1033 lands <code>src/review.rs</code> and <code>entry.approval</code>.</p>
+  <ul>
+    <li>Two clap arms + two short functions in <code>templates.rs</code>; one <code>RegistryFile::set_approval</code> mirroring <code>set_commit</code>; three <code>guidance.rs</code> edits (<code>trust_lines</code>, <code>formal_for</code>, <code>retry</code>) plus two new message helpers.</li>
+    <li>Spec edits: two machine-spec subcommands, two CLI-prose paragraph edits, one registry-ownership line.</li>
+    <li>Tests: the falsifiable set above plus the five-row sole-kill battery.</li>
+  </ul>
+</section>
+
+<section id="complexity">
+  <h2>Complexity</h2>
+  <p><strong>Low, with this plan.</strong> No new module, no new domain type, no gate or engine change; the design reuses the established <code>resolve_user</code> → immutable-<code>RegistryFile</code> → single-user-write path that <code>alias</code>/<code>remove</code>/<code>update</code> already follow.</p>
+  <ul>
+    <li><strong>Dependency:</strong> 1054 depends on 1033 for <code>src/review.rs</code> and <code>entry.approval</code>; the design (this task) does not.</li>
+    <li><strong>Main risk</strong> is discipline, not difficulty: keep the equality solely in <code>evaluate_trust</code> and <code>set_approval</code> touching only <code>approval</code> — both covered by named sole-kills.</li>
+  </ul>
+</section>
