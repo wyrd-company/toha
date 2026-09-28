@@ -8,6 +8,7 @@ relationships:
   references:
     - template-registry
     - architecture
+    - error-attribution
 ---
 
 # Toha-owned Jinja context
@@ -38,7 +39,7 @@ The command driver resolves the selected identity and canonical target once,
 decides access, captures facts, and starts the existing engine:
 
 ```rust
-let target = staging::canonical_target(path)?;
+let target: CanonicalTarget = staging::canonical_target(path)?;
 let resolved = resolve_template(operand, &config, &registry, &dirs, cwd)?;
 let template = Template::load(&resolved.folder)?;
 
@@ -88,8 +89,9 @@ A direct crate caller supplies equivalent domain facts and makes no process or
 registry read through the engine:
 
 ```rust
+let target = staging::canonical_target(Path::new("./output"))?;
 let context = InvocationContext::new(
-    canonical_target,
+    target.clone(),
     SelectedTemplate::new("sample", vec![], None)?,
     HostFacts::new("linux", "x86_64", None, None, vec![]),
     ExecutionFacts::new(false, false),
@@ -97,13 +99,30 @@ let context = InvocationContext::new(
 )?;
 let seed = Seed { now, defaults, context };
 let completed = finish(Interview::start(&template, seed)?)?;
-let plan = Plan::build(&template, &completed, completed.context().target())?;
+let plan = Plan::build(&template, &completed, &target)?;
 ```
 
-The target supplied to `InvocationContext` is the separator-free canonical
-absolute `PathBuf` returned by the existing
-`staging::canonical_target(&Path) -> Result<PathBuf, StagingError>`. This design
-does not add a normalizer or a stronger canonical-target type.
+The canonical-target design owns target construction. Its Phase C proposal at
+revision `067c8d2e7c95cf2b16ab3a4103f8b1a8fda331af`, design SHA-256
+`72a564799b95ab1c187c913ac14ef14938f880bf2ab24ec337c03f887991457b`,
+recommends:
+
+```rust
+pub fn canonical_target(
+    path: &Path,
+) -> Result<CanonicalTarget, StagingError>;
+```
+
+This design depicts that recommended carrier. `CanonicalTarget` has no public
+unchecked constructor and no `From<PathBuf>`. Context and plan consumers can
+only inspect `target.as_path()`; they never normalize it.
+
+The carrier restriction remains conditional on Bob approving it in the
+canonical-target checkpoint. This document does not grant that approval or
+change the producer design. If Bob retains the existing `PathBuf` carrier, the
+same fields and parameters project to `PathBuf` and `&Path`; callers pass the
+separator-free `canonical_target` result unchanged. No context behavior, Jinja
+value, or normalization owner changes between the two projections.
 
 ## Exact Jinja contract
 
@@ -180,7 +199,7 @@ alias exposes another process value.
 ```rust
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct InvocationContext {
-    target: PathBuf,
+    target: CanonicalTarget,
     selected: SelectedTemplate,
     host: HostFacts,
     execution: ExecutionFacts,
@@ -237,33 +256,37 @@ pub struct Completed {
 
 impl InvocationContext {
     pub fn new(
-        canonical_target: PathBuf,
+        canonical_target: CanonicalTarget,
         selected: SelectedTemplate,
         host: HostFacts,
         execution: ExecutionFacts,
         environment: EnvironmentAccess,
     ) -> Result<Self, ContextError>;
 
-    pub fn target(&self) -> &Path;
+    pub fn target(&self) -> &CanonicalTarget;
 }
 
 impl Plan {
     pub fn build(
         template: &Template,
         completed: &Completed,
-        canonical_target: &Path,
+        canonical_target: &CanonicalTarget,
     ) -> Result<Self, PlanError>;
 }
 ```
 
-`SelectedTemplate::new` rejects an empty formal name. `InvocationContext::new`
-requires an absolute target without `.` or `..` components but does not resolve,
-canonicalize, or otherwise rewrite it. The command passes the exact existing
-normalizer result. `Plan::build` compares its target byte-for-byte with the
-completed context before any render and returns
-`PlanError::ContextTarget { expected, actual }` on mismatch. It never invokes a
-normalizer. Command call sites pass the same canonical value to planning and
-apply instead of the original CLI spelling.
+`SelectedTemplate::new` rejects an empty formal name. Under the producer's
+recommended carrier, `InvocationContext::new` can receive only a
+`CanonicalTarget` made by the sole factory. `Plan::build` compares that identity
+with the completed context before any render and returns
+`PlanError::ContextTarget { expected, actual }` on mismatch. Consumers inspect
+paths only through `CanonicalTarget::as_path()` and never invoke a normalizer.
+
+If the producer retains `PathBuf`, `InvocationContext::new` keeps the existing
+absolute/no-`.`/no-`..` precondition and `Plan::build` keeps the byte-for-byte
+comparison from the earlier projection. The command still passes the exact
+factory result to context, planning, and apply instead of the original CLI
+spelling.
 
 `EnvironmentAccess` has a redacted `Debug` implementation. Gated values must
 not enter diagnostics, protocol output, logs, or task evidence.
@@ -272,7 +295,7 @@ not enter diagnostics, protocol output, logs, or task evidence.
 
 ```text
 registry/config + resolver ───► SelectedTemplate ─┐
-canonical_target result ──────────────────────────┤
+canonical_target factory ─► CanonicalTarget ──────┤
 CLI host adapter ─────────────► HostFacts         ├─► InvocationContext
 terminal driver ──────────────► ExecutionFacts    │          │
 effective trust decision ─────► EnvironmentAccess ┘          │
@@ -411,7 +434,8 @@ identifier never loads.
 | Situation | Result |
 | --- | --- |
 | Reserved authored identifier | Existing aggregate `LoadError` with authored location. |
-| Invalid direct selected identity or target precondition | `ContextError` naming the field; no process data. |
+| Target factory cannot construct the identity | Producer `StagingError`; no context is created. |
+| Invalid direct selected identity | `ContextError` naming the field; no process data. |
 | Plan target differs from completed context | `PlanError::ContextTarget` before rendering or I/O. |
 | Missing/malformed host metadata | Typed `null`/`[]` fallback; not an error. |
 | Denied or absent gated value | Jinja `none`; not an error. |
@@ -422,10 +446,12 @@ identifier never loads.
 | Plan render failure | Existing attributed `PlanError::Render`. |
 
 Adding `Seed.context` is a deliberate source break for 0.2.0 crate callers so
-that no supported caller silently receives different values. The public
-interview state machine and plan/apply result types otherwise remain. Existing
-templates that do not define a reserved name retain their behavior. Existing
-`now()` behavior remains.
+that no supported caller silently receives different values. If the producer's
+recommended carrier is independently approved, its `CanonicalTarget`
+restriction also changes target-consuming source APIs; this design only
+consumes that decision. The public interview state machine and plan/apply result
+types otherwise remain. Existing templates that do not define a reserved name
+retain their behavior. Existing `now()` behavior remains.
 
 ## Canonical document changes for implementation
 
@@ -451,9 +477,12 @@ The paired implementation updates clean current contracts:
    exact array types. Folder, direct Git, and bundled selections yield `[]` and
    `null`; bundled formal name is `toha-demo`.
 3. **Target:** nonexistent and existing directories use the basename from the
-   single canonical result; an existing directory has no trailing separator;
+   single canonical identity; an existing directory has no trailing separator;
    root and non-Unicode basenames yield `null`; a mismatched plan target fails
-   before rendering.
+   before rendering. Under producer choice 5A, raw `PathBuf` cannot enter the
+   context or plan APIs and consumers use only `as_path()`. Under choice 5B,
+   the exact separator-free factory result passes unchanged and no consumer
+   normalizes it.
 4. **Host:** Linux complete, partial, absent, unreadable, non-UTF-8, malformed,
    empty, and duplicate-key os-release fixtures produce the stated values;
    non-Linux reads no os-release file.
@@ -481,7 +510,8 @@ The paired implementation updates clean current contracts:
     engine performs no ambient read.
 13. **Predecessors:** configured-default `Resolution { defaults, warnings }`
     remains exact and flat; hook trust uses the approved live digest function;
-    canonical target has one owner.
+    canonical target has one owner; both pending carrier choices use the
+    producer factory without a consumer normalizer.
 14. **Regression:** `task ci` passes with existing `now()`, protocol, presets,
     staging, plan, apply, and hook-review fixtures.
 

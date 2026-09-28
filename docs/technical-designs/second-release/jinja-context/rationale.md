@@ -5,6 +5,7 @@ relationships:
     - template-format
     - interview-protocol
     - template-registry
+    - error-attribution
 ---
 
 # Toha-owned Jinja context rationale
@@ -46,6 +47,15 @@ planning consistency invariant; its session façade is rejected. The architect
 also narrows collision reservation to the seventeen exact names and preserves
 registry alias order.
 
+The canonical-target producer completed its own synthesis after the arena. This
+design therefore binds its target input conditionally to producer revision
+`067c8d2e7c95cf2b16ab3a4103f8b1a8fda331af`, design SHA-256
+`72a564799b95ab1c187c913ac14ef14938f880bf2ab24ec337c03f887991457b`.
+Its recommended pending projection accepts `CanonicalTarget`, uses only
+`as_path()`, and has no unchecked constructor. If Bob retains `PathBuf`, the
+same context and plan fields use the separator-free factory result unchanged.
+Both projections keep normalization in the producer.
+
 ## Tradeoffs accepted
 
 - We accept a required `Seed.context` migration in exchange for explicit facts
@@ -60,6 +70,9 @@ registry alias order.
   non-Unicode, and metadata-poor hosts without lossy conversion or refusal.
 - We accept exact-name reservation rather than the whole `toha_` prefix in
   exchange for avoiding an unrequested compatibility restriction.
+- We accept a conditional target-carrier projection in exchange for keeping
+  this consumer ready for either independent producer decision. This document
+  does not approve the producer's API restriction.
 
 ## Alternatives considered
 
@@ -72,6 +85,8 @@ registry alias order.
   without current authorization ignores revocation.
 - A `Run` façade prevents some mismatches but adds a second public workflow and
   a broad lifecycle redesign for a context feature.
+- A consumer-owned target wrapper or fallback normalizer duplicates the
+  producer's identity policy and is rejected under either carrier choice.
 
 ## Open questions and risks
 
@@ -82,6 +97,9 @@ registry alias order.
   before replay?
 - Does plaintext staged persistence need a separate hardening design after this
   feature, even though this design changes no staged-file permission policy?
+- Which target carrier will Bob approve in the independent canonical-target
+  checkpoint? The context behavior is fixed; only the Rust carrier projection
+  changes.
 
 ## Next implementation step
 

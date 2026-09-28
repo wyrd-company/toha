@@ -5,6 +5,7 @@ relationships:
     - template-format
     - interview-protocol
     - template-registry
+    - error-attribution
 ---
 
 # Jinja context design verification
@@ -23,15 +24,19 @@ relationships:
   `580119ed1fae42ac053469b26d55844886631076`, integrated implementation. The
   design consumes `HookSurface::of`, `ReviewDigest`, and `evaluate_trust`; it
   does not change their digest or approval semantics.
-- Canonical target: producer design remains in progress. The recorded consumer
-  interface is the existing
-  `staging::canonical_target(&Path) -> Result<PathBuf, StagingError>`, with the
-  proposed existing-directory empty-suffix repair returning a separator-free
-  canonical absolute `PathBuf`. This design consumes that `PathBuf`, requests no
-  stronger type, adds no normalizer, and has no dependency on implementation
-  completion.
+- Canonical target: producer Phase C revision
+  `067c8d2e7c95cf2b16ab3a4103f8b1a8fda331af`, design SHA-256
+  `72a564799b95ab1c187c913ac14ef14938f880bf2ab24ec337c03f887991457b`,
+  recommends
+  `staging::canonical_target(&Path) -> Result<CanonicalTarget, StagingError>`.
+  `CanonicalTarget` exposes `as_path()`, has no unchecked constructor or
+  `From<PathBuf>`, and is required by identity-sensitive consumers. This design
+  consumes that proposed carrier without approving it. If Bob chooses the
+  producer's retained-`PathBuf` option, the same consumer fields and parameters
+  project to `PathBuf` and `&Path` and receive the separator-free factory result
+  unchanged. Neither projection adds a normalizer or implementation dependency.
 
-No producer contract conflicts with the synthesized design. The final
+The consumer is compatible with both pending producer choices. The final
 configured-default repair was integrated into the epic base before synthesis
 was committed.
 
@@ -54,7 +59,8 @@ was committed.
 | Every render surface | Interview and plan surface list plus one shared projection. | Pass |
 | Terminal/headless/staged/direct | Caller examples, mode table, staging flow, crate signature. | Pass |
 | Presets remain distinct | Exact predecessor names and flat-default result retained; no Jinja preset name. | Pass |
-| Canonical target ownership | Existing function result consumed; no stronger type or normalizer. | Pass |
+| Canonical target ownership | Exact producer revision consumed conditionally; 5A uses `CanonicalTarget`/`as_path`, 5B uses the separator-free `PathBuf`; neither normalizes. | Pass |
+| Canonical target carrier restriction | Independent producer decision; this design grants no approval. | Pending Bob in producer checkpoint |
 | Error/results contract | Load, context, plan, staging, eval, and render outcomes explicit. | Pass |
 | Compatibility | Crate source break, legacy record rule, exact-name-only collision, no path restriction. | Pass |
 | Canonical-document impact | Template, guide, CLI, protocol, and registry-reference proposals named. | Pass |
@@ -62,14 +68,16 @@ was committed.
 
 ## Caller-to-type consistency
 
-- Command usage obtains one canonical target and one selected identity before
-  constructing the context; the type sketch accepts exactly those values.
+- Command usage obtains one producer-owned canonical target and one selected
+  identity before constructing the context. The primary sketch accepts
+  `CanonicalTarget`; the explicit 5B projection accepts the factory `PathBuf`.
 - The configured-default caller destructures `Resolution`, reports warnings,
   and passes only the flat defaults map to `Seed`.
 - `Seed.context` reaches `Pending`, `Completed`, staging, and planning; no
   candidate-only `Run` abstraction remains.
-- `Plan::build` receives the same canonical value as the context and checks it
-  without normalization.
+- `Plan::build` receives the same canonical identity as the context and checks
+  it without normalization. Under 5A, paths are inspected only through
+  `as_path()`; under 5B, the exact factory `PathBuf` is compared byte-for-byte.
 - Direct callers supply every external observation explicitly and can use the
   same public context types without CLI or process state.
 
@@ -83,7 +91,8 @@ was committed.
 | Revoked approval still exposes staged values | Current access check runs before replay. | Remove approval and replay succeeds. |
 | Resume changes branches after environment change | Recorded snapshot, instant, and submissions are replayed. | Change environment and observe different batch or plan. |
 | New context shadows authored data | Load rejects exact collisions before evaluation. | A reserved authored id reaches runtime. |
-| Existing target produces a trailing separator/name drift | Single repaired canonical result is the source. | Existing/nonexistent equivalent targets give different basename. |
+| Existing target produces a trailing separator/name drift | Single producer factory identity is the source. | Existing/nonexistent equivalent targets give different basename. |
+| Carrier choice leaks into consumer policy | Both projections keep one factory and identical context behavior. | A consumer normalizes, constructs an unchecked target, or changes Jinja output between carriers. |
 | Config presets become Jinja globals | Context has no preset field; defaults keep the approved flat seam. | A preset appears without a mapped question default. |
 | Sensitive text enters logs/errors | Gated types use redacted Debug and errors name fields only. | A sentinel appears in captured stderr/protocol/debug. |
 | Session façade duplicates the engine | Final surface changes only Seed/Completed/context projection. | Implementation adds a second public orchestration path. |
@@ -104,6 +113,8 @@ was committed.
 
 - New permission/access behavior is isolated in the two Phase C decisions and
   separately disclosed. It is not treated as approved by this document.
+- The producer's `CanonicalTarget` API restriction is independently pending.
+  This document consumes its proposed shape but does not approve it.
 - Exact collision rejection and current authorization before replay are required
   security bounds for the requested contract; no unrelated supported
   capability is removed.
@@ -114,18 +125,20 @@ was committed.
 
 ## Gates
 
-Completed before checkpoint publication:
+Required at the refreshed checkpoint:
 
 - `rumdl check`: pass for every Markdown artifact.
 - `ryl check`: pass for `design.yml`.
 - `git diff --check`: pass.
 - Required design-brief sections: present.
-- Local slide count: 23; every slide visually inspected at 1280×720.
-- Browser bounds check: no bottom, left, or right overflow on any slide.
-- Dense seam, behavior, and decision slides: inspected at original resolution.
+- Every horizontal and vertical slide visually inspected at 1280×720.
+- Browser bounds check: no bottom, left, right, or viewport overflow.
+- Dense seam, before/after, behavior, and decision slides inspected at original
+  resolution.
 - Local built deck equals published raw deck byte-for-byte.
 - Published wrapper `Reveal.initialize`: exactly 1.
 - Published URL and hashes: recorded in `publication.md`.
 
-The repository gate `task ci` passed at the publication checkpoint. Bob's
+The exact refreshed revision, slide count, hashes, and final gate result are
+recorded in `publication.md` and the canonical task after republishing. Bob's
 explicit Phase C approval remains pending.

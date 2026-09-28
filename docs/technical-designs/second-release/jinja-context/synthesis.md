@@ -5,6 +5,7 @@ relationships:
     - template-format
     - interview-protocol
     - template-registry
+    - error-attribution
 ---
 
 # Jinja context synthesis
@@ -107,6 +108,27 @@ Corrections made by the architect:
 - Add `--trust` to `stage` and `continue` as the existing permission spelling,
   subject to Bob's Phase C approval. No new permission name is introduced.
 
+### Coordinated target seam repair
+
+The arena worked from the producer's earlier provisional `PathBuf` notice. The
+producer later completed synthesis at revision
+`067c8d2e7c95cf2b16ab3a4103f8b1a8fda331af`, design SHA-256
+`72a564799b95ab1c187c913ac14ef14938f880bf2ab24ec337c03f887991457b`,
+and recommended an opaque `CanonicalTarget` made only by
+`staging::canonical_target`. It exposes `as_path()` and has no unchecked
+constructor or `From<PathBuf>`.
+
+The final consumer sketch now presents that exact recommended carrier while
+keeping it conditional on Bob's independent producer decision. If the producer
+retains `PathBuf`, the same fields and parameters project back to `PathBuf` and
+`&Path`, using the separator-free factory result unchanged. Neither projection
+normalizes, and the `InvocationContext` lifetime and ownership do not change.
+
+No new arena was needed: this repair replaces one producer-owned carrier at the
+same existing input seam. It does not change the context module, public Jinja
+contract, trust policy, replay lifecycle, or candidate comparison. Historical
+candidate and judge artifacts remain unchanged.
+
 Rejected choices:
 
 - MiniJinja globals or process reads during evaluation: hidden state and broken
@@ -118,8 +140,8 @@ Rejected choices:
 - Refusing terminal continuation of a headless stage: removes a documented
   modality change.
 - A new `Run` façade: broad lifecycle redesign with a second public workflow.
-- A second target normalizer or stronger canonical-target type: owned by the
-  error-attribution design and unnecessary here.
+- A second target normalizer, consumer-owned wrapper, or unchecked target
+  constructor: duplicates producer ownership under either carrier choice.
 - A Jinja `preset` or `presets`: conflicts with the approved config namespace.
 
 ## Red-flag result

@@ -8,6 +8,7 @@ relationships:
   references:
     - template-registry
     - architecture
+    - error-attribution
 objective: >-
   Give every terminal, headless, staged/resumed, and direct crate caller one
   pure, replay-stable Jinja context for canonical target, selected template,
@@ -42,8 +43,8 @@ design-challenges:
     host fallbacks, identity semantics, and no overlap with config presets.
   shared-seams: >-
     The design must consume the final configured-default formal-name/flat-seed
-    contract, approved content-bound trust, and the existing canonical-target
-    function without replacing any of them.
+    contract, approved content-bound trust, and the producer-owned
+    canonical-target identity without replacing any of them.
 proposed-design:
   high-level-overview: >-
     Add one immutable InvocationContext to Seed, carry it through Pending to
@@ -74,12 +75,19 @@ proposed-design:
     context owns domain types, redaction, reserved names, and Jinja projection;
     CLI owns capture and trust; interview carries the snapshot; staging owns its
     wire representation; plan consumes the completed snapshot. Protocol Context
-    remains separate output metadata.
+    remains separate output metadata. The canonical-target producer owns the
+    sole factory and carrier. The recommended pending projection accepts
+    CanonicalTarget and reads it through as_path; the retained-PathBuf projection
+    accepts the same separator-free factory result. Neither projection normalizes.
   compatibility: >-
     Seed gains a required context in the 0.2.0 crate surface. Plan rejects a
-    target that differs from the completed canonical target without normalizing
-    it. Root and non-Unicode basenames produce null, not refusal. Existing
-    templates without exact-name collisions keep their behavior.
+    target that differs from the completed canonical identity without normalizing
+    it. The CanonicalTarget source-API restriction is conditional on independent
+    approval of the producer design; this design does not approve it. If the
+    producer retains PathBuf, the consumer shape projects back to PathBuf and
+    &Path without changing behavior. Root and non-Unicode basenames produce
+    null, not refusal. Existing templates without exact-name collisions keep
+    their behavior.
   canonical-impact: >-
     Paired implementation updates template-format and schema, the Jinja guide,
     command-line-interface for stage/continue --trust and replay guidance, and
@@ -102,9 +110,9 @@ decisions-needed:
 out-of-scope: >-
   Runtime or shared canonical edits in this task; arbitrary environment access;
   a new permission name; trust-command or digest changes; a second target
-  normalizer; configured-default changes; a Run façade; staged encryption or
-  file-permission changes; timeouts; pinned-version checks; application
-  subprocesses.
+  normalizer; approval or modification of the canonical-target carrier decision;
+  configured-default changes; a Run façade; staged encryption or file-permission
+  changes; timeouts; pinned-version checks; application subprocesses.
 detail: >-
   Full caller usage, exact variable table, signatures, data flow, fallback and
   replay rules, errors, compatibility, canonical impact, and fourteen
