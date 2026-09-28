@@ -51,6 +51,16 @@ pub enum StagingError {
 /// store.save(&raw, &record);
 /// ```
 ///
+/// The abort action's removal key is a `CanonicalTarget`, never a raw path:
+///
+/// ```compile_fail
+/// use std::path::PathBuf;
+/// use toha::staging::Store;
+/// let raw = PathBuf::from("output");
+/// let store: Store = unimplemented!();
+/// store.remove(&raw);
+/// ```
+///
 /// ```compile_fail
 /// use std::path::PathBuf;
 /// use toha::staging::StagedRecord;
