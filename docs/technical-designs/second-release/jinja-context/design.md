@@ -91,10 +91,12 @@ let interview = resolution.start_with_context(&template, now, context)?;
 ```
 
 `configured_defaults` consumes the winning source-bearing `ConfigEntry` values
-and authors origin-specific warnings and errors before it returns
-`Resolution { defaults, warnings }`. The returned defaults stay flat.
-`start_with_context` consumes that existing result into `Seed`; it is a caller
-continuation, not a second provenance store.
+and returns a `Resolution` whose private `ResolvedDefault` entries keep each raw
+value with its winning `ConfiguredDefaultOrigin`. The caller reads `warnings()`
+before consuming the result. `start_with_context` then moves those entries into
+`DefaultBankEntry::Configured` together with the invocation context. It does not
+pass through `Seed`, flatten provenance, reconstruct an origin, or add a second
+resolver or origin map.
 
 For stage, `RequireStageGrant` with an environment need fails before the five
 values are read, before `Seed`, before `Interview::start`, before any question
@@ -190,8 +192,10 @@ alias list and source. A folder, direct Git address, or bundled demo carries
 
 The resolver adds aliases and source to its existing result while preserving
 the configured-default contract's formal name. Config `presets` and
-`{ preset: <name> }` remain config-side inputs to flat `Seed.defaults`. No
-Jinja value is named `preset` or `presets`.
+`{ preset: <name> }` remain config-side inputs to `configured_defaults`. Their
+selected values and origins enter the private origin-bearing `Resolution`, not
+the ordinary flat `Seed.defaults` route. No Jinja value is named `preset` or
+`presets`.
 
 ### Host fallback rules
 
@@ -348,6 +352,32 @@ pub struct Seed {
     pub context: InvocationContext,
 }
 
+// Producer-owned configured-default carrier; fields stay private.
+pub struct Resolution {
+    defaults: ResolvedDefaults,
+    warnings: Vec<String>,
+}
+
+struct ResolvedDefaults(IndexMap<Id, ResolvedDefault>);
+
+struct ResolvedDefault {
+    raw: RawAnswer,
+    origin: ConfiguredDefaultOrigin,
+}
+
+type DefaultBank = IndexMap<Id, DefaultBankEntry>;
+
+enum DefaultBankEntry {
+    Seed(RawAnswer),
+    Configured(ResolvedDefault),
+}
+
+struct InterviewSeed {
+    now: jiff::Zoned,
+    defaults: DefaultBank,
+    context: InvocationContext,
+}
+
 pub struct Completed {
     // Existing fields remain.
     context: InvocationContext,
@@ -362,12 +392,41 @@ impl Template {
 }
 
 impl Resolution {
+    pub fn warnings(&self) -> &[String];
+
+    // Existing consuming producer entry, unchanged.
+    pub fn start<'a>(
+        self,
+        template: &'a Template,
+        now: jiff::Zoned,
+    ) -> Result<Interview<'a>, EvalError>;
+
     pub fn start_with_context<'a>(
         self,
         template: &'a Template,
         now: jiff::Zoned,
         context: InvocationContext,
     ) -> Result<Interview<'a>, EvalError>;
+
+    // The explicit compatibility escape. This is the only configured route
+    // that deliberately discards ConfiguredDefaultOrigin.
+    pub fn into_flat_defaults(
+        self,
+    ) -> (IndexMap<Id, RawAnswer>, Vec<String>);
+}
+
+impl StagedRecord {
+    pub(crate) fn invocation_context(
+        &self,
+        target: &CanonicalTarget,
+    ) -> Result<InvocationContext, StagingError>;
+
+    pub fn replay_with_resolution<'a>(
+        &self,
+        template: &'a Template,
+        resolution: Resolution,
+        context: InvocationContext,
+    ) -> Result<Interview<'a>, StagingError>;
 }
 
 impl InvocationContext {
@@ -394,6 +453,13 @@ impl Plan {
 `FixedEnvironment`, `EnvironmentSnapshot`, and their staged wire types have
 redacted `Debug` implementations. Captured values must not enter diagnostics,
 protocol output, logs, or design evidence.
+
+`Resolution::start_with_context` is the consuming sibling of the producer's
+`Resolution::start`. Both map every private `ResolvedDefault` directly to
+`DefaultBankEntry::Configured`; the context-bearing sibling also places the
+supplied `InvocationContext` in `InterviewSeed`. Ordinary `Interview::start`
+maps public flat `Seed.defaults` only to `DefaultBankEntry::Seed`. Configured
+callers never call `into_flat_defaults` as part of start or replay.
 
 `Plan::build` retains the approved producer signature. For the current context,
 it compares the supplied carrier with `completed.context.target()` before any
@@ -474,6 +540,26 @@ ordered accepted submissions. It does not read current host, environment,
 terminal, privilege, registry approval, or environment access. The recorded
 snapshot carries through every later batch.
 
+The configured replay caller reads warnings before consumption and restores the
+typed context from the staged wire and producer carrier before replay:
+
+```rust
+let resolution = configured_defaults(
+    &saved.template,
+    &template,
+    &config.presets,
+    &config.template_defaults,
+)?;
+report(resolution.warnings());
+let context = saved.invocation_context(&target)?;
+let interview = saved.replay_with_resolution(&template, resolution, context)?;
+```
+
+`replay_with_resolution` parses the recorded instant, calls
+`resolution.start_with_context(template, now, context)`, and replays accepted
+submissions. It never calls `replay_with_defaults`, destructures `Resolution`
+to a flat map, or uses `into_flat_defaults`.
+
 Captured optional strings are plaintext in the existing staged JSON. The store
 does not add a new file mode; access remains governed by its state directory and
 process umask. Values remain until successful staged apply removes the record,
@@ -521,14 +607,13 @@ host adapter ─────────────────► HostFacts   
 originating driver ───────────► ExecutionFacts     │          │
 environment admission ────────► snapshot ──────────┘          │
                                                               ▼
-presets + ConfigEntry origins ─► configured_defaults + diagnostics
-                                              │
+presets + ConfigEntry origins ─► configured_defaults ─► Resolution
+                                                       (raw + origin entries)
+                                              │ start_with_context /
+                                              │ replay_with_resolution
                                               ▼
-                         Resolution { flat defaults, warnings }
-                                              │
-                                              ▼
-                                    configured start ─► Pending
-flat defaults ───────────────────────────────► Seed ────┤
+                                     configured DefaultBank ─► Pending
+ordinary flat defaults ─────────────────────► Seed ────────┤
                                                                 │
                       StagedRecord ◄──── serialize/replay ──────┤
                                                                 ▼
@@ -578,7 +663,7 @@ being completed.
 | --- | --- |
 | Reserved current-context identifier | Aggregate `LoadError` with authored locations. |
 | Unmodeled supported AST form | Conservatively marks all five observable. |
-| Stage need without `--trust` | `StagingError::EnvironmentTrustRequired { reference }` before capture, seed, interview, render, submission, or write. |
+| Stage need without `--trust` | The stage adapter maps only `EnvironmentAdmissionError::TrustRequired { reference }` to `StagingError::EnvironmentTrustRequired { reference }` before capture, seed, interview, render, submission, or write. |
 | Stage without need or `--trust` | `Unavailable`, zero environment reads; later-added references remain null. |
 | Stage with `--trust` | Capture all five once, even without an initial reference; carry them through replay. |
 | Target construction or stored-target mismatch | Producer `StagingError`; no consumer normalization. |
@@ -590,12 +675,46 @@ being completed.
 | Legacy record | Pre-context projection; no invented facts or access recovery. |
 | Interview or plan evaluation fails | Existing attributed evaluation/render error. |
 
+The stage command has one typed adapter for admission errors:
+
+```rust
+pub enum StagingError {
+    // Existing variants remain.
+    EnvironmentTrustRequired { reference: RenderOrigin },
+    EnvironmentAdmission {
+        #[source]
+        source: EnvironmentAdmissionError,
+    },
+}
+
+pub(crate) fn stage_admission_error(
+    error: EnvironmentAdmissionError,
+) -> StagingError {
+    match error {
+        EnvironmentAdmissionError::TrustRequired { reference } =>
+            StagingError::EnvironmentTrustRequired { reference },
+        source => StagingError::EnvironmentAdmission { source },
+    }
+}
+```
+
+The trust-refusal variant carries the authored `RenderOrigin`. The catch-all
+variant retains the original typed admission error as its source, including any
+authored location and evaluator detail; it is not relabeled as a trust refusal.
+This adds no protocol field or wire variant.
+
 Adding required `Seed.context` is a deliberate source break for ordinary crate
 callers, but `Seed.defaults` remains the flat application-default route.
-Configured start and replay keep `Resolution { defaults, warnings }` as the
-continuation through engine entry. `configured_defaults` remains the sole place
-that consumes winning `ConfigEntry` file/layer origins for attributed warnings
-and errors; no second origin map is added. The public interview state machine
+The configured replay signature likewise gains the restored
+`InvocationContext`; the paired implementation changes its internal command
+callers after the producer implementation is integrated. The producer's
+origin-bearing `Resolution` and method identity remain intact.
+Configured start consumes the private origin-bearing `Resolution` through
+`start_with_context`; configured replay consumes it through
+`replay_with_resolution` with the restored context. Both move the producer's
+`ResolvedDefault` entries into the private configured default bank.
+`configured_defaults` remains the sole origin source and resolver; no second
+origin map is added. The public interview state machine
 and apply result types otherwise remain. Existing `now()` behavior remains.
 Source-tree Jinja compilation moves to template load, so an attributable
 syntax/include error can occur earlier.
@@ -657,9 +776,9 @@ The paired implementation updates:
     and remain frozen.
 11. **Collisions and presets:** every exact authored collision is attributed; a
     neighboring `toha_` name loads; presets remain answer defaults only;
-    configured start/replay preserve winning `ConfigEntry` origin in resolution
-    diagnostics while `Resolution.defaults` and ordinary `Seed.defaults` stay
-    flat.
+    configured start and configured replay preserve the winning mapping/preset
+    origin through a configured-default constraint fault and recovery, while
+    the separate ordinary `Seed.defaults` route stays flat and unchanged.
 12. **Redaction and wire:** captured strings appear only in intended rendered
     output and staged JSON, never in `Debug`, errors, protocol metadata, or
     guidance. The wire has no target carrier, generic map, or access token.

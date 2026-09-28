@@ -51,9 +51,12 @@ folders use the recorded result without a source or program identity refusal.
 The exact epic base contains the configured-presets implementation, the
 hook-review contract, the Jinja-include design, and the canonical-target
 producer. Presets remain answer defaults and are not Jinja context.
-`configured_defaults` uses winning source-bearing `ConfigEntry` origins in
-diagnostics, then returns flat `Resolution.defaults`; ordinary direct callers
-keep flat `Seed.defaults`. Context adds no second origin map or resolver.
+`ConfigEntry` remains the sole origin source. `configured_defaults` carries each
+winning mapping and optional preset origin in private `ResolvedDefault` entries.
+Configured start and replay consume that `Resolution` into
+`DefaultBankEntry::Configured` with the invocation context; only the separate
+ordinary `Seed.defaults` route stays flat. Context adds no second origin map or
+resolver.
 
 The include binding is revision
 `b87a5482b97e81524272bee1e526698c862754db`, final-design SHA-256

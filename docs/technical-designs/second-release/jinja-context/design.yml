@@ -59,13 +59,17 @@ proposed-design:
   public-contract: >-
     Expose seventeen current-context variables with exact string, nullable,
     array, and boolean types. Reserve only those exact names. Presets remain
-    flat defaults and are not Jinja context.
+    configured answer defaults and are not Jinja context. Ordinary Seed defaults
+    remain the separate flat application-default route.
   configured-origin: >-
-    configured_defaults remains the sole consumer of source-bearing ConfigEntry
-    values and uses their winning file/layer origins in warnings and errors.
-    Configured start and replay carry the resulting Resolution with flat
-    defaults through engine entry. Ordinary direct callers keep flat
-    Seed.defaults with context; no second origin map is added.
+    ConfigEntry remains the sole origin source. configured_defaults copies each
+    winning mapping and optional preset origin into the private ResolvedDefault
+    entry in Resolution. Configured start consumes Resolution through
+    start_with_context; configured replay consumes it through
+    replay_with_resolution with the restored InvocationContext. Both move entries
+    into DefaultBankEntry::Configured. Only into_flat_defaults deliberately loses
+    provenance. Ordinary direct callers keep flat Seed.defaults with context; no
+    second resolver or origin map is added.
   access: >-
     Direct/new apply uses explicit --trust or a current matching reviewed
     approval for an eligible named user/system entry. Stage requires its own
@@ -100,9 +104,9 @@ proposed-design:
     completed context.
   compatibility: >-
     Seed gains a required context for direct callers. Source-tree syntax errors
-    can surface at template load. Source-bearing ConfigEntry diagnostics,
-    Resolution with flat defaults and warnings, and flat Seed defaults remain
-    exact and distinct. Existing mutable folder behavior, input modality,
+    can surface at template load. ConfigEntry origins continue through the
+    private configured Resolution and DefaultBank; the ordinary flat Seed route
+    remains exact and distinct. Existing mutable folder behavior, input modality,
     now(), protocol metadata, configured defaults, hook review, and producer
     target interfaces remain.
   canonical-impact: >-

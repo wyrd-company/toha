@@ -123,7 +123,13 @@ canonical target factory ► CanonicalTarget ─┤
 host + originating driver ► typed facts ────┼─► InvocationContext
 snapshot ────────────────────────────────────┘          │
                                                        ▼
-presets ─► flat defaults ─► Seed ─► Pending ─► Completed ─► Plan</code></pre>
+presets ─► configured_defaults ─► origin-bearing Resolution
+                                      │ start / replay + context
+                                      ▼
+                              configured DefaultBank ─► Pending
+ordinary flat defaults ─► Seed ────────────────────────┘
+                                      ▼
+                                Completed ─► Plan</code></pre>
   </section>
   <section>
     <h2>Ownership remains separate</h2>
@@ -170,6 +176,21 @@ pub fn admit_environment(
     <p>The analysis mask stays private. Callers provide a decision and receive a typed result.</p>
   </section>
   <section>
+    <h2>Configured defaults keep their source</h2>
+    <pre><code class="language-rust">impl Resolution {
+    pub fn warnings(&amp;self) -&gt; &amp;[String];
+    pub fn start_with_context(
+        self, template, now, context,
+    ) -&gt; Result&lt;Interview, EvalError&gt;;
+}
+
+pub fn replay_with_resolution(
+    &amp;self, template, resolution, context,
+) -&gt; Result&lt;Interview, StagingError&gt;;</code></pre>
+    <p>Both consuming routes move raw value plus winning origin into the private configured default bank.</p>
+    <p class="muted"><code>into_flat_defaults</code> is an explicit provenance-dropping escape, not an application path.</p>
+  </section>
+  <section>
     <h2>Stage lifecycle — refusal happens first</h2>
     <div class="two">
       <div>
@@ -191,7 +212,7 @@ EnvironmentTrustRequired
 capture fixed five once
           │
           ▼
-Seed → interview → stage</code></pre>
+context-aware start → interview → stage</code></pre>
       </div>
     </div>
   </section>
@@ -315,7 +336,8 @@ ambient reads: 0</code></pre>
     <ul>
       <li>Every target-sensitive call receives the sole producer carrier.</li>
       <li>Only the 17 exact names collide; neighboring <code>toha_</code> names remain legal.</li>
-      <li><code>configured_defaults</code> keeps winning file/layer origin in diagnostics; <code>Resolution.defaults</code> and ordinary <code>Seed.defaults</code> stay flat.</li>
+      <li>Configured start and replay keep each winning mapping/preset origin through constraint faults and recovery.</li>
+      <li>Only the separate ordinary <code>Seed.defaults</code> route stays flat.</li>
       <li>Configured presets become answer defaults, never Jinja metadata.</li>
       <li>Captured strings appear only in intended render output and staged JSON.</li>
       <li>Terminal, headless, staged, resumed, and direct callers agree for equal typed facts.</li>
@@ -346,7 +368,7 @@ ambient reads: 0</code></pre>
     <li><strong>Storage binding:</strong> does the wire remain a fixed five fields rather than a map?</li>
     <li><strong>Folder behavior:</strong> do both approved recorded-decision outcomes remain exact?</li>
       <li><strong>Ownership:</strong> did context duplicate target, presets, include, or hook-review policy?</li>
-      <li><strong>Origin:</strong> do configured start/replay preserve winning <code>ConfigEntry</code> diagnostics without a second origin map?</li>
+      <li><strong>Origin:</strong> do configured start/replay preserve winning <code>ConfigEntry</code> attribution without flattening or a second origin map?</li>
   </ul>
 </section>
 

@@ -18,8 +18,7 @@ relationships:
   `4738042a766dc7b2d1d3c76a9c83c41c03e803d2`, package tree
   `9d2d185b7bf54ec63297eeb6f390b2686be1c14e`, design SHA-256
   `0538251bb0c51310d0e288c8a44449085bf66e0a3e3547cf7d354f29c49580a5`.
-  The context keeps presets, formal name, `Resolution { defaults, warnings }`,
-  and flat `Seed.defaults` distinct.
+  The context keeps presets and formal name distinct from Jinja context.
 - **Hook review:** approved design revision
   `132b2f449633ee0db89b29b80c63bdc2eca92e8a`, subtree
   `580119ed1fae42ac053469b26d55844886631076`, with implementation integrated.
@@ -36,6 +35,11 @@ relationships:
   `Store::load(&CanonicalTarget)`, `Plan::build(..., &CanonicalTarget)`, and
   `CanonicalTarget::as_path()`. There is no `TargetError`, unchecked
   constructor, or `From<PathBuf>`.
+  The same approved producer design, lines 226–274 and 379–414, defines the
+  consuming configured-default contract: private `ResolvedDefault` raw/origin
+  entries, `warnings()` before consumption, `Resolution::start`,
+  `StagedRecord::replay_with_resolution`, and provenance-dropping only through
+  `into_flat_defaults`.
 - **Jinja includes:** integrated design revision
   `b87a5482b97e81524272bee1e526698c862754db`, final-design SHA-256
   `3c996d09a6f845ba1125f1447ca8ff110dfb6149a0862f21845cff9c7b126eeb`.
@@ -44,6 +48,11 @@ relationships:
   fields into loader surfaces.
 
 The integration base is `a62061fdce74b6b1a743c70565dd9fbeec2413bb`.
+Its runtime still has the predecessor flat implementation and is grounding, not
+the origin-bearing producer contract that the paired implementation composes
+with. Runtime integration is owned by the active producer task.
+The complete source-to-merge-to-default-bank-to-caller trace is preserved in
+[producer-composition-reground.md](producer-composition-reground.md).
 
 ## Requirement matrix
 
@@ -65,7 +74,7 @@ The integration base is `a62061fdce74b6b1a743c70565dd9fbeec2413bb`.
 | Mutable folders | Current bytes use the approved recorded decision; no source or program gate. | Approved |
 | Legacy stages | Pre-context projection, no new names or invented facts. | Pass |
 | Collision contract | Seventeen exact names only; legacy keeps prior set. | Pass |
-| Presets distinct | Config resolution and flat defaults unchanged. | Pass |
+| Presets distinct | Config presets resolve to configured answers with origin; they are not Jinja metadata. | Pass |
 | Every caller and surface | Terminal, headless, staged/resumed, direct; one projection. | Pass |
 | No prohibited mechanism | No timeout, runtime version check, subprocess, or new permission name. | Pass |
 
@@ -74,10 +83,12 @@ The integration base is `a62061fdce74b6b1a743c70565dd9fbeec2413bb`.
 - Every current caller constructs `InvocationContext` before engine entry.
 - The ordinary `Seed.context` route reaches `Pending`, `Completed`, staged wire,
   and planning.
-- `configured_defaults` remains the sole consumer of source-bearing
-  `ConfigEntry` values and uses their winning origins in diagnostics. Configured
-  start and replay carry its flat `Resolution { defaults, warnings }` through
-  engine entry; ordinary callers use flat `Seed.defaults`.
+- `ConfigEntry` remains the sole origin source. `configured_defaults` copies the
+  winning mapping and optional preset origins into private `ResolvedDefault`
+  entries. Configured start consumes them through `start_with_context`;
+  configured replay consumes them through `replay_with_resolution` with the
+  restored `InvocationContext`. Both move them into the configured default bank.
+  Ordinary callers use the separate flat `Seed.defaults` route.
 - `Template::admit_environment` owns the need/decision/capture matrix; callers
   do not receive an analysis mask.
 - `FixedEnvironmentSource` exposes exactly five named optional values. It is
@@ -87,6 +98,10 @@ The integration base is `a62061fdce74b6b1a743c70565dd9fbeec2413bb`.
   against the completed current context before rendering.
 - `Store::load` receives the producer carrier and reconstructs context from
   record text plus wire facts; the wire cannot deserialize a carrier.
+- The single stage adapter maps only the typed `TrustRequired` admission fault
+  to `StagingError::EnvironmentTrustRequired`. Every other admission fault stays
+  typed as the source of `StagingError::EnvironmentAdmission`, retaining its
+  authored location and evaluator detail.
 - Legacy replay selects the prior available/reserved set and projection before
   template building, so existing data identifiers and `debug()` behavior do
   not acquire the current contract.
@@ -177,7 +192,9 @@ include design is present on its base.
 | `mutable_folder_no_flag_added_reference_stays_null` | Read the newly referenced ambient value or introduce an access gate. |
 | `mutable_folder_carried_grant_supplies_later_reference` | Drop an unreferenced captured field or introduce a source/program identity refusal. |
 | `canonical_target_factory_is_the_only_constructor` | Add an unchecked conversion or replace a consumer carrier with `PathBuf`. |
-| `configured_context_start_preserves_origin_diagnostics` | Bypass `configured_defaults` or replace a winning `ConfigEntry` origin before a configured-start error. |
+| `configured_context_start_preserves_constraint_origin` | Route configured start through `into_flat_defaults` plus `Seed`; the configured-default constraint error must still name the winning mapping/preset origin. |
+| `configured_context_replay_preserves_constraint_origin` | Route configured replay through `replay_with_defaults`; replayed recovery must still retain the winning mapping/preset origin. |
+| `ordinary_flat_seed_does_not_claim_configured_origin` | Change ordinary flat `Seed` entries to configured entries or infer an origin; the ordinary route must remain origin-free and behavior-compatible. |
 
 Each mutation must reach and fail the named assertion, then be restored before
 the full gate runs. A compile error or unrelated failing test is not a kill.
