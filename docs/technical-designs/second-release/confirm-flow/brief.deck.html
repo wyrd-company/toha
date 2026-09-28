@@ -50,15 +50,16 @@
 <body>
 <div class="reveal"><div class="slides">
 <section id="title">
-  <p class="kicker">Toha 0.2.0 · Design brief · Phase C · revised per your 19:06 note</p>
+  <p class="kicker">Toha 0.2.0 · Design brief · approved 2026-09-28</p>
   <h1>Steering the interview with a <code>flow</code> node</h1>
   <p>
-    Following your steer, control moves off the <code>confirm</code> question and
-    into a small new <code>flow</code> node that fires an action — stop, preview,
-    or skip — when a condition is true. Ordinary yes/no questions are untouched.
+    Control moves off the <code>confirm</code> question and into a small new
+    <code>flow</code> node that fires an action — stop, abort (stop and discard the
+    saved interview), preview, or skip — when a condition is true. Ordinary yes/no
+    questions are untouched.
   </p>
   <p>
-    <span class="tag">Approval sought</span>
+    <span class="tag">Approved</span>
     <span class="tag">design only</span>
     <span class="tag">paired build: task 1062</span>
   </p>
@@ -74,6 +75,7 @@
   </p>
   <ul>
     <li><strong>Stop</strong> — end the run now; write no files, run no hooks.</li>
+    <li><strong>Abort</strong> — stop and also discard the saved (staged) interview for this target.</li>
     <li><strong>Dry-run</strong> — finish the questions, show the plan, write nothing.</li>
     <li><strong>Skip</strong> — skip the rest of the interview, or the rest of the current group.</li>
   </ul>
@@ -169,6 +171,9 @@ pub enum Headless { Completed{..}, Pending{..}, Ended{..} }        // answers fi
     when: "not proceed"           # the existing `when`, as a sibling
     label: "declined at proceed gate"
 
+  - flow: abort                   # stop AND discard the saved interview
+    when: "cancel"
+
   - flow: dry-run
     when: "mode == 'preview'"     # any expression, not just one confirm
 
@@ -179,7 +184,7 @@ pub enum Headless { Completed{..}, Pending{..}, Ended{..} }        // answers fi
         prompt: "Configure telemetry now?"
       - flow: { skip: group }     # skip the REST of this group from here
         when: "not configure_now"</code></pre>
-    <p class="muted">Actions: <code>stop</code>, <code>dry-run</code>, <code>{ skip: rest }</code>, <code>{ skip: group }</code>. <code>when</code> is optional (a flow with no <code>when</code> always fires).</p>
+    <p class="muted">Actions: <code>stop</code>, <code>abort</code>, <code>dry-run</code>, <code>{ skip: rest }</code>, <code>{ skip: group }</code>. <code>abort</code> stops and removes the saved interview. <code>when</code> is optional (a flow with no <code>when</code> always fires).</p>
   </section>
   <section>
     <h3>What the engine carries</h3>
@@ -282,16 +287,17 @@ struct Ended {                          // a stopped interview
 </section>
 
 <section id="decisions">
-  <h2>Decisions needed first</h2>
+  <h2>Decisions (resolved at approval)</h2>
   <table>
-    <thead><tr><th>Decision</th><th>Recommendation</th></tr></thead>
+    <thead><tr><th>Decision</th><th>Resolved</th></tr></thead>
     <tbody>
-      <tr><td><strong>D-shape</strong> — flow node, or keep the earlier confirm-action shape?</td><td><strong>Adopt the flow node</strong> (both reviewers agree)</td></tr>
-      <tr><td>D-attach — a standalone flow node only, or also allow attaching it to a group?</td><td>Standalone only — a group's own <code>when</code> already skips a whole group</td></tr>
-      <tr><td>D1 — Exit code when a flow stops the run</td><td>Exit 0, with the machine-readable "ended" status for scripts</td></tr>
-      <tr><td>D2 — May a preset/computed answer satisfy a flow's <code>when</code> and fire it?</td><td>Yes (the value is the answer) — flagged: a preset could then stop a run</td></tr>
-      <tr><td>D3 — Skip-scope wording</td><td><code>{ skip: rest | group }</code>; "group" = the rest of the current group</td></tr>
-      <tr><td>D5 — Include label/answers in the "ended" document?</td><td>Yes, for audit</td></tr>
+      <tr><td><strong>D-shape</strong> — flow node vs the earlier confirm-action shape</td><td><strong>The flow node</strong> — approved</td></tr>
+      <tr><td>D-attach — standalone node, or also attach to a group</td><td>Standalone only</td></tr>
+      <tr><td>Abort action (stop + discard the saved interview)</td><td>Adopted — opt-in, reuses the existing discard operation</td></tr>
+      <tr><td>D1 — exit code on stop/abort</td><td>Exit 0, with the "ended" status for scripts</td></tr>
+      <tr><td>D2 — a preset/computed answer may fire a flow</td><td>Yes</td></tr>
+      <tr><td>D3 — skip-scope wording</td><td><code>{ skip: rest | group }</code>; group = rest of current group</td></tr>
+      <tr><td>D5 — "ended" document payload</td><td>Includes kind, label, and messages</td></tr>
     </tbody>
   </table>
   <p class="muted">

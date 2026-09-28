@@ -113,9 +113,49 @@ the sibling toha designs (1058 integrated; 1072/1056 approved), addressed below.
   documents is an additive contract change agents depend on — documented, omitted on
   ordinary completions, but a contract addition.
 
+## Abort action (adopted at approval) — verification
+
+Bob pre-approved the `abort` disposition either way (verbatim on the task); the author
+adopted it. `abort` = `stop` + remove the target's staged record via the existing
+`Store::remove(&CanonicalTarget)`. Checks:
+
+- **All routes / staged cleanup.** Abort removes the target's staged record where one
+  exists (staged/continue, headless, terminal/direct resuming a staged interview) and
+  is a no-op where none exists (fresh direct apply, crate) — behaviors 8–9. It reuses
+  the sole `canonical_target` factory for the identity — behavior 11 (sole-kill:
+  divert to a raw path → the removal-key test fails).
+- **Error semantics.** A failed `Store::remove` surfaces the underlying `StagingError`
+  (nonzero); the stop portion — no files, no hooks — has already held — behavior 10
+  (sole-kill: swallow the error → the failure-surface test fails).
+- **Atomicity — abort never runs from a rejected document.** The removal is a
+  driver-layer effect applied only after a committed `Ended{Abort}`, never from the
+  discarded tentative advance — behavior 21 (sole-kill: move the removal before the
+  rejection gate → the test fails). This is the load-bearing abort guard.
+- **No new capability / no interface narrowing.** Abort reuses the existing supported
+  `Store::remove`; it adds no second normalizer, no trust/permission/timeout/subprocess
+  surface, and removes only the current target's record (Out of scope).
+- **Engine stays pure.** The engine yields `Ended{kind: Abort}`; the removal is
+  performed by the driver like any effect (mirrors how apply performs writes).
+
+Type-safety: `abort` is the `Ended` terminal variant (differing only by `kind`), so
+"stop/abort writes nothing and cannot be planned" remains a type fact.
+
+## Approval-closure status
+
+Bob approved the flow-node shape and pre-approved abort (2026-09-28 19:37); the
+recommended choices are resolved (Decisions section of `design.md`). Base refreshed:
+the branch was rebased from `dfe7ba0` onto the current epic head `a62061f`, with
+merge-base == current epic head proved before these edits. The approved design shape
+(stop/dry-run/skip) is unchanged; the closure diff adds the pre-approved `abort`
+action, resolves the decisions, and refines titles to flow language. Independent
+design review remains required and is held until after the error-attribution producer
+(1056) publishes; the handoff records a clean exact basis and the approved evidence.
+
 ## Verdict
 
 Caller usage agrees with the sketch; every criterion and inherited constraint is met;
-failure cases are covered by falsifiable behaviors; predecessor composition holds; no
-existing outcome or route is cut. The flow-node design is sound and ready for the
-Phase C human checkpoint. No re-frame or re-run is required.
+failure cases (including abort routes, cleanup, error semantics, and the
+rejected-document guard) are covered by falsifiable behaviors with named sole-kills;
+predecessor composition holds; no existing outcome or route is cut. The flow-node
+design (with the adopted `abort` action) is sound and approved. No re-frame or re-run
+is required.

@@ -200,3 +200,29 @@ remains the more *locally obvious* form for that simplest case only.
 See `verification.md` (rewritten for the flow-node design): caller usage traced
 against the sketch, every criterion and inherited constraint checked, failure cases
 enumerated, predecessor composition confirmed. The design holds.
+
+---
+
+# Approval closure (2026-09-28)
+
+Bob approved the flow-node design and pre-approved the `abort` disposition either way
+(verbatim recorded on the task, kept separate from interpretation). Closure actions:
+
+- **Decisions resolved:** D-shape = the `flow` node; D-attach = standalone-only; D1 =
+  stop/abort exit 0 + `ended` status; D2 = a `when` satisfied by a configured/preset/
+  computed answer may fire; D3 = `{ skip: rest | group }`; D5 = `ended` carries
+  `kind` + label + messages. Folded into `design.md`.
+- **Abort: adopted** (pre-approved; not reported to Bob; not a blocker). A fourth
+  opt-in action `flow: abort` = stop + remove the target's staged record via the
+  existing `Store::remove(&CanonicalTarget)`. Rationale: "cancel and discard" is a
+  genuine intent distinct from `stop` (resumable), it reuses an existing supported
+  operation, adds no new capability, and keeps the engine pure (the driver performs
+  the removal). Full routes/cleanup/error-semantics/proof-guards in `design.md` and
+  `verification.md`. The alternative (implicit abort on every stop) was rejected so a
+  template author cannot silently delete a user's staged state.
+- **Base refresh:** rebased `dfe7ba0 → a62061f` (current epic head); merge-base ==
+  current epic head proved before edits. The approved shape is unchanged; the closure
+  diff adds abort + resolves decisions + refines titles.
+- **Independent review** remains required and is **held** until the error-attribution
+  producer (1056) publishes; the handoff records a clean exact basis and approved
+  evidence. No merge/cleanup/DONE.
