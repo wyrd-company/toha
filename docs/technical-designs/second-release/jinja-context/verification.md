@@ -40,7 +40,7 @@ relationships:
   their transitive closure, and does not turn YAML `!include` or configuration
   fields into loader surfaces.
 
-The integration base is `f0186bdf6f4ad6b57a7a2918a3e219f841825dd8`.
+The integration base is `a8dc5293cc47dfb7013eea03fd740e9a486e4ec1`.
 
 ## Requirement matrix
 
