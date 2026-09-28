@@ -678,11 +678,16 @@ fn trust(ctx: &Context, name: &str) -> Result<Vec<String>, CommandError> {
         .map_err(|error| CommandError::text(guidance::surface_unreadable(&formal, &error)))?;
     let live = surface.digest();
     // Idempotency is defined through the one trust rule: a surface that changed
-    // since approval is not "already trusted"; the command holds no `==`.
-    if matches!(
-        toha::evaluate_trust(entry.approval.as_ref(), &live),
-        toha::Trust::Trusted
-    ) {
+    // since approval is not "already trusted"; the command holds no `==`. A
+    // denial (a hand-edited/legacy `trusted: false` beside a matching approval)
+    // makes the entry effectively untrusted, so the grant runs to clear it
+    // rather than reporting "already trusted".
+    if !entry.denied
+        && matches!(
+            toha::evaluate_trust(entry.approval.as_ref(), &live),
+            toha::Trust::Trusted
+        )
+    {
         return Ok(vec![format!("already trusted {formal}")]);
     }
     let next = ctx

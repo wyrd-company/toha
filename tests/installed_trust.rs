@@ -385,3 +385,112 @@ fn trust_of_an_ambiguous_name_is_refused_with_the_retry() {
     assert_eq!(names[0], "templates", "the retry names templates trust");
     assert_eq!(names[1], "trust");
 }
+
+#[test]
+fn revoke_then_retrust_clears_the_denial_and_the_hook_runs_again() {
+    // The denial-preservation contract has two halves: untrust persists a
+    // `trusted: false` denial, and a later grant clears it. This guards the
+    // second half end to end — the reachable untrust -> re-trust recovery.
+    let root = TempDir::new().unwrap();
+    let folder = root.path().join("tpl");
+    write_template(&folder, "  - script: hook.sh\n", marker_script());
+    add_untrusted(&root, &folder);
+
+    assert_eq!(
+        code_of(&toha(&root, &["templates", "trust", "demo"])),
+        Some(0)
+    );
+    assert_eq!(
+        code_of(&toha(&root, &["templates", "untrust", "demo"])),
+        Some(0)
+    );
+    let revoked = sole_entry(&root);
+    assert_eq!(
+        revoked["trusted"], false,
+        "untrust records a denial: {revoked}"
+    );
+    assert!(revoked.get("approval").is_none(), "approval is cleared");
+
+    // Re-trust must clear the denial and re-record the approval, or the merge
+    // would keep dropping the approval and the hook would never run again.
+    let regrant = toha(&root, &["templates", "trust", "demo"]);
+    assert_eq!(code_of(&regrant), Some(0), "re-trust: {}", stderr(&regrant));
+    let after = sole_entry(&root);
+    assert!(
+        after.get("trusted").is_none(),
+        "the grant clears the denial: {after}"
+    );
+    assert!(
+        after.get("approval").is_some(),
+        "the approval is re-recorded: {after}"
+    );
+
+    let (code, ran) = apply_demo(&root);
+    assert_eq!(code, Some(0), "a re-trusted template runs its hooks");
+    assert!(ran, "the recovered hook runs");
+}
+
+#[test]
+fn trust_clears_a_denial_even_when_a_matching_approval_is_present() {
+    // A hand-edited or legacy registry can carry both a matching approval and a
+    // `trusted: false` denial on one entry (no toha writer produces this). The
+    // denial wins in the merge, so the entry is effectively untrusted; the
+    // idempotency check must not report "already trusted" and skip clearing it.
+    let root = TempDir::new().unwrap();
+    let folder = root.path().join("tpl");
+    write_template(&folder, "  - script: hook.sh\n", marker_script());
+    let add = toha(
+        &root,
+        &[
+            "templates",
+            "add",
+            folder.to_str().unwrap(),
+            "--alias",
+            "demo",
+            "--trust",
+        ],
+    );
+    assert_eq!(code_of(&add), Some(0), "add --trust: {}", stderr(&add));
+
+    // Splice a `trusted: false` denial next to the recorded matching approval.
+    let path = support::user_data_dir(root.path()).join("templates.yml");
+    let mut doc: serde_json::Value =
+        serde_norway::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    let entry = doc["templates"]
+        .as_object_mut()
+        .unwrap()
+        .values_mut()
+        .next()
+        .unwrap();
+    assert!(entry.get("approval").is_some(), "the approval was recorded");
+    entry
+        .as_object_mut()
+        .unwrap()
+        .insert("trusted".into(), serde_json::Value::Bool(false));
+    fs::write(&path, serde_norway::to_string(&doc).unwrap()).unwrap();
+
+    // The denial wins in the merge: the template is effectively untrusted.
+    let (code, ran) = apply_demo(&root);
+    assert_eq!(code, Some(3), "the denial makes the template need review");
+    assert!(!ran, "the denied hook must not run");
+
+    // trust must clear the denial (a grant), not short-circuit as "already
+    // trusted", so the hook runs again.
+    let grant = toha(&root, &["templates", "trust", "demo"]);
+    assert_eq!(code_of(&grant), Some(0), "trust: {}", stderr(&grant));
+    assert!(
+        stdout(&grant).contains("trusted") && !stdout(&grant).contains("already"),
+        "a denied entry is re-granted, not reported already trusted: {}",
+        stdout(&grant)
+    );
+    let after = sole_entry(&root);
+    assert!(
+        after.get("trusted").is_none(),
+        "the denial is cleared: {after}"
+    );
+    assert!(after.get("approval").is_some(), "the approval remains");
+
+    let (code, ran) = apply_demo(&root);
+    assert_eq!(code, Some(0), "the re-granted hook runs");
+    assert!(ran, "the recovered hook runs");
+}
