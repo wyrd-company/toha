@@ -129,6 +129,10 @@ fn file_rule_faults_retain_support_path_field_expression_and_engine_text() {
         )),
         "{error}"
     );
+    assert!(
+        error.contains("invalid operation: expected four digit year"),
+        "{error}"
+    );
 
     let each = Path::new("tests/fixtures/err-each-not-array/template");
     let error = planning_error(each);
@@ -156,6 +160,10 @@ fn file_rule_faults_retain_support_path_field_expression_and_engine_text() {
         )),
         "{error}"
     );
+    assert!(
+        error.contains("invalid operation: expected four digit year"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -180,6 +188,10 @@ fn ordinary_path_fault_names_exact_segment_and_content_fault_stays_unchanged() {
             "{}: template error in path `{segment}`: ",
             source.display()
         )),
+        "{error}"
+    );
+    assert!(
+        error.contains("invalid operation: expected four digit year"),
         "{error}"
     );
 
