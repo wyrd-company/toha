@@ -629,8 +629,12 @@ mod tests {
             ("stop", toha::EndKind::Stop),
             ("abort", toha::EndKind::Abort),
         ] {
+            // The message references `proceed`, so it is not ready in the first
+            // batch; it is reached only in the step that answers `proceed` and
+            // fires the flow — after the last prompt — so the `Session::Ended`
+            // branch is what writes it.
             let (_folder, template) = template(&format!(
-                "name: sample\ninterview:\n  - {{ id: proceed, type: confirm, prompt: Ready? }}\n  - message: at the {action} gate\n  - flow: {action}\n    when: \"not proceed\"\n    label: declined\n"
+                "name: sample\ninterview:\n  - {{ id: proceed, type: confirm, prompt: Ready? }}\n  - message: \"at the {action} gate ({{{{ proceed }}}})\"\n  - flow: {action}\n    when: \"not proceed\"\n    label: declined\n"
             ));
             let mut output = Vec::new();
             let mut script = Script::new(json!({ "proceed": false }));
@@ -642,11 +646,12 @@ mod tests {
                 }
                 Session::Completed(_) => panic!("{action}: expected Session::Ended"),
             }
+            // This text can only have been written by the `Session::Ended`
+            // branch, since the message blocked the first batch.
+            let written = String::from_utf8(output).unwrap();
             assert!(
-                String::from_utf8(output)
-                    .unwrap()
-                    .contains(&format!("at the {action} gate")),
-                "{action}: the ended message was not written"
+                written.contains(&format!("at the {action} gate")),
+                "{action}: the ended message was not written; got: {written:?}"
             );
         }
     }
