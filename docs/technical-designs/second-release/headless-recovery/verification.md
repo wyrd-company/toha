@@ -6,33 +6,83 @@ relationships:
     - error-attribution
 ---
 
-# Headless recovery design verification
+# Identity-bearing recovery design verification
 
 ## Basis
 
-- Epic source: `1e663bd661304698ebd10219c8c52d78020a189e`.
+- Epic source used for revised grounding: `d33245065f80e3ed9a8c75ea6526e8a9f9386f21`.
 - Accepted flow design SHA-256: `54827ce90a185fa24568c79a14707815e225121fbaad7c060154ae17adf5381e`.
 - Accepted flow verification SHA-256: `9167bf7a48e3c65aaee4dc1dfb7dbbae62cf8d2188b0d9ff8ffc63bc370f8d52`.
+- Accepted flow synthesis SHA-256: `52375a56c635b9be567887fb34cd73a25e3ab39981bc13ded8b68b22c2320e2e`.
 - Integrated error-attribution design SHA-256: `9560139e48798429a95e06a695dea703817b673d2e18f19e25f3fe4a3efe9b39`.
-- Integrated error producer: `8a19269d78f6da0738edb17e56310621f143923d`.
-- Arena candidate 1: `27cadb578f57414ad50a602d191eb1ebe9c7166701b599cb8a71ef5d63de363a`.
-- Arena candidate 2: `ee0cff26d5a2a7aba831cfdbf35e9a3834db3d3532fd471ae65a2740a223cc2a`.
-- Other-family cross-judge: Claude session `84fdcd73-606e-4993-9181-6014e60caf9c`.
+- Integrated error-attribution verification SHA-256: `41da2344a6422c996965c134f86268a849f8705c8ffce36d132613ef9cdbef05`.
+- Identity candidate 1 SHA-256: `3028c72482dcf69abad2dd07527bd51490e9c9d0f9206cdc23d2ca4b1fa5ceb3`.
+- Identity candidate 2 SHA-256: `13e8a42fcaeb90a175215d11e1df27ffae7bee4379202543d964d555a587a415`.
+- Other-family judge: async session `7559ff37-b315-4755-9edc-a67fed21f79a`.
 
-## Caller usage against the sketch
+The branch is refreshed again against the actual epic head before checkpoint
+publication. Any changed source citation or predecessor revision is reverified.
 
-| Usage claim | Sketch carrier | Result |
+## Required identity correction
+
+| Required property | Design carrier | Result |
 |---|---|---|
-| Target-only apply resumes staged state. | Existing route loads `StagedRecord`; `answer_apply` returns `Transition`; `commit_transition` commits it. | Carries. |
-| Matching named apply has identical recovery behavior. | The template operand is checked before both spellings enter the same staged transaction. | Carries. |
-| Completion applies. | Only `RecoveryOutcome::Completed` carries `Completed`; main retains `Plan::build` and apply. | Carries. |
-| Pending exits 4 with summary on terminal and JSON otherwise. | `RecoveryOutcome::Questions` becomes `Outcome::Questions`; `finish` selects one of two representations. | Carries. |
-| `stage --async` remains JSON. | It retains `Outcome::Document`/`Saved`; only `Outcome::Questions` tests stdout. | Carries. |
-| A wrong template or complete replay does not consume the document. | Identity check and replay precede `read_answers`. | Carries. |
+| Every external answers document identifies its template. | Closed `template` + `answers` envelope. | Carries. |
+| Matching ids in another template are insufficient. | Exact comparison precedes id and value validation. | Carries. |
+| One identity authority. | Resolver/staged record produces expected formal name; declaration is data only. | Carries. |
+| No second normalizer. | Plain equality; no parse, canonicalize, alias, registry, fetch, or trust call. | Carries. |
+| Missing/malformed/unresolved/mismatch behavior. | Ordered document faults; declared value is never independently resolved. | Carries. |
+| Atomic failure. | Private verified capability precedes engine and all staged/flow/plan/target/hook effects. | Carries. |
+| Route compatibility. | One shared private parser with separate one-step and headless consuming operations. | Carries. |
+| No extra binding. | Envelope has no target, commit, or version field. | Carries. |
 
-No usage example relies on a public type, option, document field, or state field absent from the sketch.
+## Caller usage against interfaces
 
-## Evidence and provenance trace
+### New and staged apply
+
+Both pass the route's expected formal identity, active template, active interview,
+and document text to `answer_document_headless`. The function parses once,
+compares once, and drives the existing headless walk only after the comparison.
+Its `Headless` result retains accepted submissions for the staging policy.
+
+### Continue
+
+`continue` passes the staged formal identity, active `Pending`, and document text
+to `answer_document_once`. The operation calls `Pending::answer` at most once.
+It returns the accepted storage map only with a successful engine transition.
+Rejected input returns the pending state and rejections without a persistable
+submission.
+
+### Terminal, replay, and in-memory crate calls
+
+These calls have no external answers document. They keep `RawAnswers` and the
+pure engine interfaces. The identity requirement is not copied into terminal
+questions or staged submissions.
+
+### File boundary
+
+The binary reads text once and adds the path or `stdin` label to protocol errors.
+It cannot obtain a `VerifiedSubmission` or raw map from the external parser. The
+protocol module owns the whole parse-compare-convert-consume operation.
+
+No usage example relies on an interface absent from the design sketch.
+
+## Authority traces
+
+### Template identity
+
+```text
+command template -> resolve_template -> ResolvedTemplate.formal_name
+staged target    -> Store::load      -> StagedRecord.template
+question output  -> Context          -> context.template
+                                      |
+answers.template ---------------- exact equality
+                                      |
+                              private submission
+```
+
+The declaration cannot choose the source. It asserts the source identity already
+selected by the route.
 
 ### Target identity
 
@@ -45,115 +95,185 @@ raw CLI path
   -> Plan::apply_reporting(&CanonicalTarget, ...)
 ```
 
-`StagedTransaction` accepts `&CanonicalTarget`, not `&Path`. No caller can reconstruct or normalize the target inside recovery.
+The document API has no target parameter. Recovery cannot normalize or construct
+a second target.
 
-### Configured value origin
+### Configured value provenance
 
 ```text
 ConfigEntry values and source paths
   -> configured_defaults(...)
   -> Resolution { values + origins + warnings }
-  -> Resolution::start or StagedRecord::replay_with_resolution
-  -> evaluator faults and warnings with original source identity
+  -> Resolution::start or replay_with_resolution
+  -> attributed evaluation and diagnostics
 ```
 
-The design passes `Resolution` unchanged before recovery. `Transition`, `commit_transition`, and presentation have no defaults field and no origin reconstruction path.
+The document operations receive neither defaults nor origins. Existing configured
+warnings retain their route-preparation timing.
 
-### Answer transaction
+### Accepted submissions
 
 ```text
-answers file/stdin
-  -> read_answers
-  -> protocol::parse_answers
-  -> RawAnswers
-  -> answer_headless (apply) or Pending::answer (continue)
-  -> Transition { state, accepted }
-  -> copy StagedRecord + append accepted only
-  -> commit_transition
+external text
+  -> parse_and_verify
+  -> private VerifiedSubmission { RawAnswers + storage map }
+  -> Pending::answer / headless walk
+  -> accepted result only
+  -> staged-effect policy
 ```
 
-Rejected input is absent from `accepted`. A persisted submission cannot precede the pure transaction result.
+Rejected or mismatched input never appears in the accepted result.
 
-### Question presentation
+## Route matrix verification
 
-```text
-Batch + Context + effective Rejections
-  -> protocol::batch_document (canonical JSON)
-  -> QuestionSummary (human projection from the same inputs)
-  -> Outcome::Questions
-  -> stdout TTY ? summary : existing JSON
-```
+| Route | Identity source | Read priority | Engine meaning | Result |
+|---|---|---|---|---|
+| New apply with file | Resolved command template | After template/start | Headless walk | Carries. |
+| Target-only staged apply with file | Staged record | After replay proves input usable | Headless walk | Carries. |
+| Named staged apply with file | Command first equals staged; staged gates document | Command mismatch before read | Headless walk | Carries. |
+| Continue with file/stdin | Staged record | After replay proves input usable | Exactly one step | Carries. |
+| Terminal prompts | Active interview | No document | In-memory steps | Carries. |
+| Staged replay | Staged record | No document | Stored in-memory steps | Carries. |
+| Crate external document | Caller-established formal name | Caller-owned I/O | Explicit one-step or headless operation | Carries. |
+| Crate in-memory | Active interview | No document | Existing raw APIs | Carries. |
 
-The terminal renderer does not parse or reinterpret the JSON. The protocol serializer remains the single machine-document authority.
+The matrix closes candidate 2's hidden mode: one public operation does not claim
+both one-step and headless behavior.
+
+## Validation and failure ordering
+
+The route establishes whether a document can be consumed before opening it. The
+protocol boundary then classifies syntax and envelope faults before comparing
+identity, and compares identity before parsing question identifiers or invoking
+the engine.
+
+The legacy-map detector precedes generic unknown-envelope checks. It exists to
+produce migration guidance only; the input remains invalid. A malformed intended
+envelope is still rejected even if it resembles a bare map.
+
+A missing, empty, or non-string identity and a mismatch are distinct document
+errors. “Unresolved declared identity” has no resolver state: a non-empty string
+is accepted on exact match and is otherwise a mismatch.
+
+## Atomicity verification
+
+An identity failure cannot reach:
+
+- `Pending::answer` or the headless walk;
+- accepted submission output;
+- `Store::save` or `Store::remove`;
+- flow disposition;
+- `Plan::build` or `Plan::apply`;
+- target file creation or change;
+- hook or trust execution;
+- answer-derived warnings, messages, or question output.
+
+The route may already have loaded configuration, emitted configured-value
+warnings, resumed an immutable source, replayed an existing record in memory, or
+populated the source cache. Those are existing preparation steps required to
+establish whether the document is usable. The staged record and target remain
+byte-for-byte unchanged.
 
 ## Accepted flow compatibility
 
-| Accepted result | Recovery handling | Invariant |
+| Accepted result | Recovery action | Guard |
 |---|---|---|
-| `Pending` | Save returned accepted prefix under normal execution; question output. | No plan or target effect. |
-| `Completed(Proceed)` | Save accepted prefix for existing record; plan/apply; remove after success. | Only completed values are plannable. |
-| `Completed(DryRun)` | Save accepted prefix; build/show plan; retain record. | No target write or hook. |
-| `Ended(Stop)` | Save accepted prefix; report ended result. | No completed value, plan, write, or hook. |
-| `Ended(Abort)` | Normal execution removes through existing Store; CLI preview performs no mutation. | No plan/write/hook; removal errors surface. |
-| Skip | No recovery branch; engine continues with existing default/empty/warning rules. | No second walker or skipped-value policy. |
+| Pending | Save accepted prefix under normal execution. | No plan or target effect. |
+| Completed proceed | Save accepted progress, plan, apply, then clean staged state after success. | Only completed values are plannable. |
+| Completed flow dry-run | Save accepted progress, build/show plan. | No target write or hook. |
+| Ended stop | Save accepted progress and retain staged state. | No completed value or plan. |
+| Ended abort | Remove through the existing canonical target under normal execution. | No plan, write, or hook. |
+| Skip | Stay inside the engine walk. | No recovery-specific skip policy. |
+| Any result with CLI `--dry-run` | Simulate without staged or target mutation. | Abort removal is suppressed. |
 
-Confirm is not mentioned in the recovery type sketch because it remains an answer kind. The flow engine, after a confirm value commits, produces the result recovery consumes.
+An ordinary confirm value enters the answer transaction. It is not a recovery
+action. A later flow `when` can use it and produce one of the listed results.
 
-The CLI preview and abort overlap is settled by the existing dry-run promise. Normal execution applies abort's accepted removal effect. Preview reports the same ended outcome without performing the removal, so the command changes nothing.
+## Original problem reassessment
 
-## Requirement coverage
+| Original question | Identity-bearing evidence | Recommendation |
+|---|---|---|
+| Target-only apply with answers | Target selects one staged identity; document independently asserts it; mismatch precedes answer evaluation. | 1A: support recovery. |
+| Terminal question presentation | Input identity does not change human need or machine output; one result has two representations. | 2A: terminal summary, non-terminal JSON. |
+| Matching named staged apply | Command, record, and document form a three-way identity assertion; stored source remains authoritative. | 3A: preserve recovery. |
 
-| Requirement | Design evidence |
-|---|---|
-| Decide target-only apply answers. | Decision 1, command matrix, usage example, behaviors 1–8. |
-| Decide terminal exit-4 presentation while retaining JSON. | Decision 2, presentation table and types, behaviors 16–19. |
-| Decide matching-template apply answers. | Decision 3, identity assertion rule, route-parity behaviors 1–3. |
-| Cover stop/dry-run/skip/completion. | Recovery outcome table, compatibility matrix, behaviors 10–15 and 22–23. |
-| Cover staged/direct/terminal routes. | Command matrix, module map, presentation table, parity proof. |
-| Preserve exit 4 and JSON. | `Outcome::Questions` always returns 4; non-terminal uses `batch_document`. |
-| Preserve pure interview logic. | Both adapters consume existing engine results; no engine policy or protocol schema changes. |
-| Preserve target/provenance contracts. | Field traces above; no raw target or flat defaults cross the seam. |
-| No unapproved capabilities. | No removal/restriction, permission/access change, timeout, pin, or subprocess. |
+The reported problem remains valid in all three cases.
 
-## Failure and persistence verification
+## Compatibility verification
 
-The result matrix accounts for every exit after a document can be supplied:
+- Bare external maps are rejected as required by the identity correction.
+- The migration wrapper preserves the inner answer map without reinterpretation.
+- Staged record bytes and accepted replay submissions do not change.
+- The public raw JSON parser is replaced because it erases document identity.
+- `RawAnswers`, `Pending::answer`, and raw headless driving remain available for
+  in-memory callers.
+- Batch, complete, and ended output documents retain their accepted shapes.
+- External documents remain portable across target and commit for one formal
+  template identity.
+- Exit 4 retains its question/rejection meaning; document faults use exit 1.
+- Exit 3 and accepted flow exits retain predecessor semantics.
 
-- state/identity/source/replay errors occur before document read;
-- parse errors occur before engine submission;
-- rejections return original pending for the rejected step;
-- staged save errors occur before planning;
-- plan/trust/conflict failures retain accepted staged progress;
-- file/hook failures use existing partial-target semantics and retain staged progress;
-- successful apply removes only after `Applied::Written`;
-- cleanup failure is visible after effects and leaves the record;
-- stop retains accepted staged progress;
-- abort removes under normal execution and surfaces failure;
-- CLI preview changes no staged state.
-
-There is no unclassified transition from answers to effects.
-
-## Interface depth and red flags
-
-- **Recovery module:** deep. One `commit_transition` interface hides origin/new state, accepted-prefix persistence, preview policy, every future flow result, and removal behavior.
-- **Presentation module:** deep enough because two real adapters vary at the seam and both derive from one source input.
-- **Main routing:** remains visible because it owns command selection, trust, planning, and target effects; moving it would relocate established behavior rather than hide the new policy.
-- **No shallow pass-through:** the two engine adapters are private result constructors; the design removes candidate wrapper functions that forwarded complete command inputs.
-- **No information leakage:** protocol JSON, staged storage, target identity, configured origin, and planning keep one authority each.
-- **No temporal decomposition:** recovery groups state-transition knowledge, not load/validate/save phases.
+The only supported-capability changes are the required rejection of identity-less
+answer files and the public raw JSON parser that would bypass that same
+requirement. The pure in-memory capability is preserved.
 
 ## Arena verification
 
-Two valid candidates are structurally distinct: candidate 1 uses focused recovery and presentation modules; candidate 2 places apply and continue behind one command interface. The candidates share no writable output path. The supplied capsules contain the same task and evidence snapshot and no Git data or scoring material.
+The revised round contains two structurally distinct, terminal candidates:
 
-The runner sandbox did not enforce filesystem blindness. Complete terminal transcripts show the actual evidence paths: both candidates read capsule task/source/design files and general global authoring skills; neither read repository history, the rubric, judge prompt, scores, task board, worktree, or the other output. `arena-setup.md` records the exact capsule inventory, history boundary, extra reads, process handles, and hashes.
+- candidate 1 exposes parsed and verified document states;
+- candidate 2 binds parse and verification to one consuming route capability.
 
-The parent and judge disagreement is reconciled in `synthesis.md`. The final shape closes the judge's two reasons for preferring candidate 2 — shared continue/apply commit policy and completed-only planning — while retaining the parent's narrower ownership seam.
+The candidates used separate writable output paths. Both input manifests were
+unchanged. The runner directories were packaging boundaries, not enforced
+filesystem sandboxes; `arena-setup-identity.md` records actual reads and technical
+reachability. The rubric was created only after both candidates were terminal.
+
+The other-family judge and parent both selected candidate 2 as the base. The
+score disagreement and every accepted/rejected graft are resolved in
+`synthesis-identity.md` and `cross-judge-identity.md`.
+
+## Red-flag verification
+
+- The final design has no public verified-to-raw extraction.
+- It has no shallow generic load/validate stages.
+- It has no pass-through wrapper around `Pending::answer`; each document
+  operation adds the identity invariant and consumes the private capability.
+- It has no hidden mode for one-step versus headless behavior.
+- It adds no alternate source identity, target identity, or configured origin.
+- It adds no permission/access rule, timeout, pinned-version check, or
+  application subprocess.
 
 ## Canonical-document impact
 
-The proposed CLI and protocol text is internally consistent with the design. The paired implementation owns edits to the command specification, interview protocol, architecture document, and user guides. It introduces no new schema field for recovery; accepted flow document fields remain owned by the flow implementation.
+The paired implementation owns changes to the interview protocol/schema, command
+specification, architecture ownership, crate documentation, guides, fixtures,
+and examples. Each will state one two-field envelope and exact comparison rule.
+No shared canonical document changes occur in this design task.
+
+## Falsifiable implementation contract
+
+The 23 numbered behaviors and 14 sole-kill guards in `design.md` cover:
+
+- the required cross-template same-ids failure;
+- every missing/malformed/mismatch route;
+- zero identity-resolution calls;
+- read priority and unused-input refusal;
+- staged and target byte preservation;
+- one-step/headless distinction;
+- all accepted flow results and CLI preview;
+- terminal and machine presentation;
+- crate API source and compile-fail compatibility;
+- target/commit portability;
+- schema and full-path examples.
+
+Each load-bearing guard has a named test that fails when the guard is removed or
+inverted. The implementation task binds these exact behaviors after approval.
 
 ## Verdict
 
-The design can carry its target identity, configured origin, accepted submissions, flow result, persistence intent, canonical question document, and terminal summary without reconstruction or loss. The three product decisions remain pending exact human approval. No implementation dependency may treat publication or this verification as approval.
+The design carries the formal template identity from its existing producer to a
+single external-document boundary without reconstruction. A mismatched document
+cannot enter the engine or reach staged, flow, planning, target, or hook effects.
+The three recovery recommendations remain pending Bob's approval of the exact
+revised artifact and deck revision.
