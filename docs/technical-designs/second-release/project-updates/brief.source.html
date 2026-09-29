@@ -1,0 +1,580 @@
+<section id="title">
+  <p class="kicker">Toha 0.2.0 · Design checkpoint</p>
+  <h1>Keep generated projects up to date</h1>
+  <p>
+    When a template improves, a project made from it can take the improvement
+    without losing the changes its owner made.
+  </p>
+  <p>
+    <span class="tag">design only</span>
+    <span class="tag warn">9 decisions need approval</span>
+    <span class="tag warn">1 capability restriction disclosed</span>
+  </p>
+</section>
+
+<section id="task">
+  <h2>Task</h2>
+  <p>
+    Design <code>toha update</code>: bring a generated project from template
+    version A to version B, keep the owner's edits, and show a clear conflict
+    when both changed the same lines.
+  </p>
+  <div class="two">
+    <div>
+      <p><strong>Today</strong></p>
+      <ul>
+        <li>Toha writes files and forgets.</li>
+        <li>Nothing in the project says which template or answers made it.</li>
+        <li>The only way to take a template change is <code>--force</code>, which overwrites every edit.</li>
+      </ul>
+    </div>
+    <div>
+      <p><strong>Designed</strong></p>
+      <ul>
+        <li>Every apply leaves a small record in the project.</li>
+        <li><code>toha update</code> redoes the template at the new version with the same answers.</li>
+        <li>It merges line by line, the way git merges branches.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section id="how">
+  <h2>How the merge works</h2>
+  <p>For every file Toha made, it compares three versions:</p>
+  <table>
+    <thead><tr><th>Version</th><th>Where it comes from</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Base</strong>: what Toha wrote last time</td><td>The template at version A, with the recorded answers</td></tr>
+      <tr><td><strong>Yours</strong>: the file now</td><td>The project on disk, with the owner's edits</td></tr>
+      <tr><td><strong>New</strong>: what Toha would write now</td><td>The template at version B, with the same answers</td></tr>
+    </tbody>
+  </table>
+  <ul>
+    <li>Only the template changed: take the new version.</li>
+    <li>Only you changed it: keep yours.</li>
+    <li>Both changed different lines: combine both.</li>
+    <li>Both changed the same lines: <strong>conflict</strong>. Nothing is written unless you ask for conflict markers.</li>
+  </ul>
+</section>
+
+<section id="walkthrough">
+  <section id="walk-record">
+    <h2>Walkthrough: the record</h2>
+    <div class="two">
+      <div>
+        <p><strong>Project before this design</strong></p>
+        <pre><code class="language-sh">sample-service/
+├── README.md
+├── config/app.toml
+└── src/app.txt</code></pre>
+      </div>
+      <div>
+        <p><strong>Project after an apply</strong></p>
+        <pre><code class="language-sh">sample-service/
+├── .toha/applied/
+│   └── receipt-5e1d0c7a.json
+├── README.md
+├── config/app.toml
+└── src/app.txt</code></pre>
+      </div>
+    </div>
+    <p>
+      The record is committed with the project, so it survives clone, copy, and
+      move. There is one small file per template used in the project.
+    </p>
+  </section>
+  <section id="walk-dry-run">
+    <h2>Walkthrough: preview an update</h2>
+    <pre><code class="language-plaintext">$ toha update ./sample-service --dry-run
+receipt: 3f9a1c2 -> 8be0d41
+update   src/app.txt        (whole)                # template changed, you did not
+merge    README.md          (whole)                # both changed, lines combine
+update   config/app.toml    (region features)      # the template's block changed
+converge package.json       (value scripts.build)  # value set back to the template's
+add      src/health.txt     (whole)                # new in the template
+retract  docs/legacy.md     (whole)                # dropped, you never edited it
+release  notes/todo.md      (whole)                # dropped, you edited it: now yours
+conflict src/routes.txt     (whole, 2 hunks)       # both changed the same lines</code></pre>
+    <p class="muted">Text after <code>#</code> explains each line; it is not part of the output.</p>
+    <p class="muted">Toha never deletes a file its owner edited.</p>
+  </section>
+  <section id="walk-conflict">
+    <h2>Walkthrough: a conflict</h2>
+    <div class="two">
+      <div>
+        <p><strong>Default: nothing written</strong></p>
+        <pre><code class="language-sh">$ toha update ./sample-service
+conflicting changes, nothing written:
+  src/routes.txt (whole, 2 hunks)
+to write git-style conflict markers:
+  toha update --on-conflict markers ./sample-service</code></pre>
+      </div>
+      <div>
+        <p><strong>With markers: resolve by hand</strong></p>
+        <pre><code class="language-sh">&lt;&lt;&lt;&lt;&lt;&lt;&lt; operator
+route /orders  -> handler_v2
+||||||| toha 3f9a1c2
+route /orders  -> handler
+=======
+route /orders  -> orders_handler
+&gt;&gt;&gt;&gt;&gt;&gt;&gt; toha 8be0d41</code></pre>
+      </div>
+    </div>
+    <p>
+      The next update refuses while markers remain, so unresolved markers are
+      never merged in as content.
+    </p>
+  </section>
+</section>
+
+<section id="ownership">
+  <section id="own-kinds">
+    <h2>Three kinds of ownership, three rules</h2>
+    <table>
+      <thead><tr><th>Toha owns</th><th>Example</th><th>On update</th></tr></thead>
+      <tbody>
+        <tr><td>A whole file</td><td><code>src/app.txt</code></td><td>Line-by-line merge with your edits</td></tr>
+        <tr><td>A marked region in your file</td><td>a block in <code>config/app.toml</code></td><td>Merge inside the region only. Text outside the markers is never touched.</td></tr>
+        <tr><td>One value in a JSON file</td><td><code>scripts.build</code> in <code>package.json</code></td><td>Set to the template's value, as injection already does. The rest of the file is untouched.</td></tr>
+      </tbody>
+    </table>
+    <p class="muted">
+      These rules come from the approved content-injection design. Update keeps
+      them; it does not treat a region or a JSON value as a whole file.
+    </p>
+  </section>
+  <section id="own-region">
+    <h2>Region example</h2>
+    <div class="two">
+      <div>
+        <p><strong>Before update</strong></p>
+        <pre><code class="language-ini">[application]
+# >>> toha:region features >>>
+analytics_enabled = true
+# <<< toha:end features sha256:a7f3… <<<
+name = "sample-service"</code></pre>
+      </div>
+      <div>
+        <p><strong>After update (template adds a line)</strong></p>
+        <pre><code class="language-ini">[application]
+# >>> toha:region features >>>
+analytics_enabled = true
+analytics_sample_rate = 0.1
+# <<< toha:end features sha256:5c02… <<<
+name = "sample-service"</code></pre>
+      </div>
+    </div>
+    <p>The owner's <code>name</code> line outside the markers stays as it is.</p>
+  </section>
+  <section id="own-removed">
+    <h2>When the template drops something</h2>
+    <table>
+      <thead><tr><th>Dropped item</th><th>Owner did not edit it</th><th>Owner edited it</th></tr></thead>
+      <tbody>
+        <tr><td>Whole file</td><td>Deleted</td><td>Kept; Toha stops owning it</td></tr>
+        <tr><td>Region</td><td>Markers and text removed</td><td>Markers removed, text kept</td></tr>
+        <tr><td>JSON value</td><td>Key removed</td><td>Value kept</td></tr>
+      </tbody>
+    </table>
+    <p>
+      A deletion needs proof that Toha really wrote that content, so an edited
+      or forged record can never cause data loss.
+    </p>
+  </section>
+</section>
+
+<section id="adoption">
+  <h2>Projects made before this feature</h2>
+  <div class="two">
+    <div>
+      <p><strong>No record: update refuses</strong></p>
+      <pre><code class="language-sh">$ toha update ./old-service
+./old-service has no applied record
+to adopt it: toha adopt TEMPLATE ./old-service</code></pre>
+    </div>
+    <div>
+      <p><strong>Adopt once, then update</strong></p>
+      <pre><code class="language-sh">$ toha adopt forge:catalog/receipt@stable \
+    ./old-service --at 3f9a1c2
+? Label: Sample
+matches  src/app.txt
+differs  README.md
+recorded .toha/applied/receipt-5e1d0c7a.json</code></pre>
+    </div>
+  </div>
+  <p>
+    Adopt asks the questions again and writes only the record. It never changes
+    the project's files. Differences count as the owner's edits.
+  </p>
+</section>
+
+<section id="pre-mortem">
+  <h2>Pre-mortem: why this could fail</h2>
+  <table>
+    <thead><tr><th>Failure</th><th>What prevents it</th></tr></thead>
+    <tbody>
+      <tr><td>Answers replay differently, so the old version cannot be rebuilt</td><td>Record the raw answers exactly as staging does; drop answers for removed questions; freeze the time value</td></tr>
+      <tr><td>A bad record deletes the owner's files</td><td>Delete only when the rebuilt old version proves Toha wrote it</td></tr>
+      <tr><td>The old template version is gone upstream</td><td>Safe mode: detect edits, never delete, refuse unclear merges</td></tr>
+      <tr><td>A crash leaves files new but the record old</td><td>Record written last; rerunning finishes the job</td></tr>
+      <tr><td>Dates in files change on every update</td><td>The first apply's time is reused</td></tr>
+      <tr><td>The merge library starts another program</td><td>Only the built-in text merge function is called; a test fails if a process starts</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="module-seam">
+  <h2>Module and seam</h2>
+  <svg viewBox="0 0 1100 430" font-family="-apple-system, Segoe UI, sans-serif" width="100%" height="430" role="img" aria-label="Module diagram">
+    <defs><marker id="h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="#71717a"/></marker></defs>
+    <rect fill="#161616" stroke="#52525b" stroke-width="1.5" x="380" y="10" width="340" height="60" rx="8"/>
+    <text font-size="17" fill="#e5e5e5" x="550" y="37" text-anchor="middle">Commands: apply · update · adopt</text>
+    <text font-size="14" fill="#a3a3a3" x="550" y="58" text-anchor="middle">parse input, pick the route, print results</text>
+    <rect fill="#10281f" stroke="#34d399" stroke-width="2" x="330" y="120" width="440" height="130" rx="8"/>
+    <text font-size="17" fill="#e5e5e5" x="550" y="148" text-anchor="middle">NEW: project module</text>
+    <text font-size="14" fill="#a3a3a3" x="550" y="175" text-anchor="middle">record — read and check the record, write it last</text>
+    <text font-size="14" fill="#a3a3a3" x="550" y="198" text-anchor="middle">update — rebuild old, build new, merge per item</text>
+    <text font-size="14" fill="#a3a3a3" x="550" y="221" text-anchor="middle">adopt — build once, write only the record</text>
+    <rect fill="#161616" stroke="#52525b" stroke-width="1.5" x="20" y="310" width="240" height="100" rx="8"/>
+    <text font-size="17" fill="#e5e5e5" x="140" y="340" text-anchor="middle">Planner + injection</text>
+    <text font-size="14" fill="#a3a3a3" x="140" y="365" text-anchor="middle">render a version; list</text>
+    <text font-size="14" fill="#a3a3a3" x="140" y="385" text-anchor="middle">what Toha owns (unchanged)</text>
+    <rect fill="#161616" stroke="#52525b" stroke-width="1.5" x="290" y="310" width="240" height="100" rx="8"/>
+    <text font-size="17" fill="#e5e5e5" x="410" y="340" text-anchor="middle">Interview + staging</text>
+    <text font-size="14" fill="#a3a3a3" x="410" y="365" text-anchor="middle">replay recorded answers</text>
+    <text font-size="14" fill="#a3a3a3" x="410" y="385" text-anchor="middle">(engine unchanged)</text>
+    <rect fill="#161616" stroke="#52525b" stroke-width="1.5" x="560" y="310" width="240" height="100" rx="8"/>
+    <text font-size="17" fill="#e5e5e5" x="680" y="340" text-anchor="middle">Apply</text>
+    <text font-size="14" fill="#a3a3a3" x="680" y="365" text-anchor="middle">safe file replace;</text>
+    <text font-size="14" fill="#a3a3a3" x="680" y="385" text-anchor="middle">trusted hooks (unchanged)</text>
+    <rect fill="#10281f" stroke="#34d399" stroke-width="2" x="830" y="310" width="250" height="100" rx="8"/>
+    <text font-size="17" fill="#e5e5e5" x="955" y="340" text-anchor="middle">gitoxide merge</text>
+    <text font-size="14" fill="#a3a3a3" x="955" y="365" text-anchor="middle">in-process text merge</text>
+    <text font-size="14" fill="#a3a3a3" x="955" y="385" text-anchor="middle">(feature of existing dependency)</text>
+    <path stroke="#71717a" stroke-width="1.5" fill="none" marker-end="url(#h)" d="M550,70 L550,118"/>
+    <path stroke="#71717a" stroke-width="1.5" fill="none" marker-end="url(#h)" d="M420,250 L160,308"/>
+    <path stroke="#71717a" stroke-width="1.5" fill="none" marker-end="url(#h)" d="M500,250 L420,308"/>
+    <path stroke="#71717a" stroke-width="1.5" fill="none" marker-end="url(#h)" d="M600,250 L670,308"/>
+    <path stroke="#71717a" stroke-width="1.5" fill="none" marker-end="url(#h)" d="M700,250 L930,308"/>
+  </svg>
+  <p class="muted">New: the project module, and gitoxide's merge feature. Everything else is reused unchanged. A command reaches a written file through three source files.</p>
+</section>
+
+<section id="public-interfaces">
+  <section id="pi-cli">
+    <h2>Public interfaces: commands</h2>
+    <table>
+      <thead><tr><th>Who</th><th>Command</th><th>Result</th></tr></thead>
+      <tbody>
+        <tr><td>Person</td><td><code>toha update PATH</code></td><td>Asks only questions the new version needs; lists changes</td></tr>
+        <tr><td>Script, agent</td><td><code>toha update --answers FILE PATH</code></td><td>One JSON result for every outcome</td></tr>
+        <tr><td>Person</td><td><code>toha adopt TEMPLATE PATH</code></td><td>Asks the questions; writes the record only</td></tr>
+        <tr><td>Script, agent</td><td><code>toha adopt --answers FILE TEMPLATE PATH</code></td><td>One JSON result</td></tr>
+        <tr><td>Everyone</td><td><code>toha apply …</code> (existing)</td><td>Now also writes the record</td></tr>
+      </tbody>
+    </table>
+    <p>Options for <code>update</code>:</p>
+    <ul>
+      <li><code>--dry-run</code> and <code>--trust</code>, as for <code>apply</code></li>
+      <li><code>--on-conflict refuse</code> (default) or <code>--on-conflict markers</code></li>
+      <li><code>--to COMMIT</code> and <code>--template NAME</code> to pick the version and the template</li>
+    </ul>
+    <p class="muted">Exit codes keep today's meanings: 0, 1, 3, 4, 5.</p>
+  </section>
+  <section id="pi-crate">
+    <h2>Public interfaces: Rust crate</h2>
+    <pre><code class="language-rust">// toha::project
+ProjectRecord::open(&amp;CanonicalTarget) -&gt; Result&lt;Option&lt;ProjectRecord&gt;, RecordError&gt;
+ProjectRecord::application(&amp;self, Option&lt;&amp;str&gt;) -&gt; Result&lt;&amp;Application, UpdateError&gt;
+ProjectRecord::begin_update(&amp;self, app, base: Option&lt;&amp;Template&gt;, next: &amp;Template,
+                            next_revision: Revision, context: InvocationContext)
+    -&gt; Result&lt;Begun, UpdateError&gt;
+Begun::with_document(self, text: &amp;str) -&gt; Result&lt;Begun, SubmitDocumentError&gt;
+Begun::plan(self, completed: Completed) -&gt; Result&lt;UpdatePlan, UpdateError&gt;
+UpdatePlan::changes(&amp;self) -&gt; &amp;[Change]
+UpdatePlan::apply(self, UpdateOptions, &amp;dyn HookRunner) -&gt; Result&lt;Updated, UpdateError&gt;
+project::apply(plan, &amp;Provenance, &amp;Completed, &amp;CanonicalTarget, ApplyOptions, runner)
+    -&gt; Result&lt;Applied, ApplyError&gt;
+project::adopt(&amp;Provenance, &amp;Template, &amp;Completed, &amp;CanonicalTarget, replace: bool)
+    -&gt; Result&lt;Adopted, AdoptError&gt;</code></pre>
+    <p class="muted">
+      Existing planner, apply, injection, interview, and staging signatures do
+      not change.
+    </p>
+  </section>
+</section>
+
+<section id="data-structures">
+  <section id="ds-record">
+    <h2>Data structures: the record file</h2>
+    <div class="two">
+      <div>
+        <pre><code class="language-json">{
+  "template": "forge:catalog/receipt@stable",
+  "commit": "3f9a1c2e8d7b…c5b4a39",
+  "generated": "2026-03-14T09:26:53+00:00[UTC]",
+  "submissions": [
+    { "label": "Sample", "quantity": 4 },
+    { "use_vcs": true }
+  ],
+  "owned": {
+    "files":   { "README.md": "sha256:9c1e…" },
+    "regions": { "config/app.toml": ["features"] },
+    "values":  { "package.json":
+                 { "scripts.build": "sha256:77f2…" } }
+  }
+}</code></pre>
+      </div>
+      <div>
+        <ul>
+          <li><strong>template, commit</strong>: which template and exact version</li>
+          <li><strong>generated</strong>: the time of the first apply, reused so dates stay stable</li>
+          <li><strong>submissions</strong>: the answers as typed, before formatting</li>
+          <li><strong>owned</strong>: what Toha owns, with fingerprints to detect edits</li>
+        </ul>
+        <p class="muted">
+          Not stored: file contents, the project's path, hook output, trust,
+          user name, or host name.
+        </p>
+      </div>
+    </div>
+  </section>
+  <section id="ds-types">
+    <h2>Data structures: Rust types</h2>
+    <pre><code class="language-rust">pub struct Application {
+    template: FormalName,
+    revision: Revision,                 // Commit(CommitId) | Unversioned
+    generated: FrozenNow,
+    submissions: Vec&lt;IndexMap&lt;Id, serde_json::Value&gt;&gt;,
+    owned: Ownership,
+}
+pub struct Ownership {
+    files:   BTreeMap&lt;TargetPath, Fingerprint&gt;,
+    regions: BTreeMap&lt;TargetPath, BTreeSet&lt;RegionKey&gt;&gt;,  // marker holds checksum
+    values:  BTreeMap&lt;TargetPath, BTreeMap&lt;JsonPath, Fingerprint&gt;&gt;,
+}
+pub enum Action { Add, Update, Merge, Converge, Retract, Release, Conflict(ConflictKind) }
+pub enum ConflictKind { Content { hunks: usize }, Binary, DeleteModify, AddAdd }
+pub enum Updated { UpToDate, Written { .. }, NeedsTrust(UpdatePlan) }</code></pre>
+  </section>
+</section>
+
+<section id="behaviors">
+  <section id="beh-1">
+    <h2>Behaviors to prove (1 of 2)</h2>
+    <table>
+      <thead><tr><th>Test</th><th>It fails if…</th></tr></thead>
+      <tbody>
+        <tr><td>Version A→B with an edited file, same lines: refuse writes nothing; markers writes markers, exit 1</td><td>clean files are written during a refused conflict</td></tr>
+        <tr><td>A second update with no change writes nothing, runs no hook</td><td>the time is not frozen, or the record is rewritten</td></tr>
+        <tr><td>Dropped file: deleted if unedited, kept if edited</td><td>an edited file is deleted</td></tr>
+        <tr><td>A forged record entry cannot delete a file</td><td>deletion skips the proof check</td></tr>
+        <tr><td>A region merge changes only the region; plain apply then reports drift</td><td>the checksum covers merged owner text</td></tr>
+        <tr><td>An edited JSON value converges; comments and other keys stay</td><td>JSON values are merged three-way</td></tr>
+        <tr><td>Old version unavailable: safe mode, no deletes</td><td>safe mode deletes or merges without a base</td></tr>
+      </tbody>
+    </table>
+  </section>
+  <section id="beh-2">
+    <h2>Behaviors to prove (2 of 2)</h2>
+    <table>
+      <thead><tr><th>Test</th><th>It fails if…</th></tr></thead>
+      <tbody>
+        <tr><td>A non-repeatable <code>format</code> answer replays the same</td><td>formatted answers are recorded</td></tr>
+        <tr><td>Removed question dropped; new question asked or reported (exit 4)</td><td>removed answers are replayed</td></tr>
+        <tr><td>Every apply route writes the record last; a hook failure keeps the old record</td><td>the record is written before hooks</td></tr>
+        <tr><td>Update and adopt refuse while an interview is staged</td><td>they read or change staged state</td></tr>
+        <tr><td>Leftover markers make the next update refuse</td><td>the marker check is removed</td></tr>
+        <tr><td>Adopt writes only the record; fingerprints come from the template</td><td>fingerprints come from disk</td></tr>
+        <tr><td>Two templates in one project update independently</td><td>ownership collisions are allowed</td></tr>
+        <tr><td>No process starts except trusted hooks</td><td>the merge uses gitoxide's external-driver path</td></tr>
+      </tbody>
+    </table>
+  </section>
+</section>
+
+<section id="out-of-scope">
+  <h2>Out of scope</h2>
+  <ul>
+    <li>Detecting renamed files (a move is a remove plus an add).</li>
+    <li>Searching project history to guess which version made an old project.</li>
+    <li>Changing the approved rules for injection, answers files, hook results, staged interviews, or trust.</li>
+    <li>Toha making commits, tags, or notes in the owner's git repository.</li>
+    <li>Letting a question keep its answer out of the record.</li>
+    <li>New permissions, timeouts, version checks, or starting other programs.</li>
+  </ul>
+</section>
+
+<section id="reviewer-focus">
+  <h2>Reviewer focus</h2>
+  <ol>
+    <li>No path can delete an owner-edited file, even with a forged record.</li>
+    <li>Replay reproduces the original answers: raw values, removed questions filtered, frozen time.</li>
+    <li>Region and JSON value keep the approved injection rules.</li>
+    <li>The record is written last, and a rerun after any failure converges.</li>
+    <li>The merge never starts another program.</li>
+    <li>Staged interviews are never read or changed by update or adopt.</li>
+  </ol>
+</section>
+
+<section id="alternatives">
+  <section id="alt-carrier">
+    <h2>Alternatives explored: where the record lives</h2>
+    <table>
+      <thead><tr><th>Option</th><th>Result</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Files in the project</strong> <code>.toha/applied/</code></td><td><span class="tag">chosen</span> Travels with every copy; works without git; same approach as <a href="https://copier.readthedocs.io/en/stable/updating/">copier</a> and <a href="https://github.com/cruft/cruft">cruft</a></td></tr>
+        <tr><td>One shared file</td><td>Two branches updating different templates would conflict in it</td></tr>
+        <tr><td>Git commit message trailer</td><td>Lost by squash or copy; Toha would have to write commits</td></tr>
+        <tr><td><a href="https://git-scm.com/docs/git-notes">Git notes</a> or a custom ref</td><td>A normal clone does not copy them</td></tr>
+      </tbody>
+    </table>
+  </section>
+  <section id="alt-base">
+    <h2>Alternatives explored: the merge base</h2>
+    <div class="two">
+      <div>
+        <p><strong>Rebuild the old version</strong> <span class="tag">chosen</span></p>
+        <ul>
+          <li>Record stays small and readable</li>
+          <li>One source of truth: the template</li>
+          <li>Needs the old version; safe mode without it</li>
+        </ul>
+      </div>
+      <div>
+        <p><strong>Store every written file in the record</strong></p>
+        <ul>
+          <li>Full merges even offline</li>
+          <li>Large record; a second copy of every file</li>
+          <li>Answer-derived content committed twice</li>
+        </ul>
+      </div>
+    </div>
+    <p class="muted">Two independent designs explored these two shapes; a separate judge scored both.</p>
+  </section>
+  <section id="alt-engine">
+    <h2>Alternatives explored: the merge engine</h2>
+    <table>
+      <thead><tr><th>Option</th><th>Result</th></tr></thead>
+      <tbody>
+        <tr><td><strong><a href="https://docs.rs/gix-merge/0.20.1/gix_merge/blob/builtin_driver/text/index.html">gix-merge</a></strong>, part of <a href="https://github.com/GitoxideLabs/gitoxide">gitoxide</a> (~12k stars, active)</td><td><span class="tag">chosen</span> Already a Toha dependency; turn on its <code>merge</code> feature; git's own merge rules, in process</td></tr>
+        <tr><td><a href="https://github.com/bmwill/diffy">diffy</a> (~120 stars)</td><td>Pure Rust, but a new, smaller dependency</td></tr>
+        <tr><td><a href="https://git-scm.com/docs/git-merge-file">git merge-file</a> as a program</td><td><span class="tag err">not proposed</span> Starts another program and needs git installed</td></tr>
+      </tbody>
+    </table>
+  </section>
+</section>
+
+<section id="decisions">
+  <section id="dec-1">
+    <h2>Decisions needed first (1 of 3)</h2>
+    <table>
+      <thead><tr><th>#</th><th>Decision</th><th>Recommendation</th><th>Other option</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td>Where the record lives</td><td><strong>One file per template in <code>.toha/applied/</code></strong></td><td>One shared file; git notes</td></tr>
+        <tr><td>2</td><td><span class="tag warn">restriction</span> Templates may not write into <code>.toha/applied/</code></td><td><strong>Reserve that folder</strong>, so a template cannot overwrite a record</td><td>No reservation; a clash fails late, after files are written</td></tr>
+        <tr><td>3</td><td>Merge engine</td><td><strong>Turn on gitoxide's <code>merge</code> feature</strong> (adds <code>gix-merge</code>)</td><td><code>diffy</code> crate</td></tr>
+      </tbody>
+    </table>
+  </section>
+  <section id="dec-2">
+    <h2>Decisions needed first (2 of 3)</h2>
+    <table>
+      <thead><tr><th>#</th><th>Decision</th><th>Recommendation</th><th>Other option</th></tr></thead>
+      <tbody>
+        <tr><td>4</td><td>How to get the merge base</td><td><strong>Rebuild the old version; safe mode if it is gone</strong></td><td>Store every written file in the record</td></tr>
+        <tr><td>5</td><td>Projects without a record</td><td><strong><code>toha adopt</code></strong> writes only the record</td><td>Refuse</td></tr>
+        <tr><td>6</td><td>Hooks during update</td><td><strong>Run them, with trust, when update writes anything</strong>, as apply does</td><td>New template setting to limit hooks to apply or update</td></tr>
+      </tbody>
+    </table>
+  </section>
+  <section id="dec-3">
+    <h2>Decisions needed first (3 of 3)</h2>
+    <table>
+      <thead><tr><th>#</th><th>Decision</th><th>Recommendation</th><th>Other option</th></tr></thead>
+      <tbody>
+        <tr><td>7</td><td>Answers are committed in the project</td><td><strong>Store them</strong>, as copier and cruft do</td><td>Per-question opt-out (template format change)</td></tr>
+        <tr><td>8</td><td>Every apply writes a record</td><td><strong>Always</strong>, so every project can be updated</td><td>Opt-in flag</td></tr>
+        <tr><td>9</td><td>How scripts and agents call update</td><td><strong>One-shot <code>--answers FILE</code></strong>; update never saves a half-done interview</td><td>A saved agent session like <code>stage</code>/<code>continue</code></td></tr>
+      </tbody>
+    </table>
+  </section>
+</section>
+
+<section id="disclosures">
+  <h2>Disclosures for separate approval</h2>
+  <div class="check">
+    <strong>Capability restriction.</strong> Today a template may write any path
+    outside <code>.git</code>. With decision 2, a template that writes into
+    <code>.toha/applied/</code> fails before anything is written.
+  </div>
+  <div class="check">
+    <strong>New effect.</strong> Every <code>toha apply</code> adds
+    <code>.toha/applied/&lt;name&gt;.json</code> to the project (decision 8).
+  </div>
+  <div class="check">
+    <strong>New dependency code.</strong> gitoxide's <code>merge</code> feature
+    adds the <code>gix-merge</code> crate (decision 3). It can run external merge
+    drivers; Toha never calls that part, and a test enforces it.
+  </div>
+  <p>
+    No new permission, timeout, version check, or application subprocess.
+  </p>
+</section>
+
+<section id="size">
+  <h2>Size</h2>
+  <p>
+    About <strong>4 to 6 working days</strong> of agent time, done as five
+    reviewable steps:
+  </p>
+  <ol>
+    <li>Merge engine adapter and its tests</li>
+    <li>Record format, reading and checking, and writing it on every apply</li>
+    <li>Update core: rebuild, compare, merge per item, safe mode</li>
+    <li>Commands, results, adopt, and the version A→B fixtures</li>
+    <li>Specifications, schema, user guide, and example</li>
+  </ol>
+  <p class="muted">
+    It starts after the answers-file work (caller routes and identity) is
+    merged, because update uses its answers check.
+  </p>
+</section>
+
+<section id="complexity">
+  <h2>Complexity</h2>
+  <p><span class="tag warn">high</span></p>
+  <ul>
+    <li>First Toha data stored inside the project, and the first line merge.</li>
+    <li>Three ownership kinds times five situations each, plus safe mode.</li>
+    <li>Rebuilding an old version must reproduce the original answers exactly.</li>
+  </ul>
+  <p>With this plan it stays manageable:</p>
+  <ul>
+    <li>The deciding logic is one pure function, tested without files or processes.</li>
+    <li>The planner, injection, interview engine, and hooks are reused unchanged.</li>
+    <li>Every rule above has a named test that fails if the rule is removed.</li>
+  </ul>
+</section>
+
+<section id="approval">
+  <h2>What approval covers</h2>
+  <p>This exact design revision and the nine decisions:</p>
+  <table>
+    <thead><tr><th>Artifact</th><th>SHA-256</th></tr></thead>
+    <tbody>
+      <tr><td><code>project-updates/design.md</code></td><td><code>4d201050c7a8…3809</code></td></tr>
+      <tr><td><code>project-updates/design.yml</code></td><td><code>2c12ba73bc49…5f9f</code></td></tr>
+    </tbody>
+  </table>
+  <p>
+    It builds on the approved designs for content injection, caller routes and
+    answers identity, and hook results, and changes none of them.
+  </p>
+  <p class="muted">
+    Full hashes, the deck source hash, and the branch commit are recorded on the
+    design task. Reply with approval, changes, or a different option for any
+    decision.
+  </p>
+</section>
