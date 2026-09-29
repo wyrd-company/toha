@@ -1,4 +1,5 @@
 name: include-files-source
+ignore: [".gitkeep"]
 data:
   modules:
     - alpha
