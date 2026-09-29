@@ -43,7 +43,7 @@ description: >-
   evaluated as soon as their references are answered, so a batch never holds
   them.
 
-  Messages. Each batch and complete result carries a `messages` array: the
+  Messages. Each batch and result document carries a `messages` array: the
   messages reached by the step that produced it, in interview order. A step
   is the start of the interview or the submission of one accepted answers
   document. Each entry is a string: the rendered text of a message node, or a
@@ -68,11 +68,13 @@ description: >-
   its options in `anyOf: [{enum: [...]}, {type: null}]` instead of `enum`, so
   the enum lists only the options.
 
-  Answers. An answers document is a JSON object keyed by question id. `continue`
-  reads it from a file or from standard input. Answers for questions outside
-  the current batch are held and applied when their questions are reached; a
-  question whose held answer is applied does not appear in a batch, and its
-  answer appears in the complete result. Toha validates a held answer when the
+  Answers. The `answers` member of an answers document is a JSON object keyed by
+  question id, wrapped in the identity envelope described above. `continue PATH
+  FILE` reads the document from a file or from standard input. Answers for
+  questions outside the current batch are held and applied when their questions
+  are reached; a question whose held answer is applied does not appear in a
+  batch, and its answer is part of the completed answers. Toha validates a held
+  answer when the
   document is submitted, against each constraint of its question that does
   not depend on other answers: the answer type, a literal `required`, literal
   `options`, `validate.regex`, and literal `validate` and `loop` bounds. A

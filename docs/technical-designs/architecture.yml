@@ -155,11 +155,20 @@ proposed-design:
     prompt port. The terminal driver in the binary walks the `Batch` items,
     prints messages, asks each prompt with inquire, calls `check` after each
     answer, and submits the batch with `answer`. An empty submission ends a
-    loop prompt. The protocol driver in `protocol` converts a `Batch` into the
-    batch document and its JSON Schema, parses an answers document into
-    `RawAnswers`, and converts the engine's response into a result document.
-    `apply --answers` and crate callers use the same `answer` call with
-    answers from a document or from code.
+    loop prompt. The `protocol` module converts a `Batch` into the batch document
+    and its JSON Schema, and converts the engine's response into the result
+    documents. An external answers document reaches the engine only through the
+    private identity gate `parse_and_verify`: it parses the two-field envelope
+    `{"template", "answers"}` and compares the declared `template` with the
+    formal name the route established, by exact string equality, before it
+    yields the raw answers as a private `VerifiedSubmission`. `answer_document_once`
+    (one step, for `continue PATH FILE`) and `answer_document_headless` (the
+    scripted walk, for `apply TEMPLATE PATH --answers FILE`) consume that gate;
+    there is no public parser from external JSON to `RawAnswers`, so external
+    JSON cannot reach the engine without passing the identity comparison. The
+    in-memory crate path is separate: terminal prompting, staged replay, and
+    crate callers build `RawAnswers` directly and drive `Pending::answer` or
+    `answer_headless` without the envelope.
 
   staging: >-
     A staged interview is stored as its inputs, not as engine internals: the
