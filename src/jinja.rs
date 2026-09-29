@@ -719,7 +719,11 @@ impl std::fmt::Display for IncludeError {
         match self {
             Self::Template(e) => write!(f, "{e}"),
             Self::NotFound { candidates, by } if candidates.len() == 1 => {
-                write!(f, "jinja include not found: {}, included by {by}", candidates[0])
+                write!(
+                    f,
+                    "jinja include not found: {}, included by {by}",
+                    candidates[0]
+                )
             }
             Self::NotFound { candidates, by } => write!(
                 f,
@@ -727,10 +731,16 @@ impl std::fmt::Display for IncludeError {
                 candidates.join(", ")
             ),
             Self::Escape { name, by } => {
-                write!(f, "jinja include escapes template root: {name}, included by {by}")
+                write!(
+                    f,
+                    "jinja include escapes template root: {name}, included by {by}"
+                )
             }
             Self::Symlink { name, by } => {
-                write!(f, "jinja include path is a symlink: {name}, included by {by}")
+                write!(
+                    f,
+                    "jinja include path is a symlink: {name}, included by {by}"
+                )
             }
             Self::NotUtf8 { name, by } => {
                 write!(f, "jinja include is not utf-8: {name}, included by {by}")
@@ -748,7 +758,10 @@ impl std::fmt::Display for IncludeError {
                 statement,
                 surface,
                 by,
-            } => write!(f, "jinja {statement} is unavailable {surface}, found in {by}"),
+            } => write!(
+                f,
+                "jinja {statement} is unavailable {surface}, found in {by}"
+            ),
         }
     }
 }
@@ -812,20 +825,20 @@ impl Partials {
         members: &mut BTreeMap<String, String>,
         stack: &mut Vec<(String, std::path::PathBuf)>,
     ) -> Result<(), IncludeError> {
-        let specs = match StmtWalk::analyze(src, Surface::FileBody).map_err(IncludeError::Template)?
-        {
-            Analysis::Ok(specs) => specs,
-            Analysis::Reject(StatementReject::Unsupported(statement)) => {
-                return Err(IncludeError::UnsupportedStatement {
-                    statement,
-                    surface: "in file bodies",
-                    by: by.to_owned(),
-                });
-            }
-            Analysis::Reject(StatementReject::DynamicTarget) => {
-                return Err(IncludeError::Dynamic { by: by.to_owned() });
-            }
-        };
+        let specs =
+            match StmtWalk::analyze(src, Surface::FileBody).map_err(IncludeError::Template)? {
+                Analysis::Ok(specs) => specs,
+                Analysis::Reject(StatementReject::Unsupported(statement)) => {
+                    return Err(IncludeError::UnsupportedStatement {
+                        statement,
+                        surface: "in file bodies",
+                        by: by.to_owned(),
+                    });
+                }
+                Analysis::Reject(StatementReject::DynamicTarget) => {
+                    return Err(IncludeError::Dynamic { by: by.to_owned() });
+                }
+            };
         for spec in specs {
             // An empty literal list selects nothing and emits nothing, matching
             // MiniJinja's empty-sequence behavior, with or without ignore_missing.
@@ -1011,7 +1024,9 @@ impl FileTmpl {
         // analyzed here. This is what makes a nested-include environment read
         // require stage trust at load time.
         let needs_env = template_needs_environment(&source)
-            || members.values().any(|text| template_needs_environment(text));
+            || members
+                .values()
+                .any(|text| template_needs_environment(text));
         Ok(Self {
             label: label.to_owned(),
             source,
@@ -1180,6 +1195,72 @@ mod tests {
         assert!(!expr("answer + 1"));
         assert!(expr("config[toha_env_user]"));
         assert!(!expr("config[\"toha_env_user\"]"));
+    }
+
+    #[test]
+    fn loaderless_field_rejects_every_multi_template_statement() {
+        for (source, statement) in [
+            ("{% include \"x\" %}", "include"),
+            ("{% block x %}y{% endblock %}", "block"),
+            ("{% import \"x\" as m %}", "import"),
+            ("{% from \"x\" import y %}", "from import"),
+            ("{% extends \"x\" %}", "extends"),
+        ] {
+            let error = Tmpl::compile(source.into()).unwrap_err().to_string();
+            assert!(
+                error.contains(&format!(
+                    "jinja {statement} is unavailable outside file bodies"
+                )),
+                "{source}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn file_body_rejects_a_sibling_statement_nested_in_an_unreachable_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        let partials = super::Partials::rooted(dir.path());
+        // The block is unreachable at render, but the capability gate walks the
+        // whole AST and refuses it before any closure is registered.
+        let error = partials
+            .compile(
+                "{% if false %}{% block x %}y{% endblock %}{% endif %}".into(),
+                "body.txt",
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("jinja block is unavailable in file bodies"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn file_body_admits_only_include_from_the_multi_template_grammar() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("frag.txt"), "fragment").unwrap();
+        let partials = super::Partials::rooted(dir.path());
+        let body = partials
+            .compile("before {% include \"frag.txt\" %} after".into(), "body.txt")
+            .unwrap();
+        assert_eq!(
+            body.render(serde_json::json!({})).unwrap(),
+            "before fragment after"
+        );
+    }
+
+    #[test]
+    fn jinja_include_diagnostics_are_distinct_from_yaml_include_wording() {
+        // Every jinja-include message is prefixed with "jinja"; the YAML
+        // `!include` tag's messages never are, so no message collides.
+        let dir = tempfile::tempdir().unwrap();
+        let partials = super::Partials::rooted(dir.path());
+        let error = partials
+            .compile("{% include \"missing.txt\" %}".into(), "body.txt")
+            .unwrap_err()
+            .to_string();
+        assert!(error.starts_with("jinja include not found"), "{error}");
+        assert_ne!(error, "include file not found: missing.txt");
     }
 
     #[test]

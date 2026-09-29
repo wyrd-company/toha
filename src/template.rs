@@ -1172,12 +1172,14 @@ impl Template {
         // a source body may reference an id that is only conditionally present.
         let mut render_program = Vec::new();
         compile_source_tree(
+            &SourceScan {
+                source_root: &source_dir,
+                template_root: &root,
+                partials: &partials,
+                ignore: &ignore,
+                static_files: &static_files,
+            },
             &source_dir,
-            &source_dir,
-            &root,
-            &partials,
-            &ignore,
-            &static_files,
             &mut render_program,
             &mut b.problems,
         );
@@ -1210,17 +1212,27 @@ impl Template {
     }
 }
 
+/// The invariant surface of a source-tree walk: the roots and the rules that do
+/// not change as recursion descends into subdirectories.
+struct SourceScan<'a> {
+    /// The source subdirectory root, against which each entry's emitted path is
+    /// relative.
+    source_root: &'a Path,
+    /// The template root, against which each body's include label is relative.
+    template_root: &'a Path,
+    /// The include-confinement owner used to compile each file body.
+    partials: &'a Partials,
+    ignore: &'a GlobSet,
+    static_files: &'a GlobSet,
+}
+
 /// Recursively compiles the source tree in deterministic (sorted) order,
 /// retaining each file's compiled path segments and body. Mirrors planning's
 /// walk: it skips the root `template.yml` and `ignore` matches, and rejects a
 /// source symlink.
 fn compile_source_tree(
-    root: &Path,
+    scan: &SourceScan,
     dir: &Path,
-    template_root: &Path,
-    partials: &Partials,
-    ignore: &GlobSet,
-    static_files: &GlobSet,
     out: &mut Vec<SourceEntry>,
     problems: &mut Vec<Problem>,
 ) {
@@ -1243,11 +1255,14 @@ fn compile_source_tree(
     entries.sort_by_key(|e| e.file_name());
     for entry in entries {
         let source = entry.path();
-        let relative = source.strip_prefix(root).unwrap().to_owned();
-        if root == template_root && dir == root && entry.file_name() == "template.yml" {
+        let relative = source.strip_prefix(scan.source_root).unwrap().to_owned();
+        if scan.source_root == scan.template_root
+            && dir == scan.source_root
+            && entry.file_name() == "template.yml"
+        {
             continue;
         }
-        if ignore.is_match(&relative) {
+        if scan.ignore.is_match(&relative) {
             continue;
         }
         let file_type = match entry.file_type() {
@@ -1266,16 +1281,7 @@ fn compile_source_tree(
             continue;
         }
         if file_type.is_dir() {
-            compile_source_tree(
-                root,
-                &source,
-                template_root,
-                partials,
-                ignore,
-                static_files,
-                out,
-                problems,
-            );
+            compile_source_tree(scan, &source, out, problems);
             continue;
         }
         let path = source.display().to_string();
@@ -1287,20 +1293,20 @@ fn compile_source_tree(
                 Err(e) => problem(problems, format!("{path} (path)"), e.to_string()),
             }
         }
-        let body = if static_files.is_match(&relative) {
+        let body = if scan.static_files.is_match(&relative) {
             SourceBody::Static
         } else {
             // The include label is the file's path relative to the template
             // root, in the `/`-separated template namespace — the same string
             // any file would use to include it.
             let label = source
-                .strip_prefix(template_root)
+                .strip_prefix(scan.template_root)
                 .unwrap_or(&relative)
                 .to_string_lossy()
                 .replace('\\', "/");
             match fs::read(&source) {
                 Ok(bytes) => match String::from_utf8(bytes) {
-                    Ok(text) => match partials.compile(text, &label) {
+                    Ok(text) => match scan.partials.compile(text, &label) {
                         Ok(body) => SourceBody::Rendered(body),
                         Err(e) => {
                             problem(problems, path.clone(), e.to_string());
