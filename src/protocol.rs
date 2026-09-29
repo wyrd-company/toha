@@ -27,8 +27,8 @@
 //! let _ = toha::protocol::complete_document(unimplemented!(), unimplemented!());
 //! ```
 use crate::{
-    AnswerError, Batch, Completed, EndKind, Ended, EvalError, Id, Interview, Item, Pending, Planned,
-    PlannedHook, Prompt, PromptKind, RawAnswer, RawAnswers, Rejections, Template,
+    AnswerError, Batch, Completed, EndKind, Ended, EvalError, Id, Interview, Item, Pending,
+    Planned, PlannedHook, Prompt, PromptKind, RawAnswer, RawAnswers, Rejections, Template,
     staging::{CanonicalTarget, StagedRecord},
 };
 use indexmap::IndexMap;
@@ -384,11 +384,14 @@ fn parse_and_verify(
     expected_template: &str,
     text: &str,
 ) -> Result<VerifiedSubmission, AnswersDocumentError> {
-    let value: Value = serde_json::from_str(text)
-        .map_err(|e| AnswersDocumentError::Json { message: e.to_string() })?;
-    let object = value.as_object().ok_or_else(|| AnswersDocumentError::Shape {
-        message: "expected a JSON object with \"template\" and \"answers\"".into(),
+    let value: Value = serde_json::from_str(text).map_err(|e| AnswersDocumentError::Json {
+        message: e.to_string(),
     })?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| AnswersDocumentError::Shape {
+            message: "expected a JSON object with \"template\" and \"answers\"".into(),
+        })?;
     // No template assertion is a legacy bare answer map; the identity diagnostic
     // shows the required wrapper and the expected formal name.
     let template = match object.get("template") {
@@ -444,6 +447,7 @@ fn parse_and_verify(
 
 /// The outcome of `answer_document_once`: the interview advanced by one accepted
 /// document, or the same batch with the rejections of a refused document.
+#[allow(clippy::large_enum_variant)]
 pub enum DocumentStep<'a> {
     Accepted {
         interview: Interview<'a>,

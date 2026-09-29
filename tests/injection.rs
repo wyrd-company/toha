@@ -27,7 +27,11 @@ fn apply(template: &Path, target: &Path, extra: &[&str]) -> Output {
     let isolation = tempfile::tempdir().unwrap();
     let answers = isolation.path().join("answers.json");
     let formal = support::formal_name(template);
-    fs::write(&answers, support::envelope_text(&formal, &serde_json::json!({}))).unwrap();
+    fs::write(
+        &answers,
+        support::envelope_text(&formal, &serde_json::json!({})),
+    )
+    .unwrap();
     let mut command = support::isolated_command(isolation.path());
     command
         .arg("apply")
@@ -274,7 +278,10 @@ fn dry_run_reports_inject_then_update_and_writes_nothing() {
     let changed = make_template(root.path(), &STRUCT_TEMPLATE.replace("tsc", "rollup"));
     let dry = apply(&changed, &target, &["--dry-run"]);
     let plan = support::plan_text_from_document(&support::first_document(&dry.stdout));
-    assert!(plan.contains("update package.json (scripts.build)"), "{plan}");
+    assert!(
+        plan.contains("update package.json (scripts.build)"),
+        "{plan}"
+    );
 }
 
 #[test]

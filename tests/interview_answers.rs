@@ -1536,8 +1536,8 @@ fn rejected_probe_leaks_no_message_or_hook_before_the_corrected_document() {
     let Err(AnswerError::Rejected {
         pending,
         rejections,
-    }) = pending
-        .answer(support::raw_answers(r#"{"kind":"plain","style":1,"title":"NO"}"#).unwrap())
+    }) =
+        pending.answer(support::raw_answers(r#"{"kind":"plain","style":1,"title":"NO"}"#).unwrap())
     else {
         panic!("expected rejection")
     };
@@ -1643,4 +1643,3 @@ fn skipped_invalid_answer_is_dropped_beside_another_failing_answer() {
     );
     assert_eq!(submissions(state.path(), target.path()), 0);
 }
-

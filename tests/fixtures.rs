@@ -237,8 +237,11 @@ fn planning_fault_reports_the_same_message_through_direct_staged_and_crate_route
 
     // Direct scripted route: the fault is an `error` document on standard output.
     let direct_state = tempfile::tempdir().unwrap();
-    let answers =
-        support::envelope_file(direct_state.path(), &support::formal_name(&template_path), &bare);
+    let answers = support::envelope_file(
+        direct_state.path(),
+        &support::formal_name(&template_path),
+        &bare,
+    );
     let direct = support::isolated_command(direct_state.path())
         .arg("apply")
         .arg(support::folder_address(&template_path))

@@ -62,7 +62,10 @@ impl Case {
     /// nothing to return.
     fn stage_complete(&self) {
         self.stage_incomplete(&text_basic());
-        let answers = self.envelope(&fixture_template("text-basic"), serde_json::json!({ "name": "Item" }));
+        let answers = self.envelope(
+            &fixture_template("text-basic"),
+            serde_json::json!({ "name": "Item" }),
+        );
         let output = self.run(&["continue", self.target(), answers.to_str().unwrap()]);
         assert_code(&output, 0);
     }
@@ -154,7 +157,10 @@ fn apply_without_template_emits_batch_of_incomplete_staged_interview() {
         format!("toha continue {}", case.target()),
         format!("toha apply {}", case.target()),
     ] {
-        assert!(stdout.contains(&command), "stdout misses `{command}`:\n{stdout}");
+        assert!(
+            stdout.contains(&command),
+            "stdout misses `{command}`:\n{stdout}"
+        );
     }
     assert!(case.staged());
 }
@@ -469,10 +475,7 @@ fn apply_with_template_prompts_for_incomplete_staged_interview_in_terminal() {
     let template = two_batch_template(case.state.path());
     case.stage_incomplete(&template);
     let mut command = support::isolated_command(case.state.path());
-    command
-        .arg("apply")
-        .arg(&template)
-        .arg(case.target());
+    command.arg("apply").arg(&template).arg(case.target());
     let mut session = Session::spawn(command).unwrap();
     session.expect("First?").unwrap();
     session.send_line("One").unwrap();

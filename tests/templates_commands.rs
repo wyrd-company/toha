@@ -759,9 +759,16 @@ fn suggested_commands_for_folder_templates_are_accepted() {
     // standard output whose `commands` name the disambiguated apply per template.
     // Running one with the identity envelope reaches the untrusted-hooks planned
     // document (exit 3, trusted: false).
-    let output = run(&root, &["apply", "--answers", "answers.json", "same", "out"]);
+    let output = run(
+        &root,
+        &["apply", "--answers", "answers.json", "same", "out"],
+    );
     assert_exit(&output, 5);
-    let named = argv(support::first_document(&output.stdout)["commands"][0].as_str().unwrap());
+    let named = argv(
+        support::first_document(&output.stdout)["commands"][0]
+            .as_str()
+            .unwrap(),
+    );
     envelope(&root, &named[3]);
     let disambiguated = run(&root, &named.iter().map(String::as_str).collect::<Vec<_>>());
     let planned = support::first_document(&assert_exit(&disambiguated, 3).into_bytes());
@@ -781,7 +788,10 @@ fn suggested_commands_for_folder_templates_are_accepted() {
     // untrusted-hooks planned document. The scripted route reports trust
     // structurally as trusted: false rather than naming a trust command.
     envelope(&root, &chosen_formal);
-    let hooks = run(&root, &["apply", "--answers", "answers.json", "chosen", "named"]);
+    let hooks = run(
+        &root,
+        &["apply", "--answers", "answers.json", "chosen", "named"],
+    );
     let planned = support::first_document(&assert_exit(&hooks, 3).into_bytes());
     assert_eq!(planned["status"], "planned");
     assert_eq!(planned["trusted"], serde_json::json!(false));

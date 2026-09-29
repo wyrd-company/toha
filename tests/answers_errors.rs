@@ -74,7 +74,10 @@ fn missing_answers_file_names_the_file_as_input() {
     let document = support::first_document(&output.stdout);
     assert_eq!(document["kind"], "input");
     assert!(
-        message(&output).contains(&format!("{}: cannot read answers document:", answers.display())),
+        message(&output).contains(&format!(
+            "{}: cannot read answers document:",
+            answers.display()
+        )),
         "{}",
         message(&output)
     );
@@ -138,7 +141,10 @@ fn envelope_answers_with_an_invalid_question_id_is_a_document_error() {
     let answers = write(
         folder.path(),
         "answers.json",
-        &format!("{{\"template\": {:?}, \"answers\": {{\"Bad Key\": \"Item\"}}}}", formal()),
+        &format!(
+            "{{\"template\": {:?}, \"answers\": {{\"Bad Key\": \"Item\"}}}}",
+            formal()
+        ),
     );
     let output = apply_with(&answers);
     assert_eq!(output.status.code(), Some(1));

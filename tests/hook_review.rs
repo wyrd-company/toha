@@ -125,7 +125,11 @@ fn approval_invalidates_when_the_executable_surface_changes() {
         "#!/bin/sh\n: > ran.txt\n# edited\n",
     );
     let (code, document, ran) = apply_demo(&root, &folder);
-    assert_eq!(code, Some(3), "a script-byte change needs review: {document}");
+    assert_eq!(
+        code,
+        Some(3),
+        "a script-byte change needs review: {document}"
+    );
     assert!(!ran, "an unreviewed script must not run");
     assert_eq!(document["status"], "planned", "{document}");
     assert_eq!(document["trusted"], false, "trust lapsed: {document}");

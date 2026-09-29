@@ -596,7 +596,10 @@ fn successful_apply_removes_a_legacy_separator_record() {
     let formal = support::formal_name(&template);
     let mut continue_command = command(state.path());
     continue_command.args(["continue", target.path().to_str().unwrap(), "-"]);
-    let output = send(continue_command, &envelope(&formal, &json!({"name": "Item"})));
+    let output = send(
+        continue_command,
+        &envelope(&formal, &json!({"name": "Item"})),
+    );
     assert_eq!(output.status.code(), Some(0));
     let legacy_path = move_record_to_legacy_key(state.path(), target.path());
 

@@ -333,7 +333,10 @@ fn configured_default_is_visible_and_answers_win() {
     let peeked = run(&root, &["apply", target.to_str().unwrap()], 4);
     assert!(String::from_utf8_lossy(&peeked.stderr).contains(&warning));
     let resumed = document(&peeked);
-    assert_eq!(resumed["schema"]["properties"]["label"]["default"], "Resumed");
+    assert_eq!(
+        resumed["schema"]["properties"]["label"]["default"],
+        "Resumed"
+    );
     // Completing with the empty envelope lets `label` take its configured default;
     // a completing `continue PATH FILE` emits instructions only, no document.
     run(

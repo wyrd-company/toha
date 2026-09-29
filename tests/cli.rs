@@ -310,7 +310,11 @@ fn trusted_script_runs_in_target() {
     permissions.set_mode(0o755);
     std::fs::set_permissions(&script, permissions).unwrap();
     let answers = folder.path().join("answers.json");
-    std::fs::write(&answers, support::envelope_text(&support::formal_name(folder.path()), &serde_json::json!({}))).unwrap();
+    std::fs::write(
+        &answers,
+        support::envelope_text(&support::formal_name(folder.path()), &serde_json::json!({})),
+    )
+    .unwrap();
     let target = tempfile::tempdir().unwrap();
     let isolation = tempfile::tempdir().unwrap();
     let output = support::isolated_command(isolation.path())
@@ -369,7 +373,11 @@ fn trusted_hook_runs_once_per_item() {
     permissions.set_mode(0o755);
     std::fs::set_permissions(&script, permissions).unwrap();
     let answers = folder.path().join("answers.json");
-    std::fs::write(&answers, support::envelope_text(&support::formal_name(folder.path()), &serde_json::json!({}))).unwrap();
+    std::fs::write(
+        &answers,
+        support::envelope_text(&support::formal_name(folder.path()), &serde_json::json!({})),
+    )
+    .unwrap();
     let target = tempfile::tempdir().unwrap();
     let isolation = tempfile::tempdir().unwrap();
     let output = support::isolated_command(isolation.path())
@@ -421,7 +429,11 @@ fn trusted_scripted_apply_reports_files_and_runs_hooks() {
     permissions.set_mode(0o755);
     std::fs::set_permissions(&script, permissions).unwrap();
     let answers = folder.path().join("answers.json");
-    std::fs::write(&answers, support::envelope_text(&support::formal_name(folder.path()), &serde_json::json!({}))).unwrap();
+    std::fs::write(
+        &answers,
+        support::envelope_text(&support::formal_name(folder.path()), &serde_json::json!({})),
+    )
+    .unwrap();
     let target = tempfile::tempdir().unwrap();
     let isolation = tempfile::tempdir().unwrap();
     // The second run overwrites both files with --force.

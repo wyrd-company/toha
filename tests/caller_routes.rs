@@ -108,9 +108,13 @@ fn b01_a_matching_envelope_works_through_every_document_operation() {
         DocumentStep::Rejected { rejections, .. } => panic!("rejected: {rejections:?}"),
     }
     // The scripted headless walk.
-    match protocol::answer_document_headless(EXPECTED, &template, start(&template), &text).unwrap() {
+    match protocol::answer_document_headless(EXPECTED, &template, start(&template), &text).unwrap()
+    {
         Headless::Completed { .. } => {}
-        other => panic!("expected completed: {}", matches!(other, Headless::Pending { .. })),
+        other => panic!(
+            "expected completed: {}",
+            matches!(other, Headless::Pending { .. })
+        ),
     }
     // The scripted CLI route applies from the same envelope shape.
     let target = tempfile::tempdir().unwrap();
@@ -132,7 +136,10 @@ fn b02_a_different_template_fails_even_with_valid_ids_and_values() {
     // differs.
     let text = envelope("other:template", json!({ "name": "Item" }));
     let error = once_error(&template, &text);
-    assert!(matches!(error, AnswersDocumentError::TemplateMismatch { .. }));
+    assert!(matches!(
+        error,
+        AnswersDocumentError::TemplateMismatch { .. }
+    ));
 }
 
 #[test]
@@ -186,7 +193,10 @@ fn b04_a_bare_map_fails_with_wrapper_guidance_and_never_answers() {
     assert_eq!(code, 1, "{document}");
     assert_eq!(document["kind"], "identity");
     let message = document["message"].as_str().unwrap();
-    assert!(message.contains("template") && message.contains(&formal), "{message}");
+    assert!(
+        message.contains("template") && message.contains(&formal),
+        "{message}"
+    );
 }
 
 #[test]
@@ -219,8 +229,14 @@ fn b06_the_declared_identity_is_never_resolved() {
     assert_eq!(document["kind"], "identity");
     // The crate boundary compares strings only.
     let template = template();
-    let error = once_error(&template, &envelope("gh:nonexistent/repo#deadbeef", json!({ "name": "Item" })));
-    assert!(matches!(error, AnswersDocumentError::TemplateMismatch { .. }));
+    let error = once_error(
+        &template,
+        &envelope("gh:nonexistent/repo#deadbeef", json!({ "name": "Item" })),
+    );
+    assert!(matches!(
+        error,
+        AnswersDocumentError::TemplateMismatch { .. }
+    ));
 }
 
 #[test]
@@ -231,7 +247,7 @@ fn b07_scripted_refuses_a_staged_target_without_reading_the_document() {
     // Stage an interview at the target.
     let stage = support::isolated_command(state.path())
         .arg("stage")
-        .arg(&text_basic())
+        .arg(text_basic())
         .arg(target.path())
         .arg("--async")
         .output()
@@ -242,7 +258,7 @@ fn b07_scripted_refuses_a_staged_target_without_reading_the_document() {
     let unreadable = state.path().join("does-not-exist.json");
     let output = support::isolated_command(state.path())
         .arg("apply")
-        .arg(&text_basic())
+        .arg(text_basic())
         .arg(target.path())
         .arg("--answers")
         .arg(&unreadable)
@@ -262,7 +278,7 @@ fn b08_continue_file_on_a_complete_interview_leaves_the_document_unread() {
     let formal = support::formal_name(&text_basic());
     support::isolated_command(state.path())
         .args(["stage"])
-        .arg(&text_basic())
+        .arg(text_basic())
         .arg(target.path())
         .arg("--async")
         .output()
@@ -302,7 +318,10 @@ fn b09_a_mismatch_wins_over_unknown_ids_and_invalid_values() {
         json!({ "Bad Key": "x", "unknown_id": [1, 2, 3] }),
     );
     let error = once_error(&template, &text);
-    assert!(matches!(error, AnswersDocumentError::TemplateMismatch { .. }));
+    assert!(matches!(
+        error,
+        AnswersDocumentError::TemplateMismatch { .. }
+    ));
 }
 
 #[test]
@@ -310,10 +329,14 @@ fn b10_identity_failure_leaves_staged_and_target_bytes_unchanged() {
     let state = tempfile::tempdir().unwrap();
     let target = tempfile::tempdir().unwrap();
     let answers = state.path().join("answers.json");
-    std::fs::write(&answers, envelope("other:template", json!({ "name": "Item" }))).unwrap();
+    std::fs::write(
+        &answers,
+        envelope("other:template", json!({ "name": "Item" })),
+    )
+    .unwrap();
     let output = support::isolated_command(state.path())
         .arg("apply")
-        .arg(&text_basic())
+        .arg(text_basic())
         .arg(target.path())
         .arg("--answers")
         .arg(&answers)
@@ -335,7 +358,7 @@ fn b11_the_scripted_route_never_stages() {
     std::fs::write(&answers, envelope(&formal, json!({ "name": "Item" }))).unwrap();
     let output = support::isolated_command(isolation.path())
         .arg("apply")
-        .arg(&text_basic())
+        .arg(text_basic())
         .arg(target.path())
         .arg("--answers")
         .arg(&answers)
@@ -373,7 +396,7 @@ fn b12_every_scripted_outcome_is_one_schema_valid_document() {
         let mut command = support::isolated_command(isolation.path());
         command
             .arg("apply")
-            .arg(&text_basic())
+            .arg(text_basic())
             .arg(target.path())
             .arg("--answers")
             .arg(&answers)
@@ -381,8 +404,7 @@ fn b12_every_scripted_outcome_is_one_schema_valid_document() {
         let output = command.output().unwrap();
         assert_eq!(output.status.code(), Some(code), "{text}");
         // Exactly one JSON value on stdout, and nothing after it.
-        let mut stream =
-            serde_json::Deserializer::from_slice(&output.stdout).into_iter::<Value>();
+        let mut stream = serde_json::Deserializer::from_slice(&output.stdout).into_iter::<Value>();
         let document = stream.next().expect("one document").expect("valid JSON");
         assert!(stream.next().is_none(), "trailing output: {text}");
         assert!(output.stderr.is_empty(), "stderr: {:?}", output.stderr);
@@ -396,7 +418,12 @@ fn b12_every_scripted_outcome_is_one_schema_valid_document() {
 fn b13_scripted_missing_answers_report_is_required() {
     let formal = support::formal_name(&text_basic());
     let target = tempfile::tempdir().unwrap();
-    let (code, document) = scripted(&text_basic(), target.path(), &envelope(&formal, json!({})), &[]);
+    let (code, document) = scripted(
+        &text_basic(),
+        target.path(),
+        &envelope(&formal, json!({})),
+        &[],
+    );
     assert_eq!(code, 4, "{document}");
     assert_eq!(document["status"], "questions");
     assert_eq!(document["errors"]["name"], json!(["is required"]));
@@ -410,7 +437,7 @@ fn b14_agent_batches_omit_is_required_for_questions_not_yet_asked() {
     let target = tempfile::tempdir().unwrap();
     let output = support::isolated_command(state.path())
         .arg("stage")
-        .arg(&text_basic())
+        .arg(text_basic())
         .arg(target.path())
         .arg("--async")
         .output()
@@ -429,7 +456,7 @@ fn b15_stage_async_file_writes_the_batch_to_the_file_and_instructions_to_stdout(
     let batch_file = state.path().join("batch.json");
     let output = support::isolated_command(state.path())
         .arg("stage")
-        .arg(&text_basic())
+        .arg(text_basic())
         .arg(target.path())
         .arg("--async")
         .arg(&batch_file)
@@ -455,13 +482,17 @@ fn b16_continue_file_completing_writes_instructions_only() {
     let formal = support::formal_name(&text_basic());
     support::isolated_command(state.path())
         .arg("stage")
-        .arg(&text_basic())
+        .arg(text_basic())
         .arg(target.path())
         .arg("--async")
         .output()
         .unwrap();
     let answers = state.path().join("answers.json");
-    std::fs::write(&answers, support::envelope_text(&formal, &json!({ "name": "Item" }))).unwrap();
+    std::fs::write(
+        &answers,
+        support::envelope_text(&formal, &json!({ "name": "Item" })),
+    )
+    .unwrap();
     let output = support::isolated_command(state.path())
         .arg("continue")
         .arg(target.path())
@@ -475,7 +506,10 @@ fn b16_continue_file_completing_writes_instructions_only() {
         "stdout should be instructions only: {stdout}"
     );
     let t = target.path().display();
-    assert!(stdout.contains(&format!("toha apply --dry-run {t}")), "{stdout}");
+    assert!(
+        stdout.contains(&format!("toha apply --dry-run {t}")),
+        "{stdout}"
+    );
     assert!(stdout.contains(&format!("toha apply {t}")), "{stdout}");
 }
 
@@ -486,14 +520,18 @@ fn b17_continue_file_makes_one_transaction_and_saves_at_most_one() {
     let formal = support::formal_name(&text_basic());
     support::isolated_command(state.path())
         .arg("stage")
-        .arg(&text_basic())
+        .arg(text_basic())
         .arg(target.path())
         .arg("--async")
         .output()
         .unwrap();
     // A rejected document saves nothing.
     let bad = state.path().join("bad.json");
-    std::fs::write(&bad, support::envelope_text(&formal, &json!({ "name": "" }))).unwrap();
+    std::fs::write(
+        &bad,
+        support::envelope_text(&formal, &json!({ "name": "" })),
+    )
+    .unwrap();
     let output = support::isolated_command(state.path())
         .arg("continue")
         .arg(target.path())
@@ -505,10 +543,17 @@ fn b17_continue_file_makes_one_transaction_and_saves_at_most_one() {
         .load(&canonical_target(target.path()).unwrap())
         .unwrap()
         .unwrap();
-    assert!(record.submissions.is_empty(), "rejected input saved nothing");
+    assert!(
+        record.submissions.is_empty(),
+        "rejected input saved nothing"
+    );
     // An accepted document saves exactly one submission.
     let good = state.path().join("good.json");
-    std::fs::write(&good, support::envelope_text(&formal, &json!({ "name": "Item" }))).unwrap();
+    std::fs::write(
+        &good,
+        support::envelope_text(&formal, &json!({ "name": "Item" })),
+    )
+    .unwrap();
     support::isolated_command(state.path())
         .arg("continue")
         .arg(target.path())
@@ -530,7 +575,7 @@ fn b18_apply_path_on_an_incomplete_interview_never_prompts() {
     let target = tempfile::tempdir().unwrap();
     support::isolated_command(state.path())
         .arg("stage")
-        .arg(&text_basic())
+        .arg(text_basic())
         .arg(target.path())
         .arg("--async")
         .output()
@@ -583,7 +628,11 @@ fn b20_a_new_apply_template_path_saves_each_batch_and_resumes_after_interrupt() 
     // A two-batch template so an interrupt leaves a saved first batch.
     let folder = state.path().join("two-batch");
     std::fs::create_dir_all(folder.join("template")).unwrap();
-    std::fs::write(folder.join("template/result.txt"), "{{ first }} {{ second }}\n").unwrap();
+    std::fs::write(
+        folder.join("template/result.txt"),
+        "{{ first }} {{ second }}\n",
+    )
+    .unwrap();
     std::fs::write(
         folder.join("template.yml"),
         "name: two\ninterview:\n  - { id: first, type: text, prompt: First?, required: true }\n  - { id: second, type: text, prompt: \"After {{ first }}?\", required: true }\n",
@@ -666,7 +715,11 @@ fn b22_agent_and_person_staged_interviews_complete_through_the_other_route() {
     let target = tempfile::tempdir().unwrap();
     let folder = state.path().join("two-batch");
     std::fs::create_dir_all(folder.join("template")).unwrap();
-    std::fs::write(folder.join("template/result.txt"), "{{ first }} {{ second }}\n").unwrap();
+    std::fs::write(
+        folder.join("template/result.txt"),
+        "{{ first }} {{ second }}\n",
+    )
+    .unwrap();
     std::fs::write(
         folder.join("template.yml"),
         "name: two\ninterview:\n  - { id: first, type: text, prompt: First?, required: true }\n  - { id: second, type: text, prompt: \"After {{ first }}?\", required: true }\n",
@@ -682,9 +735,16 @@ fn b22_agent_and_person_staged_interviews_complete_through_the_other_route() {
     session.expect("After One?").unwrap();
     session.send(char::from(3).to_string()).unwrap(); // interrupt after the first batch is saved
     let _ = session.get_process().wait();
-    assert!(staged(state.path(), target.path()), "the first batch was staged");
+    assert!(
+        staged(state.path(), target.path()),
+        "the first batch was staged"
+    );
     let answers = state.path().join("answers.json");
-    std::fs::write(&answers, support::envelope_text(&formal, &json!({ "second": "Two" }))).unwrap();
+    std::fs::write(
+        &answers,
+        support::envelope_text(&formal, &json!({ "second": "Two" })),
+    )
+    .unwrap();
     let output = support::isolated_command(state.path())
         .arg("continue")
         .arg(target.path())
@@ -703,9 +763,13 @@ fn b23_flow_results_keep_their_effects_on_both_document_routes() {
     );
     let template = Template::load(&stop.path().join("template")).unwrap();
     let text = envelope(EXPECTED, json!({ "go": false }));
-    match protocol::answer_document_headless(EXPECTED, &template, start(&template), &text).unwrap() {
+    match protocol::answer_document_headless(EXPECTED, &template, start(&template), &text).unwrap()
+    {
         Headless::Ended { ended, .. } => assert_eq!(ended.kind(), toha::EndKind::Stop),
-        other => panic!("expected ended: {}", matches!(other, Headless::Completed { .. })),
+        other => panic!(
+            "expected ended: {}",
+            matches!(other, Headless::Completed { .. })
+        ),
     }
     // continue PATH FILE reports the same stop as an `ended` document.
     let state = tempfile::tempdir().unwrap();
@@ -720,7 +784,11 @@ fn b23_flow_results_keep_their_effects_on_both_document_routes() {
         .output()
         .unwrap();
     let answers = state.path().join("answers.json");
-    std::fs::write(&answers, support::envelope_text(&formal, &json!({ "go": false }))).unwrap();
+    std::fs::write(
+        &answers,
+        support::envelope_text(&formal, &json!({ "go": false })),
+    )
+    .unwrap();
     let output = support::isolated_command(state.path())
         .arg("continue")
         .arg(target.path())
@@ -817,13 +885,19 @@ fn b27_schema_examples_and_result_documents_validate() {
     // The answers envelope validates.
     let envelope_doc = json!({ "template": EXPECTED, "answers": { "name": "Item" } });
     assert!(answers_validator.is_valid(&envelope_doc), "{envelope_doc}");
-    assert!(!answers_validator.is_valid(&json!({ "answers": {} })), "missing template");
+    assert!(
+        !answers_validator.is_valid(&json!({ "answers": {} })),
+        "missing template"
+    );
 
     // Every result document toha emits validates against the protocol schema.
     let formal = support::formal_name(&text_basic());
     let outcomes: [(&str, Vec<&str>); 3] = [
         (&envelope(&formal, json!({ "name": "Item" })), vec![]),
-        (&envelope(&formal, json!({ "name": "Item" })), vec!["--dry-run"]),
+        (
+            &envelope(&formal, json!({ "name": "Item" })),
+            vec!["--dry-run"],
+        ),
         (&envelope(&formal, json!({})), vec![]),
     ];
     for (text, extra) in outcomes {
@@ -834,7 +908,7 @@ fn b27_schema_examples_and_result_documents_validate() {
         let mut command = support::isolated_command(isolation.path());
         command
             .arg("apply")
-            .arg(&text_basic())
+            .arg(text_basic())
             .arg(target.path())
             .arg("--answers")
             .arg(&answers)

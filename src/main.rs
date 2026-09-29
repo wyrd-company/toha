@@ -831,9 +831,10 @@ fn stage(
             let instructions = instructions(&AgentOutcome::Batch { template: &formal }, &path);
             match output {
                 Some(file) => {
-                    if let Err(e) =
-                        fs::write(file, serde_json::to_vec_pretty(&document).expect("JSON value"))
-                    {
+                    if let Err(e) = fs::write(
+                        file,
+                        serde_json::to_vec_pretty(&document).expect("JSON value"),
+                    ) {
                         return Outcome::Error(e.to_string());
                     }
                     Outcome::Agent {
@@ -919,7 +920,10 @@ fn completion_preview(
     };
     lines.extend(plan_lines(&plan, false, &edits));
     let invocation = Invocation::Apply {
-        template: Some(Arg::Given(guidance::formal_for("apply", &resolved.formal_name))),
+        template: Some(Arg::Given(guidance::formal_for(
+            "apply",
+            &resolved.formal_name,
+        ))),
         path,
         answers: None,
         force: false,
@@ -1360,11 +1364,11 @@ fn scripted(
     };
     // 3. Resolve the command template, load it, produce the configured
     //    Resolution, and start the interview.
-    let resolved = match cli::resolve::resolve_template(&template_arg, &config, &registry, dirs, &cwd)
-    {
-        Ok(v) => v,
-        Err(e) => return scripted_resolve_error(e, path, &answers_file, force, dry_run, trust),
-    };
+    let resolved =
+        match cli::resolve::resolve_template(&template_arg, &config, &registry, dirs, &cwd) {
+            Ok(v) => v,
+            Err(e) => return scripted_resolve_error(e, path, &answers_file, force, dry_run, trust),
+        };
     let template = match load_template(&resolved) {
         Ok(v) => v,
         Err(e) => return scripted_error(ErrorKind::Source, e, vec![], None),
@@ -1408,7 +1412,11 @@ fn scripted(
         Ok(v) => v,
         Err(e) => {
             let error = document_error(e, &resolved.formal_name);
-            let code = if error.kind == ErrorKind::Ambiguous { 5 } else { 1 };
+            let code = if error.kind == ErrorKind::Ambiguous {
+                5
+            } else {
+                1
+            };
             return Outcome::Document(protocol::error_document(&error, Some(&ctx)), code);
         }
     };
@@ -1431,13 +1439,14 @@ fn scripted(
             // The scripted route never staged, so an abort removes nothing.
             Outcome::Document(protocol::ended_document(&ended, &ctx), 0)
         }
-        Headless::Completed { completed, .. } => {
-            scripted_completed(&template, completed, &target, &resolved, &ctx, force, dry_run, trust)
-        }
+        Headless::Completed { completed, .. } => scripted_completed(
+            &template, completed, &target, &resolved, &ctx, force, dry_run, trust,
+        ),
     }
 }
 /// The scripted `Completed` tail: build the plan, then report `planned` (dry run
 /// or untrusted hooks) or apply and report `applied`.
+#[allow(clippy::too_many_arguments)]
 fn scripted_completed(
     template: &Template,
     completed: Completed,
@@ -1451,7 +1460,9 @@ fn scripted_completed(
     let dry_run = dry_run || matches!(completed.step(), Step::Plan { apply: false });
     let live_surface = match toha::HookSurface::of(template) {
         Ok(surface) => surface.digest(),
-        Err(error) => return scripted_error(ErrorKind::Render, error.to_string(), vec![], Some(ctx)),
+        Err(error) => {
+            return scripted_error(ErrorKind::Render, error.to_string(), vec![], Some(ctx));
+        }
     };
     let trusted = trust
         || matches!(
@@ -1460,7 +1471,9 @@ fn scripted_completed(
         );
     let plan = match Plan::build(template, &completed, target) {
         Ok(plan) => plan,
-        Err(error) => return scripted_error(ErrorKind::Render, error.to_string(), vec![], Some(ctx)),
+        Err(error) => {
+            return scripted_error(ErrorKind::Render, error.to_string(), vec![], Some(ctx));
+        }
     };
     let mut messages = completed.messages.clone();
     if let Some(before) = &plan.before_apply {
@@ -1537,9 +1550,12 @@ fn scripted_completed(
             Outcome::Document(protocol::applied_document(&report, ctx), 0)
         }
         // Trust was granted above, so an untrusted plan cannot occur here.
-        Ok(Applied::NeedsTrust(_)) => {
-            scripted_error(ErrorKind::Hook, "hooks are not trusted".into(), vec![], Some(ctx))
-        }
+        Ok(Applied::NeedsTrust(_)) => scripted_error(
+            ErrorKind::Hook,
+            "hooks are not trusted".into(),
+            vec![],
+            Some(ctx),
+        ),
         Err(error) => scripted_apply_error(error, ctx),
     }
 }

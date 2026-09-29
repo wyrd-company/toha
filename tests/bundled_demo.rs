@@ -48,7 +48,11 @@ fn envelope(dir: &Path, formal: &str, bare: &str) -> String {
 
 /// The demo's fixture answers wrapped in the envelope naming `formal`.
 fn demo_answers(dir: &Path, formal: &str) -> String {
-    envelope(dir, formal, r#"{"title":"Sample Title","topic":"Sample Topic"}"#)
+    envelope(
+        dir,
+        formal,
+        r#"{"title":"Sample Title","topic":"Sample Topic"}"#,
+    )
 }
 
 #[test]
@@ -188,7 +192,12 @@ fn apply_naming_the_staged_demo_resumes_it() {
 
 /// A folder template that occupies the reserved name, so the registry — not the
 /// bundled demo — resolves `toha-demo`. Its output is deliberately distinct.
-fn install_shadow(root: &TempDir, cwd: &Path, short: &str, alias: Option<&str>) -> std::path::PathBuf {
+fn install_shadow(
+    root: &TempDir,
+    cwd: &Path,
+    short: &str,
+    alias: Option<&str>,
+) -> std::path::PathBuf {
     let folder = root.path().join("shadow");
     fs::create_dir_all(folder.join("template")).unwrap();
     fs::write(
