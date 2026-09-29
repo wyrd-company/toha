@@ -1,0 +1,17 @@
+# ---
+# relationships:
+#   exemplifies: template-format
+# ---
+name: includes
+description: A document assembled from shared partials inside the template root
+
+interview:
+  - id: title
+    type: text
+    prompt: Title
+    required: true
+
+  - id: holder
+    type: text
+    prompt: Copyright holder
+    default: Example Org

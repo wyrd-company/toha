@@ -51,8 +51,31 @@ description: >-
   optional indent. `toyaml` serializes a value as YAML with no leading `---`
   and no trailing document newline, so it composes with `indent`; a trailing
   newline that is part of the value is kept. Object keys serialize
-  in sorted order. A macro is visible only in the value that defines it;
-  `import`, `include`, and `extends` are not available.
+  in sorted order. A macro is visible only in the value that defines it.
+  `{% include %}` is available in rendered file bodies only; `import`,
+  `from ... import`, and `extends` are not available.
+
+  File-body includes. In a rendered file body — a source-subdirectory file or a
+  `files:` rule source — `{% include %}` pulls in another file inside the
+  template root, resolved when the template loads and inlined as raw text. The
+  target is a string literal or an ordered literal list of string literals; a
+  computed target, or a list with a computed or non-string item, is rejected. A
+  list selects the first candidate that exists in author order; if none exists
+  the include fails unless `ignore missing` is present, which renders empty, as
+  does an empty list. `ignore missing` suppresses only the all-not-found result.
+  The include name is a `/`-separated path relative to the template root, with
+  no required prefix or extension: it may name a root-level file, a nested file,
+  or any extension. Resolution mirrors the `!include` and file-path confinement
+  — absolute names, `..`, backslash separators, and any symlinked component are
+  refused, and the canonicalized target must be a regular file inside the root —
+  and a cycle is reported by name. A partial shares the including file's
+  variables and, when it lies outside the source subdirectory, is not emitted.
+  Includes are available in file bodies only: on every other surface a
+  `{% include %}` is reported as unavailable outside file bodies. Its
+  diagnostics are distinct from the YAML `!include` tag's. `template.yml` and
+  every document loaded through its YAML `!include` tag are configuration parsed
+  as data, never a Jinja render surface, so they receive no include processing;
+  a file's role follows how it is referenced, not its extension.
 
   Identifiers. Question ids, computed ids, and top-level `data` keys are Jinja
   identifiers matching `^[a-z_][a-z0-9_]*$`. They share one namespace; a

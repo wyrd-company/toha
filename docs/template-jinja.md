@@ -185,6 +185,60 @@ behavior: none of the seventeen names are injected, reserved, or shown by
 Toha includes MiniJinja's built-in filters, tests, and functions, the `tojson`
 filter, macros (`{% macro %}` and `{% call %}`), and loop controls
 (`{% break %}` and `{% continue %}`). A macro is visible only in the value
-that defines it. Jinja `import`, `include`, and `extends` are unavailable in
-rendered templates. Use Toha's `!include` in `template.yml` to load support
-data files; it is separate from Jinja's `include` statement.
+that defines it. `{% include %}` is available in rendered **file bodies only**,
+described under Partials below. Jinja `import`, `from ... import`, and
+`extends` are unavailable everywhere.
+
+## Partials
+
+A rendered file body can pull in another file inside the template root with
+`{% include %}`:
+
+```jinja
+{% include "partials/frontmatter.md" %}
+# {{ title }}
+```
+
+The included file is a **partial**. Includes work in rendered file bodies only —
+source-tree files and `files:` rule sources. They do nothing in prompts,
+defaults, `when`/`computed`/`format`/`options` expressions, target path
+segments, apply messages, or hook fields; a `{% include %}` written on one of
+those surfaces is reported as unavailable outside file bodies.
+
+The rules an author needs:
+
+- **The name is a `/`-separated path relative to the template root.** It can
+  name a root-level file (`"notice.txt"`), a file in any nested directory
+  (`"shared/legal/license.inc"`), or a file with any extension. There is no
+  required `partials/` prefix or directory allowlist; `partials/` is only a
+  convention. The name is the same string in every file that includes it; it is
+  not resolved relative to the including file.
+- **A partial sees the same variables** — answers, `data`, computed values, and
+  the `toha_` context values — as the file that includes it. `with context` and
+  `without context` are accepted but change nothing.
+- **A partial placed outside the source subdirectory is pulled in but never
+  emitted** as its own output file. A partial inside the source subdirectory is
+  emitted like any other source file unless an `ignore` glob excludes it.
+- **The target is a string literal or an ordered literal list of strings.**
+  Computed names, and lists holding a computed or non-string item, are rejected.
+  A list selects the first candidate that exists, in author order; an earlier
+  missing name is a fallback. If no candidate exists the include fails, unless
+  `ignore missing` is present, which renders empty text. An empty list also
+  renders empty text. `ignore missing` suppresses only the all-not-found result;
+  an escape, symlink, unreadable, non-UTF-8, syntax, nested-include, or cycle
+  error still fails.
+- **Includes are confined to the template root.** Absolute names, `..`
+  traversal, backslash separators, and symlinked partials are refused. A partial
+  may itself include others; a cycle is reported by name.
+- **Includes resolve when the template loads**, so a missing partial, an escape,
+  or a variable reached only through a partial is reported before the interview
+  begins.
+
+`template.yml` and every document loaded through its YAML `!include` tag receive
+**no** Jinja include processing: they are configuration, parsed as data, never a
+render surface. A file's role — body or configuration — follows how it is
+referenced, not its extension, so a generated `.yml` or `.yaml` file in the
+source tree (or named as a `files:` `source:`) is a file body and does get
+includes. Naming a configuration document as a partial target simply inlines its
+literal bytes; it does not parse or process it. Toha's YAML `!include` tag is a
+separate feature for composing configuration data and is unchanged.
