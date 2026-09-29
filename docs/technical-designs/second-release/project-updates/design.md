@@ -430,7 +430,12 @@ pub fn adopt(provenance: &Provenance, template: &Template, completed: &Completed
 interview engine, `StagedRecord`, and the answers-document operations keep their
 signatures. The injection module gains crate-private helpers for retraction and
 for writing a merged region body under a given checksum. The approved public
-producer interface and ownership semantics do not change.
+producer interface and ownership semantics do not change. A JSON value
+retraction applies the same strict RFC 8259 check to a `Json` target that the
+JSON resolver applies before any edit, so a `.json` file with a comment or other
+relaxation is refused and nothing is written. A region's rendered body is the
+same whether the template supplies it inline or from a `source` file, so update
+treats both origins identically.
 
 ## Data structures
 
@@ -563,7 +568,8 @@ Conflict content reaches a caller only through the explicit change report.
    when it drifted.
 8. An operator's change to an owned JSON value converges to B without `--force`,
    and unrelated keys and comments are unchanged.
-9. A disappeared JSON value is removed when unedited and kept when edited.
+9. A disappeared JSON value is removed when unedited and kept when edited, and
+   a `.json` target with a comment is refused with nothing written.
 10. When the base commit is unavailable, the update runs in fingerprint mode,
     never deletes, and refuses edited-and-changed files.
 11. A template that renders a host fact is verified on the same host and falls
@@ -602,6 +608,7 @@ Conflict content reaches a caller only through the explicit change report.
 - Write the record before hooks: fails behavior 15.
 - Checksum a merged region as sha256(merged): fails behavior 6.
 - Three-way merge JSON values: fails behavior 8.
+- Skip the strict check in JSON value retraction: fails behavior 9.
 - Write clean identities while a conflict is refused: fails behavior 1.
 - Remove the marker preflight: fails behavior 18.
 - Fingerprint from disk in adopt: fails behavior 19.

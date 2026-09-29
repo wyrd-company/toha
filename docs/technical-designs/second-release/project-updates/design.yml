@@ -160,7 +160,8 @@ validation:
     hook.
   - >-
     A disappeared file, region, or JSON value is retracted when unedited and
-    released when edited; a forged record entry never causes a deletion.
+    released when edited; a forged record entry never causes a deletion; a
+    JSON value retraction refuses a relaxed .json target and writes nothing.
   - >-
     A merged region changes only its span and keeps the intended-body checksum;
     a plain apply then reports drift.

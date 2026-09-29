@@ -13,13 +13,24 @@ prerequisite designs, and the code at `epic/second-release` @ `b97da39`.
 
 | Prerequisite | Artifact | SHA-256 at base | Last commit |
 |---|---|---|---|
-| Content injection | `content-injection/05-design.md` | `b01b442917737c457dc92d581833b9f67c1f37abddc8638440bacf965380a006` | `0dc51b07e9bc8f5f55d7610f76b642ac0aec778d` |
+| Content injection | `content-injection/05-design.md` | `33f2f943e9a1b0165c690d1779499b8ea1c69130eb10f30e11f71ab7b0229eec` | `8a9ad067b185fa1db35834796025ff32ff157fe6` |
 | Caller routes and answers identity | `headless-recovery/design.md` | `a7e081784604e78c8349baa9f33fdb456c615074c2319d7f2eb6d1724b409ed5` | `2c4a197c82a64605c1659ddf2aceea6863e526da` |
 | Hook results | `hook-results/design.md` | `c3be45a767bcb98046d7130f89bf09a9ecd42575216700d88a4f1b9bac4b8d96` | `973b50ee7a9b4d6be3a9840411cc5a16bff27aa1` |
 
-`git diff 2c4a197 b97da39` shows no change in any of the three design
-directories. The candidates' pinned input therefore carries the same contracts
-as the refreshed base.
+The candidates read `05-design.md` at SHA-256
+`b01b442917737c457dc92d581833b9f67c1f37abddc8638440bacf965380a006`, which is
+unchanged from `2c4a197` to `b97da39`. The accepted as-built alignment at
+`8a9ad06` adds two statements and changes no interface or ownership rule:
+
+- A region body is an inline `content` template or a `source` support file,
+  and both render at plan time. Update consumes the rendered
+  `PlannedRegionEdit.body`, so the origin does not matter.
+- A `Json` target is validated with `serde_json::from_str` before any CST edit
+  (`src/inject.rs:779-790`). Update inherits this through the JSON resolver.
+  The design's crate-private JSON retraction applies the same check (behavior
+  9 and its sole-kill guard).
+
+The recovery and hook-result designs are unchanged across all three commits.
 
 ## Task decisions
 
@@ -58,7 +69,7 @@ as the refreshed base.
   and the pure resolvers at `src/inject.rs:454` and `src/inject.rs:724`. Region
   drift outside update still refuses. JSON values stay convergent with no
   three-way merge. Retraction and merged-region bodies are the removal and merge
-  behaviors that injection assigns to this design (`05-design.md:357-362`). They
+  behaviors that injection assigns to this design (`05-design.md:383-388`). They
   are crate-private helpers, so the public producer interface is unchanged. The
   identity join sorts on a private key built from `TargetPath::as_path`,
   `RegionKey::as_str`, and `JsonPath::segments`, so no injection type gains a
