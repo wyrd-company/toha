@@ -14,10 +14,17 @@ use serde_json::Value;
 use crate::{
     fault::TemplateFault,
     hook::{HookResults, ResultSpec},
+    inject::{
+        Anchor, JsonFormat, JsonPath, MarkerStyle, PlannedEdit, PlannedJsonEdit, PlannedRegionEdit,
+        RegionKey,
+    },
     interview::Completed,
     jinja::{Expr, Tmpl, context_from_answers},
     staging::CanonicalTarget,
-    template::{Capture, HookNode, HookProgram, Id, Template},
+    template::{
+        AnchorRule, Capture, HookNode, HookProgram, Id, InjectRule, InjectValue, RegionBody,
+        Template,
+    },
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,6 +102,7 @@ pub(crate) fn has_symlink_component(
 #[derive(Debug)]
 pub struct Plan {
     pub files: Vec<PlannedFile>,
+    pub edits: Vec<PlannedEdit>,
     pub conflicts: Vec<TargetPath>,
     pub hooks: Vec<Planned<PlannedHook>>,
     pub before_apply: Option<String>,
@@ -357,6 +365,8 @@ pub enum PlanError {
     },
     #[error("plan target does not match the completed interview's context target")]
     ContextTarget,
+    #[error("{field}: {message}")]
+    Inject { field: String, message: String },
 }
 fn rendered(text: &str, ctx: &impl serde::Serialize, source: &Path) -> Result<String, PlanError> {
     Tmpl::compile(text.into())
@@ -396,6 +406,7 @@ impl Plan {
         }
         let mut plan = Self {
             files: vec![],
+            edits: vec![],
             conflicts: vec![],
             hooks: vec![],
             before_apply: None,
@@ -490,6 +501,11 @@ impl Plan {
                 let content = Content::Rendered(rendered);
                 plan.add(path, content, origin.clone(), target.as_path())?;
             }
+        }
+        // Content injection: render each rule to a bounded edit. Planning is pure
+        // over the template and answers and reads no target bytes.
+        for (i, rule) in template.inject.iter().enumerate() {
+            plan.add_edit(rule, i, &ctx)?;
         }
         // Interview hooks were rendered during the interview; they may produce a
         // result but never read one, so they are always ready.
@@ -601,6 +617,264 @@ impl Plan {
             source,
         });
         Ok(())
+    }
+    /// Renders one `inject` rule to a bounded edit, resolving the marker style or
+    /// JSON format and checking the per-target uniqueness the edit requires.
+    fn add_edit(
+        &mut self,
+        rule: &InjectRule,
+        index: usize,
+        ctx: &std::collections::BTreeMap<String, Value>,
+    ) -> Result<(), PlanError> {
+        let field = format!("inject[{index}]");
+        match rule {
+            InjectRule::Region(region) => {
+                if let Some(when) = &region.when {
+                    if !inject_when(when, &field, ctx)? {
+                        return Ok(());
+                    }
+                }
+                let path = inject_target(&region.into, &field, ctx)?;
+                if json_format(&path).is_some() {
+                    return Err(PlanError::Inject {
+                        field,
+                        message: format!(
+                            "region rule targets a JSON-family file `{path}`; use struct: for a typed value or an existing files: rule for the whole file"
+                        ),
+                    });
+                }
+                let marker = match region.marker.clone().or_else(|| MarkerStyle::infer(&path)) {
+                    Some(marker) => marker,
+                    None => {
+                        return Err(PlanError::Inject {
+                            field,
+                            message: format!(
+                                "cannot infer a comment style for `{path}`; add a marker: override"
+                            ),
+                        });
+                    }
+                };
+                let body = render_region_body(&region.body, &field, ctx)?;
+                let anchor = match &region.anchor {
+                    Some(anchor) => Some(render_anchor(anchor, &field, ctx)?),
+                    None => None,
+                };
+                let source = match &region.body {
+                    RegionBody::Source { path, .. } => Some(path.clone()),
+                    RegionBody::Content(_) => None,
+                };
+                let edit = PlannedRegionEdit {
+                    path,
+                    region: region.region.clone(),
+                    body,
+                    marker,
+                    anchor,
+                    create: region.create,
+                    source,
+                };
+                self.check_region_unique(&edit, &field)?;
+                self.edits.push(PlannedEdit::Region(edit));
+            }
+            InjectRule::Struct(rule) => {
+                if let Some(when) = &rule.when {
+                    if !inject_when(when, &field, ctx)? {
+                        return Ok(());
+                    }
+                }
+                let path = inject_target(&rule.into, &field, ctx)?;
+                let Some(format) = json_format(&path) else {
+                    return Err(PlanError::Inject {
+                        field,
+                        message: format!(
+                            "struct rule targets `{path}`, which is not a .json, .jsonc, or .json5 file"
+                        ),
+                    });
+                };
+                let desired = render_inject_value(&rule.value, &field, ctx)?;
+                let edit = PlannedJsonEdit {
+                    path,
+                    json_path: rule.path.clone(),
+                    desired,
+                    format,
+                    create: rule.create,
+                };
+                self.check_json_unique(&edit, &field)?;
+                self.edits.push(PlannedEdit::JsonValue(edit));
+            }
+        }
+        Ok(())
+    }
+    /// Rejects a second region rule with the same key on one target.
+    fn check_region_unique(&self, edit: &PlannedRegionEdit, field: &str) -> Result<(), PlanError> {
+        for existing in &self.edits {
+            if let PlannedEdit::Region(other) = existing {
+                if other.path == edit.path && other.region == edit.region {
+                    return Err(PlanError::Inject {
+                        field: field.to_owned(),
+                        message: format!("duplicate region `{}` on `{}`", edit.region, edit.path),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+    /// Rejects a duplicate or ancestor/descendant JSON path on one target.
+    fn check_json_unique(&self, edit: &PlannedJsonEdit, field: &str) -> Result<(), PlanError> {
+        for existing in &self.edits {
+            if let PlannedEdit::JsonValue(other) = existing {
+                if other.path == edit.path && other.json_path.overlaps(&edit.json_path) {
+                    return Err(PlanError::Inject {
+                        field: field.to_owned(),
+                        message: format!(
+                            "JSON paths `{}` and `{}` overlap on `{}`",
+                            other.json_path, edit.json_path, edit.path
+                        ),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+    /// The derived ownership view over every planned mutation: a whole file, a
+    /// region, or a typed JSON value. Project update consumes this.
+    pub fn mutations(&self) -> impl Iterator<Item = FileMutation<'_>> {
+        self.files
+            .iter()
+            .map(|file| FileMutation::Whole { path: &file.path })
+            .chain(self.edits.iter().map(|edit| match edit {
+                PlannedEdit::Region(region) => FileMutation::Region {
+                    path: &region.path,
+                    region: &region.region,
+                },
+                PlannedEdit::JsonValue(json) => FileMutation::JsonValue {
+                    path: &json.path,
+                    json_path: &json.json_path,
+                },
+            }))
+    }
+}
+
+/// The ownership identity of one planned mutation, derived from the plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileMutation<'a> {
+    /// Toha owns and replaces the complete file.
+    Whole { path: &'a TargetPath },
+    /// Toha owns the marker pair and enclosed byte span.
+    Region {
+        path: &'a TargetPath,
+        region: &'a RegionKey,
+    },
+    /// Toha owns the typed value at the path and converges it on replay.
+    JsonValue {
+        path: &'a TargetPath,
+        json_path: &'a JsonPath,
+    },
+}
+
+/// The JSON-family format for a target extension, or `None` for any other file.
+fn json_format(path: &TargetPath) -> Option<JsonFormat> {
+    match path
+        .as_path()
+        .extension()
+        .and_then(|ext| ext.to_str())?
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "json" => Some(JsonFormat::Json),
+        "jsonc" => Some(JsonFormat::Jsonc),
+        "json5" => Some(JsonFormat::Json5),
+        _ => None,
+    }
+}
+
+fn inject_when(
+    when: &Expr,
+    field: &str,
+    ctx: &std::collections::BTreeMap<String, Value>,
+) -> Result<bool, PlanError> {
+    Ok(when
+        .eval(ctx)
+        .map_err(|e| PlanError::Inject {
+            field: field.to_owned(),
+            message: format!("template error in {field}.when `{}`: {e}", when.source()),
+        })?
+        .is_true())
+}
+
+fn inject_target(
+    into: &Tmpl,
+    field: &str,
+    ctx: &std::collections::BTreeMap<String, Value>,
+) -> Result<TargetPath, PlanError> {
+    let text = into.render(ctx).map_err(|e| PlanError::Inject {
+        field: field.to_owned(),
+        message: format!("template error in {field}.into `{}`: {e}", into.source()),
+    })?;
+    TargetPath::parse(&text).map_err(PlanError::Path)
+}
+
+fn render_region_body(
+    body: &RegionBody,
+    field: &str,
+    ctx: &std::collections::BTreeMap<String, Value>,
+) -> Result<String, PlanError> {
+    match body {
+        RegionBody::Content(tmpl) => tmpl.render(ctx).map_err(|e| PlanError::Inject {
+            field: field.to_owned(),
+            message: format!("template error in {field}.content: {e}"),
+        }),
+        RegionBody::Source { body, .. } => body.render(ctx).map_err(|e| PlanError::Inject {
+            field: field.to_owned(),
+            message: format!("template error in {field}.source: {e}"),
+        }),
+    }
+}
+
+fn render_anchor(
+    anchor: &AnchorRule,
+    field: &str,
+    ctx: &std::collections::BTreeMap<String, Value>,
+) -> Result<Anchor, PlanError> {
+    let after = anchor.after.render(ctx).map_err(|e| PlanError::Inject {
+        field: field.to_owned(),
+        message: format!("template error in {field}.anchor.after: {e}"),
+    })?;
+    Ok(Anchor {
+        after,
+        occurrence: anchor.occurrence,
+    })
+}
+
+/// Renders a structured value's string leaves to a `serde_json::Value`, keeping
+/// every other JSON type.
+fn render_inject_value(
+    value: &InjectValue,
+    field: &str,
+    ctx: &std::collections::BTreeMap<String, Value>,
+) -> Result<Value, PlanError> {
+    match value {
+        InjectValue::Template(tmpl) => {
+            let text = tmpl.render(ctx).map_err(|e| PlanError::Inject {
+                field: field.to_owned(),
+                message: format!("template error in {field}.struct.value: {e}"),
+            })?;
+            Ok(Value::String(text))
+        }
+        InjectValue::Literal(literal) => Ok(literal.clone()),
+        InjectValue::Array(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                out.push(render_inject_value(item, field, ctx)?);
+            }
+            Ok(Value::Array(out))
+        }
+        InjectValue::Object(pairs) => {
+            let mut map = serde_json::Map::new();
+            for (key, item) in pairs {
+                map.insert(key.clone(), render_inject_value(item, field, ctx)?);
+            }
+            Ok(Value::Object(map))
+        }
     }
 }
 fn plan_hook(

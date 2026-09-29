@@ -56,6 +56,7 @@ pub struct Template {
     /// resolves includes against the same root without a runtime loader.
     pub partials: Partials,
     pub files: Vec<FileRule>,
+    pub inject: Vec<InjectRule>,
     pub ignore: GlobSet,
     pub static_files: GlobSet,
     pub hooks: Vec<HookNode>,
@@ -326,6 +327,59 @@ impl Each {
             .collect())
     }
 }
+/// One `inject` rule: a visible managed region in a non-JSON text target, or a
+/// typed value at a path in a JSON-family target. Rendered into a
+/// `crate::inject::PlannedEdit` at plan time.
+#[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
+pub enum InjectRule {
+    Region(RegionRule),
+    Struct(StructRule),
+}
+/// A visible-region rule. Its body comes from an inline `content` template or a
+/// `source` support file. The marker style is an explicit override or inferred
+/// from the target extension at plan time.
+#[derive(Debug)]
+pub struct RegionRule {
+    pub into: Tmpl,
+    pub region: crate::inject::RegionKey,
+    pub body: RegionBody,
+    pub anchor: Option<AnchorRule>,
+    pub marker: Option<crate::inject::MarkerStyle>,
+    pub create: bool,
+    pub when: Option<Expr>,
+}
+#[derive(Debug)]
+pub enum RegionBody {
+    Content(Tmpl),
+    Source { path: PathBuf, body: FileTmpl },
+}
+#[derive(Debug)]
+pub struct AnchorRule {
+    pub after: Tmpl,
+    pub occurrence: crate::inject::Occurrence,
+}
+/// A structured JSON-family rule. `path` is parsed at load; `value` renders its
+/// string leaves at plan time and keeps every other JSON type.
+#[derive(Debug)]
+pub struct StructRule {
+    pub into: Tmpl,
+    pub path: crate::inject::JsonPath,
+    pub value: InjectValue,
+    pub create: bool,
+    pub when: Option<Expr>,
+}
+/// A JSON-compatible value whose string leaves are templates. Rendered to a
+/// `serde_json::Value` at plan time.
+#[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
+pub enum InjectValue {
+    Template(Tmpl),
+    Literal(Value),
+    Array(Vec<InjectValue>),
+    Object(Vec<(String, InjectValue)>),
+}
+
 #[derive(Debug, Default)]
 pub struct ApplyMessages {
     pub before_apply: Option<Tmpl>,
@@ -429,6 +483,7 @@ struct RawTemplate {
     data: Option<Map<String, Value>>,
     interview: Option<Vec<Value>>,
     files: Option<Vec<Value>>,
+    inject: Option<Vec<Value>>,
     ignore: Option<Vec<String>>,
     #[serde(rename = "static")]
     static_files: Option<Vec<String>>,
@@ -908,6 +963,163 @@ impl Builder {
         };
         Some(HookCommand { program, cwd })
     }
+    /// Parses one `inject` rule into a region or structured rule. The schema has
+    /// already checked that exactly one of `region`/`struct` is present and, for
+    /// a region, exactly one of `content`/`source`.
+    fn inject_rule(&mut self, map: &Map<String, Value>, path: &str) -> Option<InjectRule> {
+        let into = self.tmpl(map.get("into"), &format!("{path}.into"))?;
+        let when = self.expr(map.get("when"), &format!("{path}.when"), &[]);
+        let create = map.get("create").and_then(Value::as_bool).unwrap_or(false);
+        if map.contains_key("struct") {
+            let object = map.get("struct").and_then(Value::as_object);
+            let path_value = object
+                .and_then(|m| m.get("path"))
+                .and_then(Value::as_str)
+                .and_then(|value| match crate::inject::JsonPath::parse(value) {
+                    Ok(parsed) => Some(parsed),
+                    Err(message) => {
+                        problem(&mut self.problems, format!("{path}.struct.path"), message);
+                        None
+                    }
+                })?;
+            let value = self.inject_value(
+                object.and_then(|m| m.get("value"))?,
+                &format!("{path}.struct.value"),
+            )?;
+            return Some(InjectRule::Struct(StructRule {
+                into,
+                path: path_value,
+                value,
+                create,
+                when,
+            }));
+        }
+        let region = map
+            .get("region")
+            .and_then(Value::as_str)
+            .and_then(|value| match crate::inject::RegionKey::parse(value) {
+                Ok(key) => Some(key),
+                Err(message) => {
+                    problem(&mut self.problems, format!("{path}.region"), message);
+                    None
+                }
+            })?;
+        let marker = self.marker_override(map.get("marker"), &format!("{path}.marker"));
+        let anchor = match map.get("anchor") {
+            Some(value) => Some(self.anchor_rule(value, &format!("{path}.anchor"))?),
+            None => None,
+        };
+        let body = if map.contains_key("content") {
+            RegionBody::Content(self.tmpl(map.get("content"), &format!("{path}.content"))?)
+        } else {
+            let source = map.get("source").and_then(Value::as_str)?;
+            let source = self.confined_file(source, &format!("{path}.source"), false)?;
+            let text = match fs::read_to_string(self.root.join(&source)) {
+                Ok(text) => text,
+                Err(error) => {
+                    problem(
+                        &mut self.problems,
+                        format!("{path}.source"),
+                        error.to_string(),
+                    );
+                    return None;
+                }
+            };
+            let label = source.to_string_lossy().replace('\\', "/");
+            let body = self.file_tmpl(text, &label, &format!("{path}.source"))?;
+            RegionBody::Source { path: source, body }
+        };
+        Some(InjectRule::Region(RegionRule {
+            into,
+            region,
+            body,
+            anchor,
+            marker,
+            create,
+            when,
+        }))
+    }
+    /// Parses an explicit marker override: a string is a line-comment prefix; an
+    /// object `{ open, close }` is a block comment.
+    fn marker_override(
+        &mut self,
+        value: Option<&Value>,
+        path: &str,
+    ) -> Option<crate::inject::MarkerStyle> {
+        match value {
+            None => None,
+            Some(Value::String(prefix)) => Some(crate::inject::MarkerStyle::line(prefix)),
+            Some(Value::Object(map)) => {
+                let open = map.get("open").and_then(Value::as_str);
+                let close = map.get("close").and_then(Value::as_str);
+                match (open, close) {
+                    (Some(open), Some(close)) => {
+                        Some(crate::inject::MarkerStyle::block(open, close))
+                    }
+                    _ => {
+                        problem(
+                            &mut self.problems,
+                            path,
+                            "marker object needs open and close",
+                        );
+                        None
+                    }
+                }
+            }
+            Some(_) => {
+                problem(
+                    &mut self.problems,
+                    path,
+                    "marker must be a string or { open, close }",
+                );
+                None
+            }
+        }
+    }
+    fn anchor_rule(&mut self, value: &Value, path: &str) -> Option<AnchorRule> {
+        let map = value.as_object()?;
+        let after = self.tmpl(map.get("after"), &format!("{path}.after"))?;
+        let occurrence = match map.get("occurrence").and_then(Value::as_str) {
+            None | Some("only") => crate::inject::Occurrence::Only,
+            Some("first") => crate::inject::Occurrence::First,
+            Some("last") => crate::inject::Occurrence::Last,
+            Some(_) => {
+                problem(
+                    &mut self.problems,
+                    format!("{path}.occurrence"),
+                    "occurrence must be only, first, or last",
+                );
+                return None;
+            }
+        };
+        Some(AnchorRule { after, occurrence })
+    }
+    /// Parses a JSON-compatible value whose string leaves are templates.
+    fn inject_value(&mut self, value: &Value, path: &str) -> Option<InjectValue> {
+        match value {
+            Value::String(_) => self.tmpl(Some(value), path).map(InjectValue::Template),
+            Value::Bool(_) | Value::Number(_) | Value::Null => {
+                Some(InjectValue::Literal(value.clone()))
+            }
+            Value::Array(items) => {
+                let mut out = Vec::with_capacity(items.len());
+                for (i, item) in items.iter().enumerate() {
+                    out.push(self.inject_value(item, &format!("{path}[{i}]"))?);
+                }
+                Some(InjectValue::Array(out))
+            }
+            Value::Object(map) => {
+                let mut out = Vec::with_capacity(map.len());
+                for (key, item) in map {
+                    out.push((
+                        key.clone(),
+                        self.inject_value(item, &format!("{path}.{key}"))?,
+                    ));
+                }
+                Some(InjectValue::Object(out))
+            }
+        }
+    }
     fn globs(&mut self, patterns: Option<&Vec<String>>, path: &str) -> GlobSet {
         let mut builder = GlobSetBuilder::new();
         for (i, pattern) in patterns.into_iter().flatten().enumerate() {
@@ -1305,6 +1517,16 @@ impl Template {
                 });
             }
         }
+        let mut inject = Vec::new();
+        for (i, value) in raw.inject.as_deref().unwrap_or_default().iter().enumerate() {
+            let path = format!("inject[{i}]");
+            let Some(map) = value.as_object() else {
+                continue;
+            };
+            if let Some(rule) = b.inject_rule(map, &path) {
+                inject.push(rule);
+            }
+        }
         let hooks: Vec<HookNode> = raw
             .hooks
             .as_deref()
@@ -1368,6 +1590,7 @@ impl Template {
         settle_hook_results(
             &interview,
             &files,
+            &inject,
             &hooks,
             &messages,
             &render_program,
@@ -1379,8 +1602,14 @@ impl Template {
                 problems: b.problems,
             });
         }
-        let environment_need =
-            compute_environment_need(&interview, &files, &hooks, &messages, &render_program);
+        let environment_need = compute_environment_need(
+            &interview,
+            &files,
+            &inject,
+            &hooks,
+            &messages,
+            &render_program,
+        );
         Ok(Self {
             name: raw.name,
             description: raw.description,
@@ -1390,6 +1619,7 @@ impl Template {
             root,
             partials,
             files,
+            inject,
             ignore,
             static_files,
             hooks,
@@ -1527,12 +1757,16 @@ fn compile_source_tree(
 fn compute_environment_need(
     interview: &[Node],
     files: &[FileRule],
+    inject: &[InjectRule],
     hooks: &[HookNode],
     messages: &ApplyMessages,
     render_program: &[SourceEntry],
 ) -> EnvironmentNeed {
     let mut find = NeedScan::default();
     find.nodes(interview, "interview");
+    for (i, rule) in inject.iter().enumerate() {
+        find.inject(rule, &format!("inject[{i}]"));
+    }
     for (i, hook) in hooks.iter().enumerate() {
         find.hook(hook, &format!("hooks[{i}]"));
     }
@@ -1626,6 +1860,44 @@ impl NeedScan {
             HookProgram::Script { args, .. } => {
                 for (i, arg) in args.iter().enumerate() {
                     self.tmpl(arg, &format!("{label}.args[{i}]"));
+                }
+            }
+        }
+    }
+    fn inject(&mut self, rule: &InjectRule, label: &str) {
+        match rule {
+            InjectRule::Region(region) => {
+                self.opt_expr(region.when.as_ref(), &format!("{label}.when"));
+                self.tmpl(&region.into, &format!("{label}.into"));
+                if let Some(anchor) = &region.anchor {
+                    self.tmpl(&anchor.after, &format!("{label}.anchor.after"));
+                }
+                match &region.body {
+                    RegionBody::Content(tmpl) => self.tmpl(tmpl, &format!("{label}.content")),
+                    RegionBody::Source { body, .. } => {
+                        self.file_tmpl(body, &format!("{label}.source"))
+                    }
+                }
+            }
+            InjectRule::Struct(rule) => {
+                self.opt_expr(rule.when.as_ref(), &format!("{label}.when"));
+                self.tmpl(&rule.into, &format!("{label}.into"));
+                self.inject_value(&rule.value, &format!("{label}.struct.value"));
+            }
+        }
+    }
+    fn inject_value(&mut self, value: &InjectValue, label: &str) {
+        match value {
+            InjectValue::Template(tmpl) => self.tmpl(tmpl, label),
+            InjectValue::Literal(_) => {}
+            InjectValue::Array(items) => {
+                for (i, item) in items.iter().enumerate() {
+                    self.inject_value(item, &format!("{label}[{i}]"));
+                }
+            }
+            InjectValue::Object(pairs) => {
+                for (key, item) in pairs {
+                    self.inject_value(item, &format!("{label}.{key}"));
                 }
             }
         }
@@ -1851,6 +2123,7 @@ fn collect_interview_producers(
 fn settle_hook_results(
     interview: &[Node],
     files: &[FileRule],
+    inject: &[InjectRule],
     hooks: &[HookNode],
     messages: &ApplyMessages,
     render_program: &[SourceEntry],
@@ -1931,6 +2204,33 @@ fn settle_hook_results(
         }
     }
     settle.deny_opt_tmpl(messages.before_apply.as_ref(), "messages.before-apply");
+    // Injection renders at plan time, before hooks run, so it is a disallowed
+    // surface for a hook result, like a file body or path.
+    for (i, rule) in inject.iter().enumerate() {
+        let path = format!("inject[{i}]");
+        match rule {
+            InjectRule::Region(region) => {
+                settle.deny_opt_expr(region.when.as_ref(), &format!("{path}.when"));
+                settle.deny(region.into.references(), &format!("{path}.into"));
+                if let Some(anchor) = &region.anchor {
+                    settle.deny(anchor.after.references(), &format!("{path}.anchor.after"));
+                }
+                match &region.body {
+                    RegionBody::Content(tmpl) => {
+                        settle.deny(tmpl.references(), &format!("{path}.content"))
+                    }
+                    RegionBody::Source { body, .. } => {
+                        settle.deny(body.references(), &format!("{path}.source"))
+                    }
+                }
+            }
+            InjectRule::Struct(rule) => {
+                settle.deny_opt_expr(rule.when.as_ref(), &format!("{path}.when"));
+                settle.deny(rule.into.references(), &format!("{path}.into"));
+                deny_inject_value(&mut settle, &rule.value, &format!("{path}.struct.value"));
+            }
+        }
+    }
     // Allowed surfaces: later top-level hook when/run[1..]/args/cwd and after-apply.
     for (j, h) in hooks.iter().enumerate() {
         let order = interview_count + j;
@@ -1973,6 +2273,24 @@ fn settle_hook_results(
         );
     }
     settle.finish();
+}
+
+/// Denies a hook-result read in any string leaf of an injected structured value.
+fn deny_inject_value(settle: &mut Settle, value: &InjectValue, label: &str) {
+    match value {
+        InjectValue::Template(tmpl) => settle.deny(tmpl.references(), label),
+        InjectValue::Literal(_) => {}
+        InjectValue::Array(items) => {
+            for (i, item) in items.iter().enumerate() {
+                deny_inject_value(settle, item, &format!("{label}[{i}]"));
+            }
+        }
+        InjectValue::Object(pairs) => {
+            for (key, item) in pairs {
+                deny_inject_value(settle, item, &format!("{label}.{key}"));
+            }
+        }
+    }
 }
 
 /// The mutable state of one settle pass.

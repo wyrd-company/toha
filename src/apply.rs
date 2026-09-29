@@ -4,13 +4,17 @@
 // ---
 use crate::{
     hook::{HookError, HookOutcome, HookResults, HookRunner, decode},
+    inject::{
+        EditResolution, JsonEditError, PlannedEdit, RegionError, RegionKey, resolve_json_edit,
+        resolve_region_edit,
+    },
     plan::{Content, Plan, PlanError, Planned, PlannedHook, TargetPath, has_symlink_component},
     staging::CanonicalTarget,
     template::Id,
 };
 #[cfg(test)]
 use std::path::Path;
-use std::{fmt, fs, path::PathBuf};
+use std::{fmt, fs, io::Write, path::PathBuf};
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ApplyOptions {
     pub force: bool,
@@ -28,6 +32,23 @@ pub enum Applied {
 /// One indented target path per line, each after a line break.
 fn conflict_lines(paths: &[TargetPath]) -> String {
     paths.iter().map(|path| format!("\n  {path}")).collect()
+}
+/// One indented `path (region)` per line for the region-drift error.
+fn drift_lines(regions: &[(TargetPath, RegionKey)]) -> String {
+    regions
+        .iter()
+        .map(|(path, region)| format!("\n  {path} ({region})"))
+        .collect()
+}
+
+/// One injected target resolved in memory before the commit loop: its final
+/// image when it changed, and the index of its whole-file rule when one supplies
+/// the starting image and its executable mode.
+struct EditedTarget {
+    path: TargetPath,
+    /// The bytes to write, or `None` when every edit left the target unchanged.
+    image: Option<Vec<u8>>,
+    whole_file: Option<usize>,
 }
 #[derive(Debug, thiserror::Error)]
 pub enum ApplyError {
@@ -56,6 +77,16 @@ pub enum ApplyError {
     /// `cwd` was invalid, in the apply loop.
     #[error("{0}")]
     Deferred(PlanError),
+    /// An operator edited an owned region; `--force` would replace it. Writes
+    /// nothing. Each entry is a `path (region)` pair.
+    #[error("region drift; rerun with --force to overwrite:{}", drift_lines(.0))]
+    Drift(Vec<(TargetPath, RegionKey)>),
+    /// A region edit could not be resolved against the target.
+    #[error("{0}")]
+    Region(#[from] RegionError),
+    /// A JSON-family edit could not be resolved against the target.
+    #[error("{0}")]
+    Json(#[from] JsonEditError),
     /// A captured stream could not be decoded or parsed. Carries no bytes: only
     /// the hook index, its id, and the fault's position.
     #[error("hook {index} `{id}` output: {fault}")]
@@ -141,6 +172,17 @@ impl Plan {
                 return Err(ApplyError::Symlink(file.path.clone()));
             }
         }
+        // Every injected target's path is protected before it is read or written.
+        for edit in &self.edits {
+            if has_symlink_component(target.as_path(), edit.path()).map_err(|source| {
+                ApplyError::Io {
+                    path: target.as_path().join(edit.path().as_path()),
+                    source,
+                }
+            })? {
+                return Err(ApplyError::Symlink(edit.path().clone()));
+            }
+        }
         // A ready hook's cwd is known now, so it is symlink-checked before any
         // file is written, exactly as before. A deferred hook's cwd is not known
         // until its result-reading fields render, so it is checked in the loop.
@@ -158,8 +200,17 @@ impl Plan {
                 }
             }
         }
+        // Resolve every injected target fully in memory before the first write, so
+        // an unforced region drift, a parse or path error, or a missing target
+        // leaves every file on disk unchanged.
+        let resolved = self.resolve_edits(target, options.force)?;
         let mut written = Vec::new();
+        // Whole-file targets that carry no edit write exactly as before. A target
+        // with edits is committed once below, from its folded image.
         for file in &self.files {
+            if resolved.iter().any(|e| e.path == file.path) {
+                continue;
+            }
             let path = target.as_path().join(file.path.as_path());
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).map_err(|source| ApplyError::Io {
@@ -208,6 +259,14 @@ impl Plan {
             }
             on_written(&file.path);
             written.push(file.path.clone());
+        }
+        // Commit each changed injected target once, atomically.
+        for edited in &resolved {
+            if let Some(bytes) = &edited.image {
+                self.commit_edited(target, edited, bytes)?;
+                on_written(&edited.path);
+                written.push(edited.path.clone());
+            }
         }
         // The only site where hook results exist. Each declared producer is
         // seeded not-run so a reader of a skipped producer sees a bound `none`;
@@ -281,6 +340,144 @@ impl Plan {
             hooks_run,
             after_apply,
         })
+    }
+
+    /// Resolves every injected target in memory. Each target starts from its
+    /// whole-file image when a `files:` rule supplies one, otherwise from the
+    /// current bytes read once; its edits fold in source order. Returns one entry
+    /// per target, or an error that leaves every file unchanged.
+    #[allow(clippy::result_large_err)]
+    fn resolve_edits(
+        &self,
+        target: &CanonicalTarget,
+        force: bool,
+    ) -> Result<Vec<EditedTarget>, ApplyError> {
+        let mut resolved: Vec<EditedTarget> = Vec::new();
+        let mut drift: Vec<(TargetPath, RegionKey)> = Vec::new();
+        for edit in &self.edits {
+            let path = edit.path();
+            if resolved.iter().any(|e| &e.path == path) {
+                continue;
+            }
+            let whole_file = self.files.iter().position(|f| &f.path == path);
+            let mut buffer = match whole_file {
+                Some(index) => Some(self.file_image(index)?),
+                None => read_current(target, path)?,
+            };
+            // A whole-file rule always writes; a pure injection writes only when
+            // an edit changes the target.
+            let mut changed = whole_file.is_some();
+            for edit in self.edits.iter().filter(|e| e.path() == path) {
+                let resolution = match edit {
+                    PlannedEdit::Region(region) => resolve_region_edit(buffer.as_deref(), region)?,
+                    PlannedEdit::JsonValue(json) => resolve_json_edit(buffer.as_deref(), json)?,
+                };
+                match resolution {
+                    EditResolution::Unchanged => {}
+                    EditResolution::Write(bytes) => {
+                        buffer = Some(bytes);
+                        changed = true;
+                    }
+                    EditResolution::Drift { forced } => {
+                        if force {
+                            buffer = Some(forced);
+                            changed = true;
+                        } else if let PlannedEdit::Region(region) = edit {
+                            drift.push((path.clone(), region.region.clone()));
+                        }
+                    }
+                }
+            }
+            resolved.push(EditedTarget {
+                path: path.clone(),
+                image: changed.then(|| buffer.unwrap_or_default()),
+                whole_file,
+            });
+        }
+        if !drift.is_empty() {
+            return Err(ApplyError::Drift(drift));
+        }
+        Ok(resolved)
+    }
+
+    /// The starting bytes a whole-file rule supplies for an injected target.
+    #[allow(clippy::result_large_err)]
+    fn file_image(&self, index: usize) -> Result<Vec<u8>, ApplyError> {
+        match &self.files[index].content {
+            Content::Rendered(text) => Ok(text.clone().into_bytes()),
+            Content::Copied(source) => fs::read(source).map_err(|error| ApplyError::Io {
+                path: source.clone(),
+                source: error,
+            }),
+        }
+    }
+
+    /// Atomically replaces one injected target with its resolved image, writing a
+    /// sibling temporary file and renaming it into place. Preserves the existing
+    /// mode, adding the whole-file source's executable bit when one applies.
+    #[allow(clippy::result_large_err)]
+    fn commit_edited(
+        &self,
+        target: &CanonicalTarget,
+        edited: &EditedTarget,
+        bytes: &[u8],
+    ) -> Result<(), ApplyError> {
+        let path = target.as_path().join(edited.path.as_path());
+        let parent = path
+            .parent()
+            .expect("a joined target path has a parent")
+            .to_owned();
+        fs::create_dir_all(&parent).map_err(|source| ApplyError::Io {
+            path: parent.clone(),
+            source,
+        })?;
+        let io = |source| ApplyError::Io {
+            path: path.clone(),
+            source,
+        };
+        let mut temp = tempfile::NamedTempFile::new_in(&parent).map_err(io)?;
+        temp.write_all(bytes).map_err(io)?;
+        temp.flush().map_err(io)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut mode = fs::metadata(&path)
+                .map(|meta| meta.permissions().mode() & 0o7777)
+                .unwrap_or(0o644);
+            if let Some(index) = edited.whole_file {
+                let exec = fs::metadata(&self.files[index].source)
+                    .map_err(|source| ApplyError::Io {
+                        path: self.files[index].source.clone(),
+                        source,
+                    })?
+                    .permissions()
+                    .mode()
+                    & 0o111;
+                mode |= exec;
+            }
+            let mut permissions = temp.as_file().metadata().map_err(io)?.permissions();
+            permissions.set_mode(mode);
+            temp.as_file().set_permissions(permissions).map_err(io)?;
+        }
+        temp.persist(&path).map_err(|error| ApplyError::Io {
+            path: path.clone(),
+            source: error.error,
+        })?;
+        Ok(())
+    }
+}
+
+/// Reads a target's current bytes, or `None` when it does not yet exist.
+#[allow(clippy::result_large_err)]
+fn read_current(
+    target: &CanonicalTarget,
+    path: &TargetPath,
+) -> Result<Option<Vec<u8>>, ApplyError> {
+    let full = target.as_path().join(path.as_path());
+    match fs::read(&full) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(ApplyError::Io { path: full, source }),
     }
 }
 
@@ -380,6 +577,7 @@ mod tests {
                     source: source.to_owned(),
                 })
                 .collect(),
+            edits: vec![],
             conflicts: vec![],
             hooks: (0..hooks)
                 .map(|index| {

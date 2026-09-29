@@ -30,6 +30,10 @@ properties:
     type: array
     items:
       $ref: "#/$defs/file-rule"
+  inject:
+    type: array
+    items:
+      $ref: "#/$defs/inject-rule"
   ignore:
     $ref: "#/$defs/globs"
   static:
@@ -323,3 +327,84 @@ $defs:
         $ref: "#/$defs/template"
       when:
         $ref: "#/$defs/when"
+  region-key:
+    description: A region name unique per target.
+    type: string
+    pattern: '^[a-z0-9_-]+$'
+  inject-rule:
+    description: >-
+      Changes one bounded part of an existing target: a visible checksum-marked
+      region in a non-JSON text file, or a typed value at a path in a JSON,
+      JSONC, or JSON5 file.
+    type: object
+    additionalProperties: false
+    required: [ into ]
+    oneOf:
+      - required: [ region ]
+        properties:
+          content: true
+          source: true
+        oneOf:
+          - required: [ content ]
+          - required: [ source ]
+      - required: [ struct ]
+    properties:
+      into:
+        description: Target path relative to the target directory.
+        $ref: "#/$defs/template"
+      when:
+        $ref: "#/$defs/when"
+      create:
+        description: Create the target when it does not exist.
+        type: boolean
+      region:
+        $ref: "#/$defs/region-key"
+      content:
+        description: Inline region body; a template.
+        $ref: "#/$defs/template"
+      source:
+        description: Support file whose rendered body is the region body.
+        type: string
+      marker:
+        description: >-
+          Explicit comment style for the region markers, overriding inference
+          from the target extension. A string is a line-comment prefix; an
+          object is a block comment.
+        oneOf:
+          - type: string
+          - type: object
+            additionalProperties: false
+            required: [ open, close ]
+            properties:
+              open:
+                type: string
+              close:
+                type: string
+      anchor:
+        description: Where the region is first placed when its markers do not exist.
+        type: object
+        additionalProperties: false
+        required: [ after ]
+        properties:
+          after:
+            description: The line to place the region after; a template.
+            $ref: "#/$defs/template"
+          occurrence:
+            description: Which matching line to use when more than one matches.
+            enum: [ only, first, last ]
+      struct:
+        description: A typed value at a parsed path in a JSON-family target.
+        type: object
+        additionalProperties: false
+        required: [ path, value ]
+        properties:
+          path:
+            description: >-
+              Dot-separated object keys and bracketed array indexes, such as
+              `routes[0].name`. A backslash escapes `.`, `[`, `]`, and `\` in a
+              key. The path begins with a key.
+            type: string
+          value:
+            description: >-
+              A JSON-compatible value. String leaves are templates; every other
+              JSON type is kept.
