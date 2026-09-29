@@ -273,11 +273,8 @@ fn dry_run_reports_inject_then_update_and_writes_nothing() {
     apply(&template, &target, &[]);
     let changed = make_template(root.path(), &STRUCT_TEMPLATE.replace("tsc", "rollup"));
     let dry = apply(&changed, &target, &["--dry-run"]);
-    assert!(
-        stdout(&dry).contains("update package.json (scripts.build)"),
-        "{}",
-        stdout(&dry)
-    );
+    let plan = support::plan_text_from_document(&support::first_document(&dry.stdout));
+    assert!(plan.contains("update package.json (scripts.build)"), "{plan}");
 }
 
 #[test]

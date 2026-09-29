@@ -227,15 +227,18 @@ fn ordinary_path_fault_names_exact_segment_and_content_fault_stays_unchanged() {
 }
 
 #[test]
-fn planning_fault_is_byte_equal_through_direct_staged_and_crate_routes() {
+fn planning_fault_reports_the_same_message_through_direct_staged_and_crate_routes() {
     let template_path = Path::new("tests/fixtures/err-files-when-eval/template")
         .canonicalize()
         .unwrap();
     let target = tempfile::tempdir().unwrap();
-    let answers = target.path().join("answers.json");
-    fs::write(&answers, "{}").unwrap();
+    let bare = target.path().join("answers.json");
+    fs::write(&bare, "{}").unwrap();
 
+    // Direct scripted route: the fault is an `error` document on standard output.
     let direct_state = tempfile::tempdir().unwrap();
+    let answers =
+        support::envelope_file(direct_state.path(), &support::formal_name(&template_path), &bare);
     let direct = support::isolated_command(direct_state.path())
         .arg("apply")
         .arg(support::folder_address(&template_path))
@@ -245,8 +248,10 @@ fn planning_fault_is_byte_equal_through_direct_staged_and_crate_routes() {
         .output()
         .unwrap();
     assert_eq!(direct.status.code(), Some(1));
-    let direct_error = String::from_utf8(direct.stderr).unwrap();
+    let direct_message = support::diagnostic_text(&support::first_document(&direct.stdout));
 
+    // Staged agent route: `stage --async` then `apply PATH` reports the fault on
+    // standard error.
     let staged_state = tempfile::tempdir().unwrap();
     let staged = support::isolated_command(staged_state.path())
         .arg("stage")
@@ -262,7 +267,7 @@ fn planning_fault_is_byte_equal_through_direct_staged_and_crate_routes() {
         .output()
         .unwrap();
     assert_eq!(applied.status.code(), Some(1));
-    assert_eq!(String::from_utf8(applied.stderr).unwrap(), direct_error);
+    let applied_message = String::from_utf8(applied.stderr).unwrap();
 
     let template = Template::load(&template_path).unwrap();
     let canonical = toha::staging::canonical_target(target.path()).unwrap();
@@ -280,7 +285,10 @@ fn planning_fault_is_byte_equal_through_direct_staged_and_crate_routes() {
     let crate_error = Plan::build(&template, &completed, &canonical)
         .unwrap_err()
         .to_string();
-    assert_eq!(direct_error, format!("{crate_error}\n"));
+    // The scripted route carries the fault as the error document's message, the
+    // agent apply route on standard error; both equal the crate message.
+    assert_eq!(direct_message, crate_error);
+    assert_eq!(applied_message, format!("{crate_error}\n"));
 }
 
 #[test]
