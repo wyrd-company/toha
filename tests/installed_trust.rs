@@ -85,11 +85,17 @@ fn add_untrusted(root: &TempDir, folder: &Path) {
 }
 
 /// Applies `demo` into a fresh target with an empty answers document; returns
-/// (exit code, whether the hook ran).
-fn apply_demo(root: &TempDir) -> (Option<i32>, bool) {
+/// (exit code, whether the hook ran). The scripted route requires the
+/// identity-bearing envelope naming the installed template's formal identity,
+/// which for a folder template is its canonical path (`folder`).
+fn apply_demo(root: &TempDir, folder: &Path) -> (Option<i32>, bool) {
     let target = tempfile::tempdir_in(root.path()).unwrap();
     let answers = target.path().join("answers.json");
-    fs::write(&answers, "{}").unwrap();
+    fs::write(
+        &answers,
+        support::envelope_text(&support::formal_name(folder), &serde_json::json!({})),
+    )
+    .unwrap();
     let output = toha(
         root,
         &[
@@ -138,7 +144,7 @@ fn re_trust_after_a_surface_change_re_records_the_current_digest() {
         "the current surface digest is recorded"
     );
 
-    let (code, ran) = apply_demo(&root);
+    let (code, ran) = apply_demo(&root, &folder);
     assert_eq!(code, Some(0), "the re-approved hooks run");
     assert!(ran, "the re-approved hook runs");
 }
@@ -151,7 +157,7 @@ fn grant_then_revoke_round_trip_on_an_installed_template() {
     add_untrusted(&root, &folder);
 
     // Untrusted: the installed hook does not run.
-    let (code, ran) = apply_demo(&root);
+    let (code, ran) = apply_demo(&root, &folder);
     assert_eq!(
         code,
         Some(3),
@@ -186,7 +192,7 @@ fn grant_then_revoke_round_trip_on_an_installed_template() {
     );
 
     // The approved hook now runs.
-    let (code, ran) = apply_demo(&root);
+    let (code, ran) = apply_demo(&root, &folder);
     assert_eq!(code, Some(0), "an approved template runs its hooks");
     assert!(ran, "the approved hook runs");
 
@@ -216,7 +222,7 @@ fn grant_then_revoke_round_trip_on_an_installed_template() {
     );
 
     // The revoked hook no longer runs.
-    let (code, ran) = apply_demo(&root);
+    let (code, ran) = apply_demo(&root, &folder);
     assert_eq!(code, Some(3), "a revoked template needs review again");
     assert!(!ran, "the revoked hook must not run");
 
@@ -425,7 +431,7 @@ fn revoke_then_retrust_clears_the_denial_and_the_hook_runs_again() {
         "the approval is re-recorded: {after}"
     );
 
-    let (code, ran) = apply_demo(&root);
+    let (code, ran) = apply_demo(&root, &folder);
     assert_eq!(code, Some(0), "a re-trusted template runs its hooks");
     assert!(ran, "the recovered hook runs");
 }
@@ -470,7 +476,7 @@ fn trust_clears_a_denial_even_when_a_matching_approval_is_present() {
     fs::write(&path, serde_norway::to_string(&doc).unwrap()).unwrap();
 
     // The denial wins in the merge: the template is effectively untrusted.
-    let (code, ran) = apply_demo(&root);
+    let (code, ran) = apply_demo(&root, &folder);
     assert_eq!(code, Some(3), "the denial makes the template need review");
     assert!(!ran, "the denied hook must not run");
 
@@ -490,7 +496,7 @@ fn trust_clears_a_denial_even_when_a_matching_approval_is_present() {
     );
     assert!(after.get("approval").is_some(), "the approval remains");
 
-    let (code, ran) = apply_demo(&root);
+    let (code, ran) = apply_demo(&root, &folder);
     assert_eq!(code, Some(0), "the re-granted hook runs");
     assert!(ran, "the recovered hook runs");
 }

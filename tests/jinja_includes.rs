@@ -250,7 +250,16 @@ mod nested_include_trust {
         fs::create_dir_all(root.join("template")).unwrap();
         nested_env_template(&root);
         let answers = root.join("answers.json");
-        fs::write(&answers, r#"{"first":"a","second":"b"}"#).unwrap();
+        // The scripted route requires the identity envelope naming the template's
+        // formal identity (its canonical path).
+        fs::write(
+            &answers,
+            support::envelope_text(
+                &support::formal_name(&root),
+                &serde_json::json!({"first": "a", "second": "b"}),
+            ),
+        )
+        .unwrap();
 
         // Denied without trust: the fixed value never reaches the render, so the
         // nested-include read produces an empty value and captures nothing.
@@ -344,11 +353,19 @@ mod nested_include_trust {
             .stderr(Stdio::piped());
         let mut child = resume.spawn().unwrap();
         use std::io::Write;
+        // The agent continue route also requires the identity envelope naming
+        // the staged template's formal identity.
         child
             .stdin
             .take()
             .unwrap()
-            .write_all(br#"{"first":"a","second":"b"}"#)
+            .write_all(
+                support::envelope_text(
+                    &support::formal_name(&root),
+                    &serde_json::json!({"first": "a", "second": "b"}),
+                )
+                .as_bytes(),
+            )
             .unwrap();
         let resumed = child.wait_with_output().unwrap();
         assert_eq!(

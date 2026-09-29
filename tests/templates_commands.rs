@@ -609,6 +609,26 @@ fn update_two_dotted_install_keys() {
     }
 }
 
+/// The argv after `toha` in a suggested command line (a stderr suggestion or a
+/// scripted error document's `commands` entry).
+fn argv(command: &str) -> Vec<String> {
+    let mut words =
+        support::shell_words(&command[command.find("toha ").expect("a toha command")..]);
+    assert_eq!(words.remove(0), "toha");
+    words
+}
+
+/// Rewrites `root/answers.json` as the identity envelope naming `formal` around
+/// an empty answers object, so a scripted apply of that formal passes the
+/// identity boundary and reaches the plan.
+fn envelope(root: &TempDir, formal: &str) {
+    fs::write(
+        root.path().join("answers.json"),
+        support::envelope_text(formal, &serde_json::json!({})),
+    )
+    .unwrap();
+}
+
 fn assert_stderr_names(output: &std::process::Output, commands: &[String]) {
     let stderr = String::from_utf8_lossy(&output.stderr);
     for command in commands {
@@ -730,22 +750,41 @@ fn suggested_commands_for_folder_templates_are_accepted() {
         String::from_utf8_lossy(&output.stderr).into_owned()
     };
 
+    // The agent stage route names the disambiguation on stderr; the named
+    // command is accepted.
     let ambiguous = stderr(&["stage", "same", "staged", "--async"], 5);
     rerun(support::suggested(&ambiguous, "to use "), 0);
 
-    let ambiguous = stderr(&["apply", "--answers", "answers.json", "same", "out"], 5);
-    rerun(support::suggested(&ambiguous, "to use "), 3);
+    // The scripted apply route reports an ambiguous name as an error document on
+    // standard output whose `commands` name the disambiguated apply per template.
+    // Running one with the identity envelope reaches the untrusted-hooks planned
+    // document (exit 3, trusted: false).
+    let output = run(&root, &["apply", "--answers", "answers.json", "same", "out"]);
+    assert_exit(&output, 5);
+    let named = argv(support::first_document(&output.stdout)["commands"][0].as_str().unwrap());
+    envelope(&root, &named[3]);
+    let disambiguated = run(&root, &named.iter().map(String::as_str).collect::<Vec<_>>());
+    let planned = support::first_document(&assert_exit(&disambiguated, 3).into_bytes());
+    assert_eq!(planned["status"], "planned");
+    assert_eq!(planned["trusted"], serde_json::json!(false));
 
+    // The templates alias route names the disambiguation on stderr; the named
+    // command and a chosen alias are accepted.
     let ambiguous = stderr(&["templates", "alias", "same", "picked"], 5);
     rerun(support::suggested(&ambiguous, "to use "), 0);
     let mut alias = support::suggested(&ambiguous, "an alias: ");
+    let chosen_formal = alias[2].clone();
     *alias.last_mut().unwrap() = "chosen".into();
     rerun(alias, 0);
-    let hooks = stderr(
-        &["apply", "--answers", "answers.json", "chosen", "named"],
-        3,
-    );
-    rerun(support::suggested(&hooks, "to trust "), 0);
+
+    // Applying the chosen alias with the identity envelope reaches the same
+    // untrusted-hooks planned document. The scripted route reports trust
+    // structurally as trusted: false rather than naming a trust command.
+    envelope(&root, &chosen_formal);
+    let hooks = run(&root, &["apply", "--answers", "answers.json", "chosen", "named"]);
+    let planned = support::first_document(&assert_exit(&hooks, 3).into_bytes());
+    assert_eq!(planned["status"], "planned");
+    assert_eq!(planned["trusted"], serde_json::json!(false));
 
     let ambiguous = stderr(&["templates", "remove", "same"], 5);
     rerun(support::suggested(&ambiguous, "to use "), 0);
