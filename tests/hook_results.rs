@@ -585,7 +585,25 @@ hooks:
 ";
     let runner = Scripted::new().exit("probe", 1, SECRET);
     let error = apply(yaml, &runner).unwrap_err();
-    assert!(matches!(error, ApplyError::Hook { .. }), "{error:?}");
+    let ApplyError::Hook { outcome, .. } = &error else {
+        panic!("expected Hook: {error:?}")
+    };
+    // The outcome's own Debug omits the captured streams entirely, so neither the
+    // readable text nor its byte representation can appear.
+    let outcome_debug = format!("{outcome:?}");
+    assert!(
+        !outcome_debug.contains("stdout"),
+        "outcome Debug: {outcome_debug}"
+    );
+    assert!(
+        !outcome_debug.contains("stderr"),
+        "outcome Debug: {outcome_debug}"
+    );
+    let bytes = format!("{:?}", SECRET.as_bytes()[0]); // e.g. "84"
+    assert!(
+        !outcome_debug.contains(&bytes),
+        "outcome Debug leaked bytes"
+    );
     assert!(!format!("{error}").contains(SECRET), "Display leaked bytes");
     assert!(!format!("{error:?}").contains(SECRET), "Debug leaked bytes");
 }
