@@ -80,12 +80,18 @@ fn run(fixture: &Path, target: &Path) -> Result<Vec<String>, (u8, String)> {
         .map(RecordingRunner::fail_at)
         .unwrap_or_default();
     let result = if expect.options.dry_run {
-        Ok(Applied::Written {
-            files: vec![],
-            hooks_run: 0,
-            hooks: vec![],
-            after_apply: None,
-        })
+        // A dry run of untrusted hooks reports a `planned` document with
+        // `trusted: false` and exit 3, the same as the scripted route.
+        if !plan.hooks.is_empty() && !expect.options.trust {
+            Err((3, String::new()))
+        } else {
+            Ok(Applied::Written {
+                files: vec![],
+                hooks_run: 0,
+                hooks: vec![],
+                after_apply: None,
+            })
+        }
     } else {
         plan.apply(
             &target,

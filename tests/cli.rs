@@ -19,15 +19,19 @@ fn every_fixture_through_cli() {
         let target = tempfile::tempdir().unwrap();
         let isolation = tempfile::tempdir().unwrap();
         support::copy_tree(&fixture.join("existing"), target.path());
+        let template_folder = fixture.join("template").canonicalize().unwrap();
+        // The scripted route (`apply TEMPLATE PATH --answers FILE`) requires the
+        // identity-bearing envelope naming the formal template.
+        let formal = support::formal_name(&template_folder);
+        let answers =
+            support::envelope_file(isolation.path(), &formal, &fixture.join("answers.json"));
         let mut command = support::isolated_command(isolation.path());
         command
             .arg("apply")
-            .arg(support::folder_address(
-                &fixture.join("template").canonicalize().unwrap(),
-            ))
+            .arg(support::folder_address(&template_folder))
             .arg(target.path())
             .arg("--answers")
-            .arg(fixture.join("answers.json"))
+            .arg(&answers)
             // The hidden TOHA_NOW seed hook fixes the clock for CLI fixtures.
             .env("TOHA_NOW", expect.now.clone());
         if expect.options.force {
@@ -47,33 +51,43 @@ fn every_fixture_through_cli() {
             fixture.display(),
             String::from_utf8_lossy(&output.stderr)
         );
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let error_output = if expect.exit == 4 {
-            String::from_utf8_lossy(&output.stdout)
-        } else {
-            stderr.clone()
-        };
-        for part in &expect.error_contains {
+        // Every scripted outcome is exactly one JSON result document on stdout.
+        let document = support::first_document(&output.stdout);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // A `planned` document reports untrusted hooks structurally (exit 3,
+        // already asserted; the crate harness carries the "--trust" message).
+        // Every other fault is an `error` document whose decoded `message`, or a
+        // `questions` document's per-question errors, carries the diagnostic.
+        if document["status"] != "planned" {
+            let diagnostic = support::diagnostic_text(&document);
+            for part in &expect.error_contains {
+                assert!(
+                    diagnostic.contains(part),
+                    "{}: {diagnostic}",
+                    fixture.display()
+                );
+            }
+        }
+        // Plan-line expectations match the plan text reconstructed from the
+        // document's structured files and hooks.
+        let plan_text = support::plan_text_from_document(&document);
+        for part in &expect.stdout_contains {
             assert!(
-                error_output.contains(part),
-                "{}: {error_output}",
+                plan_text.contains(part),
+                "{}: {plan_text}",
                 fixture.display()
             );
         }
+        // The interview messages lead the document's `messages`.
+        let messages = support::document_messages(&document);
+        assert_eq!(
+            messages.get(..expect.messages.len()),
+            Some(expect.messages.as_slice()),
+            "{}: {document}",
+            fixture.display()
+        );
         if fixture.join("expected").exists() {
             support::assert_tree(target.path(), &fixture.join("expected"), &fixture);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for part in &expect.stdout_contains {
-                assert!(stdout.contains(part), "{}: {stdout}", fixture.display());
-            }
-            let messages: Vec<_> = expect.messages.iter().map(|s| s.as_str()).collect();
-            let lines: Vec<_> = stdout.lines().collect();
-            assert_eq!(
-                &lines[..messages.len()],
-                messages.as_slice(),
-                "{}: {stdout}",
-                fixture.display()
-            );
         } else {
             assert!(
                 std::fs::read_dir(target.path()).unwrap().next().is_none(),

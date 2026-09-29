@@ -364,3 +364,121 @@ pub fn completed_projection(completed: &toha::Completed) -> serde_json::Value {
     }
     document
 }
+
+/// The formal template identity the scripted route establishes for a local
+/// folder: its canonical absolute path, the same value the route publishes as
+/// `context.template`. Envelope answers documents must copy it exactly.
+#[allow(dead_code)]
+pub fn formal_name(template_folder: &Path) -> String {
+    template_folder
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Wraps a bare answers map in the `{"template", "answers"}` envelope naming
+/// `formal`, writes it to `dir`, and returns the path, for `apply --answers`
+/// and `continue PATH FILE`.
+#[allow(dead_code)]
+pub fn envelope_file(dir: &Path, formal: &str, answers: &Path) -> PathBuf {
+    let inner: serde_json::Value = serde_json::from_slice(&fs::read(answers).unwrap()).unwrap();
+    let document = serde_json::json!({ "template": formal, "answers": inner });
+    let path = dir.join("envelope-answers.json");
+    fs::write(&path, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
+    path
+}
+
+/// The envelope text naming `formal` around a bare answers value, for stdin.
+#[allow(dead_code)]
+pub fn envelope_text(formal: &str, answers: &serde_json::Value) -> String {
+    serde_json::json!({ "template": formal, "answers": answers }).to_string()
+}
+
+/// Parses the leading JSON value from a route's standard output, ignoring any
+/// plain-text instructions an agent route appends after the batch document.
+#[allow(dead_code)]
+pub fn first_document(stdout: &[u8]) -> serde_json::Value {
+    serde_json::Deserializer::from_slice(stdout)
+        .into_iter::<serde_json::Value>()
+        .next()
+        .expect("a JSON document on standard output")
+        .expect("a valid JSON document on standard output")
+}
+
+/// The `messages` array of a result document as strings.
+#[allow(dead_code)]
+pub fn document_messages(document: &serde_json::Value) -> Vec<String> {
+    document["messages"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .map(|v| v.as_str().unwrap_or_default().to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Reconstructs the plan-line text (`<action> <path>`, `hook [..] cwd <cwd>`)
+/// from an `applied` or `planned` result document, matching the dry-run text the
+/// former plain-text output produced, so plan-line fixture expectations hold
+/// against the JSON document.
+#[allow(dead_code)]
+pub fn plan_text_from_document(document: &serde_json::Value) -> String {
+    let mut lines = Vec::new();
+    if let Some(files) = document["files"].as_array() {
+        for file in files {
+            lines.push(format!(
+                "{} {}",
+                file["action"].as_str().unwrap_or_default(),
+                file["path"].as_str().unwrap_or_default()
+            ));
+        }
+    }
+    if let Some(hooks) = document["hooks"].as_array() {
+        for hook in hooks {
+            let command: Vec<String> = hook["command"]
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .map(|v| v.as_str().unwrap_or_default().to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
+            lines.push(format!(
+                "hook {command:?} cwd {}",
+                hook["cwd"].as_str().unwrap_or(".")
+            ));
+        }
+    }
+    lines.join("\n")
+}
+
+/// The decoded diagnostic text of a result document: an `error` document's
+/// `message`, plus every per-question error string of a `questions` document.
+/// Fixture `error_contains` parts match this rather than the JSON-escaped
+/// standard output.
+#[allow(dead_code)]
+pub fn diagnostic_text(document: &serde_json::Value) -> String {
+    let mut text = String::new();
+    if let Some(message) = document["message"].as_str() {
+        text.push_str(message);
+    }
+    if let Some(errors) = document["errors"].as_object() {
+        for (id, value) in errors {
+            text.push('\n');
+            text.push_str(id);
+            if let Some(items) = value.as_array() {
+                for item in items {
+                    if let Some(sentence) = item.as_str() {
+                        text.push('\n');
+                        text.push_str(sentence);
+                    }
+                }
+            }
+        }
+    }
+    text
+}
