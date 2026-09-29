@@ -156,6 +156,39 @@ description: >-
   hooks, including `--dry-run` output and the listing shown when hooks need
   trust, shows each invocation with its rendered arguments.
 
+  Hook results. A hook opts in to a readable result with `id`. A later
+  top-level hook reads it in `when`, in `run[1..]` or `args`, or in `cwd`, and
+  `messages.after-apply` reads it too; no other surface may — not a file, a path
+  segment, `before-apply`, an interview field, an interview hook, `run[0]`, the
+  script path, or `each`. An interview hook may produce a result but never reads
+  one. A result is the object `{exit_code, stdout, stderr}`, read as
+  `<id>.exit_code`/`.stdout`/`.stderr`. A producer that did not run — a false
+  `when`, a skipped position — binds all three to `none`, so `<id>.exit_code is
+  none` means the hook did not run; a read is always bound, never undefined. A
+  stream is readable only when the producer declares it in `capture`, the list
+  of `stdout`/`stderr` piped to Toha; an uncaptured stream inherits the terminal,
+  and Toha never prints a captured stream. A read stream that is not captured, a
+  captured stream that is never read, a read before its producer runs, a read of
+  its own result, and a read on a disallowed surface are load errors. The
+  default failure behaviour is unchanged: a nonzero exit or any signal stops the
+  remaining hooks and fails the apply. `allow-failure: true`, which requires an
+  `id` whose result is read, tolerates a nonzero exit code only; a signal stays
+  fatal. A captured stream is decoded as strict UTF-8; invalid UTF-8 fails the
+  apply with a byte-free error. A result exists for one apply only and is never
+  written to a file, shown in output, or persisted.
+
+  JSON hook results. A producer with `parse: json`, which requires `id` and
+  `capture: [stdout]`, parses its stdout so the parsed value is read directly at
+  `<id>`: an object as `<id>.key` or `<id>['a-key']`, an array as `<id>[i]`, a
+  scalar as itself, and JSON `null` as `none`. A parsed string is data, never a
+  template. Execution metadata moves to an author-declared `status-id`, bound to
+  `{exit_code, stdout, stderr, parsed}`, where `parsed` is true when stdout
+  parsed this run. `status-id` is required when the producer may not run or has
+  `allow-failure`, so a `none` `<id>` is never ambiguous. On exit 0, empty or
+  malformed stdout fails the apply with a byte-free error; a tolerated nonzero
+  exit whose stdout does not parse leaves `<id>` `none`, `<status-id>.parsed`
+  false, and the raw text in `<status-id>.stdout`.
+
   Messages. A message node shows its rendered text when the interview reaches
   it. The top-level `messages` map has two optional keys, each a template:
   `before-apply` is shown before any file is written, and `after-apply` is

@@ -74,7 +74,10 @@ description: >-
   performs a dry run, lists the hooks, states that `--trust` is required, names
   the same command with `--trust`, and exits with code 3; when an approval
   exists but no longer matches, the listing marks the hooks changed since
-  approval. For a template resolved by name from the user or system template
+  approval. A hook that reads an earlier hook's result is listed in source form,
+  with `{{ id.field }}` placeholders where the result will go, because the result
+  is not known until the hook runs; a dry run reads no result and runs no hook.
+  Toha never prints a stream a template captures. For a template resolved by name from the user or system template
   registry, it also names `templates trust` with the formal name.
   `apply --dry-run` of a template with hooks that is not trusted prints the
   plan, then names on standard error the same command with `--trust` and

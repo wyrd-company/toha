@@ -85,6 +85,16 @@ $defs:
     description: "`<expression> as <name>`."
     type: string
     pattern: '^.+ as [a-z_][a-z0-9_]*$'
+  capture:
+    description: The hook streams piped to Toha so they can be read.
+    type: array
+    minItems: 1
+    uniqueItems: true
+    items:
+      enum: [ stdout, stderr ]
+  parse:
+    description: How a captured hook stream is parsed for reading.
+    enum: [ json ]
   nodes:
     type: array
     items:
@@ -193,6 +203,32 @@ $defs:
         $ref: "#/$defs/each"
       when:
         $ref: "#/$defs/when"
+      id:
+        description: >-
+          Opt-in result identity. A later hook or the after-apply message may read
+          this hook's result as `<id>.exit_code`/`.stdout`/`.stderr`, or, with
+          `parse: json`, the parsed stdout directly at `<id>`.
+        $ref: "#/$defs/identifier"
+      capture:
+        description: >-
+          The streams piped to Toha so they can be read. An uncaptured stream
+          inherits the terminal and is never read. Requires `id`.
+        $ref: "#/$defs/capture"
+      allow-failure:
+        description: >-
+          Tolerate a nonzero exit code (a signal stays fatal). Requires an `id`
+          whose result is read.
+        type: boolean
+      parse:
+        description: >-
+          Parse the captured stdout so the value is read directly at `<id>`.
+          Requires `id` and `capture: [stdout]`.
+        $ref: "#/$defs/parse"
+      status-id:
+        description: >-
+          For a `parse: json` hook, the name carrying `{exit_code, stdout, stderr,
+          parsed}`. Requires `parse: json`.
+        $ref: "#/$defs/identifier"
   hook-node:
     type: object
     additionalProperties: false
@@ -220,6 +256,16 @@ $defs:
             $ref: "#/$defs/template"
           each:
             $ref: "#/$defs/each"
+          id:
+            $ref: "#/$defs/identifier"
+          capture:
+            $ref: "#/$defs/capture"
+          allow-failure:
+            type: boolean
+          parse:
+            $ref: "#/$defs/parse"
+          status-id:
+            $ref: "#/$defs/identifier"
       when:
         $ref: "#/$defs/when"
   message-node:

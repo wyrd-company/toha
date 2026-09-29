@@ -180,6 +180,26 @@ A staged interview created before these values existed keeps the earlier
 behavior: none of the seventeen names are injected, reserved, or shown by
 `debug()`.
 
+## Hook results
+
+A hook with an `id` adds a variable — its result — to a narrow set of later
+surfaces only: a later top-level hook's `when`, `run[1..]`, `args`, or `cwd`,
+and `messages.after-apply`. Unlike answers and context values, a hook result is
+not available to questions, files, file paths, `before-apply`, or an interview
+hook, because it does not exist until the hook runs after files are written.
+
+Its value is the object `{exit_code, stdout, stderr}`, read as `lint.exit_code`,
+`version.stdout`, and so on. Each field is `none` until the hook runs; a
+producer that never ran leaves all three `none`, so `version.exit_code is none`
+tests whether it ran. A stream is present only when the hook declares it in
+`capture`.
+
+With `parse: json`, the `id` is the parsed value itself — `pkg.name`, `pkg[0]`,
+a scalar, or `none` for JSON `null` — and the execution metadata moves to the
+`status-id`, which holds `exit_code`, `stdout`, `stderr`, and `parsed`. See
+[Hooks and messages](/docs/toha/template-hooks) for the full rules and
+examples.
+
 ## Supported Jinja features
 
 Toha includes MiniJinja's built-in filters, tests, and functions, the `tojson`

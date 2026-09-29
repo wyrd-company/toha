@@ -153,7 +153,16 @@ const FILE_REFERENCING_KEYS: &[&str] = &["script", "run", "args"];
 /// list every key the schema permits in a hook command; the coverage guard
 /// test fails when the schema grows a key that is in neither set.
 #[cfg(test)]
-const NODE_ONLY_KEYS: &[&str] = &["cwd", "each", "when"];
+const NODE_ONLY_KEYS: &[&str] = &[
+    "cwd",
+    "each",
+    "when",
+    "id",
+    "capture",
+    "allow-failure",
+    "parse",
+    "status-id",
+];
 
 impl HookSurface {
     /// Collects the reviewable surface of `template`, reading the bytes of
@@ -610,6 +619,45 @@ mod tests {
             "hook command keys need a coverage decision: {unclassified:?}"
         );
         // The classification must not name keys the schema does not have.
+        let extra: Vec<_> = classified.difference(&schema_keys).collect();
+        assert!(
+            extra.is_empty(),
+            "classified keys absent from schema: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn every_hook_key_is_classified_by_executable_reference() {
+        // Every key the schema allows in a hook command must be classified as an
+        // ExecutableReference — one that names an in-tree program (run, script) —
+        // or a NoExecutableReference. This is the 1069 hook-review coverage
+        // decision: no new field may name an executable without a conscious
+        // choice here, so `run[0]`/`script` remain the only surfaces that derive a
+        // program, and a result-reading field cannot smuggle one in. An
+        // unclassified key fails; a classified key absent from the schema fails.
+        const EXECUTABLE_REFERENCE: &[&str] = &["run", "script"];
+        const NO_EXECUTABLE_REFERENCE: &[&str] = &[
+            "args",
+            "cwd",
+            "when",
+            "each",
+            "id",
+            "capture",
+            "allow-failure",
+            "parse",
+            "status-id",
+        ];
+        let classified: std::collections::BTreeSet<String> = EXECUTABLE_REFERENCE
+            .iter()
+            .chain(NO_EXECUTABLE_REFERENCE)
+            .map(|k| (*k).to_owned())
+            .collect();
+        let schema_keys = schema_hook_command_keys();
+        let unclassified: Vec<_> = schema_keys.difference(&classified).collect();
+        assert!(
+            unclassified.is_empty(),
+            "hook keys need an executable-reference decision (1069 coverage): {unclassified:?}"
+        );
         let extra: Vec<_> = classified.difference(&schema_keys).collect();
         assert!(
             extra.is_empty(),
