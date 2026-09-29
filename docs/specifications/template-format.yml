@@ -180,13 +180,14 @@ description: >-
   are preserved; Toha adds no marker or provenance comment to a JSON-family file.
   Missing object parents in the path are created; an array in the path must
   already exist and each index must be in range, and a scalar where the path
-  needs an object or array is an error. The `Json` format disables every parser
-  relaxation, `Jsonc` adds comments and trailing commas, and `Json5` is a
-  permissive JSON5-compatible superset; because the concrete syntax tree keeps a
-  comment as a token, a comment in a strict `.json` target is tolerated and
-  preserved rather than rejected. New object values serialize with sorted keys.
-  Two `struct` rules on one target whose paths are equal or are an ancestor and
-  descendant, and two `region` rules with the same key, are planning errors.
+  needs an object or array is an error. A `.json` target is strict JSON: a
+  comment, a trailing comma, a single-quoted string, or any other relaxation is
+  rejected and nothing is written. `Jsonc` additionally accepts comments and
+  trailing commas, and `Json5` is a permissive JSON5-compatible superset; both
+  keep the comments and formatting already in the file. New object values
+  serialize with sorted keys. Two `struct` rules on one target whose paths are
+  equal or are an ancestor and descendant, and two `region` rules with the same
+  key, are planning errors.
 
   A `region` rule whose target ends in `.json`, `.jsonc`, or `.json5` is a
   planning error that directs the author to `struct` or an existing whole-file

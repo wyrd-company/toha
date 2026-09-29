@@ -317,6 +317,66 @@ fn jsonc_injection_preserves_comments() {
 }
 
 #[test]
+fn strict_json_rejects_a_comment_and_writes_nothing() {
+    let root = tempfile::tempdir().unwrap();
+    let template = make_template(root.path(), STRUCT_TEMPLATE);
+    // A `.json` target that carries a comment is not strict JSON.
+    let commented = "{\n  // scripts here\n  \"scripts\": {}\n}";
+    let target = json_target(root.path(), commented);
+    let file = target.join("package.json");
+    let output = apply(&template, &target, &[]);
+    assert_eq!(output.status.code(), Some(1), "{}", stdout(&output));
+    // The invalid strict-JSON target is refused before any write.
+    assert_eq!(fs::read_to_string(&file).unwrap(), commented);
+}
+
+#[test]
+fn a_late_invalid_json_target_leaves_earlier_targets_unchanged() {
+    // A zero-write witness: the first target would inject, but the second is an
+    // invalid strict-`.json` file, so the whole apply writes nothing.
+    let root = tempfile::tempdir().unwrap();
+    let template = make_template(
+        root.path(),
+        "name: sample\ninject:\n  - into: \"first.json\"\n    struct: { path: \"ok\", value: 1 }\n  - into: \"second.json\"\n    struct: { path: \"bad\", value: 2 }\n",
+    );
+    let target = root.path().join("out");
+    fs::create_dir_all(&target).unwrap();
+    fs::write(target.join("first.json"), "{}").unwrap();
+    // second.json is valid for the CST but has a comment, so strict JSON rejects.
+    let second = "{\n  // not strict\n}";
+    fs::write(target.join("second.json"), second).unwrap();
+    let output = apply(&template, &target, &[]);
+    assert_eq!(output.status.code(), Some(1), "{}", stdout(&output));
+    // Neither target changed: first.json is still empty, second.json untouched.
+    assert_eq!(fs::read_to_string(target.join("first.json")).unwrap(), "{}");
+    assert_eq!(
+        fs::read_to_string(target.join("second.json")).unwrap(),
+        second
+    );
+}
+
+#[test]
+fn region_source_outside_the_template_root_is_a_load_error() {
+    let root = tempfile::tempdir().unwrap();
+    // The `source` support file does not exist inside the template root.
+    let template = make_template(
+        root.path(),
+        "name: sample\ninject:\n  - into: \"a.conf\"\n    region: net\n    source: \"missing.txt\"\n",
+    );
+    let target = root.path().join("out");
+    fs::create_dir_all(&target).unwrap();
+    fs::write(target.join("a.conf"), "base\n").unwrap();
+    let output = apply(&template, &target, &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).to_lowercase().contains("source")
+            || stderr(&output).contains("does not exist"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
 fn whole_file_generation_plus_edit_commits_one_final_image() {
     let root = tempfile::tempdir().unwrap();
     // The template generates config.json, then injects a value into it.

@@ -172,10 +172,26 @@ fn parse_options_json_bundle_rejects_relaxations() {
     assert!(!parses(r#"{"a": 1,}"#, JsonFormat::Json));
     assert!(!parses(r#"{'a': 1}"#, JsonFormat::Json));
     assert!(!parses("{a: 1}", JsonFormat::Json));
-    // The concrete syntax tree keeps a comment as a trivia token, so the
-    // `allow_comments` flag it exposes does not reject one; the strict bundle's
-    // teeth are the other relaxations above.
-    assert!(parses("{\n  // kept\n  \"a\": 1\n}", JsonFormat::Json));
+}
+
+#[test]
+fn strict_json_resolver_rejects_a_comment_but_jsonc_and_json5_keep_it() {
+    // The concrete syntax tree keeps a comment regardless of `allow_comments`,
+    // so the strict-`.json` contract is enforced by a serde_json validation step
+    // in the resolver before any mutation.
+    let commented = "{\n  // note\n  \"scripts\": {}\n}";
+    let strict = json_edit("scripts.build", json!("tsc"), JsonFormat::Json, false);
+    assert!(matches!(
+        resolve_json_edit(Some(commented.as_bytes()), &strict),
+        Err(JsonEditError::Parse { .. })
+    ));
+    // JSONC and JSON5 keep their comment policy and preserve the comment.
+    for format in [JsonFormat::Jsonc, JsonFormat::Json5] {
+        let edit = json_edit("scripts.build", json!("tsc"), format, false);
+        let out = written(resolve_json_edit(Some(commented.as_bytes()), &edit).unwrap());
+        assert!(out.contains("// note"), "{format:?}: {out}");
+        assert!(out.contains("\"build\": \"tsc\""), "{format:?}: {out}");
+    }
 }
 
 #[test]

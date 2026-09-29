@@ -776,6 +776,19 @@ fn plan_json(current: Option<&[u8]>, edit: &PlannedJsonEdit) -> Result<JsonOutco
     let text = std::str::from_utf8(bytes).map_err(|_| JsonEditError::NotUtf8 {
         path: edit.json_path.clone(),
     })?;
+    // Strict JSON has no comments, but the `jsonc-parser` concrete syntax tree
+    // keeps a comment as a trivia token regardless of `allow_comments`, so it
+    // does not reject one. `serde_json` is a strict RFC 8259 parser and is
+    // already a dependency; validate a `.json` target through it before any CST
+    // mutation so a comment, a trailing comma, or any other relaxation is
+    // refused and nothing is written. JSONC and JSON5 keep their own policies.
+    if edit.format == JsonFormat::Json {
+        serde_json::from_str::<Value>(text).map_err(|e| JsonEditError::Parse {
+            path: edit.json_path.clone(),
+            format: edit.format,
+            message: e.to_string(),
+        })?;
+    }
     let root = CstRootNode::parse(text, &edit.format.parse_options()).map_err(|e| {
         JsonEditError::Parse {
             path: edit.json_path.clone(),
