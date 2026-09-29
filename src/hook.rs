@@ -286,3 +286,49 @@ impl HookResults {
         }
     }
 }
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::plan::PlannedProgram;
+    use crate::template::{Capture, Id};
+
+    fn planned(capture: Capture) -> PlannedHook {
+        PlannedHook {
+            program: PlannedProgram::Run(vec!["sh".into(), "-c".into(), "printf data".into()]),
+            cwd: None,
+            template_root: std::path::PathBuf::from("."),
+            id: Some(Id::parse("probe").unwrap()),
+            capture,
+            allow_failure: false,
+            parse_json: false,
+            status_id: None,
+        }
+    }
+
+    #[test]
+    fn process_runner_captures_only_the_declared_stream() {
+        let target = tempfile::tempdir().unwrap();
+        // Declared: stdout is piped to Toha (returned), so it is not printed.
+        let captured = ProcessRunner
+            .run(
+                &planned(Capture {
+                    stdout: true,
+                    stderr: false,
+                }),
+                target.path(),
+            )
+            .unwrap();
+        assert!(captured.success);
+        assert_eq!(captured.code, Some(0));
+        assert_eq!(captured.stdout.as_deref(), Some(b"data".as_slice()));
+        assert_eq!(captured.stderr, None);
+        // Undeclared: the stream inherits the terminal and is not captured.
+        let inherited = ProcessRunner
+            .run(&planned(Capture::default()), target.path())
+            .unwrap();
+        assert!(inherited.success);
+        assert_eq!(inherited.stdout, None);
+        assert_eq!(inherited.stderr, None);
+    }
+}
