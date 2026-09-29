@@ -79,8 +79,10 @@ description: >-
   command with `--trust`; when an approval exists but no longer matches, the
   listing marks the hooks changed since approval. The scripted route
   (`apply TEMPLATE PATH --answers FILE`) instead emits a `planned` result
-  document with `trusted: false` and the planned hooks on standard output,
-  and writes nothing else. A hook that reads an earlier hook's result is listed in source form,
+  document with `trusted: false` and the planned hooks as its single
+  standard-output document; the one-document guarantee is on standard output
+  only, and configuration diagnostics still reach standard error. A hook that
+  reads an earlier hook's result is listed in source form,
   with `{{ id.field }}` placeholders where the result will go, because the result
   is not known until the hook runs; a dry run reads no result and runs no hook.
   Toha never prints a stream a template captures. For a template resolved by name from the user or system template
@@ -88,11 +90,16 @@ description: >-
   formal name. On the person and agent routes, `apply --dry-run` of a template
   with hooks that is not trusted prints the plan, then names on standard error
   the same command with `--trust` and without `--dry-run`, and `templates
-  trust` as `apply` does, and exits with code 0. The scripted route emits the
-  `planned` document with `trusted: false` and exits with code 3 whether or
-  not `--dry-run` is given. The dry run of a trusted template, or of a template
-  without hooks, names neither on the person and agent routes, and the scripted
-  route's `planned` document reports `trusted: true` with exit code 0.
+  trust` as `apply` does, and exits with code 0. The scripted route reports the
+  trust state and chooses its exit independently: the `planned` document's
+  `trusted` field is true only under a trust grant — `--trust` or a matching
+  registry approval — whether or not the template has hooks, and the exit is 3
+  only when the template has hooks and is not trusted, otherwise 0. So an
+  untrusted template with hooks is `trusted: false` at exit 3 whether or not
+  `--dry-run` is given; an untrusted template without hooks is `trusted: false`
+  at exit 0; and a trusted template is `trusted: true` at exit 0. On the person
+  and agent routes, the dry run of a trusted template, or of a template without
+  hooks, names neither.
   `templates trust <name>` approves the current
   executable surface of an installed template, reading the installed folder
   only and never fetching or changing the commit, and echoes the approved hooks
@@ -124,7 +131,9 @@ description: >-
   accepted batch, and applies at completion; with `--dry-run` it records and
   writes nothing; without a terminal it refuses and names the agent route.
   `apply <TEMPLATE> <PATH> --answers <FILE>` is the scripted route: one shot,
-  one JSON result document for every outcome, never staged, and it refuses with
+  one JSON result document on standard output for every outcome — standard
+  error still carries any configuration diagnostics and an uncaptured hook's
+  stream — never staged, and it refuses with
   a `staged` error document — before reading the document — when an interview is
   staged at the path. `stage <TEMPLATE> <PATH>` with an interview for that
   template staged at the path fails and names `continue` for an incomplete
