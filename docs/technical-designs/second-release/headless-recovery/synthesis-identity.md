@@ -13,8 +13,8 @@ relationships:
 Candidate 2 is the base for the document boundary. Its private verified
 submission is consumed by the operation that creates it, so external JSON cannot
 be converted to a reusable raw capability after an unrelated identity check.
-The final route surface is revised to preserve the distinct engine semantics of
-apply and continue.
+The final route surface preserves the distinct engine semantics of the scripted
+apply walk and one-step continue.
 
 The external document is:
 
@@ -59,7 +59,6 @@ base. They weight defects differently:
 - One protocol-owned parse, envelope validation, exact comparison, id parsing,
   and raw conversion path.
 - No public constructor, raw extraction, or separately reusable verified value.
-- Terminal-summary scope across apply and continue question results.
 - Route, flow, migration, and compile-fail proof matrices.
 
 ### From candidate 1
@@ -101,6 +100,12 @@ base. They weight defects differently:
   are rejected because the existing producer already emits the formal identity.
 - A bare-map compatibility fallback is rejected because it bypasses the decided
   identity requirement.
+- Candidate 2's terminal-summary scope across apply and continue question results
+  is rejected. It selected output from stdout terminal status for calls that
+  carry an answers document, which cannot tell an agent on a pseudo-terminal
+  from a person. The cross-judge treated the task's reassessment question as
+  product authority; it was an investigation question. Bob's caller-route model
+  replaces it.
 
 ## Interface conclusion
 
@@ -126,13 +131,18 @@ The document declaration itself has no authority to select or resolve a source.
 
 ## Product conclusions
 
-The required identity does not remove the original recovery need:
+The route surface follows Bob's caller-route model rather than the candidates'
+recovery recommendations:
 
-- target-only apply is safer because the document independently asserts the
-  staged record's template;
-- terminal question presentation is an output concern and remains useful;
-- named staged apply supplies an additional command identity assertion.
+- the scripted route, `apply TEMPLATE PATH --answers FILE`, is one shot, never
+  stages, refuses when an interview is staged, and writes one JSON result
+  document;
+- the agent route is `stage --async`, `continue PATH FILE`, and `apply PATH`,
+  with batch JSON and instructions on standard output;
+- the person route is `stage`, `continue PATH`, and `apply TEMPLATE PATH`, with
+  prompts and batch saving.
 
-The recommendations remain target-only resume, terminal summaries for apply and
-continue question results, and matching named recovery. These three product
-choices require Bob's approval with the exact revised design.
+Both document-consuming routes use the synthesized boundary unchanged:
+`answer_document_headless` for the scripted route and `answer_document_once` for
+`continue PATH FILE`. Target-only and named staged `--answers` recovery are not
+part of the design.

@@ -45,20 +45,22 @@ unchanged.
 
 ## Caller usage against interfaces
 
-### New and staged apply
+### Scripted apply
 
-Both pass the route's expected formal identity, active template, active interview,
-and document text to `answer_document_headless`. The function parses once,
-compares once, and drives the existing headless walk only after the comparison.
-Its `Headless` result retains accepted submissions for the staging policy.
+`apply TEMPLATE PATH --answers FILE` checks for a staged record first and
+refuses without reading the document when one exists. Otherwise it passes the
+resolved formal identity, active template, started interview, and document text
+to `answer_document_headless`. The function parses once, compares once, and
+drives the headless walk only after the comparison. The route consumes the
+`Headless` result without any staged effect and emits one result document.
 
-### Continue
+### Continue with a document
 
-`continue` passes the staged formal identity, active `Pending`, and document text
-to `answer_document_once`. The operation calls `Pending::answer` at most once.
-It returns the accepted storage map only with a successful engine transition.
-Rejected input returns the pending state and rejections without a persistable
-submission.
+`continue PATH FILE` passes the staged formal identity, active `Pending`, and
+document text to `answer_document_once`. The operation calls `Pending::answer`
+at most once. It returns the accepted storage map only with a successful engine
+transition. Rejected input returns the pending state and rejections without a
+persistable submission.
 
 ### Terminal, replay, and in-memory crate calls
 
@@ -133,19 +135,32 @@ Rejected or mismatched input never appears in the accepted result.
 
 ## Route matrix verification
 
-| Route | Identity source | Read priority | Engine meaning | Result |
-|---|---|---|---|---|
-| New apply with file | Resolved command template | After template/start | Headless walk | Carries. |
-| Target-only staged apply with file | Staged record | After replay proves input usable | Headless walk | Carries. |
-| Named staged apply with file | Command first equals staged; staged gates document | Command mismatch before read | Headless walk | Carries. |
-| Continue with file/stdin | Staged record | After replay proves input usable | Exactly one step | Carries. |
-| Terminal prompts | Active interview | No document | In-memory steps | Carries. |
-| Staged replay | Staged record | No document | Stored in-memory steps | Carries. |
-| Crate external document | Caller-established formal name | Caller-owned I/O | Explicit one-step or headless operation | Carries. |
-| Crate in-memory | Active interview | No document | Existing raw APIs | Carries. |
+| Route | Identity source | Read priority | Engine meaning | Staged effect | Result |
+|---|---|---|---|---|---|
+| Scripted apply with file | Resolved command template | After staged refusal and start | Headless walk | None | Carries. |
+| Continue with file/stdin | Staged record | After replay proves input usable | Exactly one step | Accepted submission | Carries. |
+| `stage --async` | Resolved command template | No document | Start only | Create record | Carries. |
+| `apply PATH` | Staged record | No document | Replay only | Remove after write | Carries. |
+| Person prompts | Active interview | No document | In-memory steps | Save each batch | Carries. |
+| Staged replay | Staged record | No document | Stored in-memory steps | None | Carries. |
+| Crate external document | Caller-established formal name | Caller-owned I/O | Explicit one-step or headless operation | Caller | Carries. |
+| Crate in-memory | Active interview | No document | Existing raw APIs | Caller | Carries. |
 
-The matrix closes candidate 2's hidden mode: one public operation does not claim
-both one-step and headless behavior.
+Only two command routes read an answers document. Each has one expected
+identity source. One public operation does not claim both one-step and headless
+behavior.
+
+## Caller-route verification
+
+| Property | Carrier | Result |
+|---|---|---|
+| Scripts receive one JSON document for every outcome. | Result documents with status and exit table. | Carries. |
+| Scripts never stage. | Staged refusal before read; no store call on the route. | Carries. |
+| Agents receive the batch and its instructions together. | Batch JSON then instructions on stdout. | Carries. |
+| Agents see missing answers as the next step. | `errors` excludes questions not yet asked. | Carries. |
+| People can pause and resume the direct route. | New `apply T P` saves each batch. | Carries. |
+| No output selection from terminal status. | stdout check removed; stdin checked only on prompting routes. | Carries. |
+| Handoff between agent and person. | Shared staged record; no caller-kind field. | Carries. |
 
 ## Validation and failure ordering
 
@@ -183,50 +198,45 @@ byte-for-byte unchanged.
 
 ## Accepted flow compatibility
 
-| Accepted result | Recovery action | Guard |
-|---|---|---|
-| Pending | Save accepted prefix under normal execution. | No plan or target effect. |
-| Completed proceed | Save accepted progress, plan, apply, then clean staged state after success. | Only completed values are plannable. |
-| Completed flow dry-run | Save accepted progress, build/show plan. | No target write or hook. |
-| Ended stop | Save accepted progress and retain staged state. | No completed value or plan. |
-| Ended abort | Remove through the existing canonical target under normal execution. | No plan, write, or hook. |
-| Skip | Stay inside the engine walk. | No recovery-specific skip policy. |
-| Any result with CLI `--dry-run` | Simulate without staged or target mutation. | Abort removal is suppressed. |
+| Accepted result | Scripted route | `continue PATH FILE` | Guard |
+|---|---|---|---|
+| Pending | `questions`; nothing saved. | Save accepted submission. | No plan or target effect. |
+| Completed proceed | Plan, apply, `applied`. | Save; completion instructions. | Only completed values are plannable. |
+| Completed flow dry-run | Plan, `planned`. | Save; completion instructions. | No target write or hook. |
+| Ended stop | `ended`. | Save; retain record. | No completed value or plan. |
+| Ended abort | `ended`; no record exists. | Remove record. | No plan, write, or hook. |
+| Skip | Inside the walk. | Inside the step. | No recovery-specific skip policy. |
+| CLI `--dry-run` | `planned`; no mutation. | Not applicable. | Abort removal suppressed. |
 
 An ordinary confirm value enters the answer transaction. It is not a recovery
 action. A later flow `when` can use it and produce one of the listed results.
 
 ## Original problem reassessment
 
-| Original question | Identity-bearing evidence | Recommendation |
+| Original question | Evidence | Resolution |
 |---|---|---|
-| Target-only apply with answers | Target selects one staged identity; document independently asserts it; mismatch precedes answer evaluation. | 1A: support recovery. |
-| Terminal question presentation | Input identity does not change human need or machine output; one result has two representations. | 2A: terminal summary, non-terminal JSON. |
-| Matching named staged apply | Command, record, and document form a three-way identity assertion; stored source remains authoritative. | 3A: preserve recovery. |
-
-The reported problem remains valid in all three cases.
+| Target-only apply with answers | Staged recovery belongs to `continue PATH FILE` and `apply PATH`; the scripted route has no staged effect. | Not needed; scripted route refuses when staged. |
+| Exit-4 presentation | Reported by an agent; the defect is inconsistent meaning of an incomplete interview and separated instructions. | Resolved by caller routes. |
+| Matching named staged apply | People use `apply TEMPLATE PATH` directly. | Kept for the person route, by prompting. |
 
 ## Compatibility verification
 
-- Bare external maps are rejected as required by the identity correction.
+Toha is before 1.0.0 and has no dependent users. The breaking changes are listed
+in `design.md` under compatibility and consequential changes. In addition:
+
 - The migration wrapper preserves the inner answer map without reinterpretation.
 - Staged record bytes and accepted replay submissions do not change.
-- The public raw JSON parser is replaced because it erases document identity.
 - `RawAnswers`, `Pending::answer`, and raw headless driving remain available for
   in-memory callers.
-- Batch, complete, and ended output documents retain their accepted shapes.
+- The batch and ended documents keep their accepted shapes; `applied`,
+  `planned`, and `error` are added; `complete` is removed.
 - External documents remain portable across target and commit for one formal
   template identity.
-- Exit 4 retains its question/rejection meaning; document faults use exit 1.
-- Exit 3 and accepted flow exits retain predecessor semantics.
-
-The only supported-capability changes are the required rejection of identity-less
-answer files and the public raw JSON parser that would bypass that same
-requirement. The pure in-memory capability is preserved.
+- Exit codes keep their meanings.
 
 ## Arena verification
 
-The revised round contains two structurally distinct, terminal candidates:
+The identity round contains two structurally distinct, terminal candidates:
 
 - candidate 1 exposes parsed and verified document states;
 - candidate 2 binds parse and verification to one consuming route capability.
@@ -236,9 +246,14 @@ unchanged. The runner directories were packaging boundaries, not enforced
 filesystem sandboxes; `arena-setup-identity.md` records actual reads and technical
 reachability. The rubric was created only after both candidates were terminal.
 
-The other-family judge and parent both selected candidate 2 as the base. The
-score disagreement and every accepted/rejected graft are resolved in
-`synthesis-identity.md` and `cross-judge-identity.md`.
+The other-family judge and parent both selected candidate 2 as the base for the
+document boundary. `synthesis-identity.md` and `cross-judge-identity.md` resolve
+the score disagreement and every graft.
+
+The caller-route model is Bob's product decision, not an arena output. It
+changes which routes consume the document boundary, not the boundary itself.
+Bob approved revising the design directly without a further arena round for
+this reason.
 
 ## Red-flag verification
 
@@ -247,6 +262,7 @@ score disagreement and every accepted/rejected graft are resolved in
 - It has no pass-through wrapper around `Pending::answer`; each document
   operation adds the identity invariant and consumes the private capability.
 - It has no hidden mode for one-step versus headless behavior.
+- It has no caller-kind flag and no output selection from terminal status.
 - It adds no alternate source identity, target identity, or configured origin.
 - It adds no permission/access rule, timeout, pinned-version check, or
   application subprocess.
@@ -260,18 +276,20 @@ No shared canonical document changes occur in this design task.
 
 ## Falsifiable implementation contract
 
-The 23 numbered behaviors and 14 sole-kill guards in `design.md` cover:
+The 27 numbered behaviors and 15 sole-kill guards in `design.md` cover:
 
 - the required cross-template same-ids failure;
-- every missing/malformed/mismatch route;
+- every missing, malformed, and mismatch route;
 - zero identity-resolution calls;
 - read priority and unused-input refusal;
 - staged and target byte preservation;
-- one-step/headless distinction;
+- the scripted route's single document and zero staged effect;
+- agent-route output, instructions, and completion;
+- person-route prompting, batch saving, and resume;
+- one-step and headless distinction;
 - all accepted flow results and CLI preview;
-- terminal and machine presentation;
 - crate API source and compile-fail compatibility;
-- target/commit portability;
+- target and commit portability;
 - schema and full-path examples.
 
 Each load-bearing guard has a named test that fails when the guard is removed or
@@ -281,6 +299,6 @@ inverted. The implementation task binds these exact behaviors after approval.
 
 The design carries the formal template identity from its existing producer to a
 single external-document boundary without reconstruction. A mismatched document
-cannot enter the engine or reach staged, flow, planning, target, or hook effects.
-The three recovery recommendations remain pending Bob's approval of the exact
-revised artifact and deck revision.
+cannot enter the engine or reach staged, flow, planning, target, or hook
+effects. Each caller kind has one route whose modality is fixed by the route.
+The exact revision remains pending Bob's approval.

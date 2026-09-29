@@ -1,13 +1,14 @@
 <section id="title">
   <p class="kicker">Toha 0.2.0 · Revised design checkpoint</p>
-  <h1>Answer the right template, then recover</h1>
+  <h1>One route per caller</h1>
   <p>
-    Every answers file identifies its template before Toha can evaluate an
-    answer or change staged work.
+    Scripts, agents, and people each get their own command path. Every answers
+    file names the template it answers.
   </p>
   <p>
-    <span class="tag warn">3 recovery decisions</span>
+    <span class="tag">route model decided</span>
     <span class="tag">template identity decided</span>
+    <span class="tag warn">exact revision needs approval</span>
     <span class="tag">design only</span>
   </p>
 </section>
@@ -15,8 +16,8 @@
 <section id="task">
   <h2>Task</h2>
   <p>
-    Require template identity in every answers file, then decide how incomplete
-    staged interviews recover.
+    Require template identity in every answers file, and give each kind of
+    caller one clear path to finish an interview and apply it.
   </p>
   <div class="two">
     <div>
@@ -36,59 +37,155 @@
     "quantity": 4
   }
 }</code></pre>
-      <p class="muted">The template must match before answer evaluation.</p>
+      <p class="muted">The template must match before any answer is evaluated.</p>
     </div>
   </div>
 </section>
 
-<section id="reassessment">
-  <h2>The recovery problem still exists</h2>
+<section id="callers">
+  <h2>Who uses which route</h2>
   <table>
-    <thead><tr><th>Question</th><th>What identity changes</th><th>Recommendation</th></tr></thead>
+    <thead><tr><th>Caller</th><th>Commands</th><th>Stages?</th><th>Output</th></tr></thead>
     <tbody>
-      <tr><td>Can target-only apply recover?</td><td>The staged record and file must agree.</td><td>Yes — 1A</td></tr>
-      <tr><td>Should terminal exit 4 be concise?</td><td>Nothing; this is output presentation.</td><td>Yes — 2A</td></tr>
-      <tr><td>Can named apply recover?</td><td>Command, record, and file must agree.</td><td>Yes — 3A</td></tr>
+      <tr><td>Script</td><td><code>apply T P --answers F</code></td><td>Never</td><td>One JSON result, every outcome</td></tr>
+      <tr><td>Agent</td><td><code>stage T P --async</code> → <code>continue P F</code> → <code>apply P</code></td><td>Yes</td><td>Question JSON + text instructions</td></tr>
+      <tr><td>Person</td><td><code>stage T P</code>, <code>continue P</code>, <code>apply T P</code></td><td>Yes</td><td>Prompts</td></tr>
     </tbody>
   </table>
-  <p class="muted">
-    Required identity makes recovery safer. It does not remove the saved state
-    or the need to finish it.
+  <p>
+    No command guesses the caller from whether output goes to a terminal.
+    Only prompting routes need a terminal on input.
   </p>
+  <p class="muted">
+    Agents and people share one staged record, so either can hand off to the other.
+  </p>
+</section>
+
+<section id="reassessment">
+  <h2>The original problem, reassessed</h2>
+  <p>
+    The rough edge came from the agent that tested headless paths during 0.1.0
+    acceptance. A partial <code>apply --answers</code> exited 4, listed the next
+    questions as <em>errors</em>, and put the recovery commands on stderr only.
+  </p>
+  <table>
+    <thead><tr><th>Original question</th><th>Resolution</th></tr></thead>
+    <tbody>
+      <tr><td>Target-only <code>apply P --answers F</code>?</td><td>Not needed. Agents use <code>continue P F</code>, then <code>apply P</code>.</td></tr>
+      <tr><td>Exit-4 output on a terminal?</td><td>Not a rendering problem. Each route reports one meaning to one kind of caller.</td></tr>
+      <tr><td>Named apply on a staged interview?</td><td>Kept for people: <code>apply T P</code> prompts, then applies.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="agent-flow">
+  <h2>Agent route</h2>
+  <section>
+    <h2>Stage, then answer batch by batch</h2>
+    <pre><code class="language-sh">$ toha stage forge:catalog/receipt@stable ./output --async
+{ "protocol": 1, "status": "questions", "schema": { ... }, ... }
+
+answer these questions with an answers document:
+  {"template": "forge:catalog/receipt@stable", "answers": { ... }}
+then run: toha continue ./output &lt;ANSWERS&gt; (- reads standard input)
+$ echo $?
+4</code></pre>
+    <p class="muted">
+      <code>stage --async FILE</code> writes the question JSON to FILE and the
+      instructions to stdout.
+    </p>
+  </section>
+  <section>
+    <h2>Complete, then apply</h2>
+    <pre><code class="language-sh">$ toha continue ./output answers.json
+the interview at ./output is complete
+to see the files it will write: toha apply ./output --dry-run
+to write them: toha apply ./output
+$ echo $?
+0</code></pre>
+    <ul>
+      <li>A question not yet answered is the next step, not an error.</li>
+      <li>Rejected answers come back with their errors; nothing is saved.</li>
+      <li><code>apply P</code> on an incomplete interview never prompts. It shows the batch and both <code>continue</code> forms.</li>
+    </ul>
+  </section>
+</section>
+
+<section id="script-flow">
+  <h2>Scripted route</h2>
+  <section>
+    <h2>One shot, one JSON document</h2>
+    <pre><code class="language-sh">$ toha apply forge:catalog/receipt@stable ./output --answers answers.json
+{ "protocol": 1, "status": "applied", "context": { ... },
+  "files": [ { "action": "create", "path": "README.txt" } ], ... }</code></pre>
+    <ul>
+      <li>Never creates, changes, or removes staged state.</li>
+      <li>Refuses when an interview is staged at the path, before reading the file.</li>
+      <li>Writes exactly one JSON document to stdout, and nothing else.</li>
+    </ul>
+  </section>
+  <section>
+    <h2>Result statuses</h2>
+    <table>
+      <thead><tr><th>Status</th><th>When</th><th>Exit</th></tr></thead>
+      <tbody>
+        <tr><td><code>applied</code></td><td>Files written</td><td>0</td></tr>
+        <tr><td><code>planned</code></td><td><code>--dry-run</code> or flow dry-run; untrusted hooks</td><td>0; 3</td></tr>
+        <tr><td><code>ended</code></td><td>Flow stop or abort</td><td>0</td></tr>
+        <tr><td><code>questions</code></td><td>Missing or rejected answers</td><td>4</td></tr>
+        <tr><td><code>error</code></td><td>Input, document, identity, staged, source, conflict, render, hook</td><td>1</td></tr>
+        <tr><td><code>error</code> (<code>ambiguous</code>)</td><td>Template name matches several</td><td>5</td></tr>
+      </tbody>
+    </table>
+    <p class="muted">On this route a missing required answer is an error of the file.</p>
+  </section>
+</section>
+
+<section id="person-flow">
+  <h2>Person route</h2>
+  <ul>
+    <li><strong><code>apply T P</code></strong> — the direct route. Prompts, saves at each batch, applies at the end. Resumes a staged interview of the same template.</li>
+    <li><strong><code>stage T P</code></strong> — prompts and saves at each batch. At the end shows the dry-run plan and how to apply.</li>
+    <li><strong><code>continue P</code></strong> — recovery after Ctrl-C or a fault. Same saving and ending as <code>stage</code>.</li>
+  </ul>
+  <p>
+    After an interrupt, <code>continue P</code> and <code>apply T P</code> both
+    pick up from the last saved batch.
+  </p>
+  <p class="muted">Without a terminal, these refuse and name the agent route.</p>
 </section>
 
 <section id="pre-mortem">
   <h2>Pre-mortem — the build failed. Why?</h2>
   <ul>
     <li><strong>The wrong template accepted the file.</strong> Question ids matched before identity was checked.</li>
+    <li><strong>A script left staged state behind.</strong> The one-shot route saved a partial interview.</li>
+    <li><strong>An agent hung at a prompt.</strong> A route guessed "person" from a pseudo-terminal.</li>
+    <li><strong>A script could not parse the output.</strong> A warning or instruction line leaked into stdout.</li>
     <li><strong>A crate caller bypassed the check.</strong> A public parser returned raw answers.</li>
-    <li><strong>Continue consumed too much.</strong> One broad helper replaced its one-step behavior with an apply walk.</li>
-    <li><strong>A mismatch changed state.</strong> Staged answers, flow, planning, files, or hooks ran before the check.</li>
-    <li><strong>Identity became a resolver.</strong> File data triggered alias lookup, path normalization, fetch, or trust.</li>
-    <li><strong>The correction grew into another restriction.</strong> Files became bound to a target, commit, or version.</li>
+    <li><strong>A mismatch changed state.</strong> Staged answers, flow, plan, files, or hooks ran before the check.</li>
   </ul>
 </section>
 
 <section id="module-seam">
   <h2>Module and seam</h2>
-  <pre><code>command TEMPLATE ─► existing resolver ─► formal template name
-                                              │
-target PATH ─► canonical target ─► staged template name
-                                              │ expected identity
-answers file ─► read once ─► protocol identity gate
+  <pre><code>command TEMPLATE ─► resolver ─► formal template name ─┐
+                                                        │ expected
+target PATH ─► canonical target ─► staged template name ┤ identity
+                                                        │
+answers file ─► read once ─► protocol identity gate ◄───┘
                                   │ private verified submission
-                    ┌─────────────┴─────────────┐
-                    ▼                           ▼
-               one-step answer           headless answer walk
-                 continue                      apply
-                    └─────────────┬─────────────┘
-                                  ▼
-                     existing staged-effect policy
-                                  ▼
-             questions / complete / stop / abort / plan</code></pre>
+                    ┌─────────────┴──────────────┐
+                    ▼                            ▼
+          one-step answer              headless answer walk
+          continue P F                 apply T P --answers F
+                    │                            │
+          saves accepted batch         no staged effect
+                    │                            │
+        question JSON + text           one JSON result document</code></pre>
   <p class="muted">
-    Protocol owns the file boundary. The interview engine remains pure. Staging,
-    planning, and target ownership stay where they are.
+    Protocol owns the file boundary and result documents. The CLI owns routes,
+    instructions, and exit codes. The interview engine stays pure.
   </p>
 </section>
 
@@ -96,10 +193,10 @@ answers file ─► read once ─► protocol identity gate
   <h2>One identity authority</h2>
   <ul>
     <li>The source resolver produces the formal template name.</li>
-    <li>The staged record stores that same formal name.</li>
-    <li>Question output already publishes it as <code>context.template</code>.</li>
+    <li>The staged record stores that same name.</li>
+    <li>Question output publishes it as <code>context.template</code>.</li>
     <li>The answers file copies that exact string.</li>
-    <li>The consumer compares strings. It does not resolve the declaration.</li>
+    <li>Toha compares strings. It never resolves the file's declaration.</li>
   </ul>
   <div class="two">
     <div>
@@ -109,7 +206,7 @@ answers file ─► read once ─► protocol identity gate
     <div>
       <p><strong>Rejected</strong></p>
       <pre><code class="language-json">"template": "receipt"</code></pre>
-      <p class="muted">An alias is not the emitted formal identity.</p>
+      <p class="muted">An alias is not the emitted formal name.</p>
     </div>
   </div>
 </section>
@@ -117,40 +214,35 @@ answers file ─► read once ─► protocol identity gate
 <section id="public-interfaces">
   <h2>Public interfaces expected</h2>
   <section>
-    <h2>Commands</h2>
-    <pre><code class="language-sh">toha apply --answers FILE TEMPLATE PATH
-
-toha apply --answers FILE PATH
-
-toha continue PATH FILE</code></pre>
-    <ul>
-      <li>New apply compares the file with the resolved command template.</li>
-      <li>Target-only recovery compares the file with the staged template.</li>
-      <li>Named recovery checks command = staged = file.</li>
-    </ul>
+    <h2>Commands that read an answers file</h2>
+    <pre><code class="language-sh">toha apply TEMPLATE PATH --answers FILE   # compares with the command template
+toha continue PATH FILE                   # compares with the staged template</code></pre>
+    <p>No other route reads an answers file.</p>
   </section>
   <section>
     <h2>Crate document operations</h2>
-    <pre><code>answer_document_once(
-    expected_template,
-    pending,
-    text,
-) -&gt; DocumentStep
+    <pre><code>answer_document_once(expected_template, pending, text)
+    -&gt; Result&lt;DocumentStep, SubmitDocumentError&gt;
 
-answer_document_headless(
-    expected_template,
-    template,
-    interview,
-    text,
-) -&gt; Headless</code></pre>
+answer_document_headless(expected_template, template, interview, text)
+    -&gt; Result&lt;Headless, SubmitDocumentError&gt;</code></pre>
     <p>
-      Both operations parse and compare internally. No public verified value can
-      be extracted and submitted to another interview.
+      Both parse and compare internally. No verified value can be extracted and
+      submitted to another interview.
     </p>
     <p class="muted">
-      Existing in-memory <code>RawAnswers</code>, <code>Pending::answer</code>, and
-      raw headless driving remain supported.
+      In-memory <code>RawAnswers</code>, <code>Pending::answer</code>, and raw
+      headless driving remain. The public raw JSON parser is replaced.
     </p>
+  </section>
+  <section>
+    <h2>Result document producers</h2>
+    <pre><code>batch_document(batch, context, errors)   // questions
+ended_document(ended, context)           // ended
+applied_document(report, context)        // applied   (new)
+planned_document(plan, context, trust)   // planned   (new)
+error_document(error, context)           // error     (new)</code></pre>
+    <p class="muted"><code>complete_document</code> is removed.</p>
   </section>
 </section>
 
@@ -167,8 +259,24 @@ properties:
     minLength: 1
   answers:
     $ref: "#/$defs/answers"</code></pre>
+    <p class="muted">No target, commit, or version field.</p>
+  </section>
+  <section>
+    <h2>Error result</h2>
+    <pre><code class="language-json">{
+  "protocol": 1,
+  "status": "error",
+  "kind": "staged",
+  "message": "an interview is staged at ./output",
+  "commands": [
+    "toha continue ./output &lt;ANSWERS&gt;",
+    "toha apply ./output",
+    "toha abort ./output"
+  ]
+}</code></pre>
     <p class="muted">
-      No target, commit, or protocol-version field is added.
+      Kinds: input, document, identity, staged, source, replay, conflict,
+      render, hook, ambiguous.
     </p>
   </section>
   <section>
@@ -178,141 +286,82 @@ properties:
     stored: Submission,
 }
 
-fn parse_and_verify(
-    expected_template: &amp;str,
-    text: &amp;str,
-) -&gt; Result&lt;VerifiedSubmission, AnswersDocumentError&gt;;</code></pre>
-    <p>
-      The type is private, has no unchecked constructor, and is consumed by the
-      one-step or headless operation that creates it.
-    </p>
+fn parse_and_verify(expected_template: &amp;str, text: &amp;str)
+    -&gt; Result&lt;VerifiedSubmission, AnswersDocumentError&gt;;</code></pre>
+    <p>Private, no unchecked constructor, consumed by the operation that creates it.</p>
   </section>
-</section>
-
-<section id="route-matrix">
-  <h2>Every route uses the same gate</h2>
-  <table>
-    <thead><tr><th>Route</th><th>Expected identity</th><th>Engine behavior</th></tr></thead>
-    <tbody>
-      <tr><td>New apply</td><td>Resolved command template</td><td>Headless walk</td></tr>
-      <tr><td>Target-only staged apply</td><td>Staged record</td><td>Headless walk</td></tr>
-      <tr><td>Named staged apply</td><td>Command first matches staged record</td><td>Headless walk</td></tr>
-      <tr><td>Continue</td><td>Staged record</td><td>Exactly one answer step</td></tr>
-      <tr><td>Terminal prompt</td><td>Active interview</td><td>No file gate</td></tr>
-      <tr><td>Staged replay</td><td>Stored record</td><td>No file gate</td></tr>
-    </tbody>
-  </table>
 </section>
 
 <section id="validation-order">
   <h2>Validation order</h2>
   <ol>
-    <li>Establish target, staged record, source, template, configured values, and replay.</li>
-    <li>Refuse wrong command identity or unused input before opening the file.</li>
+    <li>Establish target and staged state; refuse a wrong-time request before opening the file.</li>
+    <li>Establish source, template, configured values, and start or replay.</li>
     <li>Read once; validate JSON and the two-field envelope.</li>
-    <li>Recognize a legacy bare map and show wrapper guidance.</li>
+    <li>Recognize a legacy bare map and show the wrapper to use.</li>
     <li>Compare the declared template with the established formal name.</li>
     <li>Only then parse question ids and enter the interview engine.</li>
-    <li>Only an accepted result can reach staged, flow, plan, target, or hook effects.</li>
   </ol>
-  <p class="muted">
-    A malformed envelope wins over mismatch. Mismatch wins over every answer fault.
-  </p>
-</section>
-
-<section id="failure-examples">
-  <h2>Concrete failure examples</h2>
   <div class="two">
     <div>
       <p><strong>Missing identity</strong></p>
-      <pre><code class="language-json">{
-  "label": "Sample"
-}</code></pre>
-      <p>Exit 1 with the exact wrapper and expected template.</p>
+      <pre><code class="language-json">{ "label": "Sample" }</code></pre>
+      <p>Exit 1 with the wrapper and expected template.</p>
     </div>
     <div>
       <p><strong>Wrong identity, matching ids</strong></p>
-      <pre><code class="language-json">{
-  "template": "forge:catalog/shipment@stable",
-  "answers": { "label": "Sample" }
-}</code></pre>
+      <pre><code class="language-json">{ "template": "forge:catalog/shipment@stable",
+  "answers": { "label": "Sample" } }</code></pre>
       <p>Exit 1 before <code>label</code> is evaluated.</p>
     </div>
   </div>
 </section>
 
-<section id="atomicity">
-  <h2>Identity failure is atomic</h2>
-  <p>A missing, malformed, or mismatched identity produces no:</p>
-  <ul>
-    <li>answer evaluation or accepted submission;</li>
-    <li>answer-derived warning, message, or flow result;</li>
-    <li>staged save, removal, or migration;</li>
-    <li>plan, target write, hook, or trust evaluation.</li>
-  </ul>
-  <p class="muted">
-    Existing configured-value warnings keep their route-preparation timing.
-    Existing source resolution can populate its cache before file read.
-  </p>
-</section>
-
 <section id="flow-results">
-  <h2>Accepted flow results stay unchanged</h2>
-  <table>
-    <thead><tr><th>Result</th><th>Staged state</th><th>Target</th></tr></thead>
-    <tbody>
-      <tr><td>Pending</td><td>Save accepted prefix</td><td>No effect</td></tr>
-      <tr><td>Proceed</td><td>Save; remove after successful apply</td><td>Plan and apply</td></tr>
-      <tr><td>Flow dry-run</td><td>Save and retain</td><td>Show plan only</td></tr>
-      <tr><td>Stop</td><td>Save and retain</td><td>No effect</td></tr>
-      <tr><td>Abort</td><td>Remove on normal execution</td><td>No effect</td></tr>
-      <tr><td>CLI <code>--dry-run</code></td><td>No mutation</td><td>No mutation</td></tr>
-    </tbody>
-  </table>
-  <p class="muted">
-    A confirm answer remains a boolean value. A later flow condition decides the result.
-  </p>
-</section>
-
-<section id="terminal-output">
-  <h2>Question output stays useful to both audiences</h2>
-  <table>
-    <thead><tr><th>Producer</th><th>Terminal stdout</th><th>Pipe or redirect</th></tr></thead>
-    <tbody>
-      <tr><td><code>apply</code> question result</td><td>Concise recovery summary</td><td>JSON</td></tr>
-      <tr><td><code>continue</code> question result</td><td>Concise recovery summary</td><td>JSON</td></tr>
-      <tr><td><code>stage --async</code></td><td>JSON</td><td>JSON</td></tr>
-    </tbody>
-  </table>
+  <h2>Identity failure is atomic; flow results keep their meaning</h2>
   <p>
-    Both representations use the same question batch, context, messages, and
-    rejections. Exit 4 keeps the same meaning.
+    A bad identity produces no answer evaluation, saved progress, flow action,
+    plan, file write, or hook.
   </p>
+  <table>
+    <thead><tr><th>Result</th><th>Scripted route</th><th><code>continue P F</code></th></tr></thead>
+    <tbody>
+      <tr><td>Questions remain</td><td><code>questions</code>, nothing saved</td><td>Save, next batch</td></tr>
+      <tr><td>Proceed</td><td>Apply, <code>applied</code></td><td>Save, apply instructions</td></tr>
+      <tr><td>Flow dry-run</td><td><code>planned</code></td><td>Save, apply instructions</td></tr>
+      <tr><td>Stop</td><td><code>ended</code></td><td>Save, keep record</td></tr>
+      <tr><td>Abort</td><td><code>ended</code></td><td>Remove record</td></tr>
+    </tbody>
+  </table>
+  <p class="muted">A confirm answer stays a plain value used by a later flow condition.</p>
 </section>
 
 <section id="behaviors">
   <h2>Behaviors to prove</h2>
   <section>
-    <h2>Identity and boundary guards</h2>
+    <h2>Identity guards</h2>
     <table>
       <thead><tr><th>Claim</th><th>Falsifying observation</th></tr></thead>
       <tbody>
         <tr><td>Wrong template cannot answer matching ids</td><td>The engine recorder sees a call</td></tr>
         <tr><td>Declaration is never resolved</td><td>A resolver, registry, fetch, or trust spy fires</td></tr>
-        <tr><td>External JSON cannot yield raw answers</td><td>A public compile test extracts or constructs the private capability</td></tr>
-        <tr><td>Identity failure changes no staged or target bytes</td><td>Before/after bytes differ</td></tr>
+        <tr><td>External JSON cannot yield raw answers</td><td>A compile test extracts or constructs the capability</td></tr>
+        <tr><td>Identity failure changes nothing</td><td>Staged or target bytes differ</td></tr>
       </tbody>
     </table>
   </section>
   <section>
-    <h2>Route and result guards</h2>
+    <h2>Route guards</h2>
     <table>
       <thead><tr><th>Claim</th><th>Falsifying observation</th></tr></thead>
       <tbody>
-        <tr><td>Continue is one step</td><td>One document advances a second batch</td></tr>
-        <tr><td>Apply keeps its headless walk</td><td>Valid later answers stop after one batch</td></tr>
-        <tr><td>Target-only and named recovery are equivalent</td><td>Different state, tree, output, or exit</td></tr>
-        <tr><td>Scripts keep JSON</td><td>A pipe, redirect, or async stage receives prose</td></tr>
+        <tr><td>Scripts never stage</td><td>A store save or remove fires on the scripted route</td></tr>
+        <tr><td>Scripts get exactly one JSON document</td><td>stdout fails to parse as one document</td></tr>
+        <tr><td><code>apply P</code> never prompts</td><td>A prompt appears under a pseudo-terminal</td></tr>
+        <tr><td>Agent output carries instructions</td><td>Instructions appear on stderr, or not at all</td></tr>
+        <tr><td>Continue is one step</td><td>One file advances two batches</td></tr>
+        <tr><td>Direct apply resumes after Ctrl-C</td><td><code>continue P</code> finds nothing saved</td></tr>
+        <tr><td>Agent and person can hand off</td><td>Either route refuses the other's record</td></tr>
       </tbody>
     </table>
   </section>
@@ -321,30 +370,28 @@ fn parse_and_verify(
 <section id="out-of-scope">
   <h2>Out of scope</h2>
   <ul>
-    <li>Binding answer files to a target or commit.</li>
+    <li>Binding answers files to a target or commit.</li>
     <li>Resolving or normalizing identity declared by a file.</li>
-    <li>Adding identity to staged submissions or in-memory <code>RawAnswers</code>.</li>
-    <li>Changing configured-default provenance or canonical target construction.</li>
-    <li>Changing trust, permissions, access, timeouts, dependency-version policy, or subprocess use.</li>
-    <li>Implementing runtime or shared specification changes in this design task.</li>
+    <li>An output-format option or a caller-kind flag on staged state.</li>
+    <li>A keyboard shortcut to pause a prompting route.</li>
+    <li>Changing trust, permissions, timeouts, dependency-version policy, or subprocess use.</li>
+    <li>Runtime or shared specification changes in this design task.</li>
   </ul>
   <p class="muted">
-    Dependencies:
-    <a href="https://github.com/wyrd-company/toha/commit/9a6d902a97c225069cd87d3299a5f0b2703683df">current epic basis</a>
-    and
-    <a href="https://github.com/wyrd-company/toha/commit/8a19269d78f6da0738edb17e56310621f143923d">error producer</a>.
+    Basis:
+    <a href="https://github.com/wyrd-company/toha/commit/9a6d902a97c225069cd87d3299a5f0b2703683df">current epic head</a>.
   </p>
 </section>
 
 <section id="reviewer-focus">
   <h2>Reviewer focus — what to attack</h2>
   <ul>
-    <li><strong>Submit another template's file.</strong> Use identical question ids and valid values.</li>
-    <li><strong>Bypass the gate from the crate.</strong> Try to obtain raw answers from external JSON.</li>
-    <li><strong>Make continue walk two batches.</strong> It must remain one answer step.</li>
-    <li><strong>Cause an effect before identity succeeds.</strong> Watch store, plan, target, hook, and trust calls.</li>
-    <li><strong>Trigger a second resolver.</strong> The document declaration must remain inert data.</li>
-    <li><strong>Add target, commit, or version coupling.</strong> Same-template reuse must still pass.</li>
+    <li><strong>Submit another template's file</strong> with identical ids and valid values.</li>
+    <li><strong>Make the scripted route touch staged state</strong> on any outcome.</li>
+    <li><strong>Get anything but one JSON document</strong> on scripted stdout.</li>
+    <li><strong>Make any route choose output from terminal status.</strong></li>
+    <li><strong>Bypass the gate from the crate</strong> to obtain raw answers from external JSON.</li>
+    <li><strong>Cause an effect before identity succeeds</strong>: store, plan, target, hook, trust.</li>
   </ul>
 </section>
 
@@ -353,86 +400,64 @@ fn parse_and_verify(
   <table>
     <thead><tr><th>Alternative</th><th>Disposition</th></tr></thead>
     <tbody>
-      <tr><td>Public parse → verify → raw extraction</td><td>Rejected: verification can be separated from consumption</td></tr>
-      <tr><td>One headless route for apply and continue</td><td>Rejected: continue is one step</td></tr>
-      <tr><td>Add <code>protocol: 1</code></td><td>Rejected: identity needs no version check</td></tr>
-      <tr><td>Bind target or commit</td><td>Rejected: adds an unrelated reuse restriction</td></tr>
-      <tr><td>Resolve aliases from the document</td><td>Rejected: creates a second authority and can fetch</td></tr>
-      <tr><td>Accept legacy bare maps</td><td>Rejected: bypasses the required identity</td></tr>
+      <tr><td>Text on a terminal, JSON otherwise</td><td>Rejected: an agent on a pseudo-terminal looks like a person</td></tr>
+      <tr><td>Recover staged interviews with <code>apply --answers</code></td><td>Rejected: mixes the one-shot script route with staged recovery</td></tr>
+      <tr><td>Caller-kind flag set by <code>stage --async</code></td><td>Rejected: blocks agent-to-person handoff</td></tr>
+      <tr><td>Keep <code>apply P</code> prompting on a terminal</td><td>Rejected: the only remaining guess</td></tr>
+      <tr><td>Public parse → verify → raw extraction</td><td>Rejected: verification separable from use</td></tr>
+      <tr><td>Bind target or commit; resolve aliases; accept bare maps</td><td>Rejected: extra restriction, second authority, or bypass</td></tr>
     </tbody>
   </table>
   <p class="muted">
-    Two isolated candidates and an other-family read-only judge selected the
-    private capability as the base. The final shape corrects both candidates'
-    route and diagnostic-order gaps.
+    The file boundary came from a two-candidate arena with an other-family judge.
+    The route model is Bob's decision; it changes which routes use the boundary,
+    not the boundary.
   </p>
 </section>
 
 <section id="decisions">
-  <h2>Decisions needed first</h2>
-  <section>
-    <h2>1 — Target-only answers</h2>
-    <p><strong>1A — Resume and apply (recommended).</strong></p>
-    <p>
-      <code>apply PATH --answers FILE</code> uses the staged record, checks the
-      file identity, saves accepted progress, and applies on completion.
-    </p>
-    <p><strong>1B — Keep the refusal.</strong></p>
-    <p>Require <code>continue</code> or a repeated template operand.</p>
-    <p class="muted">1A uses the target identity that already exists and adds the independent file assertion.</p>
-  </section>
-  <section>
-    <h2>2 — Exit-4 output on a terminal</h2>
-    <p><strong>2A — Show a concise summary (recommended).</strong></p>
-    <p>
-      Apply and continue show remaining questions and the next command. Pipes,
-      redirects, and <code>stage --async</code> stay JSON.
-    </p>
-    <p><strong>2B — Always show JSON.</strong></p>
-    <p>Keep one representation for terminal and non-terminal stdout.</p>
-    <p class="muted">2A changes terminal stdout only. Exit 4 and machine JSON stay stable.</p>
-  </section>
-  <section>
-    <h2>3 — Named recovery</h2>
-    <p><strong>3A — Preserve matching recovery (recommended).</strong></p>
-    <p>
-      <code>apply TEMPLATE PATH --answers FILE</code> resumes when command,
-      staged, and document identities agree.
-    </p>
-    <p><strong>3B — Refuse named recovery.</strong></p>
-    <p>Require target-only recovery or <code>continue</code> whenever state exists.</p>
-    <p class="muted">3A preserves the supported assertion route and the staged immutable source.</p>
-  </section>
+  <h2>Decisions</h2>
+  <p><strong>Decided in discussion:</strong></p>
+  <ul>
+    <li>One route per caller; no terminal-status guessing.</li>
+    <li>Scripted route never stages, refuses on staged state, and writes one JSON result for every outcome.</li>
+    <li>Agent output is question JSON plus text instructions; completion is instructions only.</li>
+    <li>Direct <code>apply T P</code> saves at each batch and resumes.</li>
+  </ul>
+  <p><strong>Needed now:</strong> approval of this exact revision, including the envelope and result documents.</p>
+  <p>
+    <span class="tag warn">Removes staged recovery via <code>apply --answers</code></span>
+    <span class="tag warn">Removes prompting from <code>apply P</code></span>
+    <span class="tag warn">Removes the <code>complete</code> document</span>
+  </p>
 </section>
 
 <section id="size">
   <h2>Size</h2>
-  <p><strong>One high-cognition agent day plus independent review.</strong></p>
+  <p><strong>One to two high-cognition agent days plus independent review.</strong></p>
   <ul>
-    <li>Protocol envelope and two consuming document operations.</li>
-    <li>New apply, staged apply, and continue route updates.</li>
-    <li>Terminal presentation and accepted flow-result integration.</li>
-    <li>Schema, command contract, architecture, crate docs, guides, examples, and fixtures.</li>
-    <li>Cross-template, failure-injection, pseudoterminal, compatibility, and compile-fail guards.</li>
+    <li>Protocol envelope, two document operations, and three new result documents.</li>
+    <li>Route changes across <code>apply</code>, <code>stage</code>, and <code>continue</code>.</li>
+    <li>Help text, embedded agent skill, specifications, guides, fixtures.</li>
+    <li>Cross-template, no-stage, single-document, pseudo-terminal, resume, and compile-fail guards.</li>
   </ul>
   <p class="muted">Implementation starts only after approval of this exact revision.</p>
 </section>
 
 <section id="complexity">
   <h2>Complexity with this plan</h2>
-  <p><strong>Moderate.</strong></p>
+  <p><strong>Moderate, and lower than today's route logic.</strong></p>
   <ul>
-    <li>One protocol boundary owns the breaking file-format change.</li>
-    <li>Two operations preserve real one-step and headless engine behavior.</li>
-    <li>One staged-effect policy keeps flow and persistence consistent.</li>
-    <li>Existing source identity, target identity, configured origins, interview logic, and planning remain authoritative.</li>
+    <li>Only two routes read an answers file, each with one identity source.</li>
+    <li>The stdout terminal check is removed; routes no longer branch on it.</li>
+    <li>Source identity, target identity, configured values, the engine, and planning keep their owners.</li>
   </ul>
   <p>
     <span class="tag warn">Bare answer maps are rejected</span>
-    <span class="tag warn">Public raw JSON parser is replaced</span>
+    <span class="tag warn">Breaking changes accepted before 1.0</span>
   </p>
   <p class="muted">
-    In-memory raw answer APIs remain. No permission, access, timeout, version-pin,
-    subprocess, target-binding, or commit-binding change is part of the design.
+    No permission, access, timeout, version-pin, subprocess, target-binding, or
+    commit-binding change.
   </p>
 </section>

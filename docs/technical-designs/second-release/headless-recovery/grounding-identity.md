@@ -197,28 +197,62 @@ The integrated error design SHA-256 is
 Its verification SHA-256 is
 `41da2344a6422c996965c134f86268a849f8705c8ffce36d132613ef9cdbef05`.
 
+## Caller-route modality
+
+The explicit answers document selects the headless modality. Output modality is
+otherwise selected by terminal checks spread across routes:
+
+| Route | Current check | Current result when questions remain |
+|---|---|---|
+| New `apply T P --answers F` | None | Stage accepted prefix; batch JSON with `is required` errors on stdout; guidance on stderr; exit 4 (`src/main.rs:873-904`). |
+| Staged `apply [T] P --answers F` | None | Same headless walk and output (`src/main.rs:955-1010`). |
+| `continue P F` | None | Next batch JSON without `is required` errors; exit 4 (`src/main.rs:726-770`). |
+| `continue P` | stdin | Prompt, or refuse without a terminal (`src/main.rs:715-725`). |
+| Staged `apply P` | stdin and stdout | Prompt, or batch JSON and stderr guidance; exit 4 (`src/main.rs:1017-1043`). |
+| New `apply T P` | stdin | Prompt; saves nothing per batch (`src/main.rs:935`). |
+| `stage T P` | stdin | Prompt; saves each batch; exits 0 with no plan (`src/main.rs:590-627`). |
+| `stage T P --async [F]` | None | First batch JSON to stdout or F; exit 4 (`src/main.rs:629-653`). |
+
+`src/main.rs:337-355` serializes every `Outcome::Document` as JSON. Guidance
+from `src/cli/guidance.rs:419-426` goes to stderr.
+
+Two facts follow. The same state (answers accepted, questions remain) is a
+document error on the headless apply walk and a normal step on `continue`
+(`docs/specifications/interview-protocol.yml:96-106,126-129`). Staged `apply P`
+is the only route that selects output from stdout terminal status, and a
+pseudo-terminal cannot distinguish an agent from a person.
+
+The terminal driver answers in the same batches as the protocol
+(`src/cli/terminal.rs:203-262`): it checks each answer, submits the batch once,
+and then invokes the save callback.
+
 ## Original problem reassessment
+
+The original report came from the agent that exercised headless paths during
+0.1.0 acceptance testing. No transcript exists. The record calls the exit-4
+output and the resume form rough edges (first-release acceptance record,
+16:06 entry). Replaying a partial `apply --answers` at the current head gives
+exit 4, a batch whose next question appears under `errors` as `is required`, and
+recovery commands only on stderr.
 
 ### Target-only apply answers
 
-The problem remains valid. The target already selects one staged record and its
-immutable source. Requiring the answer file to declare the same formal template
-adds an independent assertion; it does not require the caller to repeat the
-template as a command operand. A mismatch can fail before answer evaluation.
+The need comes from using `--answers` to recover a staged interview. Under the
+caller-route model, staged recovery belongs to `continue PATH FILE` and
+`apply PATH`. The one-shot scripted route never uses staged state.
 
-### Terminal exit-4 presentation
+### Exit-4 presentation
 
-The problem is unchanged. Identity changes the input document, while the
-question batch and exit-4 output remain output contracts. A terminal can still
-receive a concise recovery summary while a pipe or redirected file receives the
-canonical machine document.
+The problem is real but is not a terminal-rendering problem. The person who met
+it was an agent. The defect is that one route reports an incomplete interview as
+failure while another reports it as a step, and that recovery instructions are
+separated from the batch. Routing by caller removes both.
 
 ### Matching-template named recovery
 
-The problem remains valid. The named route supplies three facts: the command
-operand's resolved formal identity, the staged record's formal identity, and the
-document's declared formal identity. Recovery proceeds only when all three are
-equal. The operand remains a useful explicit assertion and a supported route.
+People keep `apply TEMPLATE PATH` as the direct route, and it resumes a staged
+same-template interview by prompting. The scripted form of the same command
+refuses when an interview is staged.
 
 ## History and rationale evidence
 
@@ -248,6 +282,8 @@ therefore a product-contract change rather than restoration of a hidden rule.
   required identity contract.
 - Protocol schema, examples, README crate usage, fixtures, command contract,
   guides, and architecture ownership describe the same envelope.
+- Each caller kind gets its own route; no route selects output from stdout
+  terminal status.
 
 ### Avoid
 
@@ -260,6 +296,8 @@ therefore a product-contract change rather than restoration of a hidden rule.
 - Parsing the document independently in apply and continue.
 - Preserving bare maps through an automatic fallback that defeats the required
   identity.
+- Selecting output format from terminal status, which cannot tell an agent on a
+  pseudo-terminal from a person.
 
 ### Risk
 
@@ -268,3 +306,6 @@ files. Migration guidance must make the required wrapper and exact expected
 formal identity visible. A design that exposes the nested map before identity
 verification recreates the defect through the public crate API even if the CLI
 checks correctly.
+
+An agent that runs `continue PATH` without a document on a pseudo-terminal can
+wait at a prompt. Agent-facing instructions name only the document form.
