@@ -9,6 +9,8 @@
 //! the binary in `flow_cli.rs`.
 #![allow(clippy::bool_assert_comparison)]
 
+#[allow(dead_code)]
+mod support;
 use indexmap::IndexMap;
 use serde_json::{Value, json};
 use toha::{
@@ -126,22 +128,15 @@ fn b3_flow_beside_a_node_key_is_a_load_error() {
 fn b4_no_flow_node_keeps_ordinary_completion_bytes() {
     // An ordinary completion carries no `disposition` and never ends, so its
     // wire bytes are unchanged by the feature.
-    let (dir, template) =
+    let (_dir, template) =
         tpl("name: sample\ninterview:\n  - { id: proceed, type: confirm, prompt: Ready? }\n");
     let done = answer(start(&template), json!({ "proceed": true }));
     let Interview::Complete(completed) = done else {
         panic!("expected complete");
     };
+    // An ordinary completion carries no disposition; the scripted route emits an
+    // `applied` (or `planned`) document, never a `complete` one.
     assert_eq!(completed.disposition(), Disposition::Proceed);
-    let document = protocol::complete_document(
-        &completed,
-        &context(dir.path(), &staged(dir.path(), vec![])),
-    );
-    assert_eq!(document["status"], "complete");
-    assert!(
-        document.get("disposition").is_none(),
-        "an ordinary completion has no disposition: {document}"
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -305,18 +300,16 @@ interview:
 }
 
 #[test]
-fn b12_dry_run_disposition_rides_the_wire_complete_document() {
-    let (dir, template) = tpl(
+fn b12_flow_dry_run_sets_the_dry_run_disposition() {
+    let (_dir, template) = tpl(
         "name: sample\ninterview:\n  - { id: mode, type: text, prompt: Mode? }\n  - flow: dry-run\n",
     );
     let Interview::Complete(completed) = drive_headless(&template, json!({ "mode": "x" })) else {
         panic!("expected complete");
     };
-    let document = protocol::complete_document(
-        &completed,
-        &context(dir.path(), &staged(dir.path(), vec![])),
-    );
-    assert_eq!(document["disposition"], "dry-run");
+    // A flow dry-run completes with the dry-run disposition; the scripted route
+    // reports it as a `planned` document (proved in the caller-route suite).
+    assert_eq!(completed.disposition(), Disposition::DryRun);
 }
 
 // ---------------------------------------------------------------------------

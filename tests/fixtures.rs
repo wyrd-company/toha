@@ -83,6 +83,7 @@ fn run(fixture: &Path, target: &Path) -> Result<Vec<String>, (u8, String)> {
         Ok(Applied::Written {
             files: vec![],
             hooks_run: 0,
+            hooks: vec![],
             after_apply: None,
         })
     } else {

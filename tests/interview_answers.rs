@@ -40,7 +40,7 @@ fn first_batch_errors(template: &Template, document: Value) -> BTreeMap<String, 
     let Interview::Asking(pending) = Interview::start(template, seed()).unwrap() else {
         panic!("expected questions")
     };
-    let raw = protocol::parse_answers(&document.to_string()).unwrap();
+    let raw = support::raw_answers(&document.to_string()).unwrap();
     match pending.answer(raw) {
         Ok(_) => BTreeMap::new(),
         Err(AnswerError::Rejected { rejections, .. }) => {
@@ -573,7 +573,7 @@ fn unanswered_list_questions_are_empty_lists_and_others_are_null() {
         "name: sample\ninterview:\n  - { id: flag, type: confirm, prompt: F? }\n  - { id: picks, type: multiselect, prompt: P?, options: [a], when: flag }\n  - { id: lines, type: text, prompt: L?, loop: { max: 2 }, when: flag }\n  - { id: more, type: text, prompt: M?, loop: { max: 2 } }\n  - { id: others, type: multiselect, prompt: O?, options: [a] }\n  - { id: word, type: text, prompt: W? }\n  - { id: skipped, type: text, prompt: S?, when: flag }\n",
     );
     let mut interview = Interview::start(&template, seed()).unwrap();
-    let mut document = protocol::parse_answers(r#"{"flag": false, "others": null}"#).unwrap();
+    let mut document = support::raw_answers(r#"{"flag": false, "others": null}"#).unwrap();
     let completed = loop {
         match interview {
             Interview::Complete(completed) => break completed,
@@ -616,7 +616,7 @@ fn template_fault_names_the_field_and_the_expression() {
     let Interview::Asking(pending) = Interview::start(&template, seed()).unwrap() else {
         panic!()
     };
-    let raw = protocol::parse_answers(r#"{"word": null}"#).unwrap();
+    let raw = support::raw_answers(r#"{"word": null}"#).unwrap();
     let Err(AnswerError::Eval(error)) = pending.answer(raw) else {
         panic!("expected a template fault")
     };
@@ -784,7 +784,7 @@ fn same_outcome_through_all_routes(template: &Path, prior: &[Value], document: &
             vec![],
         );
         let context = protocol::Context::new(&canonical, &record);
-        let raw = protocol::parse_answers(&document.to_string()).unwrap();
+        let raw = support::raw_answers(&document.to_string()).unwrap();
         let (code, result, accepted) = match protocol::answer_headless(
             &loaded,
             Interview::start(&loaded, seed()).unwrap(),
@@ -793,11 +793,7 @@ fn same_outcome_through_all_routes(template: &Path, prior: &[Value], document: &
             Ok(protocol::Headless::Completed {
                 completed,
                 accepted,
-            }) => (
-                0,
-                protocol::complete_document(&completed, &context),
-                accepted,
-            ),
+            }) => (0, support::completed_projection(&completed), accepted),
             Ok(protocol::Headless::Pending {
                 pending,
                 rejections,
@@ -939,11 +935,11 @@ fn repeated_list_answer_is_compared_in_order() {
     let Interview::Asking(pending) = Interview::start(&template, seed()).unwrap() else {
         panic!()
     };
-    let raw = protocol::parse_answers(r#"{"picks": ["a", "b"]}"#).unwrap();
+    let raw = support::raw_answers(r#"{"picks": ["a", "b"]}"#).unwrap();
     let Interview::Asking(pending) = pending.answer(raw).unwrap() else {
         panic!()
     };
-    let raw = protocol::parse_answers(r#"{"picks": ["b", "a"]}"#).unwrap();
+    let raw = support::raw_answers(r#"{"picks": ["b", "a"]}"#).unwrap();
     let Err(AnswerError::Rejected { rejections, .. }) = pending.answer(raw) else {
         panic!("expected a rejection")
     };
@@ -961,11 +957,11 @@ fn format_fault_on_a_repeated_answer_is_a_template_error() {
     let Interview::Asking(pending) = Interview::start(&template, seed()).unwrap() else {
         panic!()
     };
-    let raw = protocol::parse_answers(r#"{"word": "a"}"#).unwrap();
+    let raw = support::raw_answers(r#"{"word": "a"}"#).unwrap();
     let Interview::Asking(pending) = pending.answer(raw).unwrap() else {
         panic!()
     };
-    let raw = protocol::parse_answers(r#"{"word": "b"}"#).unwrap();
+    let raw = support::raw_answers(r#"{"word": "b"}"#).unwrap();
     let Err(AnswerError::Eval(error)) = pending.answer(raw) else {
         panic!("expected a template error")
     };
@@ -1032,7 +1028,7 @@ fn warnings_for_an_interview_complete_at_start_follow_interview_order() {
     let (_folder, template) = inline(
         "name: sample\ninterview:\n  - { id: zeta, type: text, prompt: Z?, when: 'false' }\n  - message: Hello\n  - { id: alpha, type: text, prompt: A?, when: 'false' }\n",
     );
-    let document = protocol::parse_answers(r#"{"alpha": "a", "zeta": "z"}"#).unwrap();
+    let document = support::raw_answers(r#"{"alpha": "a", "zeta": "z"}"#).unwrap();
     let Ok(protocol::Headless::Completed { completed, .. }) = protocol::answer_headless(
         &template,
         Interview::start(&template, seed()).unwrap(),
@@ -1152,7 +1148,7 @@ fn headless_answer_for_a_question_skipped_at_start_is_a_warning() {
     let (_folder, template) = inline(
         "name: sample\ninterview:\n  - { id: never, type: text, prompt: N?, when: 'false' }\n",
     );
-    let document = protocol::parse_answers(r#"{"never": "x"}"#).unwrap();
+    let document = support::raw_answers(r#"{"never": "x"}"#).unwrap();
     let Ok(protocol::Headless::Completed { completed, .. }) = protocol::answer_headless(
         &template,
         Interview::start(&template, seed()).unwrap(),
@@ -1507,14 +1503,14 @@ fn configured_default_that_fails_a_constraint_is_attributed_to_configuration() {
     else {
         panic!("expected questions")
     };
-    let raw = protocol::parse_answers(r#"{"name": "Alpha", "label": "First"}"#).unwrap();
+    let raw = support::raw_answers(r#"{"name": "Alpha", "label": "First"}"#).unwrap();
     let Interview::Asking(pending) = pending.answer(raw).unwrap() else {
         panic!("expected questions")
     };
     let Err(AnswerError::Rejected {
         pending,
         rejections,
-    }) = pending.answer(protocol::parse_answers("{}").unwrap())
+    }) = pending.answer(support::raw_answers("{}").unwrap())
     else {
         panic!("expected a rejection")
     };
@@ -1527,7 +1523,7 @@ fn configured_default_that_fails_a_constraint_is_attributed_to_configuration() {
     );
 
     let next = pending
-        .answer(protocol::parse_answers(r#"{"mode":"fast"}"#).unwrap())
+        .answer(support::raw_answers(r#"{"mode":"fast"}"#).unwrap())
         .unwrap();
     assert!(matches!(
         next,
@@ -1552,13 +1548,13 @@ fn flattening_configured_defaults_explicitly_drops_their_source() {
         panic!("expected questions")
     };
     let Interview::Asking(pending) = pending
-        .answer(protocol::parse_answers(r#"{"name":"Alpha","label":"First"}"#).unwrap())
+        .answer(support::raw_answers(r#"{"name":"Alpha","label":"First"}"#).unwrap())
         .unwrap()
     else {
         panic!("expected questions")
     };
     let Err(AnswerError::Rejected { rejections, .. }) =
-        pending.answer(protocol::parse_answers("{}").unwrap())
+        pending.answer(support::raw_answers("{}").unwrap())
     else {
         panic!("expected a rejection")
     };
@@ -1693,7 +1689,7 @@ fn unknown_id_for_an_interview_complete_before_any_submission_is_an_error() {
     // headless document is never submitted; its ids are checked at completion.
     let (_folder, template) =
         inline("name: sample\ninterview:\n  - { id: fixed, computed: '1' }\n");
-    let document = protocol::parse_answers(r#"{"other": "x"}"#).unwrap();
+    let document = support::raw_answers(r#"{"other": "x"}"#).unwrap();
     let error = match protocol::answer_headless(
         &template,
         Interview::start(&template, seed()).unwrap(),
@@ -1766,7 +1762,7 @@ fn rejected_probe_leaks_no_message_or_hook_before_the_corrected_document() {
         pending,
         rejections,
     }) = pending
-        .answer(protocol::parse_answers(r#"{"kind":"plain","style":1,"title":"NO"}"#).unwrap())
+        .answer(support::raw_answers(r#"{"kind":"plain","style":1,"title":"NO"}"#).unwrap())
     else {
         panic!("expected rejection")
     };
@@ -1780,7 +1776,7 @@ fn rejected_probe_leaks_no_message_or_hook_before_the_corrected_document() {
 
     let Interview::Complete(completed) = pending
         .answer(
-            protocol::parse_answers(r#"{"kind":"plain","style":1,"title":"good","last":"done"}"#)
+            support::raw_answers(r#"{"kind":"plain","style":1,"title":"good","last":"done"}"#)
                 .unwrap(),
         )
         .unwrap()
@@ -1805,7 +1801,7 @@ fn rejected_probe_does_not_publish_a_template_fault() {
     };
     let error = pending
         .answer(
-            protocol::parse_answers(r#"{"kind":"fancy","boom":true,"style":1,"title":"good"}"#)
+            support::raw_answers(r#"{"kind":"fancy","boom":true,"style":1,"title":"good"}"#)
                 .unwrap(),
         )
         .unwrap_err();

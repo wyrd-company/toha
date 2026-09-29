@@ -141,7 +141,7 @@ fn batch_answers(batch: &Value, answers: &Value) -> Value {
     }
     Value::Object(object)
 }
-fn one_shot(path: &Path, target: &Path) -> Value {
+fn one_shot(path: &Path, _target: &Path) -> Value {
     let template = Template::load(&path.join("template")).unwrap();
     let seed = Seed {
         now: support::expectation(path).now.parse().unwrap(),
@@ -151,7 +151,7 @@ fn one_shot(path: &Path, target: &Path) -> Value {
         ),
     };
     let interview = Interview::start(&template, seed).unwrap();
-    let raw = protocol::parse_answers(&fixture_answers(path).to_string()).unwrap();
+    let raw = support::raw_answers(&fixture_answers(path).to_string()).unwrap();
     let mut interview = interview;
     let mut raw = raw;
     let completed = loop {
@@ -170,17 +170,7 @@ fn one_shot(path: &Path, target: &Path) -> Value {
             }
         }
     };
-    protocol::complete_document(
-        &completed,
-        &context(
-            target,
-            path.join("template")
-                .canonicalize()
-                .unwrap()
-                .to_string_lossy(),
-            None,
-        ),
-    )
+    support::completed_projection(&completed)
 }
 #[test]
 fn every_success_fixture_through_staged_cli() {
@@ -302,7 +292,7 @@ fn every_success_fixture_through_library_replay() {
         );
         let store = Store::new(state.path().to_path_buf());
         store.save(&canonical, &record).unwrap();
-        let raw = protocol::parse_answers(&fixture_answers(&fixture).to_string()).unwrap();
+        let raw = support::raw_answers(&fixture_answers(&fixture).to_string()).unwrap();
         let Headless::Completed {
             completed,
             accepted,
@@ -328,10 +318,9 @@ fn every_success_fixture_through_library_replay() {
         else {
             panic!("replay incomplete: {}", fixture.display());
         };
-        let ctx = Context::new(&canonical, &record);
         assert_eq!(
-            protocol::complete_document(&replayed, &ctx),
-            protocol::complete_document(&completed, &ctx),
+            support::completed_projection(&replayed),
+            support::completed_projection(&completed),
             "{}",
             fixture.display()
         );
@@ -780,7 +769,7 @@ fn explicit_null_differs_from_missing_in_one_shot_and_staged() {
         if let Some(value) = second.clone() {
             values.insert("second".into(), value);
         }
-        let raw = protocol::parse_answers(&Value::Object(values.clone()).to_string()).unwrap();
+        let raw = support::raw_answers(&Value::Object(values.clone()).to_string()).unwrap();
         let Interview::Asking(pending) = Interview::start(&template, seed()).unwrap() else {
             panic!()
         };
@@ -827,7 +816,7 @@ fn explicit_null_differs_from_missing_in_one_shot_and_staged() {
             panic!()
         };
         let Interview::Asking(one_pending) = one_pending
-            .answer(protocol::parse_answers(r#"{"first":"ABC"}"#).unwrap())
+            .answer(support::raw_answers(r#"{"first":"ABC"}"#).unwrap())
             .unwrap()
         else {
             panic!()
@@ -1051,7 +1040,7 @@ fn headless_ignores_defined_skipped_id_but_rejects_unknown_id() {
         ),
     };
     let interview = Interview::start(&template, seed()).unwrap();
-    let raw = protocol::parse_answers(r#"{"enabled":false,"hidden":"ignored"}"#).unwrap();
+    let raw = support::raw_answers(r#"{"enabled":false,"hidden":"ignored"}"#).unwrap();
     let Headless::Completed { completed, .. } =
         protocol::answer_headless(&template, interview, raw).unwrap()
     else {
@@ -1060,7 +1049,7 @@ fn headless_ignores_defined_skipped_id_but_rejects_unknown_id() {
     let baseline = protocol::answer_headless(
         &template,
         Interview::start(&template, seed()).unwrap(),
-        protocol::parse_answers(r#"{"enabled":false}"#).unwrap(),
+        support::raw_answers(r#"{"enabled":false}"#).unwrap(),
     )
     .unwrap();
     let Headless::Completed {
@@ -1072,7 +1061,7 @@ fn headless_ignores_defined_skipped_id_but_rejects_unknown_id() {
     };
     assert_eq!(completed.answers, baseline.answers);
     let interview = Interview::start(&template, seed()).unwrap();
-    let raw = protocol::parse_answers(r#"{"enabled":false,"unknown":"bad"}"#).unwrap();
+    let raw = support::raw_answers(r#"{"enabled":false,"unknown":"bad"}"#).unwrap();
     let Headless::Pending { rejections, .. } =
         protocol::answer_headless(&template, interview, raw).unwrap()
     else {
@@ -1089,7 +1078,7 @@ fn headless_ignores_defined_skipped_id_but_rejects_unknown_id() {
     let result = protocol::answer_headless(
         &empty,
         Interview::start(&empty, seed()).unwrap(),
-        protocol::parse_answers(r#"{"unknown":"bad"}"#).unwrap(),
+        support::raw_answers(r#"{"unknown":"bad"}"#).unwrap(),
     );
     assert!(result.is_err());
 }

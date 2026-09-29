@@ -324,3 +324,43 @@ pub const ENVIRONMENT: &[&str] = &[
     "PATH",
     "TOHA_NOW",
 ];
+
+/// Builds `RawAnswers` from a bare JSON answers map, for in-memory engine and
+/// staged-replay tests that drive `Pending::answer` / `answer_headless`
+/// directly. External-document tests use the `{"template", "answers"}` envelope
+/// through `protocol::answer_document_once` / `answer_document_headless`; this
+/// helper is the in-memory path that the removed public `parse_answers` served.
+#[allow(dead_code)]
+pub fn raw_answers(json: &str) -> Result<toha::RawAnswers, String> {
+    let value: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    value
+        .as_object()
+        .ok_or_else(|| "answers document must be a JSON object".to_string())?
+        .iter()
+        .map(|(key, value)| toha::Id::parse(key).map(|id| (id, toha::RawAnswer(value.clone()))))
+        .collect()
+}
+
+/// Projects a completed interview to a comparable value `{answers, messages,
+/// disposition?}`, for engine and staged-replay equivalence tests. The product
+/// no longer emits a `complete` document (a scripted completion is `applied` or
+/// `planned`, and an agent completion is instructions only), so this projection
+/// replaces the removed `protocol::complete_document` as a test comparison
+/// medium only. It carries no context, which is identical on both sides of a
+/// replay-equivalence comparison.
+#[allow(dead_code)]
+pub fn completed_projection(completed: &toha::Completed) -> serde_json::Value {
+    let answers: serde_json::Map<String, serde_json::Value> = completed
+        .answers
+        .iter()
+        .map(|(id, answer)| (id.to_string(), answer.to_json()))
+        .collect();
+    let mut document = serde_json::json!({
+        "answers": answers,
+        "messages": completed.last_messages,
+    });
+    if completed.disposition() == toha::Disposition::DryRun {
+        document["disposition"] = serde_json::json!("dry-run");
+    }
+    document
+}
