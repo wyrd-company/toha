@@ -14,15 +14,15 @@ relationships:
 
 An omitted key in `--answers` or `continue` uses the configured default, then the question default, then an empty answer: `[]` for a looped `text` or `multiselect`, and `none` otherwise. A configured default reaches a question only through a `template-defaults` entry for the selected template's exact formal name; it can be an inline value or `{ preset: name }`. Explicit JSON `null` is an empty answer and skips both defaults; a required question rejects it. Show `messages` and configuration warnings to the caller in order. A batch's `schema` is JSON Schema 2020-12; do not infer answer types from prompt text.
 
-Hooks need registry trust through a name or `--trust` for this run. A folder or address supplied directly needs `--trust`, even when it matches a trusted registry entry. Inspect the dry run before granting trust: a `--dry-run` of untrusted hooks exits 0, lists each hook, and names on standard error the `--trust` command that runs them. `--force` permits overwriting target files; without it a conflict writes nothing.
+Hooks need registry trust through a name or `--trust` for this run. A folder or address supplied directly needs `--trust`, even when it matches a trusted registry entry. Inspect the plan before granting trust: on the scripted route (`apply TEMPLATE PATH --answers FILE`), untrusted hooks make the `planned` document carry `trusted: false` and exit 3 — read it, then rerun with `--trust`. On the person and agent routes, a `--dry-run` of untrusted hooks exits 0, prints the plan, and names on standard error the `--trust` command that runs them. `--force` permits overwriting target files; without it a conflict writes nothing.
 
 Configuration files are `$TOHA_CONFIG` (local) and `$TOHA_USER_CONFIG` (user) when set and not empty; an empty value counts as unset. `toha skills view toha --path references/environment.md` lists every environment variable and directory toha reads; `toha --help` lists them too. `toha skills view toha --path references/protocol.md` prints a tested staged exchange.
 
 | Exit | Action |
 | --- | --- |
 | 0 | Done; read the result document (`applied` or `planned`) or the completion instructions. |
-| 1 | Read the error: load, missing stage, another template staged, conflict, render, or hook failure. A refusal names the commands to run next on standard error. |
+| 1 | An error: load, missing stage, another template staged, conflict, render, or hook failure. The scripted route reports it as an `error` document carrying `kind`, `message`, and any `commands`; the person and agent routes name the next commands on standard error. |
 | 2 | Correct the command syntax (`toha <command> --help`). |
-| 3 | Hooks need trust; inspect the printed dry run, then run the named `--trust` command if approved. |
-| 4 | Read the batch, answer or correct it with `continue`; without a terminal, an incomplete staged interview cannot apply. |
-| 5 | Resolve the ambiguous template name: run the named command with the intended formal name, or add an alias. |
+| 3 | Hooks need trust. The scripted route emits a `planned` document with `trusted: false`; the person and agent routes print the dry run and name the `--trust` command on standard error. Rerun with `--trust` if approved. |
+| 4 | A question batch. On the agent routes (`stage --async`, `continue PATH FILE`, `apply PATH`) the batch is followed by instructions on standard output and `apply PATH` never prompts; answer or correct it with `continue PATH FILE`. In a terminal, `continue PATH` (person) prompts the rest. |
+| 5 | The template name is ambiguous. The scripted route lists the matches in the `error` document's `commands`; other routes name them on standard error. Run the named command with the intended formal name, or add an alias. |

@@ -43,12 +43,13 @@ description: >-
   evaluated as soon as their references are answered, so a batch never holds
   them.
 
-  Messages. Each batch and result document carries a `messages` array: the
-  messages reached by the step that produced it, in interview order. A step
-  is the start of the interview or the submission of one accepted answers
-  document. Each entry is a string: the rendered text of a message node, or a
-  warning from toha, which starts with `warning: `. A result for a rejected
-  document holds the batch it answered, with that batch's messages.
+  Messages. The `questions`, `applied`, `planned`, and `ended` documents carry a
+  `messages` array: the messages reached by the step that produced the document,
+  in interview order. A step is the start of the interview or the submission of
+  one accepted answers document. Each entry is a string: the rendered text of a
+  message node, or a warning from toha, which starts with `warning: `. A result
+  for a rejected document holds the batch it answered, with that batch's
+  messages. An `error` document carries no `messages` array.
 
   Question schema. A batch carries a JSON Schema 2020-12 object schema in
   `schema`. Each pending question is one property keyed by its id. `prompt` is
@@ -117,9 +118,11 @@ description: >-
   validates each answer and applies its `format` expression before it records
   the answer.
 
-  Context. Each batch and result document carries `context`: the canonical
-  absolute target path, the formal name of the template, and the resolved
-  commit of a git template, or `null` for a local folder.
+  Context. The `questions`, `applied`, `planned`, and `ended` documents carry
+  `context`: the canonical absolute target path, the formal name of the template,
+  and the resolved commit of a git template, or `null` for a local folder. An
+  `error` document carries `context` only once the route has established a target
+  and template.
 
   Results. `continue` emits a result document. When every answer is accepted
   and questions remain, the result holds the next batch. When answers fail
