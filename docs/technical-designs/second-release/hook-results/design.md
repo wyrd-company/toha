@@ -214,7 +214,7 @@ plan.rs  Plan::build (one context, no results)
         ▼
 apply.rs  Plan::apply_reporting  ◀── the only interleave
   conflicts → NeedsTrust gate → symlinks → write files
-  for step: [render deferred → symlink cwd → run → decode → record]  Stop on failure
+  for step: [render deferred → symlink cwd → run → stop on failure → decode → record]
   render deferred after-apply
         ▲ HookOutcome{ code, stdout, stderr }
 hook.rs  HookRunner::run (Capture), decode(), HookResults   (dropped at return)
