@@ -301,6 +301,33 @@ fn every_fixture_through_library() {
     }
 }
 
+/// Git cannot keep an empty directory, so one under the fixture tree exists only
+/// in the working tree that made it. Refuse it here so that a fixture never
+/// passes locally and fails on a fresh checkout.
+#[test]
+fn fixture_tree_has_no_empty_directories() {
+    fn collect(dir: &Path, empty: &mut Vec<std::path::PathBuf>) {
+        let entries: Vec<_> = fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap())
+            .collect();
+        if entries.is_empty() {
+            empty.push(dir.to_owned());
+        }
+        for entry in entries {
+            if entry.file_type().unwrap().is_dir() {
+                collect(&entry.path(), empty);
+            }
+        }
+    }
+    let mut empty = Vec::new();
+    collect(Path::new("tests/fixtures"), &mut empty);
+    assert!(
+        empty.is_empty(),
+        "Git does not keep these empty fixture directories; add a tracked file: {empty:#?}"
+    );
+}
+
 #[test]
 fn rejected_batch_keeps_answers_unrecorded() {
     let template = Template::load(Path::new("tests/fixtures/text-basic/template")).unwrap();
