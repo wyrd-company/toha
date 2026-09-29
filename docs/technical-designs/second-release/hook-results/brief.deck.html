@@ -61,7 +61,7 @@ relationships:
     - error-attribution
 -->
 <section id="title">
-  <p class="kicker">Toha 0.2.0 · Design for approval</p>
+  <p class="kicker">Toha 0.2.0 · Design for approval · revised with a JSON mode</p>
   <h1>Let a template read what a hook did</h1>
   <p>A hook can opt in to expose its exit code and output, so a later hook or the
     closing message can react to it — without changing trust and without ever
@@ -154,6 +154,33 @@ messages:
       Captured output is not printed by Toha; it appears only where the template
       places it.</p>
   </section>
+  <section>
+    <h2>Before and after — read the output as JSON</h2>
+    <div class="two">
+      <div>
+        <p><strong>Before</strong> — parse it yourself</p>
+        <pre><code class="language-yaml">hooks:
+  - id: pkg
+    run: [ pkg-tool, info, --json ]
+    capture: [ stdout ]
+# You get the raw text in pkg.stdout
+# and must parse it inside the template.</code></pre>
+      </div>
+      <div>
+        <p><strong>After</strong> — <code>parse: json</code></p>
+        <pre><code class="language-yaml">hooks:
+  - id: pkg
+    run: [ pkg-tool, info, --json ]
+    parse: json
+    capture: [ stdout ]
+messages:
+  after-apply: "Built {{ pkg.name }} {{ pkg.version }}."</code></pre>
+      </div>
+    </div>
+    <p class="muted">With <code>parse: json</code>, the parsed value is
+      <code>pkg</code> itself — <code>pkg.name</code>, <code>pkg.tags[0]</code>.
+      Bob's requested addition.</p>
+  </section>
 </section>
 
 <section id="pre-mortem">
@@ -231,6 +258,12 @@ Apply (writes)  write files, then for each hook:
           a stream</td></tr>
         <tr><td><code>allow-failure</code></td><td>Tolerate a nonzero exit so a
           later hook can react to it. Must be read somewhere</td></tr>
+        <tr><td><code>parse: json</code></td><td>Parse stdout as JSON, so the
+          parsed value is <code>id</code> itself. Requires
+          <code>capture: [stdout]</code></td></tr>
+        <tr><td><code>status-id</code></td><td>With <code>parse: json</code>,
+          the name that carries the exit code and raw output (so JSON keys never
+          clash with them)</td></tr>
       </tbody>
     </table>
   </section>
@@ -274,6 +307,29 @@ stderr: ""          # present only if capture includes stderr</code></pre>
       <li><code>exit_code == 0</code> means it ran and succeeded</li>
       <li>Output is decoded as text; non-text output fails the run with a clear
         message and never leaks bytes</li>
+    </ul>
+  </section>
+  <section>
+    <h2>Data shapes — a JSON result</h2>
+    <p>With <code>parse: json</code>, <code>id</code> is the parsed value; its
+      type follows the JSON:</p>
+    <table>
+      <thead><tr><th>Output</th><th>Read as</th></tr></thead>
+      <tbody>
+        <tr><td><code>{"name":"demo"}</code></td><td><code>id.name</code></td></tr>
+        <tr><td><code>["a","b"]</code></td><td><code>id[0]</code>,
+          <code>id | length</code></td></tr>
+        <tr><td><code>"stable"</code> / <code>3</code> / <code>true</code></td>
+          <td>the value itself</td></tr>
+        <tr><td><code>null</code></td><td><code>id is none</code></td></tr>
+      </tbody>
+    </table>
+    <ul>
+      <li>Empty or malformed JSON (on success) fails the run with a clear message
+        and no leaked bytes</li>
+      <li>A hook that did not run reads as empty; the <code>status-id</code> tells
+        "did not run" from "ran but printed no JSON"</li>
+      <li>Uses the JSON library already in Toha — no new dependency</li>
     </ul>
   </section>
   <section>
@@ -390,20 +446,44 @@ enum Planned&lt;T&gt; { Ready(T), AfterHooks(Deferred) }</code></pre>
     <p class="muted">The chosen shape takes the smallest surface from one and the
       static safety and trust posture from the other.</p>
   </section>
+  <section>
+    <h2>Alternatives — the JSON mode</h2>
+    <p>The JSON addition ran its own round: two independent blind designs, one
+      independent judge.</p>
+    <table>
+      <thead><tr><th>Shape for the parsed value</th><th>Outcome</th></tr></thead>
+      <tbody>
+        <tr><td>Parsed value at <code>id</code>; metadata at a declared
+          <code>status-id</code></td><td><strong>Chosen.</strong> No clash
+          between JSON keys and metadata</td></tr>
+        <tr><td>"Did not run" as an <em>undefined</em> value</td>
+          <td>Not chosen — kept "always defined, empty when absent" so a
+            forgotten guard cannot half-apply</td></tr>
+        <tr><td>Parsed value hidden under a sub-property
+          (<code>id.stdout</code> only)</td><td>Not chosen — Bob asked for it
+          directly at <code>id</code></td></tr>
+      </tbody>
+    </table>
+  </section>
 </section>
 
 <section id="decisions">
   <section>
     <h2>Decisions needed first</h2>
-    <p>Three rulings before the build starts. Recommendations given.</p>
+    <p>Five rulings before the build starts. Recommendations given. Your JSON
+      request approves none of the first three by itself.</p>
     <ol>
       <li><strong>How much can read a result?</strong> — see next slide</li>
       <li><strong>A hook <code>id</code> is an ordinary name</strong>, sharing the
         space of question and data names (a clash is the existing duplicate
         error). <em>Recommended: yes</em> — it avoids a new reserved word.</li>
-      <li><strong>Non-text output</strong> fails the run with a clear message.
-        <em>Recommended: yes</em> — the alternative silently corrupts text that
-        may become a command argument.</li>
+      <li><strong>Non-text output</strong> (and malformed JSON) fails the run with
+        a clear message. <em>Recommended: yes</em> — the alternative silently
+        corrupts text that may become a command argument.</li>
+      <li><strong>The JSON mode shape</strong> — see the JSON decisions slide.</li>
+      <li><strong>JSON capture</strong> — <code>parse: json</code> requires an
+        explicit <code>capture: [stdout]</code>. <em>Recommended: yes</em> — one
+        place controls what is piped.</li>
     </ol>
   </section>
   <section>
@@ -433,6 +513,22 @@ enum Planned&lt;T&gt; { Ready(T), AfterHooks(Deferred) }</code></pre>
       the hook's own environment; hooks already require trust. This adds a new
       ability; it removes nothing. Files and the opening message are excluded
       either way.</p>
+  </section>
+  <section>
+    <h2>Decision 4 — the JSON mode shape</h2>
+    <p>Your requested addition, as designed:</p>
+    <ul>
+      <li><code>parse: json</code> makes the parsed value <code>id</code> itself
+        — <code>id.name</code>, <code>id.tags[0]</code> — not hidden under a
+        sub-property.</li>
+      <li>The exit code and raw output move to a name you pick,
+        <code>status-id</code>, so a JSON key can never clash with them. You only
+        need it when a hook may not run or may fail.</li>
+      <li>"Did not run" reads as empty (not undefined); <code>status-id</code>
+        tells that apart from a hook that ran but printed no JSON.</li>
+    </ul>
+    <p class="muted">Approve this exact shape. Uses the JSON library already in
+      Toha — no new dependency, no new limits.</p>
   </section>
 </section>
 
