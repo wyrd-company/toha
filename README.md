@@ -94,13 +94,16 @@ Add the library without the CLI dependencies:
 cargo add toha --no-default-features
 ```
 
-From this repository checkout, drive the same interview with a JSON answers
-document:
+From this repository checkout, drive the same interview with an identity-bearing
+answers document. The document names the template it answers, which Toha compares
+by exact string equality with the formal name the caller has established before it
+evaluates any answer:
 
 ```rust
 use std::path::Path;
-use toha::{Interview, Seed, Template, protocol};
+use toha::{Interview, Seed, Template};
 use toha::context::InvocationContext;
+use toha::protocol::{self, DocumentStep};
 use toha::staging::canonical_target;
 let template = Template::load(Path::new("docs/examples/demo")).unwrap();
 let target = canonical_target(Path::new("./notes")).unwrap();
@@ -110,9 +113,17 @@ let seed = Seed {
     context: InvocationContext::for_target(target),
 };
 let Interview::Asking(pending) = Interview::start(&template, seed).unwrap() else { panic!("expected questions") };
-let answers = protocol::parse_answers(r#"{"title":"Sample note","topic":"Research"}"#).unwrap();
-let Interview::Complete(done) = pending.answer(answers).unwrap() else { panic!("expected complete interview") };
+// The document must name the formal template it answers.
+let expected = "acme:demo@1";
+let text = r#"{"template":"acme:demo@1","answers":{"title":"Sample note","topic":"Research"}}"#;
+let DocumentStep::Accepted { interview, .. } =
+    protocol::answer_document_once(expected, pending, text).unwrap()
+else { panic!("the document was rejected") };
+let Interview::Complete(done) = interview else { panic!("expected complete interview") };
 assert_eq!(done.answers.len(), 2);
 ```
+
+In-memory callers that build answers directly still use `Pending::answer` with
+`RawAnswers` and the raw headless walk; the envelope is only for external JSON.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development and changes.

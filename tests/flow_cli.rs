@@ -68,6 +68,19 @@ impl Case {
         self.template.to_str().unwrap()
     }
 
+    /// The formal template identity the routes establish for this local folder:
+    /// its canonical path, the value every answers envelope must name.
+    fn formal(&self) -> String {
+        support::formal_name(&self.template)
+    }
+
+    /// A bare answers map wrapped in the identity envelope for this template, the
+    /// form both the scripted (`apply --answers`) and agent (`continue PATH FILE`)
+    /// answers routes require.
+    fn envelope(&self, answers: Value) -> String {
+        support::envelope_text(&self.formal(), &answers)
+    }
+
     fn run(&self, args: &[&str]) -> Output {
         self.command()
             .args(args)
@@ -137,29 +150,21 @@ const ABORT_GATE: &str = "  - { id: cancel, type: confirm, prompt: Cancel? }\n  
 
 #[test]
 fn apply_answers_stop_emits_the_ended_document_and_writes_nothing() {
-    // P1/D1: a headless `apply --answers` reports a stop with the additive
-    // `ended` document on stdout (so an agent tells it from a completion or an
-    // abort) and the stderr notice, exit 0, nothing written.
+    // P1/D1: the scripted route (`apply TEMPLATE PATH --answers FILE`) reports a
+    // stop with the `ended` document on stdout (so an agent tells it from a
+    // completion or an abort), exit 0, nothing written. A scripted outcome is the
+    // one document; the stop is distinguished by `status`/`kind`/`label`, not a
+    // stderr notice.
     let case = Case::new(STOP_GATE);
     let output = case.send(
         &["apply", case.template(), case.target(), "--answers", "-"],
-        r#"{"proceed": false}"#,
+        &case.envelope(serde_json::json!({"proceed": false})),
     );
     assert_eq!(code(&output), 0, "{}", stderr(&output));
-    let document: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
-        panic!(
-            "stdout was not the ended document: {e}\n{}",
-            String::from_utf8_lossy(&output.stdout)
-        )
-    });
+    let document = support::first_document(&output.stdout);
     assert_eq!(document["status"], "ended");
     assert_eq!(document["kind"], "stop");
     assert_eq!(document["label"], "declined at gate");
-    assert!(
-        stderr(&output).contains("stopped: declined at gate"),
-        "{}",
-        stderr(&output)
-    );
     assert!(!case.wrote_file(), "stop wrote a file");
     assert!(!case.staged(), "a fresh apply stages nothing");
 }
@@ -170,10 +175,10 @@ fn apply_answers_abort_emits_the_ended_document_with_kind_abort() {
     let case = Case::new(ABORT_GATE);
     let output = case.send(
         &["apply", case.template(), case.target(), "--answers", "-"],
-        r#"{"cancel": true}"#,
+        &case.envelope(serde_json::json!({"cancel": true})),
     );
     assert_eq!(code(&output), 0, "{}", stderr(&output));
-    let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let document = support::first_document(&output.stdout);
     assert_eq!(document["status"], "ended");
     assert_eq!(document["kind"], "abort");
     assert!(!case.wrote_file());
@@ -184,7 +189,7 @@ fn apply_proceeds_and_writes_when_the_stop_is_not_triggered() {
     let case = Case::new(STOP_GATE);
     let output = case.send(
         &["apply", case.template(), case.target(), "--answers", "-"],
-        r#"{"proceed": true, "name": "Ada"}"#,
+        &case.envelope(serde_json::json!({"proceed": true, "name": "Ada"})),
     );
     assert_eq!(code(&output), 0, "{}", stderr(&output));
     assert!(case.wrote_file(), "proceed did not write");
@@ -203,9 +208,12 @@ fn abort_via_continue_removes_the_staged_record() {
     assert_eq!(code(&staged), 4, "{}", stderr(&staged));
     assert!(case.staged(), "stage did not persist a record");
 
-    let ended = case.send(&["continue", case.target(), "-"], r#"{"cancel": true}"#);
+    let ended = case.send(
+        &["continue", case.target(), "-"],
+        &case.envelope(serde_json::json!({"cancel": true})),
+    );
     assert_eq!(code(&ended), 0, "{}", stderr(&ended));
-    let document: Value = serde_json::from_slice(&ended.stdout).unwrap();
+    let document = support::first_document(&ended.stdout);
     assert_eq!(document["status"], "ended");
     assert_eq!(document["kind"], "abort");
     assert!(!case.staged(), "abort did not remove the staged record");
@@ -222,14 +230,17 @@ fn abort_via_continue_removes_the_staged_record() {
 #[test]
 fn abort_on_a_fresh_apply_is_a_no_op_removal_without_error() {
     // Behavior 9: a fresh apply has no staged record; the abort removal returns
-    // false and does not error.
+    // false and does not error. The scripted route reports the abort in its one
+    // `ended` document (kind "abort"), not on stderr.
     let case = Case::new(ABORT_GATE);
     let output = case.send(
         &["apply", case.template(), case.target(), "--answers", "-"],
-        r#"{"cancel": true}"#,
+        &case.envelope(serde_json::json!({"cancel": true})),
     );
     assert_eq!(code(&output), 0, "{}", stderr(&output));
-    assert!(stderr(&output).contains("aborted"), "{}", stderr(&output));
+    let document = support::first_document(&output.stdout);
+    assert_eq!(document["status"], "ended");
+    assert_eq!(document["kind"], "abort");
     assert!(!case.wrote_file());
     assert!(!case.staged());
 }
@@ -270,7 +281,10 @@ fn abort_removes_the_record_under_the_canonical_key() {
     let staged = case.run(&["stage", case.template(), case.target(), "--async"]);
     assert_eq!(code(&staged), 4, "{}", stderr(&staged));
     let noisy = format!("{}/.", case.target());
-    let ended = case.send(&["continue", &noisy, "-"], r#"{"cancel": true}"#);
+    let ended = case.send(
+        &["continue", &noisy, "-"],
+        &case.envelope(serde_json::json!({"cancel": true})),
+    );
     assert_eq!(code(&ended), 0, "{}", stderr(&ended));
     assert!(
         !case.staged(),
@@ -293,7 +307,7 @@ fn a_rejecting_and_aborting_continue_keeps_the_staged_record() {
 
     let rejected = case.send(
         &["continue", case.target(), "-"],
-        r#"{"cancel": true, "code": "x"}"#,
+        &case.envelope(serde_json::json!({"cancel": true, "code": "x"})),
     );
     assert_eq!(code(&rejected), 4, "{}", stderr(&rejected));
     assert!(
@@ -310,13 +324,19 @@ fn answers_after_a_flow_stop_are_refused() {
     let case = Case::new(STOP_GATE);
     let staged = case.run(&["stage", case.template(), case.target(), "--async"]);
     assert_eq!(code(&staged), 4, "{}", stderr(&staged));
-    let stopped = case.send(&["continue", case.target(), "-"], r#"{"proceed": false}"#);
+    let stopped = case.send(
+        &["continue", case.target(), "-"],
+        &case.envelope(serde_json::json!({"proceed": false})),
+    );
     assert_eq!(code(&stopped), 0, "{}", stderr(&stopped));
-    let document: Value = serde_json::from_slice(&stopped.stdout).unwrap();
+    let document = support::first_document(&stopped.stdout);
     assert_eq!(document["status"], "ended");
     assert!(case.staged(), "a stop must keep the staged record");
 
-    let refused = case.send(&["continue", case.target(), "-"], r#"{"name": "late"}"#);
+    let refused = case.send(
+        &["continue", case.target(), "-"],
+        &case.envelope(serde_json::json!({"name": "late"})),
+    );
     assert_ne!(code(&refused), 0, "answers after a stop were not refused");
     assert!(
         stderr(&refused).contains("not used"),
@@ -328,34 +348,40 @@ fn answers_after_a_flow_stop_are_refused() {
 
 #[test]
 fn apply_answers_after_a_flow_stop_is_refused_but_no_answers_shows_the_notice() {
-    // R2/behavior 23: the terminal-interview refusal holds on *every* answers
-    // route, not just `continue`. `apply TEMPLATE PATH --answers` on a staged
-    // interview a flow node already ended is refused (exit 1) and keeps the
-    // record; `apply TEMPLATE PATH` without answers keeps the notice (exit 0).
+    // R2: the scripted route never uses staged state, so `apply TEMPLATE PATH
+    // --answers` refuses with a `staged` error document (exit 1) whenever a record
+    // is staged — here one a flow node already ended — and keeps that record. The
+    // person route `apply TEMPLATE PATH` without answers resumes it and shows the
+    // stop notice (exit 0).
     let case = Case::new(STOP_GATE);
     let staged = case.run(&["stage", case.template(), case.target(), "--async"]);
     assert_eq!(code(&staged), 4, "{}", stderr(&staged));
-    let stopped = case.send(&["continue", case.target(), "-"], r#"{"proceed": false}"#);
+    let stopped = case.send(
+        &["continue", case.target(), "-"],
+        &case.envelope(serde_json::json!({"proceed": false})),
+    );
     assert_eq!(code(&stopped), 0, "{}", stderr(&stopped));
     assert!(case.staged(), "a stop must keep the staged record");
 
-    // The named-template answers route must refuse, not exit 0 discarding them.
+    // The scripted route refuses a staged target with the `staged` error document,
+    // exit 1, and never removes the record.
     let refused = case.send(
         &["apply", case.template(), case.target(), "--answers", "-"],
-        r#"{"name": "late"}"#,
+        &case.envelope(serde_json::json!({"name": "late"})),
     );
     assert_eq!(
         code(&refused),
         1,
-        "apply --answers on an ended record was not refused: {}",
+        "apply --answers on a staged record was not refused: {}",
         stderr(&refused)
     );
+    let document = support::first_document(&refused.stdout);
+    assert_eq!(document["status"], "error");
+    assert_eq!(document["kind"], "staged");
     assert!(
-        stderr(&refused).contains("not used"),
-        "{}",
-        stderr(&refused)
+        support::diagnostic_text(&document).contains("does not use staged state"),
+        "{document}"
     );
-    assert!(refused.stdout.is_empty(), "a refusal emits no document");
     assert!(case.staged(), "the refusal must keep the record");
 
     // The no-answers route is unchanged: the notice, exit 0.
@@ -374,7 +400,10 @@ fn stage_on_an_ended_record_names_starting_over_not_apply() {
     // would write nothing), but name starting over.
     let case = Case::new(STOP_GATE);
     case.run(&["stage", case.template(), case.target(), "--async"]);
-    let stopped = case.send(&["continue", case.target(), "-"], r#"{"proceed": false}"#);
+    let stopped = case.send(
+        &["continue", case.target(), "-"],
+        &case.envelope(serde_json::json!({"proceed": false})),
+    );
     assert_eq!(code(&stopped), 0, "{}", stderr(&stopped));
     assert!(case.staged());
 
@@ -400,13 +429,14 @@ fn flow_dry_run_and_cli_dry_run_compose_without_writing() {
         let case = Case::new(interview);
         let mut args = vec!["apply", case.template(), case.target(), "--answers", "-"];
         args.extend(extra.iter().copied());
-        let output = case.send(&args, r#"{"name": "Ada"}"#);
+        let output = case.send(&args, &case.envelope(serde_json::json!({"name": "Ada"})));
         assert_eq!(code(&output), 0, "{}", stderr(&output));
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(
-            stdout.contains("create hello.txt"),
-            "plan not shown: {stdout}"
-        );
+        // The scripted route reports a flow dry-run as a `planned` document; the
+        // plan text reconstructed from it lists the file it would create.
+        let document = support::first_document(&output.stdout);
+        assert_eq!(document["status"], "planned", "{document}");
+        let plan = support::plan_text_from_document(&document);
+        assert!(plan.contains("create hello.txt"), "plan not shown: {plan}");
         assert!(!case.wrote_file(), "dry-run wrote a file");
     }
 }

@@ -13,7 +13,7 @@ use std::{
     process::{Command, Stdio},
 };
 use toha::{
-    AnswerError, Applied, ApplyOptions, Interview, Plan, Seed, Template,
+    Applied, ApplyOptions, Interview, Plan, Seed, Template,
     hook::RecordingRunner,
     protocol::{self, Context, Headless},
     staging::{StagedRecord, Store, canonical_target},
@@ -93,9 +93,13 @@ fn output_document(
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let value = support::first_document(&output.stdout);
     valid(&value, validator);
     value
+}
+/// The identity envelope naming `formal` around a bare answers value.
+fn envelope(formal: &str, answers: &Value) -> Value {
+    json!({ "template": formal, "answers": answers })
 }
 fn send(mut cmd: Command, answers: &Value) -> std::process::Output {
     let mut child = cmd
@@ -141,37 +145,6 @@ fn batch_answers(batch: &Value, answers: &Value) -> Value {
     }
     Value::Object(object)
 }
-fn one_shot(path: &Path, _target: &Path) -> Value {
-    let template = Template::load(&path.join("template")).unwrap();
-    let seed = Seed {
-        now: support::expectation(path).now.parse().unwrap(),
-        defaults: Default::default(),
-        context: toha::context::InvocationContext::for_target(
-            canonical_target(std::path::Path::new(".")).unwrap(),
-        ),
-    };
-    let interview = Interview::start(&template, seed).unwrap();
-    let raw = support::raw_answers(&fixture_answers(path).to_string()).unwrap();
-    let mut interview = interview;
-    let mut raw = raw;
-    let completed = loop {
-        match interview {
-            Interview::Complete(completed) => break completed,
-            Interview::Ended(_) => panic!("unexpected flow end"),
-            Interview::Asking(pending) => {
-                interview = pending
-                    .answer(std::mem::take(&mut raw))
-                    .unwrap_or_else(|e| match e {
-                        AnswerError::Rejected { rejections, .. } => {
-                            panic!("one-shot rejection: {rejections:?}")
-                        }
-                        AnswerError::Eval(e) => panic!("one-shot evaluation: {e}"),
-                    });
-            }
-        }
-    };
-    support::completed_projection(&completed)
-}
 #[test]
 fn every_success_fixture_through_staged_cli() {
     let validator = schema_validator();
@@ -188,6 +161,7 @@ fn every_success_fixture_through_staged_cli() {
         let target = tempfile::tempdir().unwrap();
         support::copy_tree(&fixture.join("existing"), target.path());
         let template = fixture.join("template").canonicalize().unwrap();
+        let formal = template.to_string_lossy().into_owned();
         let initial = command(state.path())
             .args([
                 "stage",
@@ -198,45 +172,50 @@ fn every_success_fixture_through_staged_cli() {
             .env("TOHA_NOW", &expect.now)
             .output()
             .unwrap();
-        let mut document = output_document(
-            &initial,
-            if initial.status.code() == Some(0) {
-                0
-            } else {
-                4
-            },
-            &validator,
+        let code = initial.status.code();
+        assert!(
+            code == Some(0) || code == Some(4),
+            "{}: {}",
+            fixture.display(),
+            String::from_utf8_lossy(&initial.stderr)
         );
-        let answers = fixture_answers(&fixture);
-        let mut batches = 0;
-        while document["status"] == "questions" {
-            batches += 1;
-            assert!(batches < 20, "staged loop: {}", fixture.display());
-            let submission = batch_answers(&document, &answers);
-            let mut cmd = command(state.path());
-            cmd.args(["continue", target.path().to_str().unwrap(), "-"]);
-            let output = send(cmd, &submission);
-            document = output_document(
-                &output,
+        // A stage that still asks leads its standard output with the batch and
+        // exits 4; a stage that completes at once writes instructions only.
+        if code == Some(4) {
+            let mut document = support::first_document(&initial.stdout);
+            valid(&document, &validator);
+            let answers = fixture_answers(&fixture);
+            let mut batches = 0;
+            loop {
+                batches += 1;
+                assert!(batches < 20, "staged loop: {}", fixture.display());
+                let submission = batch_answers(&document, &answers);
+                let mut cmd = command(state.path());
+                cmd.args(["continue", target.path().to_str().unwrap(), "-"]);
+                let output = send(cmd, &envelope(&formal, &submission));
+                // A completing continue writes instructions only, no document.
                 if output.status.code() == Some(0) {
-                    0
-                } else {
-                    4
-                },
-                &validator,
-            );
-            assert!(
-                document.get("errors").is_none(),
-                "{}: {document}",
-                fixture.display()
-            );
+                    break;
+                }
+                assert_eq!(
+                    output.status.code(),
+                    Some(4),
+                    "{}: {}",
+                    fixture.display(),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                document = support::first_document(&output.stdout);
+                valid(&document, &validator);
+                assert_eq!(document["status"], "questions", "{}", fixture.display());
+                assert!(
+                    document.get("errors").is_none(),
+                    "{}: {document}",
+                    fixture.display()
+                );
+            }
         }
-        assert_eq!(
-            document["answers"],
-            one_shot(&fixture, target.path())["answers"],
-            "{}",
-            fixture.display()
-        );
+        // The final apply writes the expected tree, which proves the answers
+        // recorded through the continues are exactly the one-shot answers.
         let mut apply = command(state.path());
         apply.args(["apply", target.path().to_str().unwrap()]);
         if expect.options.force {
@@ -364,13 +343,13 @@ fn rejected_continue_preserves_record_and_abort_is_idempotent() {
     let store = Store::new(support::staged_dir(state.path()));
     let target_path = canonical_target(target.path()).unwrap();
     let before = fs::read(store.path_for(&target_path)).unwrap();
+    let formal = support::formal_name(&template);
     let mut cmd = command(state.path());
     cmd.args(["continue", target.path().to_str().unwrap(), "-"]);
-    let output = send(cmd, &json!({}));
+    let output = send(cmd, &envelope(&formal, &json!({})));
     assert_eq!(output.status.code(), Some(4));
     assert!(
-        serde_json::from_slice::<Value>(&output.stdout)
-            .unwrap()
+        support::first_document(&output.stdout)
             .get("errors")
             .is_some()
     );
@@ -389,15 +368,14 @@ fn missing_required_stages_then_continues_and_applies() {
     let state = tempfile::tempdir().unwrap();
     let target = tempfile::tempdir().unwrap();
     let template = fixture.join("template").canonicalize().unwrap();
-    let empty = state.path().join("empty.json");
-    fs::write(&empty, "{}").unwrap();
+    let formal = support::formal_name(&template);
+    // `name` is required, so the agent stage cannot complete and saves a record.
     let output = command(state.path())
         .args([
-            "apply",
+            "stage",
             support::folder_address(&template).as_str(),
             target.path().to_str().unwrap(),
-            "--answers",
-            empty.to_str().unwrap(),
+            "--async",
         ])
         .output()
         .unwrap();
@@ -411,7 +389,7 @@ fn missing_required_stages_then_continues_and_applies() {
     );
     let mut cmd = command(state.path());
     cmd.args(["continue", target.path().to_str().unwrap(), "-"]);
-    let output = send(cmd, &fixture_answers(fixture));
+    let output = send(cmd, &envelope(&formal, &fixture_answers(fixture)));
     assert_eq!(
         output.status.code(),
         Some(0),
@@ -457,6 +435,7 @@ fn duplicate_stage_and_missing_staged_apply() {
             .code(),
         Some(1)
     );
+    // The scripted route refuses a staged target instead of applying over it.
     assert_eq!(
         command(state.path())
             .args([
@@ -468,7 +447,7 @@ fn duplicate_stage_and_missing_staged_apply() {
             .unwrap()
             .status
             .code(),
-        Some(4)
+        Some(1)
     );
     assert_eq!(
         command(state.path())
@@ -509,9 +488,10 @@ fn legacy_record_continue_uses_the_active_canonical_target() {
     assert_eq!(output.status.code(), Some(4));
     let legacy_path = move_record_to_legacy_key(state.path(), target.path());
 
+    let formal = support::formal_name(&template);
     let mut continue_command = command(state.path());
     continue_command.args(["continue", target.path().to_str().unwrap(), "-"]);
-    let output = send(continue_command, &json!({}));
+    let output = send(continue_command, &envelope(&formal, &json!({})));
     assert_eq!(
         output.status.code(),
         Some(4),
@@ -519,7 +499,7 @@ fn legacy_record_continue_uses_the_active_canonical_target() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let document = support::first_document(&output.stdout);
     assert_eq!(
         document["context"]["target"],
         canonical_target(target.path())
@@ -613,9 +593,10 @@ fn successful_apply_removes_a_legacy_separator_record() {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(4));
+    let formal = support::formal_name(&template);
     let mut continue_command = command(state.path());
     continue_command.args(["continue", target.path().to_str().unwrap(), "-"]);
-    let output = send(continue_command, &json!({"name": "Item"}));
+    let output = send(continue_command, &envelope(&formal, &json!({"name": "Item"})));
     assert_eq!(output.status.code(), Some(0));
     let legacy_path = move_record_to_legacy_key(state.path(), target.path());
 
@@ -794,6 +775,7 @@ fn explicit_null_differs_from_missing_in_one_shot_and_staged() {
         let state = tempfile::tempdir().unwrap();
         let target = tempfile::tempdir().unwrap();
         let template_path = fixture.join("template").canonicalize().unwrap();
+        let formal = support::formal_name(&template_path);
         let initial = command(state.path())
             .args([
                 "stage",
@@ -805,13 +787,13 @@ fn explicit_null_differs_from_missing_in_one_shot_and_staged() {
             .output()
             .unwrap();
         assert_eq!(initial.status.code(), Some(4));
-        let first_batch: Value = serde_json::from_slice(&initial.stdout).unwrap();
+        let first_batch = support::first_document(&initial.stdout);
         assert!(first_batch["schema"]["properties"].get("first").is_some());
         let mut cmd = command(state.path());
         cmd.args(["continue", target.path().to_str().unwrap(), "-"]);
-        let output = send(cmd, &json!({"first":"ABC"}));
+        let output = send(cmd, &envelope(&formal, &json!({"first":"ABC"})));
         assert_eq!(output.status.code(), Some(4));
-        let second_batch: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let second_batch = support::first_document(&output.stdout);
         let Interview::Asking(one_pending) = Interview::start(&template, seed()).unwrap() else {
             panic!()
         };
@@ -833,10 +815,24 @@ fn explicit_null_differs_from_missing_in_one_shot_and_staged() {
         };
         let mut cmd = command(state.path());
         cmd.args(["continue", target.path().to_str().unwrap(), "-"]);
-        let output = send(cmd, &submission);
+        let output = send(cmd, &envelope(&formal, &submission));
         assert_eq!(output.status.code(), Some(0));
-        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(result["answers"]["second"], expected);
+        // A completing continue writes instructions only; read the recorded
+        // answer back by replaying the saved record.
+        let store = Store::new(support::staged_dir(state.path()));
+        let canonical = canonical_target(target.path()).unwrap();
+        let record = store.load(&canonical).unwrap().unwrap();
+        let Interview::Complete(completed) = record.replay(&template, &canonical).unwrap() else {
+            panic!("staged interview did not complete")
+        };
+        assert_eq!(
+            completed
+                .answers
+                .get(&toha::Id::parse("second").unwrap())
+                .unwrap()
+                .to_json(),
+            expected
+        );
     }
 }
 #[test]
@@ -856,16 +852,17 @@ fn skipped_group_has_same_batch_boundary_after_replay() {
         .output()
         .unwrap();
     assert_eq!(initial.status.code(), Some(4));
-    let first: Value = serde_json::from_slice(&initial.stdout).unwrap();
+    let formal = support::formal_name(&template_path);
+    let first = support::first_document(&initial.stdout);
     let first_answers = batch_answers(
         &first,
         &json!({"site_name":"Example", "theme":"light", "search":false}),
     );
     let mut cmd = command(state.path());
     cmd.args(["continue", target.path().to_str().unwrap(), "-"]);
-    let output = send(cmd, &first_answers);
+    let output = send(cmd, &envelope(&formal, &first_answers));
     assert_eq!(output.status.code(), Some(4));
-    let next: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let next = support::first_document(&output.stdout);
     let store = Store::new(support::staged_dir(state.path()));
     let canonical = canonical_target(target.path()).unwrap();
     let saved = store.load(&canonical).unwrap().unwrap();
@@ -895,9 +892,10 @@ fn evaluation_failure_exits_one_and_preserves_staged_bytes() {
     let store = Store::new(support::staged_dir(state.path()));
     let record_path = store.path_for(&canonical_target(target.path()).unwrap());
     let before = fs::read(&record_path).unwrap();
+    let formal = support::formal_name(&template);
     let mut cmd = command(state.path());
     cmd.args(["continue", target.path().to_str().unwrap(), "-"]);
-    let output = send(cmd, &json!({"first":"value"}));
+    let output = send(cmd, &envelope(&formal, &json!({"first":"value"})));
     assert_eq!(output.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&output.stderr).contains("second.default"));
     assert_eq!(fs::read(record_path).unwrap(), before);
@@ -921,7 +919,12 @@ fn async_file_pending_apply_and_invalid_answers_codes() {
         .output()
         .unwrap();
     assert_eq!(stage.status.code(), Some(4));
-    assert!(stage.stdout.is_empty());
+    // The batch went to the file; standard output carries the instructions.
+    assert!(
+        String::from_utf8_lossy(&stage.stdout).contains("toha continue"),
+        "{}",
+        String::from_utf8_lossy(&stage.stdout)
+    );
     let batch: Value = serde_json::from_slice(&fs::read(batch_file).unwrap()).unwrap();
     valid(&batch, &schema_validator());
     let pending = command(state.path())
@@ -929,10 +932,7 @@ fn async_file_pending_apply_and_invalid_answers_codes() {
         .output()
         .unwrap();
     assert_eq!(pending.status.code(), Some(4));
-    assert_eq!(
-        serde_json::from_slice::<Value>(&pending.stdout).unwrap(),
-        batch
-    );
+    assert_eq!(support::first_document(&pending.stdout), batch);
     for document in ["not json", r#"{"Invalid":true}"#] {
         let bad = state.path().join("bad.json");
         fs::write(&bad, document).unwrap();
@@ -991,7 +991,7 @@ fn staged_dry_run_and_needs_trust_keep_record() {
     }
 }
 #[test]
-fn stage_with_no_questions_emits_complete_and_saves() {
+fn stage_with_no_questions_completes_and_saves() {
     let folder = tempfile::tempdir().unwrap();
     fs::write(
         folder.path().join("template.yml"),
@@ -1015,9 +1015,11 @@ fn stage_with_no_questions_emits_complete_and_saves() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
-    valid(&value, &schema_validator());
-    assert_eq!(value["status"], "complete");
+    // A stage that completes at once writes instructions only, no document, and
+    // names apply as the next step.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.trim_start().starts_with('{'), "{stdout}");
+    assert!(stdout.contains("toha apply"), "{stdout}");
     let store = Store::new(support::staged_dir(state.path()));
     assert!(
         store

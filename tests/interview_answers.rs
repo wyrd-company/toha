@@ -200,8 +200,31 @@ fn rejected_continue_reports_the_sentence_in_the_batch() {
     );
 }
 
+/// The leading JSON value of standard output, or `None` when it does not begin
+/// with one (a completing continue writes instructions only; a template fault
+/// writes to standard error).
+fn leading_document(stdout: &[u8]) -> Option<Value> {
+    serde_json::Deserializer::from_slice(stdout)
+        .into_iter::<Value>()
+        .next()
+        .and_then(Result::ok)
+}
+
+/// Feeds `answers` to `continue PATH -` inside the identity envelope naming the
+/// staged template. Returns the batch document (accepted-with-questions or a
+/// rejection) when the interview still asks; on completion the agent route
+/// writes instructions only, so the completed answers and last-step messages
+/// are recovered by replaying the saved record.
 fn continue_with(state: &Path, target: &Path, answers: Value) -> (i32, Value) {
     use std::io::Write;
+    let canonical = toha::staging::canonical_target(target).unwrap();
+    let store = toha::staging::Store::new(support::staged_dir(state));
+    let formal = store
+        .load(&canonical)
+        .unwrap()
+        .expect("a staged record")
+        .template;
+    let envelope = json!({ "template": formal, "answers": answers });
     let mut child = support::isolated_command(state)
         .args(["continue", target.to_str().unwrap(), "-"])
         .stdin(std::process::Stdio::piped())
@@ -213,12 +236,24 @@ fn continue_with(state: &Path, target: &Path, answers: Value) -> (i32, Value) {
         .stdin
         .take()
         .unwrap()
-        .write_all(answers.to_string().as_bytes())
+        .write_all(envelope.to_string().as_bytes())
         .unwrap();
     let output = child.wait_with_output().unwrap();
-    let document = serde_json::from_slice(&output.stdout)
-        .unwrap_or_else(|_| json!({"stderr": String::from_utf8_lossy(&output.stderr)}));
-    (output.status.code().unwrap(), document)
+    let code = output.status.code().unwrap();
+    if let Some(document) = leading_document(&output.stdout) {
+        return (code, document);
+    }
+    if code == 0 {
+        let record = store.load(&canonical).unwrap().expect("a staged record");
+        let template = Template::load(Path::new(&record.template)).unwrap();
+        if let Interview::Complete(completed) = record.replay(&template, &canonical).unwrap() {
+            return (0, support::completed_projection(&completed));
+        }
+    }
+    (
+        code,
+        json!({ "stderr": String::from_utf8_lossy(&output.stderr) }),
+    )
 }
 
 fn early_template() -> std::path::PathBuf {
@@ -238,7 +273,7 @@ fn stage(state: &Path, target: &Path, template: &Path) -> Value {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(4));
-    serde_json::from_slice(&output.stdout).unwrap()
+    support::first_document(&output.stdout)
 }
 
 fn questions(document: &Value) -> Vec<String> {
@@ -300,8 +335,15 @@ fn basic_example_early_boolean_and_select_are_not_asked_again() {
     assert_eq!(document["answers"]["status"], json!("final"));
 }
 
+fn apply_agent(state: &Path, target: &Path) -> std::process::Output {
+    support::isolated_command(state)
+        .args(["apply", target.to_str().unwrap()])
+        .output()
+        .unwrap()
+}
+
 #[test]
-fn headless_apply_does_not_ask_answers_held_from_continue() {
+fn agent_apply_does_not_ask_answers_held_from_continue() {
     let state = tempfile::tempdir().unwrap();
     let target = tempfile::tempdir().unwrap();
     stage(state.path(), target.path(), &early_template());
@@ -311,31 +353,22 @@ fn headless_apply_does_not_ask_answers_held_from_continue() {
         json!({"name": "Alpha", "enabled": false, "mode": "slow"}),
     );
     assert_eq!(code, 4);
-    let answers = state.path().join("answers.json");
-    fs::write(&answers, "{}").unwrap();
-    let apply = |answers: &Path| {
-        support::isolated_command(state.path())
-            .arg("apply")
-            .arg(support::folder_address(&early_template()))
-            .args([target.path().to_str().unwrap(), "--answers"])
-            .arg(answers)
-            .output()
-            .unwrap()
-    };
-    let output = apply(&answers);
+    // `apply PATH` on an incomplete staged interview emits the remaining batch
+    // and never re-asks the answers held from continue.
+    let output = apply_agent(state.path(), target.path());
     assert_eq!(output.status.code(), Some(4));
-    let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let document = support::first_document(&output.stdout);
     assert_eq!(
         questions(&document),
         ["code", "extras", "flavor", "items", "label"]
     );
-    fs::write(
-        &answers,
-        json!({"label": "First", "code": "abc", "flavor": "slow-rich", "items": ["x"], "extras": []})
-            .to_string(),
-    )
-    .unwrap();
-    let output = apply(&answers);
+    let (code, _) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"label": "First", "code": "abc", "flavor": "slow-rich", "items": ["x"], "extras": []}),
+    );
+    assert_eq!(code, 0);
+    let output = apply_agent(state.path(), target.path());
     assert_eq!(
         output.status.code(),
         Some(0),
@@ -349,7 +382,7 @@ fn headless_apply_does_not_ask_answers_held_from_continue() {
 }
 
 #[test]
-fn headless_answer_replaces_an_answer_held_from_continue() {
+fn continue_replaces_an_answer_held_from_continue() {
     let state = tempfile::tempdir().unwrap();
     let target = tempfile::tempdir().unwrap();
     stage(state.path(), target.path(), &early_template());
@@ -359,20 +392,13 @@ fn headless_answer_replaces_an_answer_held_from_continue() {
         json!({"name": "Alpha", "flavor": "slow-plain"}),
     );
     assert_eq!(code, 4);
-    let answers = state.path().join("answers.json");
-    fs::write(
-        &answers,
-        json!({"label": "First", "mode": "slow", "flavor": "slow-rich", "items": [], "extras": []})
-            .to_string(),
-    )
-    .unwrap();
-    let output = support::isolated_command(state.path())
-        .arg("apply")
-        .arg(support::folder_address(&early_template()))
-        .args([target.path().to_str().unwrap(), "--answers"])
-        .arg(&answers)
-        .output()
-        .unwrap();
+    let (code, _) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"label": "First", "mode": "slow", "flavor": "slow-rich", "items": [], "extras": []}),
+    );
+    assert_eq!(code, 0);
+    let output = apply_agent(state.path(), target.path());
     assert_eq!(
         output.status.code(),
         Some(0),
@@ -516,26 +542,22 @@ fn headless_apply_stops_at_an_early_answer_that_fails_when_reached() {
         json!({"name": "Alpha", "flavor": "odd"}),
     );
     assert_eq!(code, 4);
-    let answers = state.path().join("answers.json");
-    fs::write(
-        &answers,
-        json!({"label": "First", "mode": "fast", "items": [], "extras": []}).to_string(),
-    )
-    .unwrap();
-    let output = support::isolated_command(state.path())
-        .arg("apply")
-        .arg(support::folder_address(&early_template()))
-        .args([target.path().to_str().unwrap(), "--answers"])
-        .arg(&answers)
-        .output()
-        .unwrap();
+    let (code, _) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"label": "First", "mode": "fast", "items": [], "extras": []}),
+    );
+    assert_eq!(code, 4);
+    // `apply PATH` replays to the held answer, stops with its origin error, and
+    // writes nothing.
+    let output = apply_agent(state.path(), target.path());
     assert_eq!(
         output.status.code(),
         Some(4),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let document = support::first_document(&output.stdout);
     assert_eq!(questions(&document), ["flavor"]);
     assert_eq!(
         document["errors"],
@@ -640,255 +662,8 @@ fn placeholder_is_a_schema_example() {
     assert!(properties["label"].get("examples").is_none(), "{result}");
 }
 
-fn staged_submissions(state: &Path, target: &Path) -> Vec<Value> {
-    let store = toha::staging::Store::new(support::staged_dir(state));
-    store
-        .load(&toha::staging::canonical_target(target).unwrap())
-        .unwrap()
-        .map(|record| {
-            record
-                .submissions
-                .into_iter()
-                .map(|s| serde_json::to_value(s).unwrap())
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn output_tree(root: &Path) -> Vec<(String, String)> {
-    fn visit(root: &Path, path: &Path, files: &mut Vec<(String, String)>) {
-        let mut entries: Vec<_> = std::fs::read_dir(path)
-            .unwrap()
-            .map(|entry| entry.unwrap())
-            .collect();
-        entries.sort_by_key(|entry| entry.file_name());
-        for entry in entries {
-            let path = entry.path();
-            if entry.file_type().unwrap().is_dir() {
-                visit(root, &path, files);
-            } else {
-                files.push((
-                    path.strip_prefix(root)
-                        .unwrap()
-                        .to_string_lossy()
-                        .into_owned(),
-                    std::fs::read_to_string(path).unwrap(),
-                ));
-            }
-        }
-    }
-    let mut files = Vec::new();
-    visit(root, root, &mut files);
-    files
-}
-
-/// The exit code, batch questions, messages, errors, and recorded
-/// submissions after one answers document, with the target path as `<P>`.
-fn outcome(code: i32, document: &Value, state: &Path, target: &Path) -> Value {
-    let outcome = json!({
-        "code": code,
-        "questions": document["schema"]["properties"]
-            .as_object()
-            .map(|p| { let mut k: Vec<_> = p.keys().cloned().collect(); k.sort(); k }),
-        "messages": document.get("messages"),
-        "errors": document.get("errors"),
-        "answers": document.get("answers"),
-        "submissions": staged_submissions(state, target),
-        "output_tree": output_tree(target),
-    });
-    normalized(outcome, target.to_str().unwrap())
-}
-
-/// `value` with `path` written as `<P>` inside each string. Strings are
-/// rewritten before JSON escaping, so a Windows path matches.
-fn normalized(value: Value, path: &str) -> Value {
-    match value {
-        Value::String(s) => Value::String(s.replace(path, "<P>")),
-        Value::Array(items) => items.into_iter().map(|v| normalized(v, path)).collect(),
-        Value::Object(map) => map
-            .into_iter()
-            .map(|(k, v)| (k, normalized(v, path)))
-            .collect(),
-        other => other,
-    }
-}
-
 /// A template whose second question is skipped unless the first is `fancy`.
 const SKIPS: &str = "name: skips\ninterview:\n  - { id: kind, type: select, prompt: Kind?, options: [plain, fancy], required: true }\n  - { id: style, type: text, prompt: Style?, when: \"kind == 'fancy'\", format: value | lower }\n  - { id: title, type: text, prompt: Title?, required: true }\n  - { id: extra, type: text, prompt: 'Extra for {{ title }}?', required: true }\n";
-
-/// Asserts that `document`, after the `prior` documents through `continue`,
-/// has the same outcome through direct apply, staged apply, continue, and crate use.
-fn same_outcome_through_all_routes(template: &Path, prior: &[Value], document: &Value) {
-    let staged = |state: &Path, target: &Path| {
-        stage(state, target, template);
-        for earlier in prior {
-            let (code, result) = continue_with(state, target, earlier.clone());
-            assert!(result.get("errors").is_none(), "{earlier}: {result}");
-            assert!(code == 4 || code == 0, "{earlier}: {result}");
-        }
-    };
-    let state = tempfile::tempdir().unwrap();
-    let target = tempfile::tempdir().unwrap();
-    staged(state.path(), target.path());
-    let (code, result) = continue_with(state.path(), target.path(), document.clone());
-    let mut through_continue = outcome(code, &result, state.path(), target.path());
-
-    let state = tempfile::tempdir().unwrap();
-    let target = tempfile::tempdir().unwrap();
-    staged(state.path(), target.path());
-    let answers = state.path().join("answers.json");
-    fs::write(&answers, document.to_string()).unwrap();
-    let output = support::isolated_command(state.path())
-        .arg("apply")
-        .arg(support::folder_address(template))
-        .args([target.path().to_str().unwrap(), "--answers"])
-        .arg(&answers)
-        .output()
-        .unwrap();
-    let result: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
-    let mut through_apply = outcome(
-        output.status.code().unwrap(),
-        &result,
-        state.path(),
-        target.path(),
-    );
-    let mut additional = Vec::new();
-    if prior.is_empty() {
-        let state = tempfile::tempdir().unwrap();
-        let target = tempfile::tempdir().unwrap();
-        let answers = state.path().join("answers.json");
-        fs::write(&answers, document.to_string()).unwrap();
-        let output = support::isolated_command(state.path())
-            .arg("apply")
-            .arg(support::folder_address(template))
-            .args([target.path().to_str().unwrap(), "--answers"])
-            .arg(&answers)
-            .output()
-            .unwrap();
-        let result: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
-        additional.push(outcome(
-            output.status.code().unwrap(),
-            &result,
-            state.path(),
-            target.path(),
-        ));
-
-        let loaded = Template::load(template).unwrap();
-        let canonical = toha::staging::canonical_target(target.path()).unwrap();
-        let record = toha::staging::StagedRecord::new(
-            &canonical,
-            template.to_string_lossy().into_owned(),
-            String::new(),
-            false,
-            seed().now.to_string(),
-            vec![],
-        );
-        let context = protocol::Context::new(&canonical, &record);
-        let raw = support::raw_answers(&document.to_string()).unwrap();
-        let (code, result, accepted) = match protocol::answer_headless(
-            &loaded,
-            Interview::start(&loaded, seed()).unwrap(),
-            raw,
-        ) {
-            Ok(protocol::Headless::Completed {
-                completed,
-                accepted,
-            }) => (0, support::completed_projection(&completed), accepted),
-            Ok(protocol::Headless::Pending {
-                pending,
-                rejections,
-                accepted,
-            }) => (
-                4,
-                protocol::batch_document(pending.batch(), &context, Some(&rejections)),
-                accepted,
-            ),
-            Ok(protocol::Headless::Ended { .. }) => panic!("unexpected flow end"),
-            Err(_) => (1, Value::Null, vec![]),
-        };
-        let mut crate_result = outcome(code, &result, state.path(), target.path());
-        crate_result["submissions"] = serde_json::to_value(accepted).unwrap();
-        additional.push(crate_result);
-    }
-    // A headless run also answers the next batch from defaults and states
-    // which required questions the document leaves unanswered; `continue`
-    // states that only for the batch it answers. Neither is compared.
-    for outcome in std::iter::once(&mut through_apply)
-        .chain(std::iter::once(&mut through_continue))
-        .chain(additional.iter_mut())
-    {
-        if let Some(errors) = outcome["errors"].as_object_mut() {
-            errors.retain(|id, e| document.get(id).is_some() || e != &json!(["is required"]));
-            if errors.is_empty() {
-                outcome["errors"] = Value::Null;
-            }
-        }
-    }
-    assert_eq!(through_apply, through_continue, "{prior:?} then {document}");
-    for other in additional {
-        assert_eq!(through_continue, other, "{prior:?} then {document}");
-    }
-}
-
-#[test]
-fn one_answers_document_has_the_same_outcome_through_all_routes() {
-    let documents = [
-        json!({"name": "Alpha", "code": "ABC"}),
-        json!({"name": "Alpha", "code": "abc"}),
-        json!({"name": "Alpha", "label": "First", "enabled": false, "mode": "fast",
-            "code": "abc", "flavor": "odd", "items": ["x"], "extras": ["one"]}),
-    ];
-    for document in documents {
-        same_outcome_through_all_routes(&early_template(), &[], &document);
-    }
-    let (folder, _template) = inline(SKIPS);
-    let skips = folder.path();
-    let plain = json!({"kind": "plain"});
-    let cases = [
-        // An answer equal to the recorded answer is ignored.
-        (
-            vec![plain.clone()],
-            json!({"kind": "plain", "title": "First"}),
-        ),
-        // An answer that differs from the recorded answer rejects the document.
-        (
-            vec![plain.clone()],
-            json!({"kind": "fancy", "title": "First"}),
-        ),
-        // A held answer whose question is skipped is not used.
-        (vec![], json!({"kind": "plain", "style": "Bold"})),
-        // An answer for a question skipped earlier is not used.
-        (
-            vec![plain.clone()],
-            json!({"style": "Bold", "title": "First"}),
-        ),
-    ];
-    for (prior, document) in cases {
-        same_outcome_through_all_routes(skips, &prior, &document);
-    }
-    // A held answer that fails a constraint is not an error when this
-    // document skips its question, and is one when the question stays active.
-    for document in [
-        json!({"kind": "plain", "style": 1}),
-        json!({"kind": "fancy", "style": 1}),
-    ] {
-        same_outcome_through_all_routes(skips, &[], &document);
-    }
-    // A repeated answer is compared after format, which need not be a fixed
-    // point.
-    let (folder, _template) = inline(SUFFIX);
-    let prior = [json!({"word": "a"})];
-    for document in [json!({"word": "ax"}), json!({"word": "a"})] {
-        same_outcome_through_all_routes(folder.path(), &prior, &document);
-    }
-    // Warnings follow interview order, before a message reached after them.
-    let (folder, _template) = inline(ORDERED);
-    same_outcome_through_all_routes(
-        folder.path(),
-        &[json!({"flag": false})],
-        &json!({"alpha": "a", "zeta": "z", "mid": "m"}),
-    );
-}
 
 /// A template whose `format` appends to the answer.
 const SUFFIX: &str = "name: suffix\ninterview:\n  - { id: word, type: text, prompt: Word?, format: \"value ~ 'x'\" }\n  - { id: next, type: text, prompt: 'Next after {{ word }}?', required: true }\n";
@@ -1869,25 +1644,3 @@ fn skipped_invalid_answer_is_dropped_beside_another_failing_answer() {
     assert_eq!(submissions(state.path(), target.path()), 0);
 }
 
-#[test]
-fn early_answer_classification_matrix_is_the_same_through_all_routes() {
-    let (folder, _template) = inline(CLASSIFY);
-    fs::create_dir_all(folder.path().join("template")).unwrap();
-    fs::write(folder.path().join("template/result.txt"), "{{ kind }}").unwrap();
-    for kind in ["plain", "fancy"] {
-        for target in ["style", "deep"] {
-            for value in [json!("ok"), json!(1)] {
-                for other in [None, Some("good"), Some("NO")] {
-                    for boom in [false, true] {
-                        let mut document = json!({"kind": kind, "boom": boom});
-                        document[target] = value.clone();
-                        if let Some(title) = other {
-                            document["title"] = json!(title);
-                        }
-                        same_outcome_through_all_routes(folder.path(), &[], &document);
-                    }
-                }
-            }
-        }
-    }
-}

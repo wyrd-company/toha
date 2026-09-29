@@ -243,7 +243,7 @@ fn documented_protocol_exchange() {
         );
         count += 1;
     }
-    assert_eq!(count, 2);
+    assert_eq!(count, 1);
 }
 
 /// The protocol exchange shows each file of the template it runs, so that

@@ -53,7 +53,6 @@ fn every_fixture_through_cli() {
         );
         // Every scripted outcome is exactly one JSON result document on stdout.
         let document = support::first_document(&output.stdout);
-        let stdout = String::from_utf8_lossy(&output.stdout);
         // A `planned` document reports untrusted hooks structurally (exit 3,
         // already asserted; the crate harness carries the "--trust" message).
         // Every other fault is an `error` document whose decoded `message`, or a

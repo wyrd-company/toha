@@ -68,8 +68,57 @@ fn write_config(root: &TempDir, content: &str) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(path, content).unwrap();
 }
+/// The leading JSON result document on standard output. Agent routes
+/// (`stage --async`, `continue PATH FILE`, `apply PATH`) append plain-text
+/// instructions after the document, so only the first value is parsed.
 fn document(output: &Output) -> Value {
-    serde_json::from_slice(&output.stdout).unwrap()
+    support::first_document(&output.stdout)
+}
+
+/// The formal template identity a route establishes for `template`, discovered
+/// from the route itself: an identity-less document is refused with an `error`
+/// document whose `context.template` is the formal name every answers envelope
+/// must copy. A registry name or git address has a formal name that is not a
+/// folder path, so it is read from the route rather than guessed. The scripted
+/// route never stages and identity fails before any write, so the probe leaves
+/// nothing behind.
+fn formal(root: &TempDir, template: &str) -> String {
+    let probe = root.path().join(".formal-probe");
+    let answers = root.path().join(".formal-probe.json");
+    fs::write(&answers, "{}").unwrap();
+    let output = command(root)
+        .args([
+            "apply",
+            template,
+            probe.to_str().unwrap(),
+            "--answers",
+            answers.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    let document = document(&output);
+    document["context"]["template"]
+        .as_str()
+        .unwrap_or_else(|| panic!("probe did not publish context.template: {document}"))
+        .to_string()
+}
+
+/// Writes the identity envelope `{"template": formal, "answers": <bare>}` the
+/// scripted (`apply --answers`) and agent (`continue PATH FILE`) routes require,
+/// and returns its path.
+fn envelope(root: &TempDir, formal: &str, answers: &str) -> String {
+    let value: Value = serde_json::from_str(answers).unwrap();
+    let document = serde_json::json!({ "template": formal, "answers": value });
+    let path = root.path().join("envelope.json");
+    fs::write(&path, document.to_string()).unwrap();
+    path.to_str().unwrap().to_string()
+}
+
+/// The envelope path for `template` with the given bare answers map, discovering
+/// the formal identity from the route.
+fn answers_for(root: &TempDir, template: &str, answers: &str) -> String {
+    let formal = formal(root, template);
+    envelope(root, &formal, answers)
 }
 
 #[test]
@@ -128,9 +177,8 @@ fn alias_short_ambiguous_and_address_forms() {
         error.contains(first) && error.contains(second) && error.contains("templates alias"),
         "{error}"
     );
-    let answers = root.path().join("answers.json");
-    fs::write(&answers, r#"{"label":"Headless"}"#).unwrap();
     let explicit = format!("{url}@main#one");
+    let explicit_answers = answers_for(&root, &explicit, r#"{"label":"Headless"}"#);
     run(
         &root,
         &[
@@ -138,7 +186,7 @@ fn alias_short_ambiguous_and_address_forms() {
             &explicit,
             root.path().join("explicit").to_str().unwrap(),
             "--answers",
-            answers.to_str().unwrap(),
+            &explicit_answers,
         ],
         0,
     );
@@ -147,6 +195,7 @@ fn alias_short_ambiguous_and_address_forms() {
         "old Headless"
     );
     let shorthand = "local:owner/repo@main#one";
+    let shorthand_answers = answers_for(&root, shorthand, r#"{"label":"Headless"}"#);
     run(
         &root,
         &[
@@ -154,7 +203,7 @@ fn alias_short_ambiguous_and_address_forms() {
             shorthand,
             root.path().join("shorthand").to_str().unwrap(),
             "--answers",
-            answers.to_str().unwrap(),
+            &shorthand_answers,
         ],
         0,
     );
@@ -208,8 +257,9 @@ fn cached_commit_survives_source_disappearance() {
     let root = TempDir::new().unwrap();
     let (url, commit) = repository(&root);
     let address = format!("{url}@{commit}#one");
-    let answers = root.path().join("answers.json");
-    fs::write(&answers, r#"{"label":"Cached"}"#).unwrap();
+    // Discover the envelope while the source is present, then reuse it after the
+    // source disappears; the commit-pinned formal name does not change.
+    let answers = answers_for(&root, &address, r#"{"label":"Cached"}"#);
     run(
         &root,
         &[
@@ -217,7 +267,7 @@ fn cached_commit_survives_source_disappearance() {
             &address,
             root.path().join("first").to_str().unwrap(),
             "--answers",
-            answers.to_str().unwrap(),
+            &answers,
         ],
         0,
     );
@@ -233,7 +283,7 @@ fn cached_commit_survives_source_disappearance() {
             &address,
             root.path().join("second").to_str().unwrap(),
             "--answers",
-            answers.to_str().unwrap(),
+            &answers,
         ],
         0,
     );
@@ -271,26 +321,37 @@ fn configured_default_is_visible_and_answers_win() {
         batch["schema"]["properties"]["label"]["default"],
         "Configured"
     );
+    // The formal identity of the mapped and unmapped templates, read from the
+    // route while the good config resolves.
+    let formal_one = formal(&root, &address);
+    let two = format!("{url}#two");
+    let formal_two = formal(&root, &two);
     write_config(&root, &config("Resumed"));
-    let empty = root.path().join("empty.json");
-    fs::write(&empty, "{}").unwrap();
-    let continued = run(
+    // Resuming re-reads the configured default: the peeked batch (`apply PATH`, the
+    // agent route) shows the new value, and config warnings reach stderr on every
+    // route.
+    let peeked = run(&root, &["apply", target.to_str().unwrap()], 4);
+    assert!(String::from_utf8_lossy(&peeked.stderr).contains(&warning));
+    let resumed = document(&peeked);
+    assert_eq!(resumed["schema"]["properties"]["label"]["default"], "Resumed");
+    // Completing with the empty envelope lets `label` take its configured default;
+    // a completing `continue PATH FILE` emits instructions only, no document.
+    run(
         &root,
         &[
             "continue",
             target.to_str().unwrap(),
-            empty.to_str().unwrap(),
+            &envelope(&root, &formal_one, "{}"),
         ],
         0,
     );
-    assert!(String::from_utf8_lossy(&continued.stderr).contains(&warning));
-    let resumed = document(&continued);
-    assert_eq!(resumed["answers"]["label"], "Resumed");
     let applied = run(&root, &["apply", target.to_str().unwrap()], 0);
     assert!(String::from_utf8_lossy(&applied.stderr).contains(&warning));
+    assert_eq!(
+        fs::read_to_string(root.path().join("staged/result.txt")).unwrap(),
+        "old Resumed"
+    );
     write_config(&root, &config("Configured"));
-    let answers = root.path().join("answers.json");
-    fs::write(&answers, "{}").unwrap();
     let defaulted = run(
         &root,
         &[
@@ -298,7 +359,7 @@ fn configured_default_is_visible_and_answers_win() {
             &address,
             root.path().join("defaulted").to_str().unwrap(),
             "--answers",
-            answers.to_str().unwrap(),
+            &envelope(&root, &formal_one, "{}"),
         ],
         0,
     );
@@ -307,7 +368,6 @@ fn configured_default_is_visible_and_answers_win() {
         fs::read_to_string(root.path().join("defaulted/result.txt")).unwrap(),
         "old Configured"
     );
-    fs::write(&answers, r#"{"label":"Override"}"#).unwrap();
     let overridden = run(
         &root,
         &[
@@ -315,7 +375,7 @@ fn configured_default_is_visible_and_answers_win() {
             &address,
             root.path().join("overridden").to_str().unwrap(),
             "--answers",
-            answers.to_str().unwrap(),
+            &envelope(&root, &formal_one, r#"{"label":"Override"}"#),
         ],
         0,
     );
@@ -328,10 +388,10 @@ fn configured_default_is_visible_and_answers_win() {
         &root,
         &[
             "apply",
-            &format!("{url}#two"),
+            &two,
             root.path().join("unmapped").to_str().unwrap(),
             "--answers",
-            empty.to_str().unwrap(),
+            &envelope(&root, &formal_two, "{}"),
         ],
         0,
     );
@@ -405,18 +465,22 @@ fn constraint_invalid_configured_default_is_replaceable_on_every_command_route()
             .get("default")
             .is_none()
     );
-    let answers = root.path().join("answers.json");
-    fs::write(&answers, r#"{"mode":"fast"}"#).unwrap();
+    // A local folder's formal identity is its canonical path, the value every
+    // answers envelope names. The valid `fast` replaces the invalid default.
+    let fast = r#"{"mode":"fast"}"#;
     run(
         &root,
         &[
             "continue",
             continued_target.to_str().unwrap(),
-            answers.to_str().unwrap(),
+            &envelope(&root, &formal, fast),
         ],
         0,
     );
 
+    // The staged route: the scripted `apply --answers` never uses staged state, so
+    // a staged interview is resumed with the replacing answer through the agent
+    // route (`continue PATH FILE`) and written with `apply PATH`.
     let staged_target = root.path().join("staged-apply");
     run(
         &root,
@@ -431,19 +495,19 @@ fn constraint_invalid_configured_default_is_replaceable_on_every_command_route()
     run(
         &root,
         &[
-            "apply",
-            &support::folder_address(&folder),
+            "continue",
             staged_target.to_str().unwrap(),
-            "--answers",
-            answers.to_str().unwrap(),
+            &envelope(&root, &formal, fast),
         ],
         0,
     );
+    run(&root, &["apply", staged_target.to_str().unwrap()], 0);
     assert_eq!(
         fs::read_to_string(staged_target.join("result.txt")).unwrap(),
         "fast"
     );
 
+    // The direct scripted route replaces the invalid default from a fresh apply.
     let direct_target = root.path().join("direct");
     run(
         &root,
@@ -452,7 +516,7 @@ fn constraint_invalid_configured_default_is_replaceable_on_every_command_route()
             &support::folder_address(&folder),
             direct_target.to_str().unwrap(),
             "--answers",
-            answers.to_str().unwrap(),
+            &envelope(&root, &formal, fast),
         ],
         0,
     );
@@ -473,6 +537,7 @@ fn resume_uses_recorded_commit_after_registry_update() {
         0,
     );
     let target = root.path().join("target");
+    let formal_chosen = formal(&root, "chosen");
     let staged = document(&run(
         &root,
         &["stage", "chosen", target.to_str().unwrap(), "--async"],
@@ -484,18 +549,19 @@ fn resume_uses_recorded_commit_after_registry_update() {
     git(&repo, &["add", "."]);
     git(&repo, &["commit", "-m", "next"]);
     run(&root, &["templates", "update", "chosen"], 0);
-    let answers = root.path().join("answers.json");
-    fs::write(&answers, r#"{"label":"Resumed"}"#).unwrap();
-    let continued = document(&run(
+    // Resuming after the registry update still resolves the recorded commit; the
+    // peeked batch (`apply PATH`, the agent route) names it in its context.
+    let resumed = document(&run(&root, &["apply", target.to_str().unwrap()], 4));
+    assert_eq!(resumed["context"]["commit"], old);
+    run(
         &root,
         &[
             "continue",
             target.to_str().unwrap(),
-            answers.to_str().unwrap(),
+            &envelope(&root, &formal_chosen, r#"{"label":"Resumed"}"#),
         ],
         0,
-    ));
-    assert_eq!(continued["context"]["commit"], old);
+    );
     run(&root, &["apply", target.to_str().unwrap()], 0);
     assert_eq!(
         fs::read_to_string(target.join("result.txt")).unwrap(),
@@ -515,8 +581,9 @@ fn registry_trust_runs_hooks_but_discovery_and_local_registry_do_not() {
     )
     .unwrap();
     fs::write(folder.join("template/file.txt"), "file").unwrap();
-    let answers = root.path().join("answers.json");
-    fs::write(&answers, "{}").unwrap();
+    // A local folder's formal identity is its canonical path; every envelope names
+    // it. The empty answers map drives the hookless walk to completion.
+    let folder_formal = support::formal_name(&folder);
     let direct = run(
         &root,
         &[
@@ -524,11 +591,15 @@ fn registry_trust_runs_hooks_but_discovery_and_local_registry_do_not() {
             folder.to_str().unwrap(),
             root.path().join("direct").to_str().unwrap(),
             "--answers",
-            answers.to_str().unwrap(),
+            &envelope(&root, &folder_formal, "{}"),
         ],
         3,
     );
-    assert!(String::from_utf8_lossy(&direct.stderr).contains("--trust"));
+    // The scripted route reports untrusted hooks structurally: a `planned`
+    // document with `trusted: false` and exit 3, not a stderr "--trust" notice.
+    let direct = document(&direct);
+    assert_eq!(direct["status"], "planned");
+    assert_eq!(direct["trusted"], false);
     let staged = root.path().join("staged-trust");
     run(
         &root,
@@ -569,7 +640,7 @@ fn registry_trust_runs_hooks_but_discovery_and_local_registry_do_not() {
             folder.to_str().unwrap(),
             root.path().join("trusted-folder").to_str().unwrap(),
             "--answers",
-            answers.to_str().unwrap(),
+            &envelope(&root, &folder_formal, "{}"),
         ],
         3,
     );
@@ -580,7 +651,7 @@ fn registry_trust_runs_hooks_but_discovery_and_local_registry_do_not() {
             folder.to_str().unwrap(),
             root.path().join("trusted-folder").to_str().unwrap(),
             "--answers",
-            answers.to_str().unwrap(),
+            &envelope(&root, &folder_formal, "{}"),
             "--trust",
         ],
         0,
@@ -596,7 +667,7 @@ fn registry_trust_runs_hooks_but_discovery_and_local_registry_do_not() {
             "hooked",
             root.path().join("trusted").to_str().unwrap(),
             "--answers",
-            answers.to_str().unwrap(),
+            &envelope(&root, &folder_formal, "{}"),
         ],
         0,
     );
@@ -611,7 +682,7 @@ fn registry_trust_runs_hooks_but_discovery_and_local_registry_do_not() {
             "chosen",
             root.path().join("alias").to_str().unwrap(),
             "--answers",
-            answers.to_str().unwrap(),
+            &envelope(&root, &folder_formal, "{}"),
         ],
         0,
     );
@@ -661,6 +732,7 @@ fn registry_trust_runs_hooks_but_discovery_and_local_registry_do_not() {
         ),
     )
     .unwrap();
+    let discovered_formal = support::formal_name(&discovered);
     run(
         &root,
         &[
@@ -668,7 +740,7 @@ fn registry_trust_runs_hooks_but_discovery_and_local_registry_do_not() {
             "local-name",
             root.path().join("untrusted").to_str().unwrap(),
             "--answers",
-            answers.to_str().unwrap(),
+            &envelope(&root, &discovered_formal, "{}"),
         ],
         3,
     );
@@ -679,7 +751,7 @@ fn registry_trust_runs_hooks_but_discovery_and_local_registry_do_not() {
             "local-name",
             root.path().join("allowed").to_str().unwrap(),
             "--answers",
-            answers.to_str().unwrap(),
+            &envelope(&root, &discovered_formal, "{}"),
             "--trust",
         ],
         0,
@@ -708,21 +780,23 @@ fn trusted_git_address_requires_explicit_trust_even_when_registered() {
     git(&repo, &["add", "."]);
     git(&repo, &["commit", "-m", "initial"]);
     let address = format!("file://{}", repo.display());
-    let answers = root.path().join("answers.json");
-    fs::write(&answers, "{}").unwrap();
     run(
         &root,
         &["templates", "add", &address, "--alias", "chosen", "--trust"],
         0,
     );
+    // Every name here (the git address, its alias `chosen`, and its short name
+    // `hooked`) resolves to the same formal identity — the address — which the
+    // scripted envelope must name.
     let apply = |template: &str, target: &str, extra: &[&str], exit| {
         let target = root.path().join(target);
+        let ans = envelope(&root, &address, "{}");
         let mut args = vec![
             "apply",
             template,
             target.to_str().unwrap(),
             "--answers",
-            answers.to_str().unwrap(),
+            ans.as_str(),
         ];
         args.extend_from_slice(extra);
         run(&root, &args, exit);
@@ -768,12 +842,19 @@ fn named_template_resumes_its_staged_interview_by_formal_name() {
         ],
         0,
     );
-    let answers = root.path().join("answers.json");
-    fs::write(&answers, r#"{"label":"Staged"}"#).unwrap();
+    let formal_one = formal(&root, "chosen");
     let complete = root.path().join("complete");
     let complete = complete.to_str().unwrap();
     run(&root, &["stage", "chosen", complete, "--async"], 4);
-    run(&root, &["continue", complete, answers.to_str().unwrap()], 0);
+    run(
+        &root,
+        &[
+            "continue",
+            complete,
+            &envelope(&root, &formal_one, r#"{"label":"Staged"}"#),
+        ],
+        0,
+    );
     run(&root, &["apply", "local:owner/repo#one", complete], 0);
     assert_eq!(
         fs::read_to_string(root.path().join("complete/result.txt")).unwrap(),
@@ -787,7 +868,16 @@ fn named_template_resumes_its_staged_interview_by_formal_name() {
         &["stage", "local:owner/repo#one", incomplete, "--async"],
         4,
     );
-    run(&root, &["apply", "chosen", incomplete], 4);
+    // Naming the staged template (by its alias) resumes that interview: the person
+    // route `apply TEMPLATE PATH` prompts, so with no terminal it refuses (exit 1)
+    // and names the agent route to answer the current batch — not a mismatch.
+    let resumed = run(&root, &["apply", "chosen", incomplete], 1);
+    assert!(
+        String::from_utf8_lossy(&resumed.stderr)
+            .contains(&format!("toha continue {incomplete} <ANSWERS>")),
+        "{}",
+        String::from_utf8_lossy(&resumed.stderr)
+    );
     let other = format!("{url}#two");
     let refused = run(&root, &["apply", &other, incomplete], 1);
     let error = String::from_utf8_lossy(&refused.stderr);
@@ -848,12 +938,28 @@ fn ambiguous_name_names_the_same_command_with_each_formal_name() {
     ];
     for (args, retry) in cases {
         let output = run(&root, &args, 5);
-        let error = String::from_utf8_lossy(&output.stderr);
+        // The scripted route reports an ambiguous template with an `error`
+        // document (kind "ambiguous", exit 5) whose `commands` list the retry per
+        // match; the agent and registry routes name them on standard error.
+        let haystack = if args[0] == "apply" {
+            let document = document(&output);
+            assert_eq!(document["status"], "error");
+            assert_eq!(document["kind"], "ambiguous");
+            document["commands"]
+                .as_array()
+                .unwrap_or_else(|| panic!("ambiguous document has no commands: {document}"))
+                .iter()
+                .map(|command| command.as_str().unwrap_or_default().to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            String::from_utf8_lossy(&output.stderr).into_owned()
+        };
         for formal in formal {
             let command = retry(formal);
             assert!(
-                error.contains(&command),
-                "{args:?}: stderr does not name `{command}`:\n{error}"
+                haystack.contains(&command),
+                "{args:?}: does not name `{command}`:\n{haystack}"
             );
         }
     }
