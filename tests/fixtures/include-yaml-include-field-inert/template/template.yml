@@ -1,0 +1,6 @@
+name: include-yaml-include-field-inert
+interview:
+  - id: label
+    type: text
+    prompt: Label
+    default: !include frag.yml

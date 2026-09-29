@@ -1,0 +1,1 @@
+a{% include "gone.txt" ignore missing %}b{% include ["x.txt", "y.txt"] ignore missing %}c

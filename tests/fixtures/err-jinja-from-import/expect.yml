@@ -1,0 +1,3 @@
+exit: 1
+error_contains:
+  - "jinja from import is unavailable in file bodies"
