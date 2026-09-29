@@ -66,6 +66,24 @@ only that span. An operator edit inside the span is drift and requires
 `--force`; `--force` still cannot invent a missing anchor or repair malformed
 markers.
 
+A region body is exactly one of an inline `content` template, as above, or a
+`source` support file:
+
+```yaml
+inject:
+  - into: "config/app.toml"
+    region: "features"
+    source: "regions/features.toml"
+    anchor: { after: "[application]", occurrence: only }
+```
+
+`source` names a support file relative to the template root. Toha resolves it
+through the same inside-template-root confinement as a `files:` rule source and
+compiles it as an include-capable file template, so the existing confinement,
+`{% include %}`, and trust rules govern it identically. The rendered result is
+the region body; ownership, markers, checksum, and drift behave the same
+whichever origin supplies it.
+
 ### Typed value in a JSON-family file
 
 ```yaml
@@ -200,6 +218,11 @@ pub struct JsonPath(Vec<JsonPathSegment>);
 pub enum JsonPathSegment { Key(String), Index(usize) }
 ```
 
+A `PlannedRegionEdit` carries the rendered region `body`; `source` records the
+support-file path when that body came from a `source` file rather than inline
+`content`. Both origins render at plan time, so apply resolves identical bytes
+regardless of origin.
+
 `RegionKey` accepts lowercase ASCII letters, digits, `_`, and `-`. It is unique
 per target. `MarkerStyle` is resolved from the non-JSON target extension or an
 explicit override during planning. `JsonFormat` is resolved from the JSON-family
@@ -274,7 +297,10 @@ resolving bytes from a successful previous apply with the same edit returns
 The JSON resolver:
 
 1. Requires the target unless `create: true`; a created target starts as `{}`.
-2. Requires UTF-8 and parses through `jsonc_parser::cst` with the options for
+2. Requires UTF-8. A `Json` target is first validated with
+   `serde_json::from_str` (strict RFC 8259): a comment, trailing comma,
+   single-quoted string, or any other relaxation is rejected and nothing is
+   written. It then parses through `jsonc_parser::cst` with the options for
    `JsonFormat`.
 3. Traverses `JsonPath`, creating missing object-key parents and rejecting an
    invalid scalar or array traversal.
@@ -397,7 +423,16 @@ features. Its CST keeps comments and whitespace as tokens and displays the
 original source plus the requested edit
 (`jsonc-parser/src/cst/mod.rs:1-5,1356`, revision `c7d4cf5`). The
 `serde_json` feature supplies CST-to-`serde_json::Value` conversion for the
-owned-value equality check. The crate has no reverse
+owned-value equality check.
+
+The CST retains a comment as a trivia token regardless of the `ParseOptions` in
+effect, so the all-relaxation-disabled `Json` bundle does not by itself reject a
+comment. A `Json` target is therefore validated with `serde_json::from_str`
+(strict RFC 8259) before any CST traversal or mutation, so a comment, trailing
+comma, single-quoted string, or any other relaxation is rejected and nothing is
+written. This pre-parse is read-only and precedes every edit, so strict-JSON
+source fidelity holds and the `Jsonc` and `Json5` bundles keep their comments
+and formatting unchanged. The crate has no reverse
 `From<serde_json::Value>` implementation, so Toha owns this conversion:
 
 ```rust
