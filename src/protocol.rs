@@ -3,8 +3,8 @@
 //   implements: interview-protocol
 // ---
 use crate::{
-    AnswerError, Batch, Completed, Disposition, EndKind, Ended, EvalError, Id, Interview, Item,
-    Pending, Prompt, PromptKind, RawAnswer, RawAnswers, Rejections, Template,
+    AnswerError, Batch, Completed, EndKind, Ended, EvalError, Id, Interview, Item, Pending, Planned,
+    PlannedHook, Prompt, PromptKind, RawAnswer, RawAnswers, Rejections, Template,
     staging::{CanonicalTarget, StagedRecord},
 };
 use indexmap::IndexMap;
@@ -151,18 +151,148 @@ pub fn batch_document(batch: &Batch, context: &Context, errors: Option<&Rejectio
     }
     result
 }
-pub fn complete_document(completed: &Completed, context: &Context) -> Value {
-    let values: Map<String, Value> = completed
-        .answers
+/// One written target and the action that produced it: `create`, `overwrite`,
+/// `inject`, or `update`. The CLI classifies each against the plan and target.
+pub struct AppliedFile {
+    pub path: String,
+    pub action: String,
+}
+/// One hook that ran during a successful apply: its id when the hook declares
+/// one, its exit code, and whether it succeeded. Captured streams never appear
+/// here, so a result document carries no hook output bytes.
+pub struct AppliedHook {
+    pub id: Option<String>,
+    pub exit_code: Option<i32>,
+    pub success: bool,
+}
+/// The record of a completed apply, built by the CLI from the plan, the written
+/// paths, the completed interview's messages, and the hooks that ran. The
+/// scripted route serializes it as the `applied` result document.
+pub struct ApplyReport {
+    pub files: Vec<AppliedFile>,
+    pub messages: Vec<String>,
+    pub hooks: Vec<AppliedHook>,
+}
+/// The `applied` result document: every written path with its action, the
+/// completion messages, and the hooks that ran. Exit 0.
+pub fn applied_document(report: &ApplyReport, context: &Context) -> Value {
+    let files: Vec<Value> = report
+        .files
         .iter()
-        .map(|(id, answer)| (id.to_string(), answer.to_json()))
+        .map(|file| json!({"path": file.path, "action": file.action}))
         .collect();
-    let mut document = json!({"protocol":1, "status":"complete", "context":context_value(context),
-        "answers":values, "messages":completed.last_messages});
-    // Omitted for `Proceed`, so an ordinary completion is byte-identical to a
-    // pre-feature build.
-    if completed.disposition() == Disposition::DryRun {
-        document["disposition"] = json!("dry-run");
+    let hooks: Vec<Value> = report
+        .hooks
+        .iter()
+        .map(|hook| json!({"id": hook.id, "exit_code": hook.exit_code, "success": hook.success}))
+        .collect();
+    json!({"protocol":1, "status":"applied", "context":context_value(context),
+        "files":files, "messages":report.messages, "hooks":hooks})
+}
+/// Whether a planned apply's hooks would run without an extra grant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrustState {
+    Trusted,
+    Untrusted,
+}
+/// One planned hook previewed for a dry run: its rendered argument vector and
+/// cwd. A deferred hook shows its `{{ id.field }}` placeholders unrendered.
+fn planned_hook_value(planned: &Planned<PlannedHook>) -> Value {
+    let (argv, cwd) = match planned {
+        Planned::Ready(hook) => (hook.argv(), hook.cwd.as_ref().map(ToString::to_string)),
+        Planned::AfterHooks(deferred) => deferred
+            .hook_preview()
+            .expect("a deferred plan hook previews as a hook"),
+    };
+    json!({"command": argv, "cwd": cwd.unwrap_or_else(|| ".".into())})
+}
+/// The `planned` result document: every planned path with its action, the
+/// completion messages, the planned hooks, and whether they are trusted. Exit 0,
+/// or exit 3 when the hooks are untrusted.
+pub fn planned_document(
+    plan: &crate::Plan,
+    messages: &[String],
+    context: &Context,
+    trust: TrustState,
+) -> Value {
+    let mut files: Vec<Value> = plan
+        .files
+        .iter()
+        .map(|file| {
+            let action = if plan.conflicts.contains(&file.path) {
+                "conflict"
+            } else {
+                "create"
+            };
+            json!({"path": file.path.to_string(), "action": action})
+        })
+        .collect();
+    // Injected targets are planned writes too; a create flag marks a target the
+    // edit would author, an update an existing target it would change.
+    for edit in &plan.edits {
+        let create = match edit {
+            crate::PlannedEdit::Region(region) => region.create,
+            crate::PlannedEdit::JsonValue(json) => json.create,
+        };
+        files.push(json!({
+            "path": edit.path().to_string(),
+            "action": if create { "inject" } else { "update" },
+        }));
+    }
+    let hooks: Vec<Value> = plan.hooks.iter().map(planned_hook_value).collect();
+    json!({"protocol":1, "status":"planned", "context":context_value(context),
+        "files":files, "messages":messages, "hooks":hooks,
+        "trusted": trust == TrustState::Trusted})
+}
+/// The kind of a scripted `error` result document. Every route-preparation and
+/// document fault maps to exactly one kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorKind {
+    Input,
+    Document,
+    Identity,
+    Staged,
+    Source,
+    Replay,
+    Conflict,
+    Render,
+    Hook,
+    Ambiguous,
+}
+impl ErrorKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Input => "input",
+            Self::Document => "document",
+            Self::Identity => "identity",
+            Self::Staged => "staged",
+            Self::Source => "source",
+            Self::Replay => "replay",
+            Self::Conflict => "conflict",
+            Self::Render => "render",
+            Self::Hook => "hook",
+            Self::Ambiguous => "ambiguous",
+        }
+    }
+}
+/// A scripted-route failure: its kind, a message, and the commands that finish,
+/// discard, or retry the request, when there are any.
+pub struct ResultError {
+    pub kind: ErrorKind,
+    pub message: String,
+    pub commands: Vec<String>,
+}
+/// The `error` result document: a `kind`, a `message`, and optional `commands`.
+/// `context` is present once the route established a target and template. Exit 1,
+/// or exit 5 for an `ambiguous` template.
+pub fn error_document(error: &ResultError, context: Option<&Context>) -> Value {
+    let mut document = json!({"protocol":1, "status":"error", "kind":error.kind.as_str(),
+        "message":error.message});
+    if let Some(context) = context {
+        document["context"] = context_value(context);
+    }
+    if !error.commands.is_empty() {
+        document["commands"] = json!(error.commands);
     }
     document
 }
@@ -188,32 +318,163 @@ static SCHEMA: LazyLock<Value> = LazyLock::new(|| {
     ))
     .expect("embedded protocol schema")
 });
-static ANSWERS: LazyLock<jsonschema::Validator> = LazyLock::new(|| {
-    let mut schema = SCHEMA.clone();
-    schema["$ref"] = json!("#/$defs/answers");
-    schema.as_object_mut().unwrap().remove("oneOf");
-    jsonschema::options()
-        .with_draft(jsonschema::Draft::Draft202012)
-        .build(&schema)
-        .expect("embedded answers schema valid")
-});
 #[derive(Debug, thiserror::Error)]
-#[error("{0}")]
-pub struct ProtocolError(pub String);
-pub fn parse_answers(text: &str) -> Result<RawAnswers, ProtocolError> {
-    let value: Value = serde_json::from_str(text).map_err(|e| ProtocolError(e.to_string()))?;
-    if let Err(error) = ANSWERS.validate(&value) {
-        return Err(ProtocolError(error.to_string()));
+pub enum SubmitDocumentError {
+    #[error(transparent)]
+    Document(#[from] AnswersDocumentError),
+
+    #[error(transparent)]
+    Evaluation(#[from] EvalError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum AnswersDocumentError {
+    #[error("invalid JSON: {message}")]
+    Json { message: String },
+
+    #[error("invalid answers document: {message}")]
+    Shape { message: String },
+
+    #[error("answers document has no template identity")]
+    MissingIdentity,
+
+    #[error("answers document template must be a non-empty string")]
+    MalformedIdentity,
+
+    #[error("answers template {declared:?} does not match expected template {expected:?}")]
+    TemplateMismatch { declared: String, expected: String },
+}
+
+/// The parsed envelope, before identity verification. Private, so external JSON
+/// never yields a raw answer map without passing the identity gate first.
+struct WireAnswersDocument {
+    template: String,
+    answers: Map<String, Value>,
+}
+/// A verified submission: the raw answers for the engine and the inner accepted
+/// map for storage. Private, has no unchecked constructor, and cannot be turned
+/// into `RawAnswers` by a caller.
+struct VerifiedSubmission {
+    raw: RawAnswers,
+    stored: IndexMap<String, Value>,
+}
+
+/// Parses one external answers document and verifies its declared identity
+/// against `expected_template` by exact string equality, before any answer is
+/// evaluated. The declaration is never resolved, trimmed, canonicalized,
+/// alias-mapped, fetched, or trust-checked.
+fn parse_and_verify(
+    expected_template: &str,
+    text: &str,
+) -> Result<VerifiedSubmission, AnswersDocumentError> {
+    let value: Value = serde_json::from_str(text)
+        .map_err(|e| AnswersDocumentError::Json { message: e.to_string() })?;
+    let object = value.as_object().ok_or_else(|| AnswersDocumentError::Shape {
+        message: "expected a JSON object with \"template\" and \"answers\"".into(),
+    })?;
+    // No template assertion is a legacy bare answer map; the identity diagnostic
+    // shows the required wrapper and the expected formal name.
+    let template = match object.get("template") {
+        None => return Err(AnswersDocumentError::MissingIdentity),
+        Some(Value::String(template)) if template.is_empty() => {
+            return Err(AnswersDocumentError::MalformedIdentity);
+        }
+        Some(Value::String(template)) => template.clone(),
+        Some(_) => return Err(AnswersDocumentError::MalformedIdentity),
+    };
+    // The envelope carries exactly `template` and `answers`.
+    if let Some(key) = object
+        .keys()
+        .find(|key| *key != "template" && *key != "answers")
+    {
+        return Err(AnswersDocumentError::Shape {
+            message: format!(
+                "unexpected member {key:?}; an answers document has only \"template\" and \"answers\""
+            ),
+        });
     }
-    let object = value.as_object().expect("validated answers object");
-    object
-        .iter()
-        .map(|(key, value)| {
-            Id::parse(key)
-                .map(|id| (id, RawAnswer(value.clone())))
-                .map_err(ProtocolError)
-        })
-        .collect()
+    let answers = match object.get("answers") {
+        None => {
+            return Err(AnswersDocumentError::Shape {
+                message: "missing \"answers\" object".into(),
+            });
+        }
+        Some(Value::Object(answers)) => answers.clone(),
+        Some(_) => {
+            return Err(AnswersDocumentError::Shape {
+                message: "\"answers\" must be a JSON object keyed by question id".into(),
+            });
+        }
+    };
+    let wire = WireAnswersDocument { template, answers };
+    // Exact string equality: a mismatch wins over every nested question or value
+    // fault, and reaches no answer evaluation.
+    if wire.template != expected_template {
+        return Err(AnswersDocumentError::TemplateMismatch {
+            declared: wire.template,
+            expected: expected_template.to_string(),
+        });
+    }
+    let mut raw = RawAnswers::new();
+    let mut stored = IndexMap::new();
+    for (key, value) in wire.answers {
+        let id = Id::parse(&key).map_err(|message| AnswersDocumentError::Shape { message })?;
+        raw.insert(id, RawAnswer(value.clone()));
+        stored.insert(key, value);
+    }
+    Ok(VerifiedSubmission { raw, stored })
+}
+
+/// The outcome of `answer_document_once`: the interview advanced by one accepted
+/// document, or the same batch with the rejections of a refused document.
+pub enum DocumentStep<'a> {
+    Accepted {
+        interview: Interview<'a>,
+        submission: IndexMap<String, Value>,
+    },
+    Rejected {
+        pending: Box<Pending<'a>>,
+        rejections: Rejections,
+    },
+}
+
+/// `continue PATH FILE`: verifies the document identity, then submits it as one
+/// step (`Pending::answer` at most once). On acceptance it returns the advanced
+/// interview and the inner accepted map to store; on rejection it returns the
+/// same batch and the rejections and nothing is stored.
+pub fn answer_document_once<'a>(
+    expected_template: &str,
+    pending: Pending<'a>,
+    text: &str,
+) -> Result<DocumentStep<'a>, SubmitDocumentError> {
+    let verified = parse_and_verify(expected_template, text)?;
+    match pending.answer(verified.raw) {
+        Ok(interview) => Ok(DocumentStep::Accepted {
+            interview,
+            submission: verified.stored,
+        }),
+        Err(AnswerError::Rejected {
+            pending,
+            rejections,
+        }) => Ok(DocumentStep::Rejected {
+            pending: Box::new(pending),
+            rejections,
+        }),
+        Err(AnswerError::Eval(error)) => Err(SubmitDocumentError::Evaluation(error)),
+    }
+}
+
+/// The scripted route: verifies the document identity, then drives the existing
+/// multi-batch headless walk. The whole document is one submission; later batches
+/// take their defaults.
+pub fn answer_document_headless<'a>(
+    expected_template: &str,
+    template: &'a Template,
+    interview: Interview<'a>,
+    text: &str,
+) -> Result<Headless<'a>, SubmitDocumentError> {
+    let verified = parse_and_verify(expected_template, text)?;
+    Ok(answer_headless(template, interview, verified.raw)?)
 }
 pub fn protocol_schema() -> &'static Value {
     &SCHEMA

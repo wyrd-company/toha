@@ -20,11 +20,22 @@ pub struct ApplyOptions {
     pub force: bool,
     pub trusted: bool,
 }
+/// One hook that ran to completion during a successful apply: its id when the
+/// hook declares one, its exit code, and whether it succeeded (an
+/// `allow-failure` hook can succeed the apply with a nonzero code). Captured
+/// streams never appear here, so no hook output bytes leave the apply.
+#[derive(Debug, Clone)]
+pub struct HookReport {
+    pub id: Option<Id>,
+    pub exit_code: Option<i32>,
+    pub success: bool,
+}
 #[derive(Debug)]
 pub enum Applied {
     Written {
         files: Vec<TargetPath>,
         hooks_run: usize,
+        hooks: Vec<HookReport>,
         after_apply: Option<String>,
     },
     NeedsTrust(Plan),
@@ -276,6 +287,7 @@ impl Plan {
             results.seed(spec);
         }
         let mut hooks_run = 0usize;
+        let mut hook_reports = Vec::new();
         for (index, planned) in self.hooks.iter().enumerate() {
             // Materialize the hook: a ready one as-is; a deferred one by rendering
             // its result-reading fields, which yields nothing when its `when` is
@@ -324,6 +336,11 @@ impl Plan {
                     outcome,
                 });
             }
+            hook_reports.push(HookReport {
+                id: hook.id.clone(),
+                exit_code: outcome.code,
+                success: outcome.success,
+            });
             if hook.id.is_some() {
                 record_result(&mut results, &hook, &outcome, index)?;
             }
@@ -338,6 +355,7 @@ impl Plan {
         Ok(Applied::Written {
             files: written,
             hooks_run,
+            hooks: hook_reports,
             after_apply,
         })
     }

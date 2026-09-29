@@ -26,13 +26,17 @@ use cli::{
     resolve::{ResolveError, ResolvedTemplate},
 };
 use toha::{
-    AnswerError, Applied, ApplyOptions, EndKind, Ended, Interview, Plan, Planned, Step, Template,
+    Applied, ApplyOptions, Batch, Completed, EndKind, Ended, Interview, Item, Plan, Planned,
+    Rejection, RejectionKind, Rejections, ReviewDigest, Step, Template,
     context::{
         EnvironmentDecision, ExecutionFacts, FixedEnvironment, FixedEnvironmentSource, HostFacts,
         InvocationContext, SelectedTemplate,
     },
     hook::ProcessRunner,
-    protocol::{self, Context, Headless},
+    protocol::{
+        self, AppliedFile, AppliedHook, ApplyReport, Context, DocumentStep, ErrorKind, Headless,
+        ResultError, SubmitDocumentError, TrustState,
+    },
     staging::{self, CanonicalTarget, StagedRecord, Store},
 };
 
@@ -409,6 +413,14 @@ enum Outcome {
     Written(Vec<String>),
     Error(String),
     Document(serde_json::Value, u8),
+    /// An agent-route result: an optional question-batch document followed by
+    /// plain-text instructions, both on standard output. The batch is omitted
+    /// when it was written to a file, or when the interview is already complete.
+    Agent {
+        document: Option<serde_json::Value>,
+        instructions: String,
+        code: u8,
+    },
     Saved(u8),
     NeedsTrust(String),
     Ambiguous {
@@ -448,6 +460,21 @@ impl Outcome {
                     "{}",
                     serde_json::to_string_pretty(&value).expect("JSON value")
                 );
+                ExitCode::from(code)
+            }
+            Self::Agent {
+                document,
+                instructions,
+                code,
+            } => {
+                if let Some(value) = document {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&value).expect("JSON value")
+                    );
+                    println!();
+                }
+                println!("{instructions}");
                 ExitCode::from(code)
             }
             Self::Ambiguous {
@@ -535,22 +562,20 @@ fn injection_report(
     Ok(lines)
 }
 
-fn read_answers(path: &str) -> Result<toha::RawAnswers, String> {
+/// Reads the answers document once as UTF-8 and prefixes a read failure with the
+/// source name. It does not inspect the JSON; the protocol boundary parses and
+/// verifies it.
+fn read_answers_text(path: &str) -> Result<String, String> {
     let source = if path == "-" { "stdin" } else { path };
-    let text = if path == "-" {
+    if path == "-" {
         let mut text = String::new();
-        io::stdin().read_to_string(&mut text).map(|_| text)
+        io::stdin()
+            .read_to_string(&mut text)
+            .map(|_| text)
+            .map_err(|e| format!("{source}: cannot read answers document: {e}"))
     } else {
-        fs::read_to_string(path)
+        fs::read_to_string(path).map_err(|e| format!("{source}: cannot read answers document: {e}"))
     }
-    .map_err(|e| format!("{source}: cannot read answers document: {e}"))?;
-    let invalid =
-        |reason: &dyn std::fmt::Display| format!("{source}: not a JSON answers document: {reason}");
-    let value: serde_json::Value = serde_json::from_str(&text).map_err(|e| invalid(&e))?;
-    if !value.is_object() {
-        return Err(invalid(&"expected an object keyed by question id"));
-    }
-    protocol::parse_answers(&text).map_err(|e| invalid(&e))
 }
 fn report_config_warnings(warnings: &[String]) {
     for warning in warnings {
@@ -762,45 +787,89 @@ fn stage(
         Ok(v) => v,
         Err(e) => return Outcome::Error(e.to_string()),
     };
+    let installed = trustable(&resolved, &registry);
     if output.is_none() {
+        // Person route: prompt, saving each batch, then show the dry-run plan and
+        // apply instructions at completion.
         let mut saved = saved;
         let completed = terminal::drive(interview, &mut terminal::InquireAsk, |submission| {
             saved.submissions.push(submission);
             store.save(&target, &saved).map_err(|e| e.to_string())
         });
         return match completed {
-            Ok(terminal::Session::Completed(_)) => {
+            Ok(terminal::Session::Completed(completed)) => {
                 // An interview without prompts still needs a staged record.
                 if saved.submissions.is_empty() {
                     if let Err(e) = store.save(&target, &saved) {
                         return Outcome::Error(e.to_string());
                     }
                 }
-                Outcome::Saved(0)
+                completion_preview(
+                    &template,
+                    &completed,
+                    &target,
+                    &resolved,
+                    installed.as_deref(),
+                    &path,
+                    false,
+                )
             }
             Ok(terminal::Session::Ended(ended)) => ended_outcome(&ended, &target, &store),
             Err(error) => Outcome::Error(error),
         };
     }
+    // Agent route: emit the first question batch and the answer instructions.
     let output = output.unwrap();
-    let (document, code) = match interview {
-        Interview::Asking(pending) => (
-            protocol::batch_document(pending.batch(), &context(&target, &saved), None),
-            4,
-        ),
-        Interview::Complete(completed) => (
-            protocol::complete_document(&completed, &context(&target, &saved)),
-            0,
-        ),
-        // A stop/abort at the first batch of an async stage ends the interview:
-        // nothing is staged, an abort removes any record, and the `ended`
-        // document reports it. Emit it without saving a resumable record.
+    let formal = resolved.formal_name.clone();
+    match interview {
+        Interview::Asking(pending) => {
+            let document =
+                protocol::batch_document(pending.batch(), &context(&target, &saved), None);
+            if let Err(e) = store.save(&target, &saved) {
+                return Outcome::Error(e.to_string());
+            }
+            let instructions = instructions(&AgentOutcome::Batch { template: &formal }, &path);
+            match output {
+                Some(file) => {
+                    if let Err(e) =
+                        fs::write(file, serde_json::to_vec_pretty(&document).expect("JSON value"))
+                    {
+                        return Outcome::Error(e.to_string());
+                    }
+                    Outcome::Agent {
+                        document: None,
+                        instructions,
+                        code: 4,
+                    }
+                }
+                None => Outcome::Agent {
+                    document: Some(document),
+                    instructions,
+                    code: 4,
+                },
+            }
+        }
+        // A staged interview with no questions is complete; save it and point to
+        // apply. There is no batch to write to a file.
+        Interview::Complete(_) => {
+            if let Err(e) = store.save(&target, &saved) {
+                return Outcome::Error(e.to_string());
+            }
+            Outcome::Agent {
+                document: None,
+                instructions: instructions(&AgentOutcome::Complete, &path),
+                code: 0,
+            }
+        }
+        // A stop/abort at the first batch ends the interview: nothing is staged,
+        // an abort removes any record, and the `ended` document reports it.
         Interview::Ended(ended) => {
-            if let Outcome::Error(e) = ended_outcome(&ended, &target, &store) {
+            if let Err(e) = ended_removed(&ended, &target, &store) {
                 return Outcome::Error(e);
             }
+            eprintln!("{}", guidance::flow_ended(&ended));
             let document = protocol::ended_document(&ended, &context(&target, &saved));
-            return match output {
+            match output {
                 Some(file) => match fs::write(
                     file,
                     serde_json::to_vec_pretty(&document).expect("JSON value"),
@@ -809,22 +878,66 @@ fn stage(
                     Err(e) => Outcome::Error(e.to_string()),
                 },
                 None => Outcome::Document(document, 0),
-            };
+            }
         }
-    };
-    if let Err(e) = store.save(&target, &saved) {
-        return Outcome::Error(e.to_string());
     }
-    if let Some(file) = output {
-        if let Err(e) = fs::write(
-            file,
-            serde_json::to_vec_pretty(&document).expect("JSON value"),
-        ) {
-            return Outcome::Error(e.to_string());
-        }
-        Outcome::Saved(code)
+}
+/// The completion preview a person route shows at the end of `stage` or
+/// `continue PATH`: the dry-run plan and the apply instructions, writing nothing
+/// to the target. `show_messages` includes the interview's messages when they
+/// were not already shown by the prompting driver.
+fn completion_preview(
+    template: &Template,
+    completed: &Completed,
+    target: &CanonicalTarget,
+    resolved: &ResolvedTemplate,
+    installed: Option<&str>,
+    path: &Path,
+    show_messages: bool,
+) -> Outcome {
+    let live_surface = match toha::HookSurface::of(template) {
+        Ok(surface) => surface.digest(),
+        Err(error) => return Outcome::Error(error.to_string()),
+    };
+    let registry_trusted = matches!(
+        toha::evaluate_trust(resolved.approval.as_ref(), &live_surface),
+        toha::Trust::Trusted
+    );
+    let changed_since_approval = resolved.approval.is_some() && !registry_trusted;
+    let plan = match Plan::build(template, completed, target) {
+        Ok(plan) => plan,
+        Err(error) => return Outcome::Error(error.to_string()),
+    };
+    let edits = match injection_report(&plan, target) {
+        Ok(edits) => edits,
+        Err(error) => return Outcome::Error(error.to_string()),
+    };
+    let mut lines: Vec<String> = if show_messages {
+        completed.messages.clone()
     } else {
-        Outcome::Document(document, code)
+        Vec::new()
+    };
+    lines.extend(plan_lines(&plan, false, &edits));
+    let invocation = Invocation::Apply {
+        template: Some(Arg::Given(guidance::formal_for("apply", &resolved.formal_name))),
+        path,
+        answers: None,
+        force: false,
+        dry_run: true,
+        trust: false,
+    };
+    if plan.hooks.is_empty() || registry_trusted {
+        lines.push(guidance::complete(path));
+        Outcome::Written(lines)
+    } else {
+        for line in &lines {
+            println!("{line}");
+        }
+        eprintln!(
+            "{}",
+            guidance::dry_run_needs_trust(&invocation, installed, changed_since_approval)
+        );
+        Outcome::Saved(0)
     }
 }
 fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome {
@@ -867,6 +980,7 @@ fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome 
         Err(e) => return Outcome::Error(e.to_string()),
     };
     report_config_warnings(resolution.warnings());
+    let installed = trustable(&resolved, &registry);
     let interview = match saved.replay_with_resolution(&template, resolution, &target) {
         Ok(v) => v,
         Err(e) => {
@@ -878,19 +992,24 @@ fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome 
         }
     };
     if let Interview::Complete(completed) = &interview {
+        // `continue PATH FILE` on a complete interview refuses before reading the
+        // document. `continue PATH` shows the completion preview.
         if answers.is_some() {
-            return Outcome::Error(guidance::complete_answers_unused(&path, &saved.template));
+            return Outcome::Error(guidance::complete_answers_unused(&path));
         }
-        eprintln!("{}", guidance::complete(&path));
-        return Outcome::Document(
-            protocol::complete_document(completed, &context(&target, &saved)),
-            0,
+        return completion_preview(
+            &template,
+            completed,
+            &target,
+            &resolved,
+            installed.as_deref(),
+            &path,
+            true,
         );
     }
     if let Interview::Ended(ended) = &interview {
-        // A prior submission ended the staged interview. An answers document is
-        // a submission after a terminal interview, so it is refused (behavior
-        // 23), like the complete case. Without answers, report the end.
+        // A prior submission ended the staged interview. `continue PATH FILE`
+        // refuses before reading the document. Without a document, report the end.
         if answers.is_some() {
             return Outcome::Error(guidance::ended_answers_unused(
                 &path,
@@ -907,51 +1026,89 @@ fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome 
             0,
         );
     }
-    if answers.is_none() {
+    let Interview::Asking(pending) = interview else {
+        unreachable!("a complete or ended interview returned above");
+    };
+    // `continue PATH` (person): prompt the remaining questions, saving each
+    // batch, then show the completion preview.
+    let Some(answers_file) = answers else {
         if !io::stdin().is_terminal() {
             return Outcome::Error(guidance::continue_no_terminal(&path));
         }
-        return match terminal::drive(interview, &mut terminal::InquireAsk, |submission| {
-            saved.submissions.push(submission);
-            store.save(&target, &saved).map_err(|e| e.to_string())
-        }) {
-            Ok(terminal::Session::Completed(_)) => Outcome::Saved(0),
+        return match terminal::drive(
+            Interview::Asking(pending),
+            &mut terminal::InquireAsk,
+            |submission| {
+                saved.submissions.push(submission);
+                store.save(&target, &saved).map_err(|e| e.to_string())
+            },
+        ) {
+            Ok(terminal::Session::Completed(completed)) => completion_preview(
+                &template,
+                &completed,
+                &target,
+                &resolved,
+                installed.as_deref(),
+                &path,
+                false,
+            ),
             Ok(terminal::Session::Ended(ended)) => ended_outcome(&ended, &target, &store),
             Err(error) => Outcome::Error(error),
         };
-    }
-    let answers = answers.unwrap();
-    let raw = match read_answers(&answers) {
+    };
+    // `continue PATH FILE` (agent): submit one document as a single step.
+    let text = match read_answers_text(&answers_file) {
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
     };
-    let Interview::Asking(pending) = interview else {
-        unreachable!("a complete interview returned above");
-    };
-    let submission = raw
-        .iter()
-        .map(|(id, value)| (id.to_string(), value.0.clone()))
-        .collect();
-    match pending.answer(raw) {
-        Ok(next) => {
+    let formal = saved.template.clone();
+    match protocol::answer_document_once(&formal, pending, &text) {
+        Ok(DocumentStep::Accepted {
+            interview,
+            submission,
+        }) => {
+            // An accepted abort removes the record and saves no submission; every
+            // other accepted step saves the one submission.
+            if let Interview::Ended(ended) = &interview {
+                if ended.kind() == EndKind::Abort {
+                    if let Err(e) = store.remove(&target) {
+                        return Outcome::Error(e.to_string());
+                    }
+                    eprintln!("{}", guidance::flow_ended(ended));
+                    return Outcome::Document(
+                        protocol::ended_document(ended, &context(&target, &saved)),
+                        0,
+                    );
+                }
+            }
             saved.submissions.push(submission);
             if let Err(e) = store.save(&target, &saved) {
                 return Outcome::Error(e.to_string());
             }
-            match next {
-                Interview::Asking(p) => Outcome::Document(
-                    protocol::batch_document(p.batch(), &context(&target, &saved), None),
-                    4,
-                ),
-                Interview::Complete(c) => Outcome::Document(
-                    protocol::complete_document(&c, &context(&target, &saved)),
-                    0,
-                ),
+            match interview {
+                Interview::Asking(next) => Outcome::Agent {
+                    document: Some(protocol::batch_document(
+                        next.batch(),
+                        &context(&target, &saved),
+                        None,
+                    )),
+                    instructions: instructions(
+                        &AgentOutcome::Batch {
+                            template: &saved.template,
+                        },
+                        &path,
+                    ),
+                    code: 4,
+                },
+                Interview::Complete(_) => Outcome::Agent {
+                    document: None,
+                    instructions: instructions(&AgentOutcome::Complete, &path),
+                    code: 0,
+                },
+                // A flow `stop` retains the saved record; the notice names the
+                // abort command.
                 Interview::Ended(ended) => {
-                    // The submission was saved above; an abort now removes it.
-                    if let Outcome::Error(e) = ended_outcome(&ended, &target, &store) {
-                        return Outcome::Error(e);
-                    }
+                    eprintln!("{}", guidance::flow_ended(&ended));
                     Outcome::Document(
                         protocol::ended_document(&ended, &context(&target, &saved)),
                         0,
@@ -959,22 +1116,28 @@ fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome 
                 }
             }
         }
-        Err(AnswerError::Rejected {
+        Ok(DocumentStep::Rejected {
             pending,
             rejections,
-        }) => Outcome::Document(
-            protocol::batch_document(
-                pending.batch(),
-                &context(&target, &saved),
-                Some(&guidance::explain_rejections(
-                    &rejections,
-                    &path,
-                    &saved.template,
+        }) => {
+            // Nothing is saved for a rejected document.
+            let errors = guidance::explain_rejections(&rejections, &path, &saved.template);
+            Outcome::Agent {
+                document: Some(protocol::batch_document(
+                    pending.batch(),
+                    &context(&target, &saved),
+                    Some(&errors),
                 )),
-            ),
-            4,
-        ),
-        Err(AnswerError::Eval(e)) => Outcome::Error(e.to_string()),
+                instructions: instructions(
+                    &AgentOutcome::Batch {
+                        template: &saved.template,
+                    },
+                    &path,
+                ),
+                code: 4,
+            }
+        }
+        Err(e) => Outcome::Error(document_error(e, &formal).message),
     }
 }
 /// The outcome of a flow `stop`/`abort` at any driver. Both write nothing and
@@ -998,23 +1161,6 @@ fn ended_outcome(ended: &Ended, target: &CanonicalTarget, store: &Store) -> Outc
     eprintln!("{}", guidance::flow_ended(ended));
     Outcome::Written(vec![])
 }
-/// The headless outcome of a flow end (`apply --answers`, matching `stage
-/// --async`/`continue`): the additive `ended` document on stdout with exit 0,
-/// the stderr notice, and the staged record removed on an abort. Agents detect
-/// a stop or abort by the `ended` status and `kind`.
-fn ended_document_outcome(
-    ended: &Ended,
-    target: &CanonicalTarget,
-    store: &Store,
-    context: &Context,
-) -> Outcome {
-    if let Err(e) = ended_removed(ended, target, store) {
-        return Outcome::Error(e);
-    }
-    eprintln!("{}", guidance::flow_ended(ended));
-    Outcome::Document(protocol::ended_document(ended, context), 0)
-}
-
 fn abort(path: PathBuf, dirs: &Dirs) -> Outcome {
     let (target, store) = match setup(&path, dirs) {
         Ok(v) => v,
@@ -1030,6 +1176,400 @@ fn abort(path: PathBuf, dirs: &Dirs) -> Outcome {
     }
 }
 
+/// What an agent-route step produced, for the plain-text instructions that
+/// follow the batch JSON on standard output.
+enum AgentOutcome<'a> {
+    /// A question batch is available; answer it with `continue PATH FILE`. Used
+    /// by `stage --async` and `continue PATH FILE` while questions remain.
+    Batch { template: &'a str },
+    /// `apply PATH` found the staged interview incomplete: answer with
+    /// `continue PATH FILE` or, in a terminal, `continue PATH`.
+    ApplyIncomplete { template: &'a str },
+    /// `continue PATH FILE` completed the interview: preview or write with
+    /// `apply PATH`.
+    Complete,
+}
+/// The instructions for an agent-route step, built from the parsed command
+/// values and the outcome. It parses no JSON of its own.
+fn instructions(outcome: &AgentOutcome, path: &Path) -> String {
+    match outcome {
+        AgentOutcome::Batch { template } => guidance::answer_batch(path, template),
+        AgentOutcome::ApplyIncomplete { template } => {
+            guidance::apply_incomplete_agent(path, template)
+        }
+        AgentOutcome::Complete => guidance::continue_complete(path),
+    }
+}
+/// One scripted `error` result document with its tabled exit code.
+fn scripted_error(
+    kind: ErrorKind,
+    message: String,
+    commands: Vec<String>,
+    context: Option<&Context>,
+) -> Outcome {
+    let code = if kind == ErrorKind::Ambiguous { 5 } else { 1 };
+    Outcome::Document(
+        protocol::error_document(
+            &ResultError {
+                kind,
+                message,
+                commands,
+            },
+            context,
+        ),
+        code,
+    )
+}
+/// Maps a document or evaluation failure to a scripted `error` document. A
+/// malformed envelope is `document`; a missing, malformed, or mismatched
+/// identity is `identity`; an engine evaluation failure is `render`.
+fn document_error(error: SubmitDocumentError, expected: &str) -> ResultError {
+    use protocol::AnswersDocumentError as E;
+    let (kind, message) = match error {
+        SubmitDocumentError::Evaluation(error) => (ErrorKind::Render, error.to_string()),
+        SubmitDocumentError::Document(error) => match &error {
+            E::Json { .. } | E::Shape { .. } => (ErrorKind::Document, error.to_string()),
+            E::MissingIdentity => (
+                ErrorKind::Identity,
+                format!(
+                    "answers document has no template identity; wrap the answers as {{\"template\": {}, \"answers\": {{ ... }}}}",
+                    serde_json::to_string(expected).expect("template string")
+                ),
+            ),
+            E::MalformedIdentity => (
+                ErrorKind::Identity,
+                format!(
+                    "answers document template must be a non-empty string equal to {}",
+                    serde_json::to_string(expected).expect("template string")
+                ),
+            ),
+            E::TemplateMismatch { .. } => (ErrorKind::Identity, error.to_string()),
+        },
+    };
+    ResultError {
+        kind,
+        message,
+        commands: vec![],
+    }
+}
+/// The `is required` errors a scripted `questions` document carries for each
+/// required question left unanswered in the current batch. Agent routes never
+/// add these for a question not yet asked.
+fn required_errors(batch: &Batch) -> Rejections {
+    batch
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Prompt(prompt) if prompt.constraints.required => Some(Rejection {
+                id: prompt.id.clone(),
+                message: "is required".into(),
+                kind: RejectionKind::Invalid,
+            }),
+            _ => None,
+        })
+        .collect()
+}
+/// The per-path action of a completed plan, classified against the target's
+/// current bytes before any write: `create`/`overwrite`/`conflict` for a
+/// whole-file rule, `inject`/`update` for an edit.
+#[allow(clippy::result_large_err)]
+fn plan_actions(
+    plan: &Plan,
+    target: &CanonicalTarget,
+    force: bool,
+) -> Result<std::collections::HashMap<String, &'static str>, toha::ApplyError> {
+    use toha::{EditReport, PlannedEdit};
+    let mut actions = std::collections::HashMap::new();
+    for file in &plan.files {
+        let action = if plan.conflicts.contains(&file.path) {
+            if force { "overwrite" } else { "conflict" }
+        } else {
+            "create"
+        };
+        actions.insert(file.path.to_string(), action);
+    }
+    for edit in &plan.edits {
+        let full = target.as_path().join(edit.path().as_path());
+        let current = std::fs::read(&full).ok();
+        let report = match edit {
+            PlannedEdit::Region(region) => toha::report_region_edit(current.as_deref(), region)?,
+            PlannedEdit::JsonValue(json) => toha::report_json_edit(current.as_deref(), json)?,
+        };
+        let action = match report {
+            EditReport::Inject => "inject",
+            EditReport::Update | EditReport::Drift => "update",
+            EditReport::Unchanged => continue,
+        };
+        actions.insert(edit.path().to_string(), action);
+    }
+    Ok(actions)
+}
+/// Maps an apply failure to a scripted `error` document by kind.
+fn scripted_apply_error(error: toha::ApplyError, context: &Context) -> Outcome {
+    use toha::ApplyError as E;
+    let kind = match &error {
+        E::Conflicts(_) | E::Drift(_) | E::Symlink(_) => ErrorKind::Conflict,
+        E::Hook { .. } | E::HookIo { .. } | E::HookOutput { .. } => ErrorKind::Hook,
+        E::Io { .. } | E::Deferred(_) | E::Region(_) | E::Json(_) => ErrorKind::Render,
+    };
+    scripted_error(kind, error.to_string(), vec![], Some(context))
+}
+/// The scripted route: `apply TEMPLATE PATH --answers FILE`. One shot. It never
+/// stages, refuses when an interview is staged (before reading the document),
+/// and writes exactly one JSON result document for every outcome.
+fn scripted(
+    template_arg: String,
+    path: &Path,
+    answers_file: String,
+    force: bool,
+    dry_run: bool,
+    trust: bool,
+    dirs: &Dirs,
+) -> Outcome {
+    // 1. Construct one canonical target and check for a staged record.
+    let (target, store) = match setup(path, dirs) {
+        Ok(v) => v,
+        Err(e) => return scripted_error(ErrorKind::Input, e, vec![], None),
+    };
+    let existing = match store.load(&target) {
+        Ok(v) => v,
+        Err(e) => return scripted_error(ErrorKind::Staged, e.to_string(), vec![], None),
+    };
+    // 2. Refuse when a record exists; the document is not read.
+    if existing.is_some() {
+        return scripted_error(
+            ErrorKind::Staged,
+            format!(
+                "an interview is staged at {target}; the scripted route does not use staged state"
+            ),
+            guidance::staged_commands(path),
+            None,
+        );
+    }
+    let cwd = match std::env::current_dir() {
+        Ok(v) => v,
+        Err(e) => return scripted_error(ErrorKind::Input, e.to_string(), vec![], None),
+    };
+    let (config, registry) = match cli::resolve::load_context(dirs, &cwd) {
+        Ok(v) => v,
+        Err(e) => return scripted_resolve_error(e, path, &answers_file, force, dry_run, trust),
+    };
+    // 3. Resolve the command template, load it, produce the configured
+    //    Resolution, and start the interview.
+    let resolved = match cli::resolve::resolve_template(&template_arg, &config, &registry, dirs, &cwd)
+    {
+        Ok(v) => v,
+        Err(e) => return scripted_resolve_error(e, path, &answers_file, force, dry_run, trust),
+    };
+    let template = match load_template(&resolved) {
+        Ok(v) => v,
+        Err(e) => return scripted_error(ErrorKind::Source, e, vec![], None),
+    };
+    let (resolution, now) = match resolution(&resolved.formal_name, &template, &config) {
+        Ok(v) => v,
+        Err(e) => return scripted_error(ErrorKind::Source, e, vec![], None),
+    };
+    let decision =
+        EnvironmentDecision::grant_if_needed(apply_environment_grant(trust, &resolved, &template));
+    let new_context = match build_context(&target, &resolved, &template, decision, false) {
+        Ok(v) => v,
+        Err(e) => return scripted_error(ErrorKind::Source, e, vec![], None),
+    };
+    // An in-memory record carries the context for the result documents; the
+    // scripted route never saves or removes it.
+    let saved = StagedRecord::new_with_context(
+        new_context.clone(),
+        resolved.commit.clone(),
+        resolved.named,
+        now.to_string(),
+        vec![],
+    );
+    let ctx = context(&target, &saved);
+    let interview = match resolution.start_with_context(&template, now, new_context) {
+        Ok(v) => v,
+        Err(e) => return scripted_error(ErrorKind::Render, e.to_string(), vec![], Some(&ctx)),
+    };
+    // 4. Read the document once as UTF-8.
+    let text = match read_answers_text(&answers_file) {
+        Ok(v) => v,
+        Err(e) => return scripted_error(ErrorKind::Input, e, vec![], Some(&ctx)),
+    };
+    // 5-8. Parse, verify identity, and drive the headless walk.
+    let headless = match protocol::answer_document_headless(
+        &resolved.formal_name,
+        &template,
+        interview,
+        &text,
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            let error = document_error(e, &resolved.formal_name);
+            let code = if error.kind == ErrorKind::Ambiguous { 5 } else { 1 };
+            return Outcome::Document(protocol::error_document(&error, Some(&ctx)), code);
+        }
+    };
+    match headless {
+        Headless::Pending {
+            pending,
+            rejections,
+            ..
+        } => {
+            let mut errors = required_errors(pending.batch());
+            errors.extend(rejections);
+            Outcome::Document(
+                protocol::batch_document(pending.batch(), &ctx, Some(&errors)),
+                4,
+            )
+        }
+        Headless::Ended { ended, .. } => {
+            // The scripted route never staged, so an abort removes nothing.
+            Outcome::Document(protocol::ended_document(&ended, &ctx), 0)
+        }
+        Headless::Completed { completed, .. } => {
+            scripted_completed(&template, completed, &target, &resolved, &ctx, force, dry_run, trust)
+        }
+    }
+}
+/// The scripted `Completed` tail: build the plan, then report `planned` (dry run
+/// or untrusted hooks) or apply and report `applied`.
+fn scripted_completed(
+    template: &Template,
+    completed: Completed,
+    target: &CanonicalTarget,
+    resolved: &ResolvedTemplate,
+    ctx: &Context,
+    force: bool,
+    dry_run: bool,
+    trust: bool,
+) -> Outcome {
+    let dry_run = dry_run || matches!(completed.step(), Step::Plan { apply: false });
+    let live_surface = match toha::HookSurface::of(template) {
+        Ok(surface) => surface.digest(),
+        Err(error) => return scripted_error(ErrorKind::Render, error.to_string(), vec![], Some(ctx)),
+    };
+    let trusted = trust
+        || matches!(
+            toha::evaluate_trust(resolved.approval.as_ref(), &live_surface),
+            toha::Trust::Trusted
+        );
+    let plan = match Plan::build(template, &completed, target) {
+        Ok(plan) => plan,
+        Err(error) => return scripted_error(ErrorKind::Render, error.to_string(), vec![], Some(ctx)),
+    };
+    let mut messages = completed.messages.clone();
+    if let Some(before) = &plan.before_apply {
+        messages.push(before.clone());
+    }
+    let has_hooks = !plan.hooks.is_empty();
+    let trust_state = if trusted {
+        TrustState::Trusted
+    } else {
+        TrustState::Untrusted
+    };
+    if dry_run {
+        let code = if has_hooks && !trusted { 3 } else { 0 };
+        return Outcome::Document(
+            protocol::planned_document(&plan, &messages, ctx, trust_state),
+            code,
+        );
+    }
+    if has_hooks && !trusted {
+        return Outcome::Document(
+            protocol::planned_document(&plan, &messages, ctx, TrustState::Untrusted),
+            3,
+        );
+    }
+    let actions = match plan_actions(&plan, target, force) {
+        Ok(v) => v,
+        Err(e) => return scripted_apply_error(e, ctx),
+    };
+    match plan.apply_reporting(
+        target,
+        ApplyOptions {
+            force,
+            trusted: true,
+        },
+        &ProcessRunner,
+        &mut |_| {},
+    ) {
+        Ok(Applied::Written {
+            files,
+            hooks,
+            after_apply,
+            ..
+        }) => {
+            if let Some(after) = after_apply {
+                messages.push(after);
+            }
+            let report = ApplyReport {
+                files: files
+                    .iter()
+                    .map(|path| AppliedFile {
+                        path: path.to_string(),
+                        action: actions
+                            .get(&path.to_string())
+                            .copied()
+                            .unwrap_or("create")
+                            .to_string(),
+                    })
+                    .collect(),
+                messages,
+                hooks: hooks
+                    .iter()
+                    .map(|hook| AppliedHook {
+                        id: hook.id.as_ref().map(ToString::to_string),
+                        exit_code: hook.exit_code,
+                        success: hook.success,
+                    })
+                    .collect(),
+            };
+            Outcome::Document(protocol::applied_document(&report, ctx), 0)
+        }
+        // Trust was granted above, so an untrusted plan cannot occur here.
+        Ok(Applied::NeedsTrust(_)) => {
+            scripted_error(ErrorKind::Hook, "hooks are not trusted".into(), vec![], Some(ctx))
+        }
+        Err(error) => scripted_apply_error(error, ctx),
+    }
+}
+/// Maps a resolve failure on the scripted route to a `source` or `ambiguous`
+/// error document. The ambiguous document lists the scripted command with each
+/// match's formal name.
+fn scripted_resolve_error(
+    error: ResolveError,
+    path: &Path,
+    answers_file: &str,
+    force: bool,
+    dry_run: bool,
+    trust: bool,
+) -> Outcome {
+    match error {
+        ResolveError::Error(message) => scripted_error(ErrorKind::Source, message, vec![], None),
+        ResolveError::Ambiguous { name, matches } => {
+            let commands = matches
+                .iter()
+                .map(|formal| {
+                    Invocation::Apply {
+                        template: Some(Arg::Given(guidance::formal_for("apply", formal))),
+                        path,
+                        answers: Some(Arg::Given(answers_file)),
+                        force,
+                        dry_run,
+                        trust,
+                    }
+                    .command()
+                })
+                .collect();
+            scripted_error(
+                ErrorKind::Ambiguous,
+                format!("ambiguous template name: {name}"),
+                commands,
+                None,
+            )
+        }
+    }
+}
+
 fn run(
     template: Option<String>,
     path: &Path,
@@ -1039,6 +1579,11 @@ fn run(
     trust: bool,
     dirs: &Dirs,
 ) -> Outcome {
+    // Scripted route: apply TEMPLATE PATH --answers FILE. One shot, one result
+    // document, never staged.
+    if let (Some(template), Some(answers_file)) = (template.clone(), answers.clone()) {
+        return scripted(template, path, answers_file, force, dry_run, trust, dirs);
+    }
     let (target, store) = match setup(path, dirs) {
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
@@ -1057,7 +1602,9 @@ fn run(
         dirs,
         cwd: &cwd,
     };
-    if template.is_none() && answers.is_some() {
+    // apply PATH --answers FILE with no template: the scripted route requires a
+    // template. There is no target-only answers route.
+    if answers.is_some() {
         let staged = existing
             .as_ref()
             .map(|saved| (saved.template.as_str(), progress(saved, &scope, &target)));
@@ -1067,11 +1614,15 @@ fn run(
             staged,
         ));
     }
-    let (requested_template, requested_answers) = (template.clone(), answers.clone());
+    // A template argument selects the person route (`apply TEMPLATE PATH`), which
+    // prompts; its absence selects the agent route (`apply PATH`), which never
+    // prompts.
+    let named = template.is_some();
+    let requested_template = template.clone();
     let invocation = Invocation::Apply {
         template: requested_template.as_deref().map(Arg::Given),
         path,
-        answers: requested_answers.as_deref().map(Arg::Given),
+        answers: None,
         force,
         dry_run,
         trust,
@@ -1083,15 +1634,18 @@ fn run(
     }
     // A template named for its own staged interview resumes that interview.
     let template = template.filter(|_| existing.is_none());
-    let mut terminal_run = template.is_some() && answers.is_none();
+    let mut terminal_run = false;
     // The stored approval digest of the template resolved by name, compared to
     // the live executable surface once the template is loaded.
-    let approval: Option<toha::ReviewDigest>;
+    let approval: Option<ReviewDigest>;
     // The installed template whose registry trust would run the hooks.
     let installed: Option<String>;
     let (template, interview, saved) = match (template, existing) {
+        // apply TEMPLATE PATH with nothing staged: the person route starts the
+        // interview, prompts, saves at each batch boundary, and applies at
+        // completion.
         (Some(folder), None) => {
-            if answers.is_none() && !io::stdin().is_terminal() {
+            if !io::stdin().is_terminal() {
                 return Outcome::Error(guidance::no_terminal(&folder, path));
             }
             let resolved =
@@ -1114,12 +1668,11 @@ fn run(
             let decision = EnvironmentDecision::grant_if_needed(apply_environment_grant(
                 trust, &resolved, &template,
             ));
-            let new_context =
-                match build_context(&target, &resolved, &template, decision, answers.is_none()) {
-                    Ok(v) => v,
-                    Err(e) => return Outcome::Error(e),
-                };
-            let saved = StagedRecord::new_with_context(
+            let new_context = match build_context(&target, &resolved, &template, decision, true) {
+                Ok(v) => v,
+                Err(e) => return Outcome::Error(e),
+            };
+            let mut saved = StagedRecord::new_with_context(
                 new_context.clone(),
                 resolved.commit.clone(),
                 resolved.named,
@@ -1130,61 +1683,28 @@ fn run(
                 Ok(v) => v,
                 Err(e) => return Outcome::Error(e.to_string()),
             };
-            if let Some(answers_file) = answers {
-                let raw = match read_answers(&answers_file) {
-                    Ok(v) => v,
-                    Err(e) => return Outcome::Error(e),
-                };
-                let result = match protocol::answer_headless(&template, interview, raw) {
-                    Ok(v) => v,
-                    Err(e) => return Outcome::Error(e.to_string()),
-                };
-                match result {
-                    Headless::Completed { completed, .. } => (template, completed, None),
-                    Headless::Ended { ended, .. } => {
-                        // A fresh apply has no staged record, so an abort's
-                        // removal is a no-op. Nothing is written; the `ended`
-                        // document reports the stop or abort.
-                        return ended_document_outcome(
-                            &ended,
-                            &target,
-                            &store,
-                            &context(&target, &saved),
-                        );
-                    }
-                    Headless::Pending {
-                        pending,
-                        rejections,
-                        accepted,
-                    } => {
-                        let mut saved = saved;
-                        saved.submissions = accepted;
-                        let document = protocol::batch_document(
-                            pending.batch(),
-                            &context(&target, &saved),
-                            Some(&rejections),
-                        );
-                        if dry_run {
-                            eprintln!("{}", guidance::dry_run_incomplete(&invocation, path));
-                        } else {
-                            if let Err(e) = store.save(&target, &saved) {
-                                return Outcome::Error(e.to_string());
-                            }
-                            eprintln!("{}", guidance::incomplete(path));
-                        }
-                        return Outcome::Document(document, 4);
-                    }
+            // Save each accepted batch so an interrupt leaves a resumable record;
+            // a dry run records nothing.
+            match terminal::drive(interview, &mut terminal::InquireAsk, |submission| {
+                if dry_run {
+                    return Ok(());
                 }
-            } else {
-                match terminal::drive(interview, &mut terminal::InquireAsk, |_| Ok(())) {
-                    Ok(terminal::Session::Completed(completed)) => (template, completed, None),
-                    Ok(terminal::Session::Ended(ended)) => {
-                        return ended_outcome(&ended, &target, &store);
-                    }
-                    Err(e) => return Outcome::Error(e),
+                saved.submissions.push(submission);
+                store.save(&target, &saved).map_err(|e| e.to_string())
+            }) {
+                Ok(terminal::Session::Completed(completed)) => {
+                    terminal_run = true;
+                    (template, completed, Some(saved))
                 }
+                Ok(terminal::Session::Ended(ended)) => {
+                    return ended_outcome(&ended, &target, &store);
+                }
+                Err(e) => return Outcome::Error(e),
             }
         }
+        // apply PATH (agent) or apply TEMPLATE PATH naming the staged template
+        // (person) resumes the staged interview. The agent route never prompts;
+        // the person route prompts the remaining questions.
         (None, Some(mut saved)) => {
             let resolved = match cli::resolve::resume_template(
                 &saved.template,
@@ -1224,101 +1744,19 @@ fn run(
                     ));
                 }
             };
-            let interview = match (interview, answers) {
-                (Interview::Complete(_), Some(_)) => {
-                    return Outcome::Error(guidance::complete_answers_unused(
-                        path,
-                        &saved.template,
-                    ));
-                }
-                // A staged interview a flow node already ended is terminal. An
-                // answers document is a submission after a terminal interview,
-                // so it is refused (behavior 23), exactly as the complete case
-                // above — on every answers route, not just `continue`. Without
-                // answers, the notice reports the end (an abort removes the
-                // record).
-                (Interview::Ended(ended), Some(_)) => {
-                    return Outcome::Error(guidance::ended_answers_unused(
-                        path,
-                        &saved.template,
-                        ended.kind(),
-                    ));
-                }
-                (Interview::Ended(ended), None) => {
+            match interview {
+                Interview::Ended(ended) => {
                     return ended_outcome(&ended, &target, &store);
                 }
-                (Interview::Asking(pending), Some(answers_file)) => {
-                    let raw = match read_answers(&answers_file) {
-                        Ok(v) => v,
-                        Err(e) => return Outcome::Error(e),
-                    };
-                    let result =
-                        match protocol::answer_headless(&template, Interview::Asking(pending), raw)
-                        {
-                            Ok(v) => v,
-                            Err(e) => return Outcome::Error(e.to_string()),
-                        };
-                    match result {
-                        Headless::Completed {
-                            completed,
-                            accepted,
-                        } => {
-                            saved.submissions.extend(accepted);
-                            if !dry_run {
-                                if let Err(e) = store.save(&target, &saved) {
-                                    return Outcome::Error(e.to_string());
-                                }
-                            }
-                            Interview::Complete(completed)
-                        }
-                        // A flow end during `apply --answers` reports the stop
-                        // or abort with the additive `ended` document and the
-                        // stderr notice, like `stage --async`/`continue`. The
-                        // staged record is left as it was, except an abort
-                        // discards it.
-                        Headless::Ended { ended, .. } => {
-                            return ended_document_outcome(
-                                &ended,
-                                &target,
-                                &store,
-                                &context(&target, &saved),
-                            );
-                        }
-                        Headless::Pending {
-                            pending,
-                            rejections,
-                            accepted,
-                        } => {
-                            saved.submissions.extend(accepted);
-                            if dry_run {
-                                eprintln!("{}", guidance::dry_run_incomplete(&invocation, path));
-                            } else {
-                                if let Err(e) = store.save(&target, &saved) {
-                                    return Outcome::Error(e.to_string());
-                                }
-                                eprintln!("{}", guidance::incomplete(path));
-                            }
-                            return Outcome::Document(
-                                protocol::batch_document(
-                                    pending.batch(),
-                                    &context(&target, &saved),
-                                    Some(&guidance::explain_rejections(
-                                        &rejections,
-                                        path,
-                                        &saved.template,
-                                    )),
-                                ),
-                                4,
-                            );
-                        }
+                Interview::Complete(completed) => (template, completed, Some(saved)),
+                // apply TEMPLATE PATH resume: the person route prompts the rest,
+                // saving each batch, then applies.
+                Interview::Asking(pending) if named => {
+                    if !io::stdin().is_terminal() {
+                        return Outcome::Error(guidance::continue_no_terminal(path));
                     }
-                }
-                (interview, None) => interview,
-            };
-            match interview {
-                Interview::Asking(p) if io::stdin().is_terminal() && io::stdout().is_terminal() => {
-                    let completed = terminal::drive(
-                        Interview::Asking(p),
+                    match terminal::drive(
+                        Interview::Asking(pending),
                         &mut terminal::InquireAsk,
                         |submission| {
                             if dry_run {
@@ -1327,8 +1765,7 @@ fn run(
                             saved.submissions.push(submission);
                             store.save(&target, &saved).map_err(|e| e.to_string())
                         },
-                    );
-                    match completed {
+                    ) {
                         Ok(terminal::Session::Completed(c)) => {
                             terminal_run = true;
                             (template, c, Some(saved))
@@ -1339,16 +1776,24 @@ fn run(
                         Err(e) => return Outcome::Error(e),
                     }
                 }
-                Interview::Asking(p) => {
-                    eprintln!("{}", guidance::incomplete(path));
-                    return Outcome::Document(
-                        protocol::batch_document(p.batch(), &context(&target, &saved), None),
-                        4,
-                    );
+                // apply PATH: the agent route reports the current batch with
+                // instructions and never prompts. Nothing new is saved.
+                Interview::Asking(pending) => {
+                    return Outcome::Agent {
+                        document: Some(protocol::batch_document(
+                            pending.batch(),
+                            &context(&target, &saved),
+                            None,
+                        )),
+                        instructions: instructions(
+                            &AgentOutcome::ApplyIncomplete {
+                                template: &saved.template,
+                            },
+                            path,
+                        ),
+                        code: 4,
+                    };
                 }
-                Interview::Complete(c) => (template, c, Some(saved)),
-                // Handled before this match by the post-replay end check.
-                Interview::Ended(_) => unreachable!("a flow end returned above"),
             }
         }
         (None, None) => {

@@ -19,7 +19,7 @@ pub mod source;
 pub mod staging;
 pub mod template;
 
-pub use apply::{Applied, ApplyError, ApplyOptions};
+pub use apply::{Applied, ApplyError, ApplyOptions, HookReport};
 pub use inject::{
     Anchor, EditReport, EditResolution, JsonEditError, JsonFormat, JsonPath, JsonPathSegment,
     MarkerStyle, Occurrence, PlannedEdit, PlannedJsonEdit, PlannedRegionEdit, RegionError,

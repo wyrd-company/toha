@@ -331,6 +331,64 @@ fn continue_answers(path: &Path) -> String {
         &[path_operand(path), placeholder("<ANSWERS>")],
     )
 }
+fn apply_dry_run(path: &Path) -> String {
+    toha("apply", &["--dry-run".to_string()], &[path_operand(path)])
+}
+
+/// The template hint line of an answers document, with the formal name quoted as
+/// JSON.
+fn answers_hint(template: &str) -> String {
+    format!(
+        "  {{\"template\": {}, \"answers\": {{ ... }}}}",
+        serde_json::to_string(template).expect("template string")
+    )
+}
+
+/// The agent instruction that follows a question batch: answer it with an
+/// answers document that names the template, through `continue PATH FILE`.
+pub fn answer_batch(path: &Path, template: &str) -> String {
+    [
+        "answer these questions with an answers document:".to_string(),
+        answers_hint(template),
+        format!(
+            "then run: {} (- reads standard input)",
+            continue_answers(path)
+        ),
+    ]
+    .join("\n")
+}
+
+/// `apply PATH` found the staged interview incomplete. It names `continue PATH
+/// FILE` for an answers document and `continue PATH` for a terminal, then
+/// `apply PATH` to write the files.
+pub fn apply_incomplete_agent(path: &Path, template: &str) -> String {
+    [
+        format!("the interview at {} has questions remaining", target(path)),
+        "answer these questions with an answers document:".to_string(),
+        answers_hint(template),
+        format!(
+            "to answer the current batch: {} (- reads standard input)",
+            continue_answers(path)
+        ),
+        format!(
+            "to answer in a terminal instead: {}",
+            continue_prompting(path)
+        ),
+        format!("then write its files: {}", apply_staged(path)),
+    ]
+    .join("\n")
+}
+
+/// `continue PATH FILE` completed the interview: the instructions name
+/// `apply PATH --dry-run` to preview and `apply PATH` to write. No batch follows.
+pub fn continue_complete(path: &Path) -> String {
+    [
+        format!("the interview at {} is complete", target(path)),
+        format!("to see the files it will write: {}", apply_dry_run(path)),
+        format!("to write them: {}", apply_staged(path)),
+    ]
+    .join("\n")
+}
 
 fn finish(path: &Path, progress: Progress) -> String {
     let apply = apply_staged(path);
@@ -427,35 +485,6 @@ pub fn already_staged(
     lines.join("\n")
 }
 
-/// `apply` found the staged interview incomplete.
-pub fn incomplete(path: &Path) -> String {
-    [
-        format!("the interview at {} has questions remaining", target(path)),
-        remaining(path),
-        format!("then write its files: {}", apply_staged(path)),
-    ]
-    .join("\n")
-}
-
-/// `apply --answers --dry-run` left questions remaining.
-pub fn dry_run_incomplete(invocation: &Invocation, path: &Path) -> String {
-    [
-        format!(
-            "questions remain for the interview at {}; a dry run records nothing",
-            target(path)
-        ),
-        format!(
-            "to preview the files: add answers for the batch to the answers document, then {}",
-            invocation.command()
-        ),
-        format!(
-            "to record these answers: {}",
-            invocation.without_dry_run().command()
-        ),
-    ]
-    .join("\n")
-}
-
 /// A flow `stop`/`abort` ended the interview. The notice names what did not
 /// happen, and for an abort that the staged interview was discarded.
 pub fn flow_ended(ended: &toha::Ended) -> String {
@@ -481,24 +510,16 @@ pub fn complete(path: &Path) -> String {
     )
 }
 
-/// An answers document was given for a complete staged interview.
-pub fn complete_answers_unused(path: &Path, staged: &str) -> String {
-    let restage = Invocation::Stage {
-        template: Arg::Given(formal_for("stage", staged)),
-        path,
-        output: None,
-    };
+/// `continue PATH FILE` was given for a complete staged interview. It refuses
+/// before reading the document and names `apply PATH --dry-run` and `apply PATH`.
+pub fn complete_answers_unused(path: &Path) -> String {
     [
         format!(
             "the interview at {} is complete, so the answers document is not used",
             target(path)
         ),
-        format!("to write its files: {}", apply_staged(path)),
-        format!(
-            "to answer it again: {}, then {}",
-            abort(path),
-            restage.command()
-        ),
+        format!("to preview the files: {}", apply_dry_run(path)),
+        format!("to write them: {}", apply_staged(path)),
     ]
     .join("\n")
 }
@@ -571,6 +592,12 @@ pub fn explain_rejections(
             rejection
         })
         .collect()
+}
+
+/// The commands a scripted `staged` refusal lists: answer the staged interview
+/// with an answers document, write it, or discard it.
+pub fn staged_commands(path: &Path) -> Vec<String> {
+    vec![continue_answers(path), apply_staged(path), abort(path)]
 }
 
 /// `continue` without an answers document has no terminal to prompt in.
