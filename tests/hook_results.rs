@@ -514,6 +514,33 @@ messages:
     assert!(matches!(error, ApplyError::Hook { .. }), "{error:?}");
 }
 
+#[test]
+fn an_untolerated_failure_is_reported_before_any_decode() {
+    // Failure is checked strictly before decode: an untolerated nonzero hook with
+    // a non-UTF-8 captured stream reports Hook, never HookOutput.
+    let yaml = "\
+name: sample
+hooks:
+  - id: probe
+    run: [ probe-tool ]
+    capture: [ stdout ]
+  - run: [ note, \"{{ probe.stdout }}\" ]
+    when: \"probe.exit_code == 0\"
+";
+    let mut runner = Scripted::new();
+    runner = runner.set(
+        "probe",
+        Out {
+            success: false,
+            code: Some(1),
+            stdout: vec![0xff, 0xfe],
+            stderr: vec![],
+        },
+    );
+    let error = apply(yaml, &runner).unwrap_err();
+    assert!(matches!(error, ApplyError::Hook { .. }), "{error:?}");
+}
+
 // ---------------------------------------------------------------------------
 // Encoding and leakage (design §5 invariants 4, 7).
 // ---------------------------------------------------------------------------

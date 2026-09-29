@@ -479,6 +479,14 @@ mod tests {
             json!({"hook": {"run": ["tool", "call"], "cwd": "x", "when": "true"}}),
             json!({"hook": {"run": ["tool", "call"]}}),
             json!({"when": "true", "hook": {"run": ["tool", "call"], "cwd": "x"}}),
+            // A hook-result field is part of the reviewed node, so declaring one
+            // changes the digest — a new stdio-affecting `capture`, or an `id`,
+            // cannot slip past an existing approval unreviewed.
+            json!({"hook": {"run": ["tool", "call"], "cwd": "x", "id": "t"}}),
+            json!({"hook": {"run": ["tool", "call"], "cwd": "x", "capture": ["stdout"]}}),
+            json!({"hook": {"run": ["tool", "call"], "cwd": "x", "allow-failure": true}}),
+            json!({"hook": {"run": ["tool", "call"], "cwd": "x", "parse": "json"}}),
+            json!({"hook": {"run": ["tool", "call"], "cwd": "x", "status-id": "s"}}),
         ];
         for mutation in mutations {
             assert_ne!(surface(&mutation), base_digest, "{mutation}");
