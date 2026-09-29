@@ -26,8 +26,8 @@ use cli::{
     resolve::{ResolveError, ResolvedTemplate},
 };
 use toha::{
-    Applied, ApplyOptions, Batch, Completed, EndKind, Ended, Interview, Item, Plan, Planned,
-    Rejection, RejectionKind, Rejections, ReviewDigest, Step, Template,
+    Applied, ApplyOptions, Completed, EndKind, Ended, Interview, Plan, Planned, ReviewDigest, Step,
+    Template,
     context::{
         EnvironmentDecision, ExecutionFacts, FixedEnvironment, FixedEnvironmentSource, HostFacts,
         InvocationContext, SelectedTemplate,
@@ -1252,23 +1252,6 @@ fn document_error(error: SubmitDocumentError, expected: &str) -> ResultError {
         commands: vec![],
     }
 }
-/// The `is required` errors a scripted `questions` document carries for each
-/// required question left unanswered in the current batch. Agent routes never
-/// add these for a question not yet asked.
-fn required_errors(batch: &Batch) -> Rejections {
-    batch
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            Item::Prompt(prompt) if prompt.constraints.required => Some(Rejection {
-                id: prompt.id.clone(),
-                message: "is required".into(),
-                kind: RejectionKind::Invalid,
-            }),
-            _ => None,
-        })
-        .collect()
-}
 /// Classifies each planned write against the target's current bytes before any
 /// write: `create`/`overwrite`/`conflict` for a whole-file rule, `inject`/
 /// `update` for an edit (by whether the region or value is present), carrying the
@@ -1435,10 +1418,12 @@ fn scripted(
             rejections,
             ..
         } => {
-            let mut errors = required_errors(pending.batch());
-            errors.extend(rejections);
+            // The headless walk reaches each unanswered required question and
+            // rejects it with `is required`; the scripted `questions` document
+            // carries those rejections. Agent routes take one step and leave an
+            // unanswered question pending without such an error.
             Outcome::Document(
-                protocol::batch_document(pending.batch(), &ctx, Some(&errors)),
+                protocol::batch_document(pending.batch(), &ctx, Some(&rejections)),
                 4,
             )
         }

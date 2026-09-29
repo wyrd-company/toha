@@ -2,6 +2,30 @@
 // relationships:
 //   implements: interview-protocol
 // ---
+//! The interview protocol boundary: the external answers envelope, the identity
+//! gate, and the result documents.
+//!
+//! External JSON cannot yield a raw or verified answer capability without first
+//! passing the identity gate. The removed public external-JSON parser no longer
+//! compiles:
+//!
+//! ```compile_fail
+//! let _ = toha::protocol::parse_answers("{}");
+//! ```
+//!
+//! `VerifiedSubmission` is private and has no external constructor, so external
+//! JSON cannot be turned into a `RawAnswers` around the gate:
+//!
+//! ```compile_fail
+//! let submission: toha::protocol::VerifiedSubmission = unimplemented!();
+//! let _ = submission.raw;
+//! ```
+//!
+//! The removed `complete` result document no longer compiles:
+//!
+//! ```compile_fail
+//! let _ = toha::protocol::complete_document(unimplemented!(), unimplemented!());
+//! ```
 use crate::{
     AnswerError, Batch, Completed, EndKind, Ended, EvalError, Id, Interview, Item, Pending, Planned,
     PlannedHook, Prompt, PromptKind, RawAnswer, RawAnswers, Rejections, Template,
