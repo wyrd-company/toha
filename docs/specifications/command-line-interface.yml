@@ -43,8 +43,11 @@ description: >-
 
   Short names. A short name that matches more than one installed template is
   ambiguous. A command given an ambiguous short name fails with exit code 5
-  and lists the formal name of every match with the same command naming that
-  formal name and a `templates alias` command for each. `templates add` reports every short name the new templates share with
+  and names the formal name of every match with the same command naming that
+  formal name and a `templates alias` command for each; the scripted route
+  (`apply TEMPLATE PATH --answers FILE`) carries those commands in the
+  `commands` of its `error` document, and every other route names them on
+  standard error. `templates add` reports every short name the new templates share with
   installed templates, with the same `templates alias` commands, and completes
   the add.
 
@@ -71,19 +74,26 @@ description: >-
   until it is approved again. Templates from a local templates path and
   templates given by address or folder to `stage` or `apply` are trusted only
   through `--trust`. When the template has hooks and is not trusted, `apply`
-  performs a dry run, lists the hooks, states that `--trust` is required, names
-  the same command with `--trust`, and exits with code 3; when an approval
-  exists but no longer matches, the listing marks the hooks changed since
-  approval. A hook that reads an earlier hook's result is listed in source form,
+  exits with code 3. On the person and agent routes it performs a dry run,
+  lists the hooks, states that `--trust` is required, and names the same
+  command with `--trust`; when an approval exists but no longer matches, the
+  listing marks the hooks changed since approval. The scripted route
+  (`apply TEMPLATE PATH --answers FILE`) instead emits a `planned` result
+  document with `trusted: false` and the planned hooks on standard output,
+  and writes nothing else. A hook that reads an earlier hook's result is listed in source form,
   with `{{ id.field }}` placeholders where the result will go, because the result
   is not known until the hook runs; a dry run reads no result and runs no hook.
   Toha never prints a stream a template captures. For a template resolved by name from the user or system template
-  registry, it also names `templates trust` with the formal name.
-  `apply --dry-run` of a template with hooks that is not trusted prints the
-  plan, then names on standard error the same command with `--trust` and
-  without `--dry-run`, and `templates trust` as `apply` does, and exits
-  with code 0. The dry run of a trusted template, or of a template without
-  hooks, names neither. `templates trust <name>` approves the current
+  registry, the person and agent routes also name `templates trust` with the
+  formal name. On the person and agent routes, `apply --dry-run` of a template
+  with hooks that is not trusted prints the plan, then names on standard error
+  the same command with `--trust` and without `--dry-run`, and `templates
+  trust` as `apply` does, and exits with code 0. The scripted route emits the
+  `planned` document with `trusted: false` and exits with code 3 whether or
+  not `--dry-run` is given. The dry run of a trusted template, or of a template
+  without hooks, names neither on the person and agent routes, and the scripted
+  route's `planned` document reports `trusted: true` with exit code 0.
+  `templates trust <name>` approves the current
   executable surface of an installed template, reading the installed folder
   only and never fetching or changing the commit, and echoes the approved hooks
   on standard error; `templates untrust <name>` revokes that approval, reads
@@ -134,13 +144,16 @@ description: >-
   interview over.
 
   Flow control. When a template's flow node ends the run, no files are written
-  and no hooks run, a one-line notice that names the action and any `label` is
-  printed on standard error, and the command exits with code 0. A flow `abort`
+  and no hooks run, and the command exits with code 0. On the person and agent
+  routes a one-line notice that names the action and any `label` is printed on
+  standard error. A flow `abort`
   additionally removes the staged record, as the `abort` command does; a run
-  with nothing staged still stops cleanly. Every headless route — `stage
-  --async`, `continue` with an answers document, and `apply --answers` — also
-  emits the machine-readable `ended` result document with its `kind` on
-  standard output, so an agent tells a stop or abort from a completion. An
+  with nothing staged still stops cleanly. The agent headless routes — `stage
+  --async` and `continue` with an answers document — emit the machine-readable
+  `ended` result document with its `kind` on standard output alongside that
+  notice, so an agent tells a stop or abort from a completion. The scripted
+  route (`apply TEMPLATE PATH --answers FILE`) emits only that `ended`
+  document — one JSON document, with no separate notice. An
   interactive terminal run prints only the notice. A flow `dry-run` shows the
   plan and writes nothing, the same as `--dry-run`, and the two compose:
   setting either, or both, applies nothing. A failed abort removal exits with
@@ -148,31 +161,43 @@ description: >-
   already ended is refused with code 1, which names starting over.
 
   Refusals. When a command refuses a valid request made at the wrong time or
-  in the wrong form, and nothing is faulty, the message names the command or
-  commands that do what the caller meant. A named command is built from the
+  in the wrong form, and nothing is faulty, it names the command or
+  commands that do what the caller meant: the person and agent routes name them
+  in the standard-error message, and the scripted route carries them in the
+  `commands` of its `error` result document. A named command is built from the
   parsed request in canonical form: options first in long form, then `--` when
   an operand starts with `-`, then the operands. `stage` places `--async`
   after its operands unless they follow `--`.
 
   Overwriting. `apply` writes no file over an existing file unless `--force` is
   given. When any target file exists and `--force` is absent, `apply` writes
-  nothing, lists the conflicting paths on standard error one per line after
-  `conflicting files:`, and names the same command with `--force`.
+  nothing and exits with code 1. On the person and agent routes it lists the
+  conflicting paths on standard error one per line after `conflicting files:`
+  and names the same command with `--force`; the scripted route reports an
+  `error` result document of kind `conflict` whose `message` lists those paths.
 
-  `apply` prints each target path on standard output when it writes the
-  file, so every path precedes the output of the hooks. Printed target paths
-  use `/` separators on every platform.
+  On the person and agent routes, `apply` prints each target path on standard
+  output when it writes the file, so every path precedes the output of the
+  hooks. The scripted route lists each written path, with its action, in the
+  `applied` result document instead. Written target paths, and the paths in a
+  result document, use `/` separators on every platform.
 
   Injection. A template `inject` rule changes one bounded part of an existing
   file rather than replacing it, so an injected target that already exists is not
-  a conflict. `apply` prints each changed injected target once, like a written
-  file; an injection that changes nothing prints nothing. `apply --dry-run`
+  a conflict. On the person and agent routes, `apply` prints each changed
+  injected target once, like a written file; an injection that changes nothing
+  prints nothing. `apply --dry-run`
   reports `inject <path> (<owner>)` for a region or value it would place and
   `update <path> (<owner>)` for one it would change, where `<owner>` is the
-  region key or the typed path; an unchanged injection is not reported. An
-  operator edit inside a region's owned bytes is drift: `apply` writes nothing,
-  reports each drifted region as `<path> (<region>)`, and names the same command
-  with `--force`. `--force` replaces only a drifted region; a changed owned JSON
+  region key or the typed path; an unchanged injection is not reported. The
+  scripted route lists each changed injected target in the `applied` document,
+  and each planned injection with its `inject` or `update` action and owner in
+  the `planned` document. An
+  operator edit inside a region's owned bytes is drift: `apply` writes nothing
+  and exits with code 1; on the person and agent routes it reports each drifted
+  region as `<path> (<region>)` on standard error and names the same command
+  with `--force`, while the scripted route reports an `error` document of kind
+  `conflict`. `--force` replaces only a drifted region; a changed owned JSON
   value converges without it, and `--force` never creates a target, repairs
   malformed input, or makes an invalid path valid.
 
