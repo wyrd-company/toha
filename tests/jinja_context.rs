@@ -172,6 +172,29 @@ fn stage_refs_with_trust_captures_fixed_five_once() {
 }
 
 #[test]
+fn all_surfaces_source_body_reference_drives_the_need() {
+    // An environment reference in a source-tree file body — not the interview —
+    // is analyzed at load, so a no-trust stage refuses before progress.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("template")).unwrap();
+    std::fs::write(dir.path().join("template.yml"), "name: widget\n").unwrap();
+    std::fs::write(
+        dir.path().join("template").join("note.txt"),
+        "editor is {{ toha_env_editor }}\n",
+    )
+    .unwrap();
+    let template = Template::load(dir.path()).unwrap();
+    let spy = SpySource::default();
+    assert!(
+        template
+            .admit_environment(EnvironmentDecision::RequireStageGrant, &mut &spy)
+            .is_err(),
+        "a source-tree body reference is a need",
+    );
+    assert_eq!(spy.captures.get(), 0);
+}
+
+#[test]
 fn direct_denial_reads_nothing() {
     let (_dir, template) = load(WITH_REF);
     let spy = SpySource::default();
