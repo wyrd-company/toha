@@ -152,6 +152,60 @@ impl HookRunner for ProcessRunner {
         }
     }
 }
+/// A hook runner for the scripted route (`apply TEMPLATE PATH --answers FILE`).
+///
+/// It behaves exactly like [`ProcessRunner`] except that a hook's *uncaptured*
+/// stdout — which `ProcessRunner` inherits onto the parent's standard output — is
+/// instead forwarded to the parent's standard error, so the scripted route's own
+/// standard output stays exactly one JSON result document. A captured stdout is
+/// already stored in [`HookOutcome`] and never reaches the parent's standard
+/// output, so those cases delegate to `ProcessRunner` unchanged. Non-scripted
+/// routes keep `ProcessRunner`'s inherited stdout, so terminal and agent runs are
+/// unaffected. The forwarded bytes are the hook's, unchanged; nothing is
+/// suppressed.
+pub struct ScriptedRunner;
+impl HookRunner for ScriptedRunner {
+    fn run(&self, hook: &PlannedHook, target: &Path) -> Result<HookOutcome, HookError> {
+        // A captured stdout is stored, not inherited, so it never lands on the
+        // parent's stdout: ProcessRunner's behaviour is already correct.
+        if hook.capture.stdout {
+            return ProcessRunner.run(hook, target);
+        }
+        use std::io::Write;
+        let mut command = ProcessRunner::command(hook, target)?;
+        command.stdout(Stdio::piped());
+        if hook.capture.stderr {
+            // Both streams piped: `output()` reads them concurrently. stdout is
+            // forwarded to the parent's stderr; stderr is stored as usual.
+            let output = command.stderr(Stdio::piped()).output()?;
+            std::io::stderr().write_all(&output.stdout)?;
+            Ok(HookOutcome {
+                success: output.status.success(),
+                code: output.status.code(),
+                stdout: None,
+                stderr: Some(output.stderr),
+            })
+        } else {
+            // Only stdout is piped (stderr inherits), so reading it fully before
+            // `wait` cannot deadlock. It is forwarded to the parent's stderr.
+            let mut child = command.spawn()?;
+            let mut buffer = Vec::new();
+            child
+                .stdout
+                .take()
+                .expect("piped stdout")
+                .read_to_end(&mut buffer)?;
+            let status = child.wait()?;
+            std::io::stderr().write_all(&buffer)?;
+            Ok(HookOutcome {
+                success: status.success(),
+                code: status.code(),
+                stdout: None,
+                stderr: None,
+            })
+        }
+    }
+}
 #[derive(Debug, Default)]
 pub struct RecordingRunner {
     calls: RefCell<Vec<(Vec<String>, String)>>,

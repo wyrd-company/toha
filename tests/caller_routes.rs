@@ -920,3 +920,60 @@ fn b27_schema_examples_and_result_documents_validate() {
         }
     }
 }
+
+// Behavior 12, extended: the scripted route emits exactly one JSON document even
+// when a trusted hook writes uncaptured stdout. A hook echoing to stdout must not
+// pollute the result document; its output is forwarded to standard error.
+#[cfg(unix)]
+#[test]
+fn scripted_stdout_stays_one_document_with_an_uncaptured_stdout_hook() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("template/template")).unwrap();
+    std::fs::write(
+        dir.path().join("template/template.yml"),
+        "name: hooky\nhooks:\n  - run: [\"sh\", \"-c\", \"echo HOOK-STDOUT\"]\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("template/template/note.txt"), "note\n").unwrap();
+    let template = dir.path().join("template");
+    let formal = support::formal_name(&template);
+    let target = tempfile::tempdir().unwrap();
+    let isolation = tempfile::tempdir().unwrap();
+    let answers = isolation.path().join("answers.json");
+    std::fs::write(&answers, envelope(&formal, json!({}))).unwrap();
+    let output = support::isolated_command(isolation.path())
+        .arg("apply")
+        .arg(&template)
+        .arg(target.path())
+        .arg("--answers")
+        .arg(&answers)
+        .arg("--trust")
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // Standard output is exactly one JSON value and nothing else.
+    let mut stream = serde_json::Deserializer::from_slice(&output.stdout).into_iter::<Value>();
+    let document = stream.next().expect("one document").expect("valid JSON");
+    assert!(
+        stream.next().is_none(),
+        "trailing output on stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(document["status"], "applied");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("HOOK-STDOUT"),
+        "the hook's stdout leaked onto standard output: {stdout}"
+    );
+    // The hook ran and its output was forwarded to standard error, unchanged.
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("HOOK-STDOUT"),
+        "the hook's stdout was not forwarded to standard error: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

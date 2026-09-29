@@ -32,7 +32,7 @@ use toha::{
         EnvironmentDecision, ExecutionFacts, FixedEnvironment, FixedEnvironmentSource, HostFacts,
         InvocationContext, SelectedTemplate,
     },
-    hook::ProcessRunner,
+    hook::{ProcessRunner, ScriptedRunner},
     protocol::{
         self, AppliedFile, AppliedHook, ApplyReport, Context, DocumentStep, ErrorKind, Headless,
         ResultError, SubmitDocumentError, TrustState,
@@ -1533,7 +1533,9 @@ fn scripted_completed(
             force,
             trusted: true,
         },
-        &ProcessRunner,
+        // The scripted route keeps standard output a single JSON document: an
+        // uncaptured hook's stdout is forwarded to standard error.
+        &ScriptedRunner,
         &mut |_| {},
     ) {
         Ok(Applied::Written {
