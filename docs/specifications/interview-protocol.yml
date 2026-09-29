@@ -25,7 +25,9 @@ description: >-
   raw headless walk without the envelope.
 
   Result documents. The scripted route (`apply TEMPLATE PATH --answers FILE`)
-  writes exactly one JSON result document for every outcome and nothing else:
+  writes exactly one JSON result document on standard output for every outcome —
+  standard error still carries any configuration diagnostics and an uncaptured
+  hook's stream:
   `questions` (exit 4), `ended` (exit 0), `applied` (exit 0), `planned` (exit 0,
   or exit 3 when hooks are untrusted), or `error` (exit 1, or exit 5 for an
   ambiguous template). An `applied` document lists each written path with its
