@@ -32,10 +32,13 @@ impl Case {
             .output()
             .unwrap()
     }
-    /// Writes an answers document and returns its path.
-    fn answers(&self, document: &str) -> String {
+    /// Writes an identity-bearing envelope around a bare answers map for the
+    /// scripted route, and returns its path.
+    fn envelope(&self, formal: &str, answers: &str) -> String {
+        let inner: serde_json::Value = serde_json::from_str(answers).unwrap();
+        let document = serde_json::json!({ "template": formal, "answers": inner });
         let path = self.state.path().join("answers.json");
-        std::fs::write(&path, document).unwrap();
+        std::fs::write(&path, document.to_string()).unwrap();
         path.to_str().unwrap().to_string()
     }
 }
@@ -56,45 +59,28 @@ fn assert_code(output: &Output, code: i32) {
         String::from_utf8_lossy(&output.stderr)
     );
 }
-fn assert_stderr_names(output: &Output, commands: &[String]) {
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    for command in commands {
-        assert!(
-            stderr.contains(command.as_str()),
-            "stderr does not name `{command}`:\n{stderr}"
-        );
-    }
-}
-
 #[test]
-fn untrusted_hooks_name_the_command_with_trust() {
+fn untrusted_hooks_of_a_folder_report_planned_untrusted() {
+    // The scripted route reports untrusted hooks structurally: a `planned`
+    // document with `trusted: false` and exit 3.
     let case = Case::new();
     let template = support::folder_address(&fixture_template("hooks-untrusted"));
-    let answers = case.answers("{}");
+    let formal = support::formal_name(&fixture_template("hooks-untrusted"));
+    let answers = case.envelope(&formal, "{}");
     let output = case.run(&["apply", "--answers", &answers, &template, case.target()]);
     assert_code(&output, 3);
-    assert_stderr_names(
-        &output,
-        &[
-            "hooks will not run without --trust".into(),
-            format!(
-                "toha apply --answers {answers} --trust {template} {}",
-                case.target()
-            ),
-        ],
-    );
-    assert!(
-        !String::from_utf8_lossy(&output.stderr).contains("templates add"),
-        "registry trust does not apply to a folder given directly"
-    );
+    let document = support::first_document(&output.stdout);
+    assert_eq!(document["status"], "planned");
+    assert_eq!(document["trusted"], false);
 }
 
 #[test]
-fn untrusted_hooks_of_installed_template_name_registry_trust() {
+fn untrusted_hooks_of_an_installed_template_report_planned_untrusted() {
     let case = Case::new();
     let template = support::folder_address(&fixture_template("hooks-untrusted"));
+    let formal = support::formal_name(&fixture_template("hooks-untrusted"));
     assert_code(&case.run(&["templates", "add", &template]), 0);
-    let answers = case.answers("{}");
+    let answers = case.envelope(&formal, "{}");
     let output = case.run(&[
         "apply",
         "--answers",
@@ -103,39 +89,35 @@ fn untrusted_hooks_of_installed_template_name_registry_trust() {
         case.target(),
     ]);
     assert_code(&output, 3);
-    assert_stderr_names(
-        &output,
-        &[
-            format!(
-                "toha apply --answers {answers} --trust hooks-untrusted {}",
-                case.target()
-            ),
-            format!("toha templates trust {template}"),
-        ],
-    );
+    let document = support::first_document(&output.stdout);
+    assert_eq!(document["status"], "planned");
+    assert_eq!(document["trusted"], false);
 }
 
 #[test]
-fn conflicting_files_name_the_command_with_force() {
+fn conflicting_files_are_a_conflict_error() {
     let case = Case::new();
     support::copy_tree(
         Path::new("tests/fixtures/conflict/existing"),
         case.target.path(),
     );
     let template = support::folder_address(&fixture_template("conflict"));
-    let answers =
-        case.answers(&std::fs::read_to_string("tests/fixtures/conflict/answers.json").unwrap());
+    let formal = support::formal_name(&fixture_template("conflict"));
+    let answers = case.envelope(
+        &formal,
+        &std::fs::read_to_string("tests/fixtures/conflict/answers.json").unwrap(),
+    );
     let output = case.run(&["apply", "--answers", &answers, &template, case.target()]);
     assert_code(&output, 1);
-    assert_stderr_names(
-        &output,
-        &[
-            "conflicting files".into(),
-            format!(
-                "toha apply --answers {answers} --force {template} {}",
-                case.target()
-            ),
-        ],
+    let document = support::first_document(&output.stdout);
+    assert_eq!(document["status"], "error");
+    assert_eq!(document["kind"], "conflict");
+    assert!(
+        document["message"]
+            .as_str()
+            .unwrap()
+            .contains("conflicting files"),
+        "{document}"
     );
 }
 
@@ -150,15 +132,19 @@ fn conflicting_files_are_listed_one_plain_path_per_line() {
     std::fs::create_dir_all(case.target.path().join("dir")).unwrap();
     std::fs::write(case.target.path().join("file.txt"), "old").unwrap();
     std::fs::write(case.target.path().join("dir/other.txt"), "old").unwrap();
-    let answers = case.answers("{}");
+    let formal = support::formal_name(&folder);
+    let answers = case.envelope(&formal, "{}");
     let template = support::folder_address(&folder);
     let output = case.run(&["apply", "--answers", &answers, &template, case.target()]);
     assert_code(&output, 1);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let lines: Vec<&str> = stderr.lines().collect();
-    assert_eq!(lines[0], "conflicting files:", "{stderr}");
+    // The conflict error document's message lists one indented path per line.
+    let message = support::first_document(&output.stdout)["message"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let lines: Vec<&str> = message.lines().collect();
+    assert_eq!(lines[0], "conflicting files:", "{message}");
     let mut listed = lines[1..3].to_vec();
     listed.sort();
-    assert_eq!(listed, ["  dir/other.txt", "  file.txt"], "{stderr}");
-    assert!(lines[3].starts_with("to overwrite them: "), "{stderr}");
+    assert_eq!(listed, ["  dir/other.txt", "  file.txt"], "{message}");
 }
