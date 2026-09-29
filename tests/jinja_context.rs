@@ -350,9 +350,23 @@ fn ordinary_flat_seed_does_not_claim_configured_origin() {
         },
     )
     .unwrap();
-    let message = batch_rejection(interview);
-    // The flat route keeps the generic attribution and never claims a config
-    // file/layer origin.
+    // Answering the empty document applies the flat default, which the select
+    // rejects. The attribution is the generic flat form, never a config origin.
+    let toha::Interview::Asking(pending) = interview else {
+        panic!("expected a batch");
+    };
+    let message = match pending.answer(Default::default()) {
+        Err(toha::AnswerError::Rejected { rejections, .. }) => rejections
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        other => panic!("expected a rejection, got {other:?}"),
+    };
+    assert!(
+        message.contains("configured default for question"),
+        "flat route keeps generic attribution: {message}",
+    );
     assert!(!message.contains("user.yml"), "{message}");
     assert!(!message.contains("template-defaults"), "{message}");
 }
