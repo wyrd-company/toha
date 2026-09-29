@@ -18,6 +18,12 @@ pub type RenderError = Error;
 pub fn environment() -> Environment<'static> {
     let mut env = Environment::new();
     env.set_keep_trailing_newline(true);
+    // File bodies register under their real root-relative names, so the default
+    // extension-based auto-escape would JSON-quote a `.yml`/`.yaml`/`.json` body
+    // and HTML-escape an `.html` one. Toha renders every body as raw text (the
+    // loaderless `Tmpl` always compiled under an extensionless name and so never
+    // escaped); force that one rule for every surface.
+    env.set_auto_escape_callback(|_| minijinja::AutoEscape::None);
     env.set_formatter(|out, state, value| {
         minijinja::escape_formatter(
             out,
@@ -95,6 +101,14 @@ impl Tmpl {
     pub fn compile(source: String) -> Result<Self, Error> {
         let mut env = environment();
         env.add_template_owned("value", source.clone())?;
+        // The `multi_template` feature is crate-wide, so `{% include %}` and its
+        // sibling statements now parse in every field. A loaderless field admits
+        // none of them. Rejecting them after syntax validation but before the
+        // template is used keeps includes to file bodies by type. A no-loader
+        // environment is not enough on its own: the internal template registers
+        // under `"value"`, so `{% include "value" %}` would resolve this very
+        // template.
+        reject_loaderless_statements(&source)?;
         let referenced_ids = env.get_template("value")?.undeclared_variables(false);
         Ok(Self {
             source,
@@ -401,6 +415,26 @@ impl NeedWalk {
             }
             Stmt::Continue(_) | Stmt::Break(_) => {}
             Stmt::Do(d) => self.call(&d.call),
+            // Multi-template statements. Only `include` reaches a valid file
+            // body; its literal target is a constant, and the included body's
+            // own need is unioned separately by walking each closure member's
+            // source (see `FileTmpl::needs_environment`), so the statement adds
+            // no direct need here. The sibling statements are rejected before a
+            // template is registered, so these arms are unreachable in a valid
+            // program; they visit their operands to stay sound and exhaustive.
+            Stmt::Include(i) => self.expr(&i.name),
+            Stmt::Block(b) => self.block(&b.body),
+            Stmt::Import(i) => {
+                self.expr(&i.expr);
+                self.bind_target(&i.name);
+            }
+            Stmt::FromImport(f) => {
+                self.expr(&f.expr);
+                for (name, alias) in &f.names {
+                    self.bind_target(alias.as_ref().unwrap_or(name));
+                }
+            }
+            Stmt::Extends(e) => self.expr(&e.name),
         }
     }
     fn expr(&mut self, expr: &minijinja::machinery::ast::Expr) {
@@ -478,6 +512,526 @@ impl NeedWalk {
                 }
             }
         }
+    }
+}
+
+/// The statement grammar Toha admits differs by render surface. A loaderless
+/// field (`Tmpl`) admits none of the multi-template statements; a file body
+/// (`FileTmpl`) admits only `include`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Surface {
+    Loaderless,
+    FileBody,
+}
+
+/// One `{% include %}` directive collected from a file body: its ordered literal
+/// candidate names and whether `ignore missing` is present.
+struct IncludeSpec {
+    candidates: Vec<String>,
+    ignore_missing: bool,
+}
+
+/// A statement a surface refuses, formatted by the caller into that surface's
+/// error type.
+enum StatementReject {
+    /// A multi-template statement unavailable on this surface, named for the
+    /// diagnostic (`block`, `import`, `from import`, `extends`, or `include`).
+    Unsupported(&'static str),
+    /// An `include` whose target is not a literal string or literal list of
+    /// string constants.
+    DynamicTarget,
+}
+
+/// The outcome of one AST inspection parse.
+enum Analysis {
+    /// A file body's ordered include specs (empty for a loaderless field, which
+    /// admits no includes).
+    Ok(Vec<IncludeSpec>),
+    /// The first refused statement.
+    Reject(StatementReject),
+}
+
+/// A control-flow-insensitive walk over a parsed Jinja AST. It rejects the
+/// statements unavailable on `surface` anywhere in the tree — including a
+/// statement nested in an unreachable branch, macro, loop, or capture — and, on
+/// a file body, collects the ordered literal include specs. It recurses through
+/// every statement-body vector, matching MiniJinja's own visitor exhaustiveness,
+/// which is why enabling `multi_template` cannot smuggle a sibling statement
+/// past this gate through a nested block.
+struct StmtWalk {
+    surface: Surface,
+    includes: Vec<IncludeSpec>,
+    reject: Option<StatementReject>,
+}
+impl StmtWalk {
+    /// Parses `source` and analyzes it for `surface`. Syntax errors surface as
+    /// the parse `Error`.
+    fn analyze(source: &str, surface: Surface) -> Result<Analysis, Error> {
+        let stmt =
+            minijinja::machinery::parse(source, "value", Default::default(), Default::default())?;
+        let mut walk = StmtWalk {
+            surface,
+            includes: Vec::new(),
+            reject: None,
+        };
+        walk.stmt(&stmt);
+        Ok(match walk.reject {
+            Some(reject) => Analysis::Reject(reject),
+            None => Analysis::Ok(walk.includes),
+        })
+    }
+    fn block(&mut self, stmts: &[minijinja::machinery::ast::Stmt]) {
+        for stmt in stmts {
+            if self.reject.is_some() {
+                return;
+            }
+            self.stmt(stmt);
+        }
+    }
+    fn refuse(&mut self, statement: &'static str) {
+        if self.reject.is_none() {
+            self.reject = Some(StatementReject::Unsupported(statement));
+        }
+    }
+    fn include(&mut self, inc: &minijinja::machinery::ast::Include) {
+        if self.surface == Surface::Loaderless {
+            self.refuse("include");
+            return;
+        }
+        match literal_candidates(&inc.name) {
+            Some(candidates) => self.includes.push(IncludeSpec {
+                candidates,
+                ignore_missing: inc.ignore_missing,
+            }),
+            None => {
+                if self.reject.is_none() {
+                    self.reject = Some(StatementReject::DynamicTarget);
+                }
+            }
+        }
+    }
+    fn stmt(&mut self, stmt: &minijinja::machinery::ast::Stmt) {
+        use minijinja::machinery::ast::Stmt;
+        if self.reject.is_some() {
+            return;
+        }
+        match stmt {
+            Stmt::Template(t) => self.block(&t.children),
+            Stmt::EmitExpr(_) | Stmt::EmitRaw(_) => {}
+            Stmt::ForLoop(f) => {
+                self.block(&f.body);
+                self.block(&f.else_body);
+            }
+            Stmt::IfCond(c) => {
+                self.block(&c.true_body);
+                self.block(&c.false_body);
+            }
+            Stmt::WithBlock(w) => self.block(&w.body),
+            Stmt::Set(_) => {}
+            Stmt::SetBlock(s) => self.block(&s.body),
+            Stmt::AutoEscape(a) => self.block(&a.body),
+            Stmt::FilterBlock(fb) => self.block(&fb.body),
+            Stmt::Macro(m) => self.block(&m.body),
+            Stmt::CallBlock(cb) => self.block(&cb.macro_decl.body),
+            Stmt::Continue(_) | Stmt::Break(_) | Stmt::Do(_) => {}
+            Stmt::Include(i) => self.include(i),
+            Stmt::Block(_) => self.refuse("block"),
+            Stmt::Import(_) => self.refuse("import"),
+            Stmt::FromImport(_) => self.refuse("from import"),
+            Stmt::Extends(_) => self.refuse("extends"),
+        }
+    }
+}
+
+/// The ordered string constants of an include target: a single literal string,
+/// or a literal list whose items are all string constants. Any other shape — a
+/// variable, an expression, or a list with a non-string or computed item — is
+/// `None`, which the caller reports as a dynamic target.
+fn literal_candidates(expr: &minijinja::machinery::ast::Expr) -> Option<Vec<String>> {
+    use minijinja::machinery::ast::Expr;
+    fn constant(expr: &Expr) -> Option<String> {
+        match expr {
+            Expr::Const(c) => c.value.as_str().map(str::to_owned),
+            _ => None,
+        }
+    }
+    match expr {
+        Expr::Const(_) => constant(expr).map(|s| vec![s]),
+        Expr::List(list) => list.items.iter().map(constant).collect(),
+        _ => None,
+    }
+}
+
+/// Rejects every multi-template statement in a loaderless field, after syntax
+/// validation. The error carries MiniJinja's own kind so the message reads like
+/// the other compile diagnostics on that surface.
+fn reject_loaderless_statements(source: &str) -> Result<(), Error> {
+    match StmtWalk::analyze(source, Surface::Loaderless)? {
+        Analysis::Ok(_) => Ok(()),
+        Analysis::Reject(StatementReject::Unsupported(statement)) => Err(Error::new(
+            ErrorKind::SyntaxError,
+            format!("jinja {statement} is unavailable outside file bodies"),
+        )),
+        // A loaderless field refuses `include` itself before inspecting its
+        // target, so a dynamic target never reaches this arm.
+        Analysis::Reject(StatementReject::DynamicTarget) => Err(Error::new(
+            ErrorKind::SyntaxError,
+            "jinja include is unavailable outside file bodies".to_owned(),
+        )),
+    }
+}
+
+/// A failure to compile a file body's include closure. Every message names a
+/// "jinja include" (or a "jinja {statement}"); none reuses the YAML `!include`
+/// tag's wording, so the two features stay distinguishable in diagnostics.
+#[derive(Debug)]
+pub enum IncludeError {
+    /// A syntax error in a body or a partial, with MiniJinja's own wording.
+    Template(Error),
+    /// No candidate exists; `candidates` is in author order.
+    NotFound { candidates: Vec<String>, by: String },
+    /// A candidate is absolute, uses `\`, traverses with `..`, or canonicalizes
+    /// outside the template root.
+    Escape { name: String, by: String },
+    /// A component of the candidate path is a symlink.
+    Symlink { name: String, by: String },
+    /// A resolved candidate is not valid UTF-8.
+    NotUtf8 { name: String, by: String },
+    /// A resolved candidate could not be read.
+    Unreadable {
+        name: String,
+        by: String,
+        source: std::io::Error,
+    },
+    /// The static include graph re-enters a file; `path` is the named cycle.
+    Cycle { path: String },
+    /// An include target is not a literal string or literal list of strings.
+    Dynamic { by: String },
+    /// A statement other than `include` appears in a file body.
+    UnsupportedStatement {
+        statement: &'static str,
+        surface: &'static str,
+        by: String,
+    },
+}
+impl std::fmt::Display for IncludeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Template(e) => write!(f, "{e}"),
+            Self::NotFound { candidates, by } if candidates.len() == 1 => {
+                write!(f, "jinja include not found: {}, included by {by}", candidates[0])
+            }
+            Self::NotFound { candidates, by } => write!(
+                f,
+                "jinja include candidates not found: {}, included by {by}",
+                candidates.join(", ")
+            ),
+            Self::Escape { name, by } => {
+                write!(f, "jinja include escapes template root: {name}, included by {by}")
+            }
+            Self::Symlink { name, by } => {
+                write!(f, "jinja include path is a symlink: {name}, included by {by}")
+            }
+            Self::NotUtf8 { name, by } => {
+                write!(f, "jinja include is not utf-8: {name}, included by {by}")
+            }
+            Self::Unreadable { name, by, source } => write!(
+                f,
+                "jinja include is not readable: {name}, included by {by}: {source}"
+            ),
+            Self::Cycle { path } => write!(f, "jinja include cycle: {path}"),
+            Self::Dynamic { by } => write!(
+                f,
+                "jinja include target must be a literal string or literal list of strings, in {by}"
+            ),
+            Self::UnsupportedStatement {
+                statement,
+                surface,
+                by,
+            } => write!(f, "jinja {statement} is unavailable {surface}, found in {by}"),
+        }
+    }
+}
+impl std::error::Error for IncludeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Template(e) => Some(e),
+            Self::Unreadable { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
+
+/// The include boundary for one loaded template: a cheap, cloneable handle to
+/// the canonical template root. It consumes that identity and defines no new
+/// one. Every include name a file body pulls in passes through this one seam,
+/// which is the sole gate on a target (in-root, `/`-separated, no `..`,
+/// absolute, or symlink). Includes are reachable only by holding a `FileTmpl`,
+/// and only `Partials::compile` mints one.
+///
+/// Invariant: the wrapped root is already canonical (`Template::load`
+/// canonicalizes it before constructing this).
+#[derive(Clone, Debug)]
+pub struct Partials {
+    root: std::sync::Arc<std::path::PathBuf>,
+}
+impl Partials {
+    /// Builds from the canonical template root. Does not re-canonicalize.
+    pub fn rooted(root: &std::path::Path) -> Self {
+        Self {
+            root: std::sync::Arc::new(root.to_path_buf()),
+        }
+    }
+
+    /// Compiles a file body into an include-capable template. `label` is the
+    /// body's root-relative path, used for diagnostics, cycle paths, and the
+    /// body's registration name. The transitive confined include closure is
+    /// resolved, read, and registered before the returned `FileTmpl` can render;
+    /// no filesystem loader is installed on the render environment.
+    pub fn compile(&self, source: String, label: &str) -> Result<FileTmpl, IncludeError> {
+        let mut members = BTreeMap::new();
+        let body_canonical = self
+            .root
+            .join(label)
+            .canonicalize()
+            .unwrap_or_else(|_| self.root.join(label));
+        let mut stack = vec![(label.to_owned(), body_canonical)];
+        self.collect(&source, label, &mut members, &mut stack)?;
+        FileTmpl::build(source, label, members)
+    }
+
+    /// Walks the literal include graph of `src` (included by `by`), resolving
+    /// each directive's first existing candidate through the confinement seam,
+    /// recording it as a closure member, and recursing. `stack` carries the
+    /// canonical path of each open body for cycle detection; `members` collects
+    /// the resolved partials by their author-string names.
+    fn collect(
+        &self,
+        src: &str,
+        by: &str,
+        members: &mut BTreeMap<String, String>,
+        stack: &mut Vec<(String, std::path::PathBuf)>,
+    ) -> Result<(), IncludeError> {
+        let specs = match StmtWalk::analyze(src, Surface::FileBody).map_err(IncludeError::Template)?
+        {
+            Analysis::Ok(specs) => specs,
+            Analysis::Reject(StatementReject::Unsupported(statement)) => {
+                return Err(IncludeError::UnsupportedStatement {
+                    statement,
+                    surface: "in file bodies",
+                    by: by.to_owned(),
+                });
+            }
+            Analysis::Reject(StatementReject::DynamicTarget) => {
+                return Err(IncludeError::Dynamic { by: by.to_owned() });
+            }
+        };
+        for spec in specs {
+            // An empty literal list selects nothing and emits nothing, matching
+            // MiniJinja's empty-sequence behavior, with or without ignore_missing.
+            if spec.candidates.is_empty() {
+                continue;
+            }
+            let mut selected = None;
+            for candidate in &spec.candidates {
+                if let Some((canonical, text)) = self.locate(candidate, by)? {
+                    selected = Some((candidate.clone(), canonical, text));
+                    break;
+                }
+            }
+            let Some((name, canonical, text)) = selected else {
+                // No candidate exists. `ignore missing` emits nothing; otherwise
+                // the ordered candidates are reported.
+                if spec.ignore_missing {
+                    continue;
+                }
+                return Err(IncludeError::NotFound {
+                    candidates: spec.candidates,
+                    by: by.to_owned(),
+                });
+            };
+            if stack.iter().any(|(_, path)| path == &canonical) {
+                let mut cycle: Vec<String> = stack.iter().map(|(n, _)| n.clone()).collect();
+                cycle.push(name);
+                return Err(IncludeError::Cycle {
+                    path: cycle.join(" -> "),
+                });
+            }
+            // A partial reached by more than one path is registered once; only a
+            // re-entry of an open body is a cycle.
+            if members.contains_key(&name) {
+                continue;
+            }
+            members.insert(name.clone(), text.clone());
+            stack.push((name.clone(), canonical));
+            self.collect(&text, &name, members, stack)?;
+            stack.pop();
+        }
+        Ok(())
+    }
+
+    /// Resolves one candidate name through the confinement seam. `Ok(Some(..))`
+    /// is the confined, non-symlink, regular UTF-8 file; `Ok(None)` is a missing
+    /// candidate a list may fall past; `Err(..)` is a hard failure that no
+    /// fallback or `ignore missing` suppresses.
+    fn locate(
+        &self,
+        name: &str,
+        by: &str,
+    ) -> Result<Option<(std::path::PathBuf, String)>, IncludeError> {
+        use std::path::Component;
+        let escape = || IncludeError::Escape {
+            name: name.to_owned(),
+            by: by.to_owned(),
+        };
+        // The template namespace always uses `/`; a backslash is an escape,
+        // independent of the host path syntax.
+        if name.contains('\\') {
+            return Err(escape());
+        }
+        let relative = std::path::Path::new(name);
+        if relative.is_absolute() {
+            return Err(escape());
+        }
+        let mut current = self.root.to_path_buf();
+        for component in relative.components() {
+            match component {
+                Component::Normal(part) => {
+                    current.push(part);
+                    match std::fs::symlink_metadata(&current) {
+                        Ok(meta) if meta.file_type().is_symlink() => {
+                            return Err(IncludeError::Symlink {
+                                name: name.to_owned(),
+                                by: by.to_owned(),
+                            });
+                        }
+                        Ok(_) => {}
+                        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                            return Ok(None);
+                        }
+                        Err(source) => {
+                            return Err(IncludeError::Unreadable {
+                                name: name.to_owned(),
+                                by: by.to_owned(),
+                                source,
+                            });
+                        }
+                    }
+                }
+                Component::CurDir => {}
+                // A parent, root, or drive-prefix component escapes the root.
+                _ => return Err(escape()),
+            }
+        }
+        let canonical = match current.canonicalize() {
+            Ok(path) => path,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(source) => {
+                return Err(IncludeError::Unreadable {
+                    name: name.to_owned(),
+                    by: by.to_owned(),
+                    source,
+                });
+            }
+        };
+        if !canonical.starts_with(self.root.as_path()) {
+            return Err(escape());
+        }
+        if !canonical.is_file() {
+            return Ok(None);
+        }
+        match std::fs::read(&canonical) {
+            Ok(bytes) => match String::from_utf8(bytes) {
+                Ok(text) => Ok(Some((canonical, text))),
+                Err(_) => Err(IncludeError::NotUtf8 {
+                    name: name.to_owned(),
+                    by: by.to_owned(),
+                }),
+            },
+            Err(source) => Err(IncludeError::Unreadable {
+                name: name.to_owned(),
+                by: by.to_owned(),
+                source,
+            }),
+        }
+    }
+}
+
+/// A compiled file body that MAY resolve `{% include %}` against its root.
+/// Holding one IS the include capability; it is a distinct type from `Tmpl`.
+/// Its render environment has every reachable partial pre-registered and no
+/// loader, so rendering performs no filesystem access.
+pub struct FileTmpl {
+    label: String,
+    source: String,
+    env: Environment<'static>,
+    referenced_ids: HashSet<String>,
+    needs_env: bool,
+}
+impl std::fmt::Debug for FileTmpl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FileTmpl")
+            .field("source", &self.source)
+            .finish()
+    }
+}
+impl FileTmpl {
+    /// Registers the body and its closure members in one loader-free
+    /// environment, unions their referenced ids, and unions their environment
+    /// need across the closure. The body registers under `label`; a partial can
+    /// never take that name without forming a cycle, which `collect` already
+    /// refused.
+    fn build(
+        source: String,
+        label: &str,
+        members: BTreeMap<String, String>,
+    ) -> Result<Self, IncludeError> {
+        let mut env = environment();
+        for (name, text) in &members {
+            env.add_template_owned(name.clone(), text.clone())
+                .map_err(IncludeError::Template)?;
+        }
+        env.add_template_owned(label.to_owned(), source.clone())
+            .map_err(IncludeError::Template)?;
+        let mut referenced_ids = HashSet::new();
+        referenced_ids.extend(
+            env.get_template(label)
+                .map_err(IncludeError::Template)?
+                .undeclared_variables(false),
+        );
+        for name in members.keys() {
+            referenced_ids.extend(
+                env.get_template(name)
+                    .map_err(IncludeError::Template)?
+                    .undeclared_variables(false),
+            );
+        }
+        // The environment need is transitive: a fixed value reached only through
+        // a nested partial still marks the body, because each member's source is
+        // analyzed here. This is what makes a nested-include environment read
+        // require stage trust at load time.
+        let needs_env = template_needs_environment(&source)
+            || members.values().any(|text| template_needs_environment(text));
+        Ok(Self {
+            label: label.to_owned(),
+            source,
+            env,
+            referenced_ids,
+            needs_env,
+        })
+    }
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+    /// References including those reached through partials.
+    pub fn references(&self) -> &HashSet<String> {
+        &self.referenced_ids
+    }
+    pub fn render<S: Serialize>(&self, ctx: S) -> Result<String, RenderError> {
+        self.env.get_template(&self.label)?.render(ctx)
+    }
+    pub(crate) fn needs_environment(&self) -> bool {
+        self.needs_env
     }
 }
 

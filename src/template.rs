@@ -6,7 +6,7 @@ use crate::context::{
     EnvironmentAdmissionError, EnvironmentDecision, EnvironmentNeed, EnvironmentSnapshot,
     FixedEnvironmentSource, RenderOrigin,
 };
-use crate::jinja::{Expr, Tmpl, Typed, is_global, is_reserved};
+use crate::jinja::{Expr, FileTmpl, Partials, Tmpl, Typed, is_global, is_reserved};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use indexmap::IndexMap;
 use regex::Regex;
@@ -50,6 +50,11 @@ pub struct Template {
     pub data: IndexMap<Id, Value>,
     pub interview: Vec<Node>,
     pub root: PathBuf,
+    /// The single include-confinement owner for this template's file bodies,
+    /// created once from the canonical `root`. It is retained so a source-tree
+    /// body compiled during a later load step, and every stored `files:` body,
+    /// resolves includes against the same root without a runtime loader.
+    pub partials: Partials,
     pub files: Vec<FileRule>,
     pub ignore: GlobSet,
     pub static_files: GlobSet,
@@ -91,8 +96,8 @@ pub struct SourceEntry {
 pub enum SourceBody {
     /// A static file, copied verbatim from its source path.
     Static,
-    /// A rendered body, compiled at load.
-    Rendered(Tmpl),
+    /// A rendered body, compiled at load as an include-capable file body.
+    Rendered(FileTmpl),
     /// A non-static, non-UTF-8 body. Planning surfaces the existing
     /// "add it to static" error without reopening the file.
     NonUtf8,
@@ -258,10 +263,11 @@ pub struct FileRule {
     pub source: PathBuf,
     pub path: Tmpl,
     pub when: Option<Expr>,
-    /// The rule's source file body, compiled at load with the `each` binding in
-    /// scope, so planning renders it without reopening the file. `None` only for
-    /// a non-UTF-8 source, which planning surfaces on its existing read path.
-    pub body: Option<Tmpl>,
+    /// The rule's source file body, compiled at load as an include-capable file
+    /// body with the `each` binding in scope, so planning renders it and its
+    /// selected partial closure without reopening any file. `None` only for a
+    /// non-UTF-8 source, which planning surfaces on its existing read path.
+    pub body: Option<FileTmpl>,
 }
 /// `<expression> as <name>`: the expression yields a sequence, and each item is
 /// bound to `binding` in turn.
@@ -498,6 +504,10 @@ struct Builder {
     /// Every question id, computed id, and `data` key, wherever it is defined.
     answer_ids: HashSet<String>,
     root: PathBuf,
+    /// The include-confinement owner, cloned from the one `Template::load`
+    /// retains. A `files:` body compiles through it at load, so a missing or
+    /// escaping partial fails before any interview starts.
+    partials: Partials,
     /// Whether reserved context names collide with authored ids and resolve as
     /// available references (a current load) or not (a legacy staged load).
     reserves_context: bool,
@@ -579,6 +589,24 @@ impl Builder {
                     None
                 }
             })
+    }
+    /// Compiles a `files:` rule body into an include-capable file body at load.
+    /// `field` is `files[i].source` for load-error attribution; `label` is the
+    /// source's root-relative path, used for include diagnostics and cycle
+    /// paths. Called inside `bound(Some(&each), ...)`, so the unioned references
+    /// — including those reached only through a selected partial — are checked
+    /// against the `each` binding and every earlier id.
+    fn file_tmpl(&mut self, source: String, label: &str, field: &str) -> Option<FileTmpl> {
+        match self.partials.compile(source, label) {
+            Ok(body) => {
+                self.refs(body.references(), field, &[]);
+                Some(body)
+            }
+            Err(error) => {
+                problem(&mut self.problems, field, error.to_string());
+                None
+            }
+        }
     }
     fn expr(&mut self, value: Option<&Value>, path: &str, local: &[&str]) -> Option<Expr> {
         value
@@ -1004,12 +1032,17 @@ impl Template {
             );
         }
         let source_dir = source_dir.canonicalize().unwrap_or(source_dir);
+        // The one include-confinement owner, created from the canonical root and
+        // shared by the `files:` bodies (compiled here) and the source-tree
+        // bodies (compiled below); it is retained on the returned Template.
+        let partials = Partials::rooted(&root);
         let mut b = Builder {
             problems,
             seen: HashSet::new(),
             names: HashSet::new(),
             answer_ids: HashSet::new(),
             root: root.clone(),
+            partials: partials.clone(),
             reserves_context,
         };
         if let Some(values) = &raw.data {
@@ -1074,7 +1107,10 @@ impl Template {
             let (target, body) = b.bound(Some(&each), |b| {
                 let target = b.tmpl(map.get("path"), &format!("{path}.path"));
                 let body = match fs::read_to_string(root.join(&source)) {
-                    Ok(content) => b.tmpl(Some(&Value::String(content)), &format!("{path}.source")),
+                    Ok(content) => {
+                        let label = source.to_string_lossy().replace('\\', "/");
+                        b.file_tmpl(content, &label, &format!("{path}.source"))
+                    }
                     // A non-UTF-8 body is tolerated at load; planning surfaces
                     // it on its existing read path.
                     Err(error) if error.kind() == std::io::ErrorKind::InvalidData => None,
@@ -1139,6 +1175,7 @@ impl Template {
             &source_dir,
             &source_dir,
             &root,
+            &partials,
             &ignore,
             &static_files,
             &mut render_program,
@@ -1158,6 +1195,7 @@ impl Template {
             data,
             interview,
             root,
+            partials,
             files,
             ignore,
             static_files,
@@ -1180,6 +1218,7 @@ fn compile_source_tree(
     root: &Path,
     dir: &Path,
     template_root: &Path,
+    partials: &Partials,
     ignore: &GlobSet,
     static_files: &GlobSet,
     out: &mut Vec<SourceEntry>,
@@ -1231,6 +1270,7 @@ fn compile_source_tree(
                 root,
                 &source,
                 template_root,
+                partials,
                 ignore,
                 static_files,
                 out,
@@ -1250,9 +1290,17 @@ fn compile_source_tree(
         let body = if static_files.is_match(&relative) {
             SourceBody::Static
         } else {
+            // The include label is the file's path relative to the template
+            // root, in the `/`-separated template namespace — the same string
+            // any file would use to include it.
+            let label = source
+                .strip_prefix(template_root)
+                .unwrap_or(&relative)
+                .to_string_lossy()
+                .replace('\\', "/");
             match fs::read(&source) {
                 Ok(bytes) => match String::from_utf8(bytes) {
-                    Ok(text) => match Tmpl::compile(text) {
+                    Ok(text) => match partials.compile(text, &label) {
                         Ok(body) => SourceBody::Rendered(body),
                         Err(e) => {
                             problem(problems, path.clone(), e.to_string());
@@ -1302,7 +1350,7 @@ fn compute_environment_need(
         find.expr(&rule.each.expr, &format!("{path}.each"));
         find.tmpl(&rule.path, &format!("{path}.path"));
         if let Some(body) = &rule.body {
-            find.tmpl(body, &format!("{path}.source"));
+            find.file_tmpl(body, &format!("{path}.source"));
         }
     }
     for entry in render_program {
@@ -1311,7 +1359,7 @@ fn compute_environment_need(
             find.tmpl(segment, &format!("{label} (path)"));
         }
         if let SourceBody::Rendered(body) = &entry.body {
-            find.tmpl(body, &label);
+            find.file_tmpl(body, &label);
         }
     }
     match find.found {
@@ -1333,6 +1381,12 @@ impl NeedScan {
     }
     fn tmpl(&mut self, tmpl: &Tmpl, label: &str) {
         self.mark(label, tmpl.needs_environment());
+    }
+    /// A file body's need is transitive: it is true when the body or any partial
+    /// it selects can observe a fixed value, so an environment read reached only
+    /// through a nested include still marks the load.
+    fn file_tmpl(&mut self, body: &FileTmpl, label: &str) {
+        self.mark(label, body.needs_environment());
     }
     fn opt_tmpl(&mut self, tmpl: Option<&Tmpl>, label: &str) {
         if let Some(tmpl) = tmpl {
