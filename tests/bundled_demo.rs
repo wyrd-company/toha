@@ -34,10 +34,21 @@ fn run(root: &TempDir, cwd: &Path, args: &[&str], exit: i32) -> Output {
     output
 }
 
-fn answers(dir: &Path) -> String {
-    let path = dir.join("answers.json");
-    fs::write(&path, r#"{"title":"Sample Title","topic":"Sample Topic"}"#).unwrap();
-    path.to_string_lossy().into_owned()
+/// Writes the bare answer map `bare`, wraps it in the identity envelope naming
+/// the formal template `formal`, and returns the envelope path. The scripted
+/// route (`apply TEMPLATE PATH --answers FILE`, `continue PATH FILE`) requires
+/// this `{"template", "answers"}` envelope, not a bare map.
+fn envelope(dir: &Path, formal: &str, bare: &str) -> String {
+    let bare_path = dir.join("bare.json");
+    fs::write(&bare_path, bare).unwrap();
+    support::envelope_file(dir, formal, &bare_path)
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// The demo's fixture answers wrapped in the envelope naming `formal`.
+fn demo_answers(dir: &Path, formal: &str) -> String {
+    envelope(dir, formal, r#"{"title":"Sample Title","topic":"Sample Topic"}"#)
 }
 
 #[test]
@@ -47,7 +58,7 @@ fn applies_offline_from_any_directory() {
     let root = TempDir::new().unwrap();
     let cwd = root.path().join("scratch");
     fs::create_dir_all(&cwd).unwrap();
-    let answers = answers(&cwd);
+    let answers = demo_answers(&cwd, "toha-demo");
     run(
         &root,
         &cwd,
@@ -69,11 +80,11 @@ fn bundled_identity_selects_its_configured_defaults() {
         "presets: { sample_title: Configured Title }\ntemplate-defaults:\n  toha-demo:\n    title: { preset: sample_title }\n    topic: Configured Topic\n",
     )
     .unwrap();
-    fs::write(cwd.join("empty.json"), "{}").unwrap();
+    let answers = envelope(&cwd, "toha-demo", "{}");
     run(
         &root,
         &cwd,
-        &["apply", "--answers", "empty.json", "toha-demo", "./out"],
+        &["apply", "--answers", &answers, "toha-demo", "./out"],
         0,
     );
     assert_eq!(
@@ -87,7 +98,7 @@ fn dry_run_previews_without_writing() {
     let root = TempDir::new().unwrap();
     let cwd = root.path().join("scratch");
     fs::create_dir_all(&cwd).unwrap();
-    let answers = answers(&cwd);
+    let answers = demo_answers(&cwd, "toha-demo");
     let output = run(
         &root,
         &cwd,
@@ -101,7 +112,13 @@ fn dry_run_previews_without_writing() {
         ],
         0,
     );
-    assert!(String::from_utf8_lossy(&output.stdout).contains("create note.txt"));
+    // A dry run is a single `planned` document; its reconstructed plan text
+    // carries the create line the former plain-text output printed.
+    let document = support::first_document(&output.stdout);
+    assert!(
+        support::plan_text_from_document(&document).contains("create note.txt"),
+        "{document}"
+    );
     assert!(!cwd.join("out").exists(), "dry run must not write files");
 }
 
@@ -112,17 +129,19 @@ fn other_unknown_name_is_still_not_found() {
     let root = TempDir::new().unwrap();
     let cwd = root.path().join("scratch");
     fs::create_dir_all(&cwd).unwrap();
-    let answers = answers(&cwd);
+    let answers = demo_answers(&cwd, "not-a-template");
     let output = run(
         &root,
         &cwd,
         &["apply", "--answers", &answers, "not-a-template", "./out"],
         1,
     );
+    // Resolution fails before the envelope identity is read: the fault is an
+    // `error` document whose decoded message names the unknown template.
+    let document = support::first_document(&output.stdout);
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("template not found: not-a-template"),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        support::diagnostic_text(&document).contains("template not found: not-a-template"),
+        "{document}"
     );
     assert!(!cwd.join("out").exists());
 }
@@ -141,7 +160,7 @@ fn resumes_across_processes() {
         &["stage", "toha-demo", "./out", "--async", "batch.json"],
         4,
     );
-    let answers = answers(&cwd);
+    let answers = demo_answers(&cwd, "toha-demo");
     run(&root, &cwd, &["continue", "./out", &answers], 0);
     run(&root, &cwd, &["apply", "./out"], 0);
     assert_eq!(fs::read_to_string(cwd.join("out/note.txt")).unwrap(), NOTE);
@@ -161,7 +180,7 @@ fn apply_naming_the_staged_demo_resumes_it() {
         &["stage", "toha-demo", "./out", "--async", "batch.json"],
         4,
     );
-    let answers = answers(&cwd);
+    let answers = demo_answers(&cwd, "toha-demo");
     run(&root, &cwd, &["continue", "./out", &answers], 0);
     run(&root, &cwd, &["apply", "toha-demo", "./out"], 0);
     assert_eq!(fs::read_to_string(cwd.join("out/note.txt")).unwrap(), NOTE);
@@ -169,7 +188,7 @@ fn apply_naming_the_staged_demo_resumes_it() {
 
 /// A folder template that occupies the reserved name, so the registry — not the
 /// bundled demo — resolves `toha-demo`. Its output is deliberately distinct.
-fn install_shadow(root: &TempDir, cwd: &Path, short: &str, alias: Option<&str>) {
+fn install_shadow(root: &TempDir, cwd: &Path, short: &str, alias: Option<&str>) -> std::path::PathBuf {
     let folder = root.path().join("shadow");
     fs::create_dir_all(folder.join("template")).unwrap();
     fs::write(
@@ -190,6 +209,7 @@ fn install_shadow(root: &TempDir, cwd: &Path, short: &str, alias: Option<&str>) 
         args.push(alias);
     }
     run(root, cwd, &args, 0);
+    folder
 }
 
 #[test]
@@ -197,8 +217,10 @@ fn installed_short_name_wins_over_bundled() {
     let root = TempDir::new().unwrap();
     let cwd = root.path().join("scratch");
     fs::create_dir_all(&cwd).unwrap();
-    install_shadow(&root, &cwd, "toha-demo", None);
-    let answers = answers(&cwd);
+    let folder = install_shadow(&root, &cwd, "toha-demo", None);
+    // `toha-demo` resolves to the installed folder, so its formal identity is
+    // that folder's canonical path, not the reserved short name.
+    let answers = demo_answers(&cwd, &support::formal_name(&folder));
     run(
         &root,
         &cwd,
@@ -218,8 +240,10 @@ fn installed_alias_wins_over_bundled() {
     let root = TempDir::new().unwrap();
     let cwd = root.path().join("scratch");
     fs::create_dir_all(&cwd).unwrap();
-    install_shadow(&root, &cwd, "other", Some("toha-demo"));
-    let answers = answers(&cwd);
+    let folder = install_shadow(&root, &cwd, "other", Some("toha-demo"));
+    // The alias resolves to the installed folder; the envelope names its formal
+    // path identity.
+    let answers = demo_answers(&cwd, &support::formal_name(&folder));
     run(
         &root,
         &cwd,

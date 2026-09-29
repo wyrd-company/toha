@@ -57,11 +57,15 @@ fn add_trusted(root: &TempDir, folder: &Path) {
 }
 
 /// Applies the approved template `demo` into a fresh target with an empty
-/// answers document, returning (exit code, stderr, whether the hook ran).
-fn apply_demo(root: &TempDir) -> (Option<i32>, String, bool) {
+/// envelope answers document naming `folder`'s formal path identity, returning
+/// (exit code, the single result document on standard output, whether the hook
+/// ran). The scripted route reports trust structurally in the document rather
+/// than on stderr.
+fn apply_demo(root: &TempDir, folder: &Path) -> (Option<i32>, serde_json::Value, bool) {
     let target = tempfile::tempdir_in(root.path()).unwrap();
-    let answers = target.path().join("answers.json");
-    fs::write(&answers, "{}").unwrap();
+    let bare = target.path().join("bare.json");
+    fs::write(&bare, "{}").unwrap();
+    let answers = support::envelope_file(target.path(), &support::formal_name(folder), &bare);
     let output = support::isolated_command(root.path())
         .args([
             "apply",
@@ -75,7 +79,7 @@ fn apply_demo(root: &TempDir) -> (Option<i32>, String, bool) {
     let ran = target.path().join(RAN_MARKER).exists();
     (
         output.status.code(),
-        String::from_utf8_lossy(&output.stderr).into_owned(),
+        support::first_document(&output.stdout),
         ran,
     )
 }
@@ -89,30 +93,30 @@ fn approval_invalidates_when_the_executable_surface_changes() {
     add_trusted(&root, &folder);
 
     // No change: the live surface matches the approval, so the hook runs.
-    let (code, _stderr, ran) = apply_demo(&root);
+    let (code, _document, ran) = apply_demo(&root, &folder);
     assert_eq!(code, Some(0), "unchanged approved template must run hooks");
     assert!(ran, "the approved hook must run");
 
     // Documentation-only change: a new source file leaves the surface, and so
     // the approval, intact.
     fs::write(folder.join("template/extra.txt"), "docs\n").unwrap();
-    let (code, _stderr, ran) = apply_demo(&root);
+    let (code, _document, ran) = apply_demo(&root, &folder);
     assert_eq!(code, Some(0), "a doc-only change keeps approval");
     assert!(ran, "a doc-only change keeps the hook running");
 
     // Hook-node change: adding an argument changes the node, so trust lapses.
+    // The scripted route reports the lapse as a `planned` document with
+    // `trusted: false` at exit 3, not a stderr line.
     write_template(
         &folder,
         "  - script: hook.sh\n    args: [ marker ]\n",
         marker_script(),
     );
-    let (code, stderr, ran) = apply_demo(&root);
-    assert_eq!(code, Some(3), "a hook-line change needs review: {stderr}");
+    let (code, document, ran) = apply_demo(&root, &folder);
+    assert_eq!(code, Some(3), "a hook-line change needs review: {document}");
     assert!(!ran, "an unreviewed hook must not run");
-    assert!(
-        stderr.contains("hooks changed since approval"),
-        "the listing marks the change: {stderr}"
-    );
+    assert_eq!(document["status"], "planned", "{document}");
+    assert_eq!(document["trusted"], false, "trust lapsed: {document}");
 
     // Script-byte change: restore the node, change only the script's bytes.
     write_template(
@@ -120,13 +124,11 @@ fn approval_invalidates_when_the_executable_surface_changes() {
         original_hooks,
         "#!/bin/sh\n: > ran.txt\n# edited\n",
     );
-    let (code, stderr, ran) = apply_demo(&root);
-    assert_eq!(code, Some(3), "a script-byte change needs review: {stderr}");
+    let (code, document, ran) = apply_demo(&root, &folder);
+    assert_eq!(code, Some(3), "a script-byte change needs review: {document}");
     assert!(!ran, "an unreviewed script must not run");
-    assert!(
-        stderr.contains("hooks changed since approval"),
-        "the listing marks the change: {stderr}"
-    );
+    assert_eq!(document["status"], "planned", "{document}");
+    assert_eq!(document["trusted"], false, "trust lapsed: {document}");
 }
 
 #[test]
@@ -145,10 +147,12 @@ fn the_gate_is_answer_independent() {
     .unwrap();
     add_trusted(&root, &folder);
 
+    let formal = support::formal_name(&folder);
     for answer in ["alpha", "beta"] {
         let target = tempfile::tempdir_in(root.path()).unwrap();
-        let answers = target.path().join("answers.json");
-        fs::write(&answers, format!("{{\"who\": \"{answer}\"}}")).unwrap();
+        let bare = target.path().join("bare.json");
+        fs::write(&bare, format!("{{\"who\": \"{answer}\"}}")).unwrap();
+        let answers = support::envelope_file(target.path(), &formal, &bare);
         let output = support::isolated_command(root.path())
             .args([
                 "apply",
@@ -272,8 +276,9 @@ fn legacy_trusted_registry_loads_and_needs_review() {
 
     // Applying the hooked template needs review, not a run.
     let target = tempfile::tempdir_in(root.path()).unwrap();
-    let answers = target.path().join("answers.json");
-    fs::write(&answers, "{}").unwrap();
+    let bare = target.path().join("bare.json");
+    fs::write(&bare, "{}").unwrap();
+    let answers = support::envelope_file(target.path(), &canonical.to_string_lossy(), &bare);
     let output = support::isolated_command(root.path())
         .args([
             "apply",

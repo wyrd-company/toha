@@ -17,7 +17,17 @@ fn template(root: &Path) -> std::path::PathBuf {
         "name: sample\ninterview:\n  - { id: title, type: text, prompt: Title? }\n",
     )
     .unwrap();
-    std::fs::write(root.join("answers.json"), "{\"title\":\"Sample\"}").unwrap();
+    // The scripted route (`apply TEMPLATE PATH --answers FILE`) requires the
+    // identity-bearing envelope naming the formal template: the folder's
+    // canonical path.
+    std::fs::write(
+        root.join("answers.json"),
+        support::envelope_text(
+            &support::formal_name(&folder),
+            &serde_json::json!({ "title": "Sample" }),
+        ),
+    )
+    .unwrap();
     folder
 }
 
@@ -93,12 +103,16 @@ fn template_whose_name_starts_with_a_dash() {
         root.path(),
         &["--answers", "answers.json", "--", "-sample", "out"],
     );
-    // A bare name is looked up as an installed template, not as a flag.
+    // A bare name is looked up as an installed template, not as a flag. The
+    // scripted route reports the missing template as an `error` document on
+    // standard output.
     assert_eq!(output.status.code(), Some(1));
+    let document = support::first_document(&output.stdout);
+    assert_eq!(document["status"], "error");
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("template not found: -sample"),
+        support::diagnostic_text(&document).contains("template not found: -sample"),
         "{}",
-        String::from_utf8_lossy(&output.stderr)
+        support::diagnostic_text(&document)
     );
 }
 
