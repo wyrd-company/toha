@@ -117,44 +117,46 @@ recognized extension.
 ## 2. Module & seam map
 
 One new value object owns the single confinement seam. `Template::load` creates
-it once and retains it for both file-body paths. A `files:` rule owns its
-compiled body from load onward; a walked source-tree file uses the same value
-object when it is discovered during planning. Everything else stays loaderless.
+it once and retains it for both file-body paths, which both compile at load: a
+`files:` rule owns its compiled body, and each walked source-tree body is
+compiled through the same value object into the retained render program.
+Everything else stays loaderless.
 
 ```text
 Template::load (template.rs)
   └─ root = folder.canonicalize()                         [existing]
   └─ source_dir derived, confined                         [existing]
   └─ partials = Partials::rooted(&root)                    ← owned by Template
-  └─ Builder { partials: &partials, ... }
+  └─ Builder { partials, ... }
        └─ files: source read once
             └─ partials.compile(text, root-relative source label)
                  ├─ reject block/import/from/extends in the complete AST
                  ├─ build confined literal include closure
                  └─ Builder::refs(body.references(), "files[i].source", each)
-            └─ FileRule { body: FileTmpl, ... }             ← survives interview
-Plan::build (plan.rs)
-  ├─ walk() source-tree file  ─▶ read_render(path, label, ctx, &template.partials)
-  │                                └─ partials.compile(text, label)? .render(ctx)
-  ├─ files: rule source        ─▶ rule.body.render(ctx)      ← no read/recompile
-  │                                          │
-  │                       ┌──────────────────┴───────────────────┐
-  │                       │   the ONE confinement seam            │
-  │                       │   (IncludeRoot::locate / confined_loader)
-  │                       │   reject absolute/`..`/`\`; refuse     │
-  │                       │   symlink at any component;             │
-  │                       │   canonicalize; starts_with(root); read │
-  │                       └───────────────────────────────────────┘
-  ├─ target path segments      ─▶ rendered() ─▶ guarded Tmpl         includes refused
-  ├─ apply messages, hooks     ─▶ guarded Tmpl / Expr                includes refused
+            └─ FileRule { body: Some(FileTmpl), ... }       ← survives interview
+  └─ compile_source_tree(source_dir, &partials, ...)
+       └─ each walked body ─▶ partials.compile(text, root-relative label)
+            └─ SourceEntry { body: Rendered(FileTmpl), ... } ← retained program
+       │
+       ┌───────────────────┴────────────────────────────────┐
+       │   the ONE confinement seam (Partials::locate)       │
+       │   reject absolute/`..`/`\`; refuse symlink at any    │
+       │   component; canonicalize; starts_with(root); read   │
+       └─────────────────────────────────────────────────────┘
+Plan::build (plan.rs)                      renders the retained program; no reopen
+  ├─ render_program entry     ─▶ entry.body.render(ctx)      ← retained FileTmpl
+  ├─ files: rule              ─▶ rule.body.render(ctx)       ← retained FileTmpl
+  ├─ target path segments     ─▶ rendered() ─▶ guarded Tmpl          includes refused
+  ├─ apply messages, hooks    ─▶ guarded Tmpl / Expr                 includes refused
 interview.rs / template.rs field compiles ─▶ guarded Tmpl / Expr    includes refused
 template.rs !include resolve() ─▶ SEPARATE load-time data feature, own diagnostics
 ```
 
 Includes are reachable **iff** a caller holds `FileTmpl`, and only
-`Partials::compile` mints one. `Template` owns `Partials`; `FileRule` owns the
-load-time `FileTmpl`. Surface scope and load-before-interview behavior are
-ownership invariants, not guards that a driver can forget.
+`Partials::compile` mints one. `Template` owns `Partials`; each `FileRule` and
+each retained `SourceEntry` owns its load-time `FileTmpl`. Surface scope and
+load-before-interview behavior are ownership invariants, not guards that a
+driver can forget.
 
 ## 3. Public interfaces (signatures)
 
@@ -194,7 +196,7 @@ impl Partials {
 
 /// A compiled file body that MAY resolve `{% include %}` against its root.
 /// A distinct type from `Tmpl`: holding one IS the include capability.
-pub struct FileTmpl { /* source, env, referenced_ids */ }
+pub struct FileTmpl { /* label, source, env, referenced_ids, needs_environment */ }
 
 // Required by FileRule's existing Debug derivation; mirror Tmpl's manual Debug
 // implementation and expose only the source field.
@@ -224,21 +226,21 @@ pub struct Template {
 pub struct FileRule {
     pub each: Each,
     pub source: std::path::PathBuf, // root-relative diagnostic/origin path
-    pub body: FileTmpl,             // compiled and validated by Template::load
+    pub body: Option<FileTmpl>,     // compiled at load; None for a non-UTF-8 source
     pub path: Tmpl,
     pub when: Option<Expr>,
 }
 ```
 
-Load-time and plan-time call-site deltas:
+Load-time call-site deltas:
 
 ```rust
-struct Builder<'a> {
+struct Builder {
     // existing fields ...
-    partials: &'a Partials,
+    partials: Partials, // a cheap clone of the handle Template retains
 }
 
-impl Builder<'_> {
+impl Builder {
     /// Compile a `files:` body at load. `field` remains `files[i].source` for
     /// LoadError attribution; `label` is its root-relative path for include
     /// diagnostics and cycle paths. Called inside `bound(Some(&each), ...)`, so
@@ -258,24 +260,28 @@ impl Builder<'_> {
 }
 
 // Template::load creates `partials` immediately after canonicalizing `root`,
-// lends it to Builder, stores each successful `file_tmpl` on FileRule, then
-// moves `partials` into the returned Template. All of this finishes before any
-// driver can call Interview::start or replay. A files: body and its selected
-// partial closure are one immutable load snapshot; planning never resolves the
-// live files independently.
+// clones the cheap handle into Builder, stores each successful `file_tmpl` on
+// FileRule, then moves `partials` into the returned Template. Walked source-tree
+// bodies compile the same way in `compile_source_tree`, into the retained render
+// program. All of this finishes before any driver can call Interview::start or
+// replay. A file body and its selected partial closure are one immutable load
+// snapshot; planning never resolves the live files independently.
 
-// Only walked source-tree bodies compile during planning. The caller derives
-// `label` from `path.strip_prefix(&template.root)` and normalizes `/` separators.
-// `rendered()` (path segments) does NOT gain these parameters.
-fn read_render(
-    path: &Path,
-    label: &str,
-    ctx: &impl serde::Serialize,
-    partials: &Partials,
-)
-    -> Result<String, PlanError> { not_implemented!() }
+// Walked source-tree bodies compile at load through the same seam. The label is
+// derived from `source.strip_prefix(&template.root)` with `/` separators, and the
+// compiled body is retained on the render program; `rendered()` (path segments)
+// stays a guarded `Tmpl`.
+fn compile_source_tree(
+    scan: &SourceScan,        // source_root, template_root, partials, ignore, static
+    dir: &Path,
+    out: &mut Vec<SourceEntry>,
+    problems: &mut Vec<Problem>,
+) {
+    // ... scan.partials.compile(text, label)? -> SourceBody::Rendered(FileTmpl) ...
+    not_implemented!()
+}
 
-// The `files:` loop renders the load-owned body.
+// Both planning loops render the load-owned body; neither reopens a file.
 let content = Content::Rendered(
     rule.body.render(&local).map_err(|error| PlanError::Render {
         path: template.root.join(&rule.source),
@@ -284,10 +290,11 @@ let content = Content::Rendered(
 );
 ```
 
-At load, `IncludeError` becomes the existing `Problem` at `files[i].source`; at
-plan, it becomes `PlanError::Render` at the walked source path. Render errors for
-a stored `FileRule::body` retain the rule's root-relative source as their
-origin. No new error variant leaks to the CLI or crate boundary.
+At load, an `IncludeError` becomes the existing `Problem` — at `files[i].source`
+for a `files:` body, or at the source path for a walked source-tree body. Render
+faults from a retained `FileTmpl` become `PlanError::Render` with the rule's or
+entry's source as origin. No new error variant leaks to the CLI or crate
+boundary.
 
 ## 4. Data shapes
 
@@ -391,9 +398,10 @@ edge in either form, matching MiniJinja's empty sequence behavior.
    - **Hook fields** — feed process execution; an unaudited injection surface.
 
    Enforced **structurally**: `Template::load` stores an include-capable
-   `FileTmpl` only on each `FileRule`; the source-tree `read_render` receives
-   `&template.partials`; every other site holds guarded `Tmpl`/`Expr`, and
-   configuration documents are pure data before any template exists. The two
+   `FileTmpl` only on each `FileRule` and each retained source-tree
+   `SourceEntry`, both compiled through `template.partials`; every other site
+   holds guarded `Tmpl`/`Expr`, and configuration documents are pure data before
+   any template exists. The two
    AST modes prevent the crate-wide feature from turning an internal template
    name into a capability. This is a type/role invariant.
 
@@ -438,10 +446,11 @@ edge in either form, matching MiniJinja's empty sequence behavior.
    inside the existing `each` binding scope, reports errors at
    `files[i].source`, unions references across its selected literal include
    graph, and stores the `FileTmpl` on `FileRule`. Every driver completes this
-   before starting or replaying an interview. Source-tree bodies compile later
-   because `walk` discovers them at plan time. The stored body and its selected
-   partial closure are the exact bytes read at load; a file mutation during an
-   interview cannot split validation from rendering. A resume loads a fresh
+   before starting or replaying an interview. Walked source-tree bodies compile
+   the same way, in `compile_source_tree`, into the retained render program at
+   load. The stored body and its selected partial closure are the exact bytes
+   read at load; a file mutation during an interview cannot split validation from
+   rendering. A resume loads a fresh
    `Template` from the selected template identity, as it does today.
 7. **Only include from MiniJinja's multi-template grammar.** Both
    `multi_template` and `unstable_machinery` are required. The capability
