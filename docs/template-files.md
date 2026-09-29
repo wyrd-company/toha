@@ -107,5 +107,7 @@ The fields are `files[i].when`, `files[i].each`, and `files[i].path`. A fault
 in a normal source-tree path uses `path` and shows only the path segment that
 failed. A file-content fault continues to name the source file.
 
-For commands to run after writing files, continue with
+To change part of a file that already exists instead of writing a whole file,
+see [Injecting into existing files](/docs/toha/template-injection). For commands
+to run after writing files, continue with
 [Hooks and messages](/docs/toha/template-hooks).

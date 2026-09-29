@@ -159,6 +159,19 @@ description: >-
   file, so every path precedes the output of the hooks. Printed target paths
   use `/` separators on every platform.
 
+  Injection. A template `inject` rule changes one bounded part of an existing
+  file rather than replacing it, so an injected target that already exists is not
+  a conflict. `apply` prints each changed injected target once, like a written
+  file; an injection that changes nothing prints nothing. `apply --dry-run`
+  reports `inject <path> (<owner>)` for a region or value it would place and
+  `update <path> (<owner>)` for one it would change, where `<owner>` is the
+  region key or the typed path; an unchanged injection is not reported. An
+  operator edit inside a region's owned bytes is drift: `apply` writes nothing,
+  reports each drifted region as `<path> (<region>)`, and names the same command
+  with `--force`. `--force` replaces only a drifted region; a changed owned JSON
+  value converges without it, and `--force` never creates a target, repairs
+  malformed input, or makes an invalid path valid.
+
   Environment. `toha --help` lists every environment variable that toha
   reads in an `Environment:` section after its options. `TOHA_CONFIG` and
   `TOHA_USER_CONFIG` name the local and user configuration files as the

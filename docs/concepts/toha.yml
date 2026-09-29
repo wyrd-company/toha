@@ -93,6 +93,11 @@ features:
   generate-files-from-arrays: >-
     Renders one support file once for each item of an array answer or data
     value, at a templated path.
+  inject-into-existing-files: >-
+    Changes one bounded part of an existing file — a checksum-marked region in a
+    text file, or a typed value at a path in a JSON, JSONC, or JSON5 file —
+    leaving the rest unchanged, converging on repeated applies, and refusing an
+    operator's region edit without a forced overwrite.
   run-hooks: >-
     Runs commands after rendering, in interview order and then in template
     order, with the conditions of their position in the interview.

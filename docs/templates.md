@@ -145,8 +145,10 @@ Use `interview` to ask questions; [Asking questions](/docs/toha/template-intervi
 explains each question option. Use
 [Controlling the interview](/docs/toha/template-flow) for conditions and
 calculated values. Use [Generating files](/docs/toha/template-files) to choose
-what Toha writes, and [Hooks and messages](/docs/toha/template-hooks) for
-commands and apply-time messages.
+what Toha writes, [Injecting into existing files](/docs/toha/template-injection)
+to change part of a file that already exists, and
+[Hooks and messages](/docs/toha/template-hooks) for commands and apply-time
+messages.
 
 The [basic](https://github.com/wyrd-company/toha/tree/main/docs/examples/basic),
 [branching](https://github.com/wyrd-company/toha/tree/main/docs/examples/branching), and

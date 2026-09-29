@@ -139,6 +139,63 @@ description: >-
   the exact failing segment. Each fault also names the support or source file;
   a source-content fault keeps its source-file diagnostic.
 
+  Injection. `inject` is a list of rules that each change one bounded part of an
+  existing target file, rather than replacing the whole file as `files` and the
+  source subdirectory do. Every rule names its target with `into`, a template
+  relative to the target directory, and carries an optional `when`; a rule whose
+  `when` is false injects nothing. A rule that does not create its target fails
+  when the target is missing unless `create: true` is set. Injection is resolved
+  fully in memory before the first write, so a plan, parse, path, or unforced
+  drift failure writes nothing; each changed target is then replaced atomically
+  and reported once. A rule is one of two kinds.
+
+  A `region` rule owns a visible block in a non-JSON text file, marked by a begin
+  and end comment and a checksum. `region` names the block with a key of
+  lowercase letters, digits, `_`, and `-`, unique per target. Its body is an
+  inline `content` template or the rendered body of a `source` support file
+  relative to the template root; exactly one is given. The comment style is
+  inferred from the target extension, or set by `marker` — a string line-comment
+  prefix, or an object `{ open, close }` for a block comment. An extension with
+  no inferred style and no `marker` is a planning error. On the first apply Toha
+  places the block at `anchor`: `after` is a template naming the line to place
+  the block after, and `occurrence` is `only` (the default, which rejects more
+  than one matching line), `first`, or `last`; with no anchor the block is
+  appended at end of file. Later applies find the markers, not the anchor. The
+  checksum records the body Toha last wrote: a matching body whose template body
+  is unchanged is a byte no-op; a changed template body replaces only the block;
+  an operator edit inside the owned bytes is drift, which `apply` refuses and
+  reports as `<path> (<region>)` unless `--force` is given, in which case
+  `--force` replaces only that block and never invents a missing anchor.
+
+  A `struct` rule owns one typed value at a path in a JSON, JSONC, or JSON5 file,
+  selected by the `.json`, `.jsonc`, or `.json5` extension. `struct.path` is
+  dot-separated object keys and bracketed array indexes, such as `routes[0].name`;
+  a backslash escapes `.`, `[`, `]`, and `\` in a key, and the path begins with a
+  key. `struct.value` is a JSON-compatible value whose string leaves are
+  templates and whose other JSON types are kept; a rendered string stays a JSON
+  string. Toha owns the value at the path: a matching value is a byte no-op, and
+  an operator change to the owned value converges to the template value on the
+  next apply without `--force`. All unrelated keys and source text — comments,
+  key order, whitespace, quote style, and trailing commas in JSONC and JSON5 —
+  are preserved; Toha adds no marker or provenance comment to a JSON-family file.
+  Missing object parents in the path are created; an array in the path must
+  already exist and each index must be in range, and a scalar where the path
+  needs an object or array is an error. The `Json` format disables every parser
+  relaxation, `Jsonc` adds comments and trailing commas, and `Json5` is a
+  permissive JSON5-compatible superset; because the concrete syntax tree keeps a
+  comment as a token, a comment in a strict `.json` target is tolerated and
+  preserved rather than rejected. New object values serialize with sorted keys.
+  Two `struct` rules on one target whose paths are equal or are an ancestor and
+  descendant, and two `region` rules with the same key, are planning errors.
+
+  A `region` rule whose target ends in `.json`, `.jsonc`, or `.json5` is a
+  planning error that directs the author to `struct` or an existing whole-file
+  `files` rule; whole-file JSON generation is unchanged. A whole-file rule and
+  injection may both change one target: the whole-file bytes are the starting
+  image and the edits fold over them into one committed replacement. An injected
+  value or region reads no hook result: injection renders at plan time, before
+  hooks run, so a hook-result reference in an `inject` field is a load error.
+
   Hooks. A hook runs a command after all files are written, with the target
   directory as its working directory unless `cwd` names a path relative to it.
   `run` is an argument vector; each argument is a template, and the program is
@@ -219,8 +276,14 @@ validation-criteria: >-
   a `flow` value that is not `stop`, `abort`, `dry-run`, or
   `{ skip: rest | group }`, a `{ skip: group }` on a flow node outside any
   group, a `flow` combined with another node key,
-  an `!include` or `script` path outside the template root, and a `source`
-  path that does not exist. Rendering fails when a rendered target path leaves
-  the target directory or enters the target's `.git` directory. Every example
+  an `!include` or `script` path outside the template root, a `source`
+  path that does not exist, an invalid `struct.path`, an `inject` field that
+  reads a hook result, and a `region` or `struct` rule whose target does not
+  match its family. Planning additionally rejects a `region` rule targeting a
+  JSON-family file, a `struct` rule targeting a non-JSON-family file, a marker
+  style that cannot be inferred without an override, a duplicate region key, and
+  two `struct` paths on one target that are equal or overlap. Rendering fails
+  when a rendered target path leaves the target directory or enters the target's
+  `.git` directory. Every example
   in `docs/examples/` loads without error, and the fixture suite renders each
   fixture template with its answers file to the expected output tree.

@@ -1,0 +1,24 @@
+# ---
+# relationships:
+#   exemplifies: template-format
+# ---
+name: injection
+ignore: [".keep"]
+description: Add a settings block and a script to files a project already has
+
+inject:
+  # A visible, checksum-marked region in a TOML file. Re-applying is a no-op
+  # until the template body changes; an operator edit inside it needs --force.
+  - into: "config/service.toml"
+    region: telemetry
+    content: |
+      telemetry_enabled = true
+      telemetry_endpoint = "https://example.invalid/ingest"
+    anchor: { after: "[service]", occurrence: only }
+
+  # A typed value at a path in package.json. Toha owns scripts.check and
+  # converges it on every apply, preserving every other key.
+  - into: "package.json"
+    struct:
+      path: "scripts.check"
+      value: "run-checks"

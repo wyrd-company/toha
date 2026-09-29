@@ -307,6 +307,29 @@ fn an_error_in_a_later_edit_leaves_every_target_unchanged() {
 }
 
 #[test]
+fn region_body_from_a_source_support_file() {
+    let root = tempfile::tempdir().unwrap();
+    // The region body is a rendered support file rather than inline content.
+    let folder = root.path().join("tmpl");
+    fs::create_dir_all(folder.join("template")).unwrap();
+    fs::write(folder.join("snippet.txt"), "port = {{ port }}\n").unwrap();
+    fs::write(
+        folder.join("template.yml"),
+        "name: sample\ndata: { port: 8080 }\ninject:\n  - into: \"app.conf\"\n    region: net\n    source: snippet.txt\n",
+    )
+    .unwrap();
+    let target = root.path().join("out");
+    fs::create_dir_all(&target).unwrap();
+    fs::write(target.join("app.conf"), "existing = 1\n").unwrap();
+    let output = apply(&folder, &target, &[]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let text = fs::read_to_string(target.join("app.conf")).unwrap();
+    assert!(text.contains("# >>> toha:region net >>>"), "{text}");
+    assert!(text.contains("port = 8080"), "{text}");
+    assert!(text.starts_with("existing = 1\n"), "{text}");
+}
+
+#[test]
 fn missing_target_without_create_is_an_error_and_create_makes_it() {
     let root = tempfile::tempdir().unwrap();
     let target = root.path().join("out");

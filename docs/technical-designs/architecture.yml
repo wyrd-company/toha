@@ -190,13 +190,35 @@ proposed-design:
     apply messages. `TargetPath` is a newtype built only by a constructor that
     normalizes a rendered relative path and rejects `..` escapes, absolute
     paths, and any path inside `.git`, so no later code checks for them.
+    A `Plan` also holds `edits: Vec<PlannedEdit>`, the bounded content-injection
+    edits, where `PlannedEdit` is `Region(PlannedRegionEdit)` or
+    `JsonValue(PlannedJsonEdit)`. `Plan::build` renders each `inject` rule to an
+    edit — resolving the marker style or JSON format, rejecting a JSON-family
+    marker rule, and rejecting a duplicate region key or an overlapping typed
+    path — but reads no target bytes. Two pure resolvers,
+    `resolve_region_edit(current: Option<&[u8]>, edit) -> Result<EditResolution,
+    RegionError>` and `resolve_json_edit(current, edit) -> Result<EditResolution,
+    JsonEditError>`, each return a complete candidate file as
+    `Unchanged`, `Write(Vec<u8>)`, or `Drift { forced }` and perform no I/O; the
+    region resolver checksums its owned span with `sha2`, and the JSON resolver
+    edits the `jsonc-parser` concrete syntax tree so unrelated source is kept.
+    `Plan::mutations() -> impl Iterator<Item = FileMutation>` derives the
+    ownership view `FileMutation::{Whole, Region, JsonValue}` that the project-
+    update design consumes.
     `Plan::apply(self, target: &CanonicalTarget, options: ApplyOptions,
     runner: &dyn HookRunner) ->
     Result<Applied, ApplyError>` refuses to write when conflicts exist
     without `force`, returns `Applied::NeedsTrust(Plan)` without writing when
-    the plan has hooks and `options.trusted` is false, and otherwise writes
-    every file, then runs the hooks in order and stops at the first failure.
-    A dry run is `Plan::build` followed by printing the plan.
+    the plan has hooks and `options.trusted` is false, and otherwise resolves
+    every injected target in memory before the first write — starting from the
+    whole-file image when a rule supplies one, otherwise the current bytes read
+    once, and folding the target's edits in source order — so an unforced region
+    drift, a parse or path error, or a missing target leaves every file
+    unchanged. It then writes each whole file, replaces each changed injected
+    target atomically through a sibling temporary file, reports each changed
+    target once, and runs the hooks in order, stopping at the first failure.
+    A dry run is `Plan::build` followed by classifying each edit against its
+    target's current bytes and printing the plan.
 
   hook-runner: >-
     `HookRunner` is the one port in the library, with two adapters: the
