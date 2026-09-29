@@ -103,7 +103,10 @@ fn stage_environment_reference_without_trust_writes_nothing_before_refusing() {
         "no staged record written before refusal",
     );
     // The environment was not read: the sentinel never surfaces.
-    assert!(!stderr.contains(SENTINEL), "environment must not be read: {stderr}");
+    assert!(
+        !stderr.contains(SENTINEL),
+        "environment must not be read: {stderr}"
+    );
 }
 
 /// P3: a stage recorded with no environment grant keeps its unavailable
