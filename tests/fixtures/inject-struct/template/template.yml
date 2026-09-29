@@ -1,0 +1,7 @@
+name: inject-struct
+ignore: [".keep"]
+inject:
+  - into: "package.json"
+    struct:
+      path: "scripts.build"
+      value: "tsc"

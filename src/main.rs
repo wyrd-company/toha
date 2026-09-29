@@ -465,7 +465,7 @@ impl Outcome {
         }
     }
 }
-fn plan_lines(plan: &Plan, force: bool) -> Vec<String> {
+fn plan_lines(plan: &Plan, force: bool, edits: &[String]) -> Vec<String> {
     let mut lines = Vec::new();
     if let Some(message) = &plan.before_apply {
         lines.push(message.clone());
@@ -478,6 +478,9 @@ fn plan_lines(plan: &Plan, force: bool) -> Vec<String> {
         };
         lines.push(format!("{action} {}", file.path));
     }
+    // Injection previews sit between the whole-file lines and the hook lines, the
+    // order in which apply commits and then runs.
+    lines.extend_from_slice(edits);
     for planned in &plan.hooks {
         // A deferred hook lists its source form: `run[0]` rendered, later
         // arguments and cwd showing their `{{ id.field }}` placeholders. It runs
@@ -495,6 +498,41 @@ fn plan_lines(plan: &Plan, force: bool) -> Vec<String> {
         ));
     }
     lines
+}
+
+/// The dry-run injection lines: `inject`/`update <path> (<owner>)` for a missing
+/// or changed region or value, and `<path> (<region>)` for a region drift.
+/// Unchanged edits produce no line. Classifies each edit against the target's
+/// current bytes.
+#[allow(clippy::result_large_err)]
+fn injection_report(
+    plan: &Plan,
+    target: &toha::staging::CanonicalTarget,
+) -> Result<Vec<String>, toha::ApplyError> {
+    use toha::{EditReport, PlannedEdit};
+    let mut lines = Vec::new();
+    for edit in &plan.edits {
+        let full = target.as_path().join(edit.path().as_path());
+        let current = std::fs::read(&full).ok();
+        let (report, owner) = match edit {
+            PlannedEdit::Region(region) => (
+                toha::report_region_edit(current.as_deref(), region)?,
+                region.region.to_string(),
+            ),
+            PlannedEdit::JsonValue(json) => (
+                toha::report_json_edit(current.as_deref(), json)?,
+                json.json_path.to_string(),
+            ),
+        };
+        let path = edit.path();
+        match report {
+            EditReport::Inject => lines.push(format!("inject {path} ({owner})")),
+            EditReport::Update => lines.push(format!("update {path} ({owner})")),
+            EditReport::Drift => lines.push(format!("{path} ({owner})")),
+            EditReport::Unchanged => {}
+        }
+    }
+    Ok(lines)
 }
 
 fn read_answers(path: &str) -> Result<toha::RawAnswers, String> {
@@ -1340,13 +1378,17 @@ fn run(
         Err(error) => return Outcome::Error(error.to_string()),
     };
     if dry_run {
+        let edits = match injection_report(&plan, &target) {
+            Ok(edits) => edits,
+            Err(error) => return Outcome::Error(error.to_string()),
+        };
         let lines = if terminal_run {
             vec![]
         } else {
             completed.messages
         }
         .into_iter()
-        .chain(plan_lines(&plan, force));
+        .chain(plan_lines(&plan, force, &edits));
         if plan.hooks.is_empty() || registry_trusted || trust {
             return Outcome::Written(lines.collect());
         }
@@ -1365,7 +1407,7 @@ fn run(
         return Outcome::Saved(0);
     }
     let before = plan.before_apply.clone();
-    let preview = plan_lines(&plan, force);
+    let preview = plan_lines(&plan, force, &[]);
     if !terminal_run {
         for message in completed.messages {
             println!("{message}");
@@ -1404,7 +1446,7 @@ fn run(
                 changed_since_approval,
             ))
         }
-        Err(error @ toha::ApplyError::Conflicts(_)) => {
+        Err(error @ (toha::ApplyError::Conflicts(_) | toha::ApplyError::Drift(_))) => {
             Outcome::Error(format!("{error}\n{}", guidance::conflicts(&invocation)))
         }
         Err(error) => Outcome::Error(error.to_string()),
