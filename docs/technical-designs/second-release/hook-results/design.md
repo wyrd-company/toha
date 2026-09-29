@@ -306,6 +306,105 @@ hook-node key and classifies it as `ExecutableReference` (`run`, `script`) or
 decision. Hook trust requirements are unchanged; staged `apply --trust` stays
 hook-execution-only.
 
+## 5A. JSON results mode — opt-in `parse: json`
+
+A producer may opt in to parse its stdout as JSON so the parsed value is read
+**directly at `<id>`** (not only as raw text at `<id>.stdout`). See
+`06-json-revision-grounding.md`, `07-json-cross-judge.md`, and
+`08-json-synthesis.md`.
+
+### Caller usage
+
+```yaml
+hooks:
+  - id: pkg
+    run: [ pkg-tool, info, --json ]   # prints {"name":"demo","version":"1.4.0","tags":["a"]}
+    parse: json                       # requires id and capture: [stdout]
+    capture: [ stdout ]
+  - run: [ note-tool, "built {{ pkg.name }} {{ pkg.version }}" ]
+    when: "pkg.tags | length > 0"
+messages:
+  after-apply: "Created {{ pkg.name }} at {{ pkg.version }}."
+```
+
+Metadata, when needed, goes to a separately named result:
+
+```yaml
+hooks:
+  - id: findings
+    run: [ lint-tool, --format, json ]  # exit 1 with a JSON list when it finds issues
+    parse: json
+    capture: [ stdout ]
+    status-id: lint                     # lint = {exit_code, stdout, stderr, parsed}
+    allow-failure: true                 # requires status-id; lint.exit_code must be read
+  - run: [ lint-tool, --fix, . ]
+    when: "lint.exit_code != 0"
+messages:
+  after-apply: >-
+    {% if lint.parsed %}{{ findings | length }} findings.{% else %}Lint: {{ lint.stdout }}{% endif %}
+```
+
+### Contract
+
+1. **The value is `<id>`.** With `parse: json`, `<id>` is the parsed stdout as a
+   plain JSON value: object → `<id>.key` / `<id>['a-key']`, array → `<id>[i]`,
+   string/number/bool → the scalar, `null` → `none`. A parsed string is **data,
+   not a template** (never re-rendered). serde_json integers above `u64` become
+   floats (no `arbitrary_precision`) — disclosed.
+2. **Opt-in and explicit.** `parse: json` requires `id` and `capture: [stdout]`
+   (capture stays the single control for "stdout is piped, not shown"). A hook
+   without `parse` is exactly the v1/today behaviour.
+3. **Metadata is a separate name.** `status-id: <name>` binds `<name> =
+   {exit_code, stdout, stderr, parsed}` — an ordinary identifier in the
+   authored-id space, no new reserved name. `parsed` is true iff stdout parsed
+   as JSON this run. `status-id` is **required** when the producer may not run
+   (its own `when`, an enclosing group/branch `when`, or a skippable interview
+   position — computed from the retained program) or has `allow-failure`;
+   otherwise it is optional.
+4. **`<id>` is `none`, never undefined**, when the producer did not run or a
+   tolerated failure did not parse. `<status-id>.exit_code is none` ⇔ did not
+   run; `<status-id>.parsed` ⇔ stdout parsed; JSON `null` is a parsed `none`
+   (`parsed` true). This preserves the v1 "always bound, never undefined" rule.
+5. **Apply order (failure first):** run → if untolerated nonzero or a signal,
+   the v1 `ApplyError::Hook` fires and nothing is parsed → decode stdout
+   strict-UTF-8 (`NotUtf8` fatal) → parse. On exit 0, empty or malformed stdout
+   is fatal. On a tolerated nonzero exit, parse is lenient: on failure `<id>` is
+   `none`, `parsed` is false, the raw text stays in `<status-id>.stdout`, and the
+   apply continues.
+6. **One output fault type.** `ApplyError::HookOutput { index, id, fault }` with
+   `OutputFault::{ NotUtf8 { valid_up_to }, Empty, NotJson { line, column } }`.
+   No message carries stdout bytes; `NotJson` carries only a position.
+7. **Best-effort migration guard.** Writing `<id>.exit_code`, `<id>.stdout`, or
+   `<id>.stderr` on a `parse: json` hook is a load error naming the subscript
+   escape (`<id>['exit_code']`) and the `status-id`. It reuses
+   `undeclared_variables(true)` (which v1 already needs) to tell `GetAttr` from
+   `GetItem`; aliasing, loop variables, and non-variable roots fall through to a
+   plain key read (disclosed, not silently wrong).
+
+### Load errors (added to §5)
+
+| Condition | Message |
+| --- | --- |
+| `parse`/`status-id` without `id` | `parse requires id` / `status-id requires id` |
+| `status-id` without `parse: json` | `status-id requires parse: json` |
+| `parse: json` without `capture: [stdout]` | `parse: json requires capture: [stdout]` |
+| `status-id` duplicate / reserved / invalid / equal to `id` | existing `duplicate id` / 1075 collision / `invalid identifier` |
+| `allow-failure` on a `parse: json` hook without a read `status-id` | `add status-id: <name> and read <name>.exit_code` |
+| `<status-id>` field not in `exit_code`/`stdout`/`stderr`/`parsed` | `unknown hook result field` |
+| attribute `<id>.exit_code`/`.stdout`/`.stderr` on a `parse: json` hook | `hook <id> parses stdout as JSON; use <id>['exit_code'] for a JSON key or <status-id>.exit_code for metadata` |
+
+### Dry-run, trust, dependencies
+
+- Dry-run parses nothing; the listing shows `parse: json`. Stop/abort/replay
+  unchanged; parsed values live one apply only.
+- `parse` and `status-id` are parsed hook-node fields → covered by the 1069
+  digest automatically; neither names an executable; `run[0]`/`script` still
+  cannot read a result, so no program is derived from output.
+- **No new dependency:** `serde_json = "1"` is already in `Cargo.toml`, and the
+  render context is already `serde_json::Value`.
+- **Validation target for impl 1063:** a fixture for a read *through* a `none`
+  `<id>` (`<id>.key`) under minijinja's undefined mode.
+
 ## 6. Compatibility and canonical impact (described, owned by impl 1063)
 
 - **Existing templates:** a hook with no `id` is byte-identical to today
@@ -315,9 +414,11 @@ hook-execution-only.
   `PlannedHook`/`RenderedHook`/`HookNode` gain `id`/`capture`/`allow_failure`,
   `HookOutcome` gains `stdout`/`stderr`, new `ApplyError` variants.
 - **Schema (`template-format.schema.yml`):** add `id` (identifier),
-  `capture` (array of `stdout`/`stderr`, unique, min 1), and `allow-failure`
-  (boolean) to the top-level and interview hook objects; `capture`/`allow-failure`
-  require `id`; `id` excludes `each`.
+  `capture` (array of `stdout`/`stderr`, unique, min 1), `allow-failure`
+  (boolean), `parse` (enum `[json]`), and `status-id` (identifier) to the
+  top-level and interview hook objects; `capture`/`allow-failure`/`parse`/
+  `status-id` require `id`; `parse: json` requires `capture: [stdout]`;
+  `status-id` requires `parse: json`; `id` excludes `each`.
 - **Spec (`template-format.yml`):** add a "Hook results" paragraph stating
   invariants 1–5 and the readable surfaces.
 - **Guide (`docs/template-hooks.md`):** add a "Use a hook's result" section from
@@ -328,6 +429,13 @@ hook-execution-only.
 
 ## 7. Decisions for Bob (Phase C — see the deck)
 
+All five are open; Bob's JSON request approves none of the first three.
+
 1. Readable-surface breadth: BROAD-minus-`run[0]`/`each` (recommended) vs NARROW.
 2. Hook `id` shares the answer-id space (no new reserved name).
-3. Decode policy: strict UTF-8 with a fatal, byte-free error (recommended).
+3. Decode policy: strict UTF-8, and (on exit 0) malformed JSON, fatal with a
+   byte-free error (recommended).
+4. JSON mode shape (§5A): `parse: json` makes `<id>` the parsed value; metadata
+   goes to an optional/required `status-id`. Approve the exact shape.
+5. JSON capture: `parse: json` requires an explicit `capture: [stdout]`
+   (recommended) vs implying it. Two-way door.

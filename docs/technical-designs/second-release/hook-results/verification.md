@@ -66,6 +66,22 @@ by the paired implementation (1063).
 - No shallow module, information leakage, temporal decomposition, pass-through,
   or hypothetical seam survives synthesis (see `05-synthesis.md` rejections).
 
+## JSON results mode (§5A) — added checks
+
+| Case | Expected | Sole-kill |
+| --- | --- | --- |
+| object/array/string/number/bool/null stdout under `parse: json` | `<id>` is the parsed value of that type; `<id>.key` / `<id>[i]` / scalar / `none` | one fixture per type |
+| exit 0, empty or malformed stdout | fatal `HookOutput::{Empty,NotJson}`, no bytes | make parse lenient on success ⇒ empty/malformed test fails |
+| tolerated nonzero, unparseable stdout | `<id>` `none`, `<status-id>.parsed` false, `<status-id>.stdout` raw text; apply continues | drop the `parsed` flag ⇒ null-vs-unparsed test fails |
+| untolerated nonzero with bad JSON | v1 `ApplyError::Hook` (failure checked before parse) | parse before failure check ⇒ wrong error surfaces |
+| `<id>.exit_code` on a `parse: json` hook | best-effort load error naming the subscript escape and `status-id` | remove the `GetAttr`/`GetItem` distinction ⇒ migration-mistake test fails; aliased root still degrades to a key read |
+| `status-id` omitted when the producer may not run | load error (trigger computed from the retained program) | trigger on "has `when`" only ⇒ group-skipped-producer test fails |
+| read through a `none` `<id>` (`<id>.key`) | defined behaviour under minijinja's undefined mode | fixture required in 1063 |
+| existing hook / v1 `parse`-free hook | byte-identical to v1 | add `parse: json` inference ⇒ v1 hook changes behaviour |
+
+`serde_json` is already a dependency; no new third-party adoption. Integers above
+`u64` become floats (disclosed).
+
 ## Open items carried to Phase C
 
 - The three decisions in `design.md:§7` require Bob's ruling before impl 1063

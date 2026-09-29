@@ -109,6 +109,23 @@ proposed-design:
     that classifies every hook-node key and fails on any unclassified key,
     citing the 1069 coverage decision. Staged apply --trust stays
     hook-execution-only.
+  json-mode: >-
+    An opt-in parse: json on a producer (requiring id and capture: [stdout])
+    makes <id> the parsed stdout as a plain serde_json::Value: object keys as
+    <id>.key, arrays as <id>[i], scalars directly, null as none. Execution
+    metadata moves to an optional author-declared status-id bound to
+    {exit_code, stdout, stderr, parsed}; status-id is required when the producer
+    may not run or has allow-failure, so a none <id> is never ambiguous. Apply
+    order is failure-check first, then strict-UTF-8 decode, then parse: on exit 0
+    empty or malformed stdout is fatal; on a tolerated nonzero exit parse is
+    lenient and, on failure, <id> is none with parsed false and the raw text in
+    status-id.stdout. One ApplyError::HookOutput carries NotUtf8, Empty, or
+    NotJson{line,column} with no stdout bytes. Writing <id>.exit_code/.stdout/
+    .stderr on a JSON hook is a best-effort load error naming the subscript
+    escape and status-id, reusing undeclared_variables(true) which v1 already
+    needs. serde_json is already a dependency; no new dependency, timeout, or
+    size cap; integers above u64 become floats (disclosed). A parsed string is
+    data, not a template.
   composition: >-
     Result names are static and analyzed by the 1075 retained-program reference
     analysis, contributing zero environment need; the engine performs no ambient
@@ -165,6 +182,15 @@ decisions-for-approval:
   decode-policy: >-
     Recommend strict UTF-8 with a fatal, byte-free error, because decoded text
     can flow into later argv and lossy replacement would silently corrupt it.
+    On exit 0, malformed JSON under parse: json is fatal in the same way.
+  json-mode-shape: >-
+    Bob requested parsing stdout as JSON into <id>. Approve the exact shape:
+    parse: json makes <id> the parsed value; metadata goes to an
+    optional/required status-id. Not inferred from the earlier v1 approval.
+  json-capture: >-
+    Recommend parse: json require an explicit capture: [stdout] rather than
+    implying it, so capture stays the single control for stream piping. Two-way
+    door.
 validation:
   - >-
     A later hook when reading an earlier hook exit_code runs or is skipped
@@ -193,3 +219,17 @@ validation:
   - >-
     Dry-run lists every planned invocation with placeholders for deferred
     arguments and runs no hook; stop and abort build no plan.
+  - >-
+    parse: json binds <id> to the parsed value for object, array, string,
+    number, bool, and null stdout; a fixture proves each value type and a
+    read through a none <id>.
+  - >-
+    On exit 0, empty or malformed JSON stops the apply with a byte-free
+    HookOutput fault; a tolerated nonzero exit with unparseable stdout leaves
+    <id> none, status-id.parsed false, and status-id.stdout the raw text.
+  - >-
+    parse/status-id without id, parse: json without capture: [stdout], a
+    status-id collision, allow-failure on a JSON hook without a read status-id,
+    and the attribute-form <id>.exit_code on a JSON hook all fail at load with
+    the named messages; the attribute guard degrades to a key read for aliased
+    or looped roots.
