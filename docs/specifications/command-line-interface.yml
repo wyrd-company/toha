@@ -48,6 +48,20 @@ description: >-
   installed templates, with the same `templates alias` commands, and completes
   the add.
 
+  Environment trust. The five `toha_env_` Jinja values — user, host name,
+  editor, shell, and visual — are read from the environment only under trust,
+  and captured together or not at all. `stage` analyzes every Jinja surface
+  before it asks a question: without `--trust` it records the values as
+  unavailable when nothing references them, and when a reference exists it
+  refuses before any capture, seed, interview, render, submission, or staged
+  write, naming `stage --trust`. `stage --trust` captures all five once, even
+  when no reference exists yet, and the recorded snapshot carries through every
+  later batch. `continue` has no trust flag and performs no environment read: it
+  replays the recorded snapshot. A direct `apply` with a template grants the
+  same access through `--trust` or a current matching registry approval;
+  `apply --trust` on a staged interview controls hook execution only and does
+  not change the recorded environment snapshot.
+
   Trust. The hooks of a template run when the caller has approved the
   template's current executable surface in the user or system template
   registry, or when `--trust` is given. Approval is a digest of the template's

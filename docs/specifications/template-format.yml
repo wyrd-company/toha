@@ -28,8 +28,19 @@ description: >-
   array, or object) accepts either a literal of that type or a string, and a
   string is evaluated as an expression whose result has that type. `when`,
   `computed`, and `format` values are always expressions. The evaluation
-  context holds every top-level key of `data`, every answer given so far, and
-  every computed value evaluated so far. Toha registers the case filters
+  context holds every top-level key of `data`, every answer given so far,
+  every computed value evaluated so far, and seventeen reserved `toha_`
+  variables. The reserved variables are `toha_target_name`,
+  `toha_template_name`, `toha_template_formal_name`, `toha_template_aliases`,
+  `toha_template_source`, `toha_host_os`, `toha_host_arch`, `toha_host_os_name`,
+  `toha_host_os_id`, `toha_host_os_id_like`, `toha_is_admin`,
+  `toha_is_interactive`, `toha_env_user`, `toha_env_hostname`, `toha_env_editor`,
+  `toha_env_shell`, and `toha_env_visual`. Each is present at every render
+  surface — question, computed, message, hook, file path, and file body — with a
+  fixed type; an unavailable value is `none`, never undefined. The five
+  `toha_env_` values are read from the environment only under stage or apply
+  trust; without trust they are `none`. A staged interview created before these
+  variables existed injects none of them. Toha registers the case filters
   `kebab`, `snake`, `camel`, `pascal`, `constant`, and `title`, the `toyaml`
   filter, and the date function `now()` with the `dateformat` filter, in
   addition to the minijinja built-ins, the `tojson` filter, macros
@@ -48,7 +59,10 @@ description: >-
   duplicate is a load error. The `<name>` bound by an `each` is a load error
   when it equals any id in that namespace, wherever the id is defined; two
   `each` entries may bind the same `<name>`. Answers are one flat object keyed
-  by id.
+  by id. The seventeen reserved `toha_` variable names are also reserved in this
+  namespace: a `data` key, question id, computed id, or `each` binding that
+  equals one is a load error naming every colliding location. Other `toha_`
+  names remain available.
 
   Interview. `interview` is an ordered list of nodes. Every node has an
   optional `when` expression; a node whose `when` is false is skipped, with all

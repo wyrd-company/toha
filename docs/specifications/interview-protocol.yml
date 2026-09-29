@@ -159,8 +159,18 @@ description: >-
   readable. The staged record holds the target path, the formal name and
   resolved commit of the template, whether the argument resolved by name, the
   instant that `now()` returns for this
-  interview, and every accepted answers submission, in order. Resuming replays
-  those submissions, so the interview position is derived, not stored.
+  interview, and every accepted answers submission, in order. A record also
+  carries a versioned invocation context: either the current form, holding the
+  short name, aliases, source, host facts, execution facts, and the environment
+  snapshot (unavailable, or the five captured optional values), or the legacy
+  form. A record written before the context existed, or by the legacy
+  constructor, has no context field and decodes as legacy; a legacy record
+  stays byte-compatible with a pre-context record and injects none of the
+  reserved variables on replay. The wire never duplicates the target or formal
+  name and holds no environment map or grant token; the captured strings are
+  plaintext in the existing staged JSON under the existing state-directory and
+  process-umask behavior. Each per-call input modality is unchanged. Resuming
+  replays those submissions, so the interview position is derived, not stored.
   `apply <TEMPLATE> <PATH>` resumes the staged interview when `<TEMPLATE>`
   resolves to the formal name the record holds, and refuses otherwise. A
   staged record without the name-resolution field treats it as false.
