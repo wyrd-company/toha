@@ -2,7 +2,11 @@
 // relationships:
 //   implements: architecture
 // ---
-use crate::jinja::{Expr, Tmpl, Typed, is_global};
+use crate::context::{
+    EnvironmentAdmissionError, EnvironmentDecision, EnvironmentNeed, EnvironmentSnapshot,
+    FixedEnvironmentSource, RenderOrigin,
+};
+use crate::jinja::{Expr, Tmpl, Typed, is_global, is_reserved};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use indexmap::IndexMap;
 use regex::Regex;
@@ -58,6 +62,57 @@ pub struct Template {
     /// Parsed, post-`!include`, pre-render top-level hook node values, in list
     /// order.
     pub top_hook_nodes: Vec<Value>,
+    /// The retained, compiled source-tree render program, in deterministic walk
+    /// order. Planning renders these; it does not reopen a Jinja source after
+    /// admission.
+    pub render_program: Vec<SourceEntry>,
+    /// Whether this template reserves and exposes the seventeen context names.
+    /// A current load reserves them; a legacy staged load keeps the pre-context
+    /// available/reserved set so an existing authored identifier is not turned
+    /// into a collision mid-stage.
+    reserves_context: bool,
+    /// The immutable analysis result over the complete render program: whether
+    /// any compiled surface can observe a fixed environment value, and the first
+    /// location that does.
+    environment_need: EnvironmentNeed,
+}
+/// One compiled source-tree file: its relative path (as compiled path-segment
+/// templates) and its body, retained at load so planning renders without
+/// reopening the file.
+#[derive(Debug)]
+pub struct SourceEntry {
+    pub relative: PathBuf,
+    pub source: PathBuf,
+    pub segments: Vec<Tmpl>,
+    pub body: SourceBody,
+}
+#[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
+pub enum SourceBody {
+    /// A static file, copied verbatim from its source path.
+    Static,
+    /// A rendered body, compiled at load.
+    Rendered(Tmpl),
+    /// A non-static, non-UTF-8 body. Planning surfaces the existing
+    /// "add it to static" error without reopening the file.
+    NonUtf8,
+}
+impl Template {
+    /// Combines the immutable render-program analysis with one caller decision,
+    /// capturing the closed five-value environment snapshot exactly once when
+    /// granted and never otherwise.
+    pub fn admit_environment(
+        &self,
+        decision: EnvironmentDecision,
+        source: &mut impl FixedEnvironmentSource,
+    ) -> Result<EnvironmentSnapshot, EnvironmentAdmissionError> {
+        crate::context::admit(&self.environment_need, decision, source)
+    }
+
+    /// Whether this template reserves and exposes the seventeen context names.
+    pub fn reserves_context(&self) -> bool {
+        self.reserves_context
+    }
 }
 /// Collects interview hook node values in interview order (depth-first through
 /// groups), so the reviewable surface matches the runtime hook order.
@@ -203,6 +258,10 @@ pub struct FileRule {
     pub source: PathBuf,
     pub path: Tmpl,
     pub when: Option<Expr>,
+    /// The rule's source file body, compiled at load with the `each` binding in
+    /// scope, so planning renders it without reopening the file. `None` only for
+    /// a non-UTF-8 source, which planning surfaces on its existing read path.
+    pub body: Option<Tmpl>,
 }
 /// `<expression> as <name>`: the expression yields a sequence, and each item is
 /// bound to `binding` in turn.
@@ -439,6 +498,9 @@ struct Builder {
     /// Every question id, computed id, and `data` key, wherever it is defined.
     answer_ids: HashSet<String>,
     root: PathBuf,
+    /// Whether reserved context names collide with authored ids and resolve as
+    /// available references (a current load) or not (a legacy staged load).
+    reserves_context: bool,
 }
 /// Collects question and computed ids from raw interview nodes, including nested groups.
 fn answer_ids(values: &[Value], ids: &mut HashSet<String>) {
@@ -471,13 +533,29 @@ impl Builder {
     }
     fn refs(&mut self, refs: &HashSet<String>, path: &str, local: &[&str]) {
         for name in refs {
-            if !self.seen.contains(name) && !local.contains(&name.as_str()) && !is_global(name) {
+            if !self.seen.contains(name)
+                && !local.contains(&name.as_str())
+                && !is_global(name)
+                && !(self.reserves_context && is_reserved(name))
+            {
                 problem(
                     &mut self.problems,
                     path,
                     format!("id is not defined by an earlier node: {name}"),
                 );
             }
+        }
+    }
+    /// Rejects an authored id that collides with a reserved context name, for a
+    /// current load. Every colliding location is named so the aggregate load
+    /// error lists them all.
+    fn reserve(&mut self, id: &Id, path: &str) {
+        if self.reserves_context && is_reserved(id.as_str()) {
+            problem(
+                &mut self.problems,
+                path,
+                format!("\"{id}\" is a reserved Toha context name"),
+            );
         }
     }
     fn tmpl(&mut self, value: Option<&Value>, path: &str) -> Option<Tmpl> {
@@ -579,6 +657,7 @@ impl Builder {
         if self.answer_ids.contains(binding.as_str()) {
             problem(&mut self.problems, path, format!("duplicate id: {binding}"));
         }
+        self.reserve(&binding, path);
         let expr = self.expr(Some(&Value::String(expression.into())), path, &[])?;
         Some(Each { expr, binding })
     }
@@ -728,6 +807,9 @@ impl Builder {
                 continue;
             }
             let id = self.id(map.get("id"), &format!("{path}.id"));
+            if let Some(id) = &id {
+                self.reserve(id, &format!("{path}.id"));
+            }
             if map.contains_key("computed") {
                 let expr = self.expr(map.get("computed"), &format!("{path}.computed"), &[]);
                 if let (Some(id), Some(expr)) = (id, expr) {
@@ -848,7 +930,20 @@ impl Builder {
     }
 }
 impl Template {
+    /// Loads a template in the current context mode: the seventeen reserved
+    /// names collide with authored ids and resolve as available references.
     pub fn load(folder: &Path) -> Result<Self, LoadError> {
+        Self::load_with(folder, true)
+    }
+
+    /// Loads a template in legacy staged mode: the seventeen names are neither
+    /// reserved nor available, so a pre-context authored identifier is not
+    /// turned into a collision while its old stage is completed.
+    pub fn load_legacy(folder: &Path) -> Result<Self, LoadError> {
+        Self::load_with(folder, false)
+    }
+
+    fn load_with(folder: &Path, reserves_context: bool) -> Result<Self, LoadError> {
         let root = folder
             .canonicalize()
             .map_err(|e| error("template.yml", e.to_string()))?;
@@ -915,6 +1010,7 @@ impl Template {
             names: HashSet::new(),
             answer_ids: HashSet::new(),
             root: root.clone(),
+            reserves_context,
         };
         if let Some(values) = &raw.data {
             b.answer_ids.extend(values.keys().cloned());
@@ -927,6 +1023,7 @@ impl Template {
         if let Some(values) = &raw.data {
             for (key, value) in values {
                 if let Some(id) = b.id(Some(&Value::String(key.clone())), &format!("data.{key}")) {
+                    b.reserve(&id, &format!("data.{key}"));
                     b.seen.insert(id.as_str().into());
                     data.insert(id, value.clone());
                 }
@@ -974,18 +1071,19 @@ impl Template {
             let Some(each) = each else {
                 continue;
             };
-            let target = b.bound(Some(&each), |b| {
+            let (target, body) = b.bound(Some(&each), |b| {
                 let target = b.tmpl(map.get("path"), &format!("{path}.path"));
-                match fs::read_to_string(root.join(&source)) {
-                    Ok(content) => {
-                        b.tmpl(Some(&Value::String(content)), &format!("{path}.source"));
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {}
+                let body = match fs::read_to_string(root.join(&source)) {
+                    Ok(content) => b.tmpl(Some(&Value::String(content)), &format!("{path}.source")),
+                    // A non-UTF-8 body is tolerated at load; planning surfaces
+                    // it on its existing read path.
+                    Err(error) if error.kind() == std::io::ErrorKind::InvalidData => None,
                     Err(error) => {
-                        problem(&mut b.problems, format!("{path}.source"), error.to_string())
+                        problem(&mut b.problems, format!("{path}.source"), error.to_string());
+                        None
                     }
-                }
-                target
+                };
+                (target, body)
             });
             if let Some(path) = target {
                 files.push(FileRule {
@@ -993,10 +1091,11 @@ impl Template {
                     source,
                     path,
                     when,
+                    body,
                 });
             }
         }
-        let hooks = raw
+        let hooks: Vec<HookNode> = raw
             .hooks
             .as_deref()
             .unwrap_or_default()
@@ -1030,6 +1129,28 @@ impl Template {
             &mut interview_hook_nodes,
         );
         let top_hook_nodes = raw.hooks.clone().unwrap_or_default();
+        // Compile and retain the source-tree render program. Syntax errors in a
+        // non-static body or a path segment become attributable load errors,
+        // rather than first appearing during planning. Bodies are not
+        // reference-checked: MiniJinja renders an undefined value leniently, so
+        // a source body may reference an id that is only conditionally present.
+        let mut render_program = Vec::new();
+        compile_source_tree(
+            &source_dir,
+            &source_dir,
+            &root,
+            &ignore,
+            &static_files,
+            &mut render_program,
+            &mut b.problems,
+        );
+        if !b.problems.is_empty() {
+            return Err(LoadError {
+                problems: b.problems,
+            });
+        }
+        let environment_need =
+            compute_environment_need(&interview, &files, &hooks, &messages, &render_program);
         Ok(Self {
             name: raw.name,
             description: raw.description,
@@ -1044,6 +1165,269 @@ impl Template {
             messages,
             interview_hook_nodes,
             top_hook_nodes,
+            render_program,
+            reserves_context,
+            environment_need,
         })
+    }
+}
+
+/// Recursively compiles the source tree in deterministic (sorted) order,
+/// retaining each file's compiled path segments and body. Mirrors planning's
+/// walk: it skips the root `template.yml` and `ignore` matches, and rejects a
+/// source symlink.
+fn compile_source_tree(
+    root: &Path,
+    dir: &Path,
+    template_root: &Path,
+    ignore: &GlobSet,
+    static_files: &GlobSet,
+    out: &mut Vec<SourceEntry>,
+    problems: &mut Vec<Problem>,
+) {
+    if !dir.exists() {
+        return;
+    }
+    let mut entries = match fs::read_dir(dir) {
+        Ok(entries) => match entries.collect::<Result<Vec<_>, _>>() {
+            Ok(entries) => entries,
+            Err(e) => {
+                problem(problems, dir.display().to_string(), e.to_string());
+                return;
+            }
+        },
+        Err(e) => {
+            problem(problems, dir.display().to_string(), e.to_string());
+            return;
+        }
+    };
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
+        let source = entry.path();
+        let relative = source.strip_prefix(root).unwrap().to_owned();
+        if root == template_root && dir == root && entry.file_name() == "template.yml" {
+            continue;
+        }
+        if ignore.is_match(&relative) {
+            continue;
+        }
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(e) => {
+                problem(problems, source.display().to_string(), e.to_string());
+                continue;
+            }
+        };
+        if file_type.is_symlink() {
+            problem(
+                problems,
+                source.display().to_string(),
+                "source symlink not supported",
+            );
+            continue;
+        }
+        if file_type.is_dir() {
+            compile_source_tree(
+                root,
+                &source,
+                template_root,
+                ignore,
+                static_files,
+                out,
+                problems,
+            );
+            continue;
+        }
+        let path = source.display().to_string();
+        let mut segments = Vec::new();
+        for component in relative.components() {
+            let text = component.as_os_str().to_string_lossy();
+            match Tmpl::compile(text.into_owned()) {
+                Ok(segment) => segments.push(segment),
+                Err(e) => problem(problems, format!("{path} (path)"), e.to_string()),
+            }
+        }
+        let body = if static_files.is_match(&relative) {
+            SourceBody::Static
+        } else {
+            match fs::read(&source) {
+                Ok(bytes) => match String::from_utf8(bytes) {
+                    Ok(text) => match Tmpl::compile(text) {
+                        Ok(body) => SourceBody::Rendered(body),
+                        Err(e) => {
+                            problem(problems, path.clone(), e.to_string());
+                            SourceBody::NonUtf8
+                        }
+                    },
+                    Err(_) => SourceBody::NonUtf8,
+                },
+                Err(e) => {
+                    problem(problems, path.clone(), e.to_string());
+                    SourceBody::NonUtf8
+                }
+            }
+        };
+        out.push(SourceEntry {
+            relative,
+            source,
+            segments,
+            body,
+        });
+    }
+}
+
+/// The first surface, in deterministic order, whose compiled Jinja can observe
+/// a fixed environment value, or `EnvironmentNeed::None`.
+fn compute_environment_need(
+    interview: &[Node],
+    files: &[FileRule],
+    hooks: &[HookNode],
+    messages: &ApplyMessages,
+    render_program: &[SourceEntry],
+) -> EnvironmentNeed {
+    let mut find = NeedScan::default();
+    find.nodes(interview, "interview");
+    for (i, hook) in hooks.iter().enumerate() {
+        find.hook(hook, &format!("hooks[{i}]"));
+    }
+    if let Some(t) = &messages.before_apply {
+        find.tmpl(t, "messages.before-apply");
+    }
+    if let Some(t) = &messages.after_apply {
+        find.tmpl(t, "messages.after-apply");
+    }
+    for (i, rule) in files.iter().enumerate() {
+        let path = format!("files[{i}]");
+        find.opt_expr(rule.when.as_ref(), &format!("{path}.when"));
+        find.expr(&rule.each.expr, &format!("{path}.each"));
+        find.tmpl(&rule.path, &format!("{path}.path"));
+        if let Some(body) = &rule.body {
+            find.tmpl(body, &format!("{path}.source"));
+        }
+    }
+    for entry in render_program {
+        let label = entry.source.display().to_string();
+        for segment in &entry.segments {
+            find.tmpl(segment, &format!("{label} (path)"));
+        }
+        if let SourceBody::Rendered(body) = &entry.body {
+            find.tmpl(body, &label);
+        }
+    }
+    match find.found {
+        Some(origin) => EnvironmentNeed::Needed(origin),
+        None => EnvironmentNeed::None,
+    }
+}
+
+/// Accumulates the first environment-need location across the render program.
+#[derive(Default)]
+struct NeedScan {
+    found: Option<RenderOrigin>,
+}
+impl NeedScan {
+    fn mark(&mut self, label: &str, needed: bool) {
+        if needed && self.found.is_none() {
+            self.found = Some(RenderOrigin::new(label));
+        }
+    }
+    fn tmpl(&mut self, tmpl: &Tmpl, label: &str) {
+        self.mark(label, tmpl.needs_environment());
+    }
+    fn opt_tmpl(&mut self, tmpl: Option<&Tmpl>, label: &str) {
+        if let Some(tmpl) = tmpl {
+            self.tmpl(tmpl, label);
+        }
+    }
+    fn expr(&mut self, expr: &Expr, label: &str) {
+        self.mark(label, expr.needs_environment());
+    }
+    fn opt_expr(&mut self, expr: Option<&Expr>, label: &str) {
+        if let Some(expr) = expr {
+            self.expr(expr, label);
+        }
+    }
+    fn typed<T: Clone + serde::de::DeserializeOwned>(&mut self, typed: &Typed<T>, label: &str) {
+        self.mark(label, typed.needs_environment());
+    }
+    fn opt_typed<T: Clone + serde::de::DeserializeOwned>(
+        &mut self,
+        typed: Option<&Typed<T>>,
+        label: &str,
+    ) {
+        if let Some(typed) = typed {
+            self.typed(typed, label);
+        }
+    }
+    fn hook(&mut self, hook: &HookNode, label: &str) {
+        self.opt_expr(hook.when.as_ref(), &format!("{label}.when"));
+        if let Some(each) = &hook.each {
+            self.expr(&each.expr, &format!("{label}.each"));
+        }
+        self.opt_tmpl(hook.command.cwd.as_ref(), &format!("{label}.cwd"));
+        match &hook.command.program {
+            HookProgram::Run(args) => {
+                for (i, arg) in args.iter().enumerate() {
+                    self.tmpl(arg, &format!("{label}.run[{i}]"));
+                }
+            }
+            HookProgram::Script { args, .. } => {
+                for (i, arg) in args.iter().enumerate() {
+                    self.tmpl(arg, &format!("{label}.args[{i}]"));
+                }
+            }
+        }
+    }
+    fn nodes(&mut self, nodes: &[Node], prefix: &str) {
+        for (i, node) in nodes.iter().enumerate() {
+            let label = format!("{prefix}[{i}]");
+            match node {
+                Node::Question(q) => {
+                    self.tmpl(&q.prompt, &format!("{label}.prompt"));
+                    self.opt_tmpl(q.description.as_ref(), &format!("{label}.description"));
+                    self.opt_tmpl(q.placeholder.as_ref(), &format!("{label}.placeholder"));
+                    self.typed(&q.required, &format!("{label}.required"));
+                    self.opt_expr(q.when.as_ref(), &format!("{label}.when"));
+                    self.opt_typed(q.validate.min.as_ref(), &format!("{label}.validate.min"));
+                    self.opt_typed(q.validate.max.as_ref(), &format!("{label}.validate.max"));
+                    self.opt_expr(q.format.as_ref(), &format!("{label}.format"));
+                    match &q.kind {
+                        QuestionKind::Text { default } | QuestionKind::Multiline { default } => {
+                            self.opt_tmpl(default.as_ref(), &format!("{label}.default"));
+                        }
+                        QuestionKind::Confirm { default } => {
+                            self.opt_typed(default.as_ref(), &format!("{label}.default"));
+                        }
+                        QuestionKind::Select { options, default } => {
+                            self.typed(options, &format!("{label}.options"));
+                            self.opt_tmpl(default.as_ref(), &format!("{label}.default"));
+                        }
+                        QuestionKind::MultiSelect { options, default } => {
+                            self.typed(options, &format!("{label}.options"));
+                            self.opt_typed(default.as_ref(), &format!("{label}.default"));
+                        }
+                        QuestionKind::TextLoop { default, min, max } => {
+                            self.opt_typed(default.as_ref(), &format!("{label}.default"));
+                            self.opt_typed(min.as_ref(), &format!("{label}.loop.min"));
+                            self.opt_typed(max.as_ref(), &format!("{label}.loop.max"));
+                        }
+                    }
+                }
+                Node::Computed(c) => {
+                    self.opt_expr(c.when.as_ref(), &format!("{label}.when"));
+                    self.expr(&c.expr, &format!("{label}.computed"));
+                }
+                Node::Group(g) => {
+                    self.opt_expr(g.when.as_ref(), &format!("{label}.when"));
+                    self.nodes(&g.nodes, &format!("{label}.nodes"));
+                }
+                Node::Message(m) => {
+                    self.opt_expr(m.when.as_ref(), &format!("{label}.when"));
+                    self.tmpl(&m.text, &format!("{label}.message"));
+                }
+                Node::Hook(h) => self.hook(h, label.as_str()),
+                Node::Flow(f) => self.opt_expr(f.when.as_ref(), &format!("{label}.when")),
+            }
+        }
     }
 }

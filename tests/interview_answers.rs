@@ -14,10 +14,16 @@ use std::{
 use toha::config::{ConfigEntry, ConfigLayer, ConfigOrigin, DefaultSource, PresetName};
 use toha::{AnswerError, Interview, Seed, Template, protocol};
 
+fn ctx() -> toha::context::InvocationContext {
+    toha::context::InvocationContext::for_target(
+        toha::staging::canonical_target(std::path::Path::new(".")).unwrap(),
+    )
+}
 fn seed() -> Seed {
     Seed {
         now: "2026-01-02T03:04:05+00:00[UTC]".parse().unwrap(),
         defaults: Default::default(),
+        context: ctx(),
     }
 }
 
@@ -1495,7 +1501,10 @@ fn configured_default_that_fails_a_constraint_is_attributed_to_configuration() {
         &configured(json!({"mode": "medium"})),
     )
     .unwrap();
-    let Interview::Asking(pending) = resolution.start(&template, seed().now).unwrap() else {
+    let Interview::Asking(pending) = resolution
+        .start_with_context(&template, seed().now, ctx())
+        .unwrap()
+    else {
         panic!("expected questions")
     };
     let raw = protocol::parse_answers(r#"{"name": "Alpha", "label": "First"}"#).unwrap();
@@ -1581,7 +1590,10 @@ fn referenced_configured_constraint_error_keeps_mapping_preset_and_value() {
     .into();
     let resolution =
         toha::interview::configured_defaults("sample", &template, &presets, &mappings).unwrap();
-    let Interview::Asking(pending) = resolution.start(&template, seed().now).unwrap() else {
+    let Interview::Asking(pending) = resolution
+        .start_with_context(&template, seed().now, ctx())
+        .unwrap()
+    else {
         panic!("expected prompt")
     };
     assert_eq!(

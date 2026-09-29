@@ -24,6 +24,12 @@ pub struct ResolvedTemplate {
     /// template, which run hooks only through `--trust`.
     pub approval: Option<ReviewDigest>,
     pub named: bool,
+    /// Effective aliases of the selected named registry entry, in registry
+    /// order; empty for a folder, direct Git, or bundled selection.
+    pub aliases: Vec<String>,
+    /// The selected named entry's source; `None` when the selection has no
+    /// registry entry.
+    pub source: Option<String>,
 }
 
 #[derive(Debug)]
@@ -81,6 +87,8 @@ fn entry(formal: String, registry: &Registry) -> Option<ResolvedTemplate> {
         folder: listed.entry.path.clone(),
         approval: listed.approval.clone(),
         named: true,
+        aliases: listed.entry.aliases.clone(),
+        source: Some(listed.entry.source.clone()),
     })
 }
 
@@ -155,6 +163,8 @@ fn fetch_new(
                     folder: selected_folder(&root, address)?,
                     approval: None,
                     named: false,
+                    aliases: Vec::new(),
+                    source: None,
                 });
             }
         }
@@ -173,6 +183,8 @@ fn fetch_new(
         folder: selected_folder(&root, address)?,
         approval: None,
         named: false,
+        aliases: Vec::new(),
+        source: None,
     })
 }
 
@@ -191,12 +203,16 @@ pub fn resolve_template(
             folder: folder.clone(),
             approval: None,
             named: false,
+            aliases: Vec::new(),
+            source: None,
         }),
         Address::Git { .. } => {
             let formal = address.formal_name(&config.hosts);
             if let Some(mut found) = entry(formal, registry) {
                 found.approval = None;
                 found.named = false;
+                found.aliases = Vec::new();
+                found.source = None;
                 Ok(found)
             } else {
                 fetch_new(&address, config, dirs)
@@ -265,6 +281,8 @@ pub fn resume_template(
                 None
             },
             named,
+            aliases: Vec::new(),
+            source: None,
         });
     }
     if let Some(found) = entry(formal.into(), registry) {
@@ -298,6 +316,8 @@ pub fn resume_template(
             None
         },
         named,
+        aliases: Vec::new(),
+        source: None,
     })
 }
 

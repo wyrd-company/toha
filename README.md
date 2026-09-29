@@ -100,8 +100,15 @@ document:
 ```rust
 use std::path::Path;
 use toha::{Interview, Seed, Template, protocol};
+use toha::context::InvocationContext;
+use toha::staging::canonical_target;
 let template = Template::load(Path::new("docs/examples/demo")).unwrap();
-let seed = Seed { now: "2026-01-01T00:00:00Z[UTC]".parse().unwrap(), defaults: Default::default() };
+let target = canonical_target(Path::new("./notes")).unwrap();
+let seed = Seed {
+    now: "2026-01-01T00:00:00Z[UTC]".parse().unwrap(),
+    defaults: Default::default(),
+    context: InvocationContext::for_target(target),
+};
 let Interview::Asking(pending) = Interview::start(&template, seed).unwrap() else { panic!("expected questions") };
 let answers = protocol::parse_answers(r#"{"title":"Sample note","topic":"Research"}"#).unwrap();
 let Interview::Complete(done) = pending.answer(answers).unwrap() else { panic!("expected complete interview") };

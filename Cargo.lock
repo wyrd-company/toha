@@ -3823,6 +3823,7 @@ dependencies = [
  "minijinja",
  "pretty_assertions",
  "regex",
+ "rustix",
  "rustls",
  "serde",
  "serde_json",

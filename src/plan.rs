@@ -144,6 +144,8 @@ pub enum PlanError {
         first: PathBuf,
         second: PathBuf,
     },
+    #[error("plan target does not match the completed interview's context target")]
+    ContextTarget,
 }
 fn rendered(text: &str, ctx: &impl serde::Serialize, source: &Path) -> Result<String, PlanError> {
     Tmpl::compile(text.into())
@@ -151,24 +153,6 @@ fn rendered(text: &str, ctx: &impl serde::Serialize, source: &Path) -> Result<St
         .map_err(|e| PlanError::Render {
             path: source.into(),
             message: e.to_string(),
-        })
-}
-fn rendered_field(
-    text: &str,
-    ctx: &impl serde::Serialize,
-    source: &Path,
-    field: impl Into<String>,
-) -> Result<String, PlanError> {
-    Tmpl::compile(text.into())
-        .and_then(|t| t.render(ctx))
-        .map_err(|error| PlanError::Render {
-            path: source.into(),
-            message: TemplateFault {
-                field: field.into(),
-                expression: Some(text.into()),
-                message: error.to_string(),
-            }
-            .to_string(),
         })
 }
 fn read_render(path: &Path, ctx: &impl serde::Serialize) -> Result<String, PlanError> {
@@ -182,31 +166,20 @@ fn read_render(path: &Path, ctx: &impl serde::Serialize) -> Result<String, PlanE
     })?;
     rendered(&text, ctx, path)
 }
-fn target_path(
-    path: &Path,
-    source: &Path,
-    ctx: &impl serde::Serialize,
-) -> Result<Option<TargetPath>, PlanError> {
-    let mut parts = Vec::new();
-    for segment in path.components() {
-        let expression = segment.as_os_str().to_string_lossy();
-        let value = rendered_field(&expression, ctx, source, "path")?;
-        if value.is_empty() {
-            return Ok(None);
-        }
-        parts.push(value);
-    }
-    TargetPath::parse(&parts.join("/"))
-        .map(Some)
-        .map_err(PlanError::Path)
-}
 impl Plan {
     pub fn build(
         template: &Template,
         completed: &Completed,
         target: &CanonicalTarget,
     ) -> Result<Self, PlanError> {
-        let ctx = context_from_answers(&completed.answers, &template.data, &completed.now);
+        // The plan renders under the completed interview's context. A current
+        // context must carry the target the plan is applied to; a legacy context
+        // carries the same target restored during replay.
+        if completed.context().target() != target {
+            return Err(PlanError::ContextTarget);
+        }
+        let mut ctx = context_from_answers(&completed.answers, &template.data, &completed.now);
+        completed.context().project(&mut ctx);
         let mut plan = Self {
             files: vec![],
             conflicts: vec![],
@@ -214,14 +187,47 @@ impl Plan {
             before_apply: None,
             after_apply: None,
         };
-        walk(
-            &template.source_dir,
-            &template.source_dir,
-            target.as_path(),
-            template,
-            &ctx,
-            &mut plan,
-        )?;
+        // Render the retained source-tree program; it is not reopened here.
+        for entry in &template.render_program {
+            let mut parts = Vec::new();
+            let mut skip = false;
+            for segment in &entry.segments {
+                let value = segment.render(&ctx).map_err(|e| PlanError::Render {
+                    path: entry.source.clone(),
+                    message: TemplateFault {
+                        field: "path".into(),
+                        expression: Some(segment.source().into()),
+                        message: e.to_string(),
+                    }
+                    .to_string(),
+                })?;
+                if value.is_empty() {
+                    skip = true;
+                    break;
+                }
+                parts.push(value);
+            }
+            if skip {
+                continue;
+            }
+            let path = TargetPath::parse(&parts.join("/")).map_err(PlanError::Path)?;
+            let content = match &entry.body {
+                crate::template::SourceBody::Static => Content::Copied(entry.source.clone()),
+                crate::template::SourceBody::Rendered(body) => {
+                    Content::Rendered(body.render(&ctx).map_err(|e| PlanError::Render {
+                        path: entry.source.clone(),
+                        message: e.to_string(),
+                    })?)
+                }
+                crate::template::SourceBody::NonUtf8 => {
+                    return Err(PlanError::Render {
+                        path: entry.source.clone(),
+                        message: "file is not UTF-8; add it to static".into(),
+                    });
+                }
+            };
+            plan.add(path, content, entry.source.clone(), target.as_path())?;
+        }
         for (i, rule) in template.files.iter().enumerate() {
             let origin = template.root.join(&rule.source);
             if let Some(when) = &rule.when {
@@ -258,7 +264,15 @@ impl Plan {
                     .to_string(),
                 })?;
                 let path = TargetPath::parse(&path_text).map_err(PlanError::Path)?;
-                let content = Content::Rendered(read_render(&origin, &local)?);
+                let rendered = match &rule.body {
+                    Some(body) => body.render(&local).map_err(|e| PlanError::Render {
+                        path: origin.clone(),
+                        message: e.to_string(),
+                    })?,
+                    // A non-UTF-8 rule body was tolerated at load; surface it now.
+                    None => read_render(&origin, &local)?,
+                };
+                let content = Content::Rendered(rendered);
                 plan.add(path, content, origin.clone(), target.as_path())?;
             }
         }
@@ -367,65 +381,6 @@ fn plan_hook(
         cwd,
         template_root: template.root.clone(),
     })
-}
-fn walk(
-    root: &Path,
-    dir: &Path,
-    target: &Path,
-    template: &Template,
-    ctx: &impl serde::Serialize,
-    plan: &mut Plan,
-) -> Result<(), PlanError> {
-    if !dir.exists() {
-        return Ok(());
-    }
-    let mut entries = fs::read_dir(dir)
-        .map_err(|source| PlanError::Io {
-            path: dir.into(),
-            source,
-        })?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|source| PlanError::Io {
-            path: dir.into(),
-            source,
-        })?;
-    entries.sort_by_key(|e| e.file_name());
-    for entry in entries {
-        let source = entry.path();
-        let relative = source.strip_prefix(root).unwrap();
-        if root == template.root && dir == root && entry.file_name() == "template.yml" {
-            continue;
-        }
-        if template.ignore.is_match(relative) {
-            continue;
-        }
-        let file_type = entry
-            .file_type()
-            .map_err(|source: std::io::Error| PlanError::Io {
-                path: entry.path(),
-                source,
-            })?;
-        if file_type.is_symlink() {
-            return Err(PlanError::Path(format!(
-                "source symlink not supported: {}",
-                source.display()
-            )));
-        }
-        if file_type.is_dir() {
-            walk(root, &source, target, template, ctx, plan)?;
-            continue;
-        }
-        let Some(path) = target_path(relative, &source, ctx)? else {
-            continue;
-        };
-        let content = if template.static_files.is_match(relative) {
-            Content::Copied(source.clone())
-        } else {
-            Content::Rendered(read_render(&source, ctx)?)
-        };
-        plan.add(path, content, source, target)?;
-    }
-    Ok(())
 }
 #[cfg(test)]
 mod tests {

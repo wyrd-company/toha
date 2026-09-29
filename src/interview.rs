@@ -4,7 +4,8 @@
 // ---
 use crate::{
     config::{ConfigEntry, DefaultSource, PresetName},
-    jinja::{Expr, Typed, context_from_answers, is_global},
+    context::InvocationContext,
+    jinja::{Expr, Typed, context_from_answers, is_global, is_reserved},
     template::{FlowAction, Id, Node, Question, QuestionKind, SkipScope, Template},
 };
 use indexmap::IndexMap;
@@ -38,11 +39,13 @@ pub type RawAnswers = IndexMap<Id, RawAnswer>;
 pub struct Seed {
     pub now: jiff::Zoned,
     pub defaults: IndexMap<Id, RawAnswer>,
+    pub context: InvocationContext,
 }
 #[derive(Debug, Clone)]
 struct InterviewSeed {
     now: jiff::Zoned,
     defaults: IndexMap<Id, DefaultBankEntry>,
+    context: InvocationContext,
 }
 #[derive(Debug, Clone)]
 enum DefaultBankEntry {
@@ -126,6 +129,8 @@ pub struct Completed {
     pub now: jiff::Zoned,
     /// Whether a flow `dry-run` fired; re-derived each walk, never persisted.
     pub disposition: Disposition,
+    /// The immutable invocation context carried from the seed.
+    context: InvocationContext,
     skipped: Skipped,
     step_start: usize,
 }
@@ -135,6 +140,10 @@ type Skipped = IndexMap<Id, usize>;
 impl Completed {
     pub fn disposition(&self) -> Disposition {
         self.disposition
+    }
+    /// The immutable invocation context this interview carried.
+    pub fn context(&self) -> &InvocationContext {
+        &self.context
     }
     /// The one policy seam: how a completed interview's plan step is treated.
     pub fn step(&self) -> Step {
@@ -378,13 +387,19 @@ fn context(
     answers: &Answers,
     seed: &InterviewSeed,
 ) -> std::collections::BTreeMap<String, Value> {
-    context_from_answers(answers, &template.data, &seed.now)
+    let mut values = context_from_answers(answers, &template.data, &seed.now);
+    // The single context builder: a current invocation projects the seventeen
+    // reserved names; a legacy invocation projects none. Readiness, interview
+    // rendering, and planning all build the context here.
+    seed.context.project(&mut values);
+    values
 }
 fn has_refs(refs: &HashSet<String>, answers: &Answers, template: &Template) -> bool {
     refs.iter().all(|r| {
         template.data.keys().any(|id| id.as_str() == r)
             || answers.keys().any(|id| id.as_str() == r)
             || is_global(r)
+            || (template.reserves_context() && is_reserved(r))
     })
 }
 fn typed_ready<T: Clone + serde::de::DeserializeOwned>(
@@ -978,10 +993,15 @@ impl Resolution {
         &self.warnings
     }
 
-    pub fn start<'a>(
+    /// Consumes the origin-bearing configured defaults and the supplied
+    /// invocation context, moving each `ResolvedDefault` into the configured
+    /// default bank. This is the configured sibling of [`Interview::start`]; it
+    /// never flattens provenance through `Seed` or `into_flat_defaults`.
+    pub fn start_with_context<'a>(
         self,
         template: &'a Template,
         now: jiff::Zoned,
+        context: InvocationContext,
     ) -> Result<Interview<'a>, EvalError> {
         Interview::start_with_bank(
             template,
@@ -992,6 +1012,7 @@ impl Resolution {
                     .into_iter()
                     .map(|(id, value)| (id, DefaultBankEntry::Configured(value)))
                     .collect(),
+                context,
             },
         )
     }
@@ -1323,6 +1344,7 @@ fn unresolved(nodes: &[Node], available: &mut HashSet<String>, t: &Template) -> 
                     !available.contains(*r)
                         && !t.data.keys().any(|d| d.as_str() == r.as_str())
                         && !is_global(r)
+                        && !(t.reserves_context() && is_reserved(r))
                 })
                 .collect();
             missing.sort();
@@ -1761,6 +1783,7 @@ fn advance(mut state: Advance<'_>) -> Result<Interview<'_>, EvalError> {
             hooks: state.hooks,
             now: state.seed.now,
             disposition: state.disposition,
+            context: state.seed.context,
             skipped: state.skipped,
             step_start: state.step_start,
         }))
@@ -1800,6 +1823,7 @@ impl<'a> Interview<'a> {
                     .into_iter()
                     .map(|(id, value)| (id, DefaultBankEntry::Seed(value)))
                     .collect(),
+                context: seed.context,
             },
         )
     }

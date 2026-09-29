@@ -389,6 +389,9 @@ mod tests {
             Seed {
                 now: "2026-01-02T03:04:05+00:00[UTC]".parse().unwrap(),
                 defaults: Default::default(),
+                context: toha::context::InvocationContext::for_target(
+                    crate::staging::canonical_target(std::path::Path::new(".")).unwrap(),
+                ),
             },
         )
         .unwrap()
@@ -436,7 +439,13 @@ mod tests {
         )
         .unwrap();
         let interview = resolution
-            .start(&template, "2026-01-02T03:04:05+00:00[UTC]".parse().unwrap())
+            .start_with_context(
+                &template,
+                "2026-01-02T03:04:05+00:00[UTC]".parse().unwrap(),
+                toha::context::InvocationContext::for_target(
+                    crate::staging::canonical_target(std::path::Path::new(".")).unwrap(),
+                ),
+            )
             .unwrap();
         let mut script = Script::new(json!({"mode": "fast"}));
         let mut records = Vec::new();
@@ -560,7 +569,12 @@ mod tests {
         );
         let mut script =
             Script::new(json!({"label": "First", "code": "abc", "flavor": "slow-rich"}));
-        let completed = driven(saved.replay(&template).unwrap(), &mut script, |_| Ok(())).unwrap();
+        let completed = driven(
+            saved.replay(&template, &target).unwrap(),
+            &mut script,
+            |_| Ok(()),
+        )
+        .unwrap();
         assert_eq!(script.asked, ["label", "code", "flavor", "items", "extras"]);
         assert_eq!(
             completed.answers[&toha::Id::parse("enabled").unwrap()],
@@ -601,7 +615,7 @@ mod tests {
             "2026-01-02T03:04:05+00:00[UTC]".into(),
             vec![IndexMap::from([("first".into(), json!("Ada"))])],
         );
-        let resumed = saved.replay(&template).unwrap();
+        let resumed = saved.replay(&template, &target).unwrap();
         let Interview::Asking(pending) = &resumed else {
             panic!("expected remaining batch")
         };
@@ -668,9 +682,13 @@ mod tests {
             let document: Value =
                 serde_json::from_str(&fs::read_to_string(fixture.join("answers.json")).unwrap())
                     .unwrap();
+            let output_dir = tempfile::tempdir().unwrap();
+            support::copy_tree(&fixture.join("existing"), output_dir.path());
+            let output_canonical = crate::staging::canonical_target(output_dir.path()).unwrap();
             let seed = Seed {
                 now: expect.now.parse().unwrap(),
                 defaults: Default::default(),
+                context: toha::context::InvocationContext::for_target(output_canonical.clone()),
             };
             let mut script = Script::new(document);
             let mut submissions = Vec::new();
@@ -715,15 +733,14 @@ mod tests {
                     submissions,
                 )
             };
-            let replayed = |submissions| match staged(submissions).replay(&template).unwrap() {
-                Interview::Complete(completed) => completed.answers,
-                Interview::Asking(_) => panic!("{name}: replay incomplete"),
-                Interview::Ended(_) => panic!("{name}: replay ended"),
-            };
+            let replayed =
+                |submissions| match staged(submissions).replay(&template, &target).unwrap() {
+                    Interview::Complete(completed) => completed.answers,
+                    Interview::Asking(_) => panic!("{name}: replay incomplete"),
+                    Interview::Ended(_) => panic!("{name}: replay ended"),
+                };
             assert_eq!(replayed(submissions), replayed(accepted), "{name}");
-            let target = tempfile::tempdir().unwrap();
-            support::copy_tree(&fixture.join("existing"), target.path());
-            let canonical = crate::staging::canonical_target(target.path()).unwrap();
+            let canonical = output_canonical.clone();
             let plan = Plan::build(&template, &completed, &canonical).unwrap();
             if !expect.options.dry_run {
                 plan.apply(
@@ -737,7 +754,7 @@ mod tests {
                 .unwrap();
             }
             if fixture.join("expected").exists() {
-                support::assert_tree(target.path(), &fixture.join("expected"), &fixture);
+                support::assert_tree(output_dir.path(), &fixture.join("expected"), &fixture);
             }
         }
     }

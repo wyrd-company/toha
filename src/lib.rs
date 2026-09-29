@@ -5,6 +5,7 @@
 // ---
 pub mod apply;
 pub mod config;
+pub mod context;
 mod fault;
 pub mod hook;
 pub mod interview;

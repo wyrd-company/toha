@@ -189,6 +189,298 @@ impl<T: Clone + DeserializeOwned> Typed<T> {
     }
 }
 
+/// Whether `name` is one of the seventeen reserved Toha context names. Used by
+/// current-context load-time reference checking and runtime readiness so a
+/// reserved name resolves like a global rather than an undefined id.
+pub(crate) fn is_reserved(name: &str) -> bool {
+    crate::context::RESERVED_NAMES.contains(&name)
+}
+
+/// Whether a template-mode source can observe any fixed environment value.
+pub(crate) fn template_needs_environment(source: &str) -> bool {
+    match minijinja::machinery::parse(source, "<analysis>", Default::default(), Default::default())
+    {
+        Ok(stmt) => {
+            let mut walk = NeedWalk::new();
+            walk.stmt(&stmt);
+            walk.needed
+        }
+        // A source that compiled through the real environment should parse
+        // here too; an unexpected failure is treated conservatively as a need.
+        Err(_) => true,
+    }
+}
+
+/// Whether an expression-mode source can observe any fixed environment value.
+pub(crate) fn expr_needs_environment(source: &str) -> bool {
+    match minijinja::machinery::parse_expr(source) {
+        Ok(expr) => {
+            let mut walk = NeedWalk::new();
+            walk.expr(&expr);
+            walk.needed
+        }
+        Err(_) => true,
+    }
+}
+
+impl Tmpl {
+    pub(crate) fn needs_environment(&self) -> bool {
+        template_needs_environment(&self.source)
+    }
+}
+impl Expr {
+    pub(crate) fn needs_environment(&self) -> bool {
+        expr_needs_environment(&self.source)
+    }
+}
+impl<T: Clone + DeserializeOwned> Typed<T> {
+    pub(crate) fn needs_environment(&self) -> bool {
+        match self {
+            Self::Literal(_) => false,
+            Self::Expr(expr) => expr.needs_environment(),
+        }
+    }
+}
+
+/// A control-flow-insensitive, read-accurate walk over a parsed Jinja AST that
+/// marks whether the program can observe any of the five fixed environment
+/// values or the built-in `debug` callable.
+///
+/// Soundness rules (design "Complete pre-interview analysis"): assignment
+/// right-hand sides are visited before their targets bind; lexical shadowing is
+/// tracked per block so a shadowed name is not a fixed read and a self-shadow
+/// right-hand side still is; macro bodies and false branches are reachable;
+/// dynamic item operands are visited while a literal property string is not a
+/// root read; any un-shadowed reference to `debug` (read or called, directly or
+/// through an alias) marks a need. An unparseable source is conservatively a
+/// need. When the include runtime (task 1061) lands, each included body's need
+/// unions into its containing body through this same walk; the real transitive
+/// include proof is that task's obligation, not a seam unit test here.
+struct NeedWalk {
+    needed: bool,
+    scopes: Vec<std::collections::HashSet<String>>,
+}
+impl NeedWalk {
+    fn new() -> Self {
+        Self {
+            needed: false,
+            scopes: vec![std::collections::HashSet::new()],
+        }
+    }
+    fn push(&mut self) {
+        self.scopes.push(std::collections::HashSet::new());
+    }
+    fn pop(&mut self) {
+        self.scopes.pop();
+    }
+    fn bind(&mut self, name: &str) {
+        if let Some(top) = self.scopes.last_mut() {
+            top.insert(name.to_owned());
+        }
+    }
+    fn bound(&self, name: &str) -> bool {
+        self.scopes.iter().any(|frame| frame.contains(name))
+    }
+    fn bind_target(&mut self, target: &minijinja::machinery::ast::Expr) {
+        use minijinja::machinery::ast::Expr;
+        match target {
+            Expr::Var(var) => self.bind(var.id),
+            Expr::List(list) => {
+                for item in &list.items {
+                    self.bind_target(item);
+                }
+            }
+            // An attribute/item assignment target reads its base object; it
+            // introduces no new root name.
+            other => self.expr(other),
+        }
+    }
+    fn block(&mut self, stmts: &[minijinja::machinery::ast::Stmt]) {
+        for stmt in stmts {
+            self.stmt(stmt);
+        }
+    }
+    fn macro_decl(&mut self, decl: &minijinja::machinery::ast::Macro) {
+        for default in &decl.defaults {
+            self.expr(default);
+        }
+        self.push();
+        for arg in &decl.args {
+            self.bind_target(arg);
+        }
+        self.bind(decl.name);
+        self.block(&decl.body);
+        self.pop();
+        // The macro name is visible to later siblings after its declaration.
+        self.bind(decl.name);
+    }
+    fn call(&mut self, call: &minijinja::machinery::ast::Call) {
+        self.expr(&call.expr);
+        for arg in &call.args {
+            self.call_arg(arg);
+        }
+    }
+    fn call_arg(&mut self, arg: &minijinja::machinery::ast::CallArg) {
+        use minijinja::machinery::ast::CallArg;
+        match arg {
+            CallArg::Pos(e) | CallArg::PosSplat(e) | CallArg::KwargSplat(e) => self.expr(e),
+            CallArg::Kwarg(_, e) => self.expr(e),
+        }
+    }
+    fn stmt(&mut self, stmt: &minijinja::machinery::ast::Stmt) {
+        use minijinja::machinery::ast::Stmt;
+        if self.needed {
+            return;
+        }
+        match stmt {
+            Stmt::Template(t) => self.block(&t.children),
+            Stmt::EmitExpr(e) => self.expr(&e.expr),
+            Stmt::EmitRaw(_) => {}
+            Stmt::ForLoop(f) => {
+                self.expr(&f.iter);
+                self.push();
+                self.bind_target(&f.target);
+                self.bind("loop");
+                if let Some(filter) = &f.filter_expr {
+                    self.expr(filter);
+                }
+                self.block(&f.body);
+                self.pop();
+                // The else body runs in the enclosing scope.
+                self.block(&f.else_body);
+            }
+            Stmt::IfCond(c) => {
+                self.expr(&c.expr);
+                self.push();
+                self.block(&c.true_body);
+                self.pop();
+                self.push();
+                self.block(&c.false_body);
+                self.pop();
+            }
+            Stmt::WithBlock(w) => {
+                for (_, value) in &w.assignments {
+                    self.expr(value);
+                }
+                self.push();
+                for (target, _) in &w.assignments {
+                    self.bind_target(target);
+                }
+                self.block(&w.body);
+                self.pop();
+            }
+            Stmt::Set(s) => {
+                self.expr(&s.expr);
+                self.bind_target(&s.target);
+            }
+            Stmt::SetBlock(s) => {
+                if let Some(filter) = &s.filter {
+                    self.expr(filter);
+                }
+                self.push();
+                self.block(&s.body);
+                self.pop();
+                self.bind_target(&s.target);
+            }
+            Stmt::AutoEscape(a) => {
+                self.expr(&a.enabled);
+                self.push();
+                self.block(&a.body);
+                self.pop();
+            }
+            Stmt::FilterBlock(fb) => {
+                self.expr(&fb.filter);
+                self.push();
+                self.block(&fb.body);
+                self.pop();
+            }
+            Stmt::Macro(m) => self.macro_decl(m),
+            Stmt::CallBlock(cb) => {
+                self.call(&cb.call);
+                self.macro_decl(&cb.macro_decl);
+            }
+            Stmt::Continue(_) | Stmt::Break(_) => {}
+            Stmt::Do(d) => self.call(&d.call),
+        }
+    }
+    fn expr(&mut self, expr: &minijinja::machinery::ast::Expr) {
+        use minijinja::machinery::ast::Expr;
+        if self.needed {
+            return;
+        }
+        match expr {
+            Expr::Var(var) => {
+                let id = var.id;
+                let sensitive = crate::context::ENVIRONMENT_NAMES.contains(&id) || id == "debug";
+                if sensitive && !self.bound(id) {
+                    self.needed = true;
+                }
+            }
+            Expr::Const(_) => {}
+            Expr::Slice(s) => {
+                self.expr(&s.expr);
+                for inner in [&s.start, &s.stop, &s.step].into_iter().flatten() {
+                    self.expr(inner);
+                }
+            }
+            Expr::UnaryOp(u) => self.expr(&u.expr),
+            Expr::BinOp(b) => {
+                self.expr(&b.left);
+                self.expr(&b.right);
+            }
+            Expr::Compare(c) => {
+                self.expr(&c.expr);
+                for op in &c.ops {
+                    self.expr(&op.expr);
+                }
+            }
+            Expr::IfExpr(i) => {
+                self.expr(&i.test_expr);
+                self.expr(&i.true_expr);
+                if let Some(f) = &i.false_expr {
+                    self.expr(f);
+                }
+            }
+            Expr::Filter(f) => {
+                if let Some(inner) = &f.expr {
+                    self.expr(inner);
+                }
+                for arg in &f.args {
+                    self.call_arg(arg);
+                }
+            }
+            Expr::Test(t) => {
+                self.expr(&t.expr);
+                for arg in &t.args {
+                    self.call_arg(arg);
+                }
+            }
+            // An attribute name is a literal, not a root read.
+            Expr::GetAttr(g) => self.expr(&g.expr),
+            // A dynamic subscript is a read; a literal string subscript is a
+            // constant and contributes nothing.
+            Expr::GetItem(g) => {
+                self.expr(&g.expr);
+                self.expr(&g.subscript_expr);
+            }
+            Expr::Call(c) => self.call(c),
+            Expr::List(l) => {
+                for item in &l.items {
+                    self.expr(item);
+                }
+            }
+            Expr::Map(m) => {
+                for key in &m.keys {
+                    self.expr(key);
+                }
+                for value in &m.values {
+                    self.expr(value);
+                }
+            }
+        }
+    }
+}
+
 pub fn context_from_answers(
     answers: &crate::interview::Answers,
     data: &indexmap::IndexMap<crate::template::Id, serde_json::Value>,
@@ -287,6 +579,53 @@ mod tests {
             ),
             "hello world"
         );
+    }
+
+    #[test]
+    fn analyzer_detects_direct_and_shadowed_environment_reads() {
+        use super::{expr_needs_environment as expr, template_needs_environment as tmpl};
+        // Direct root read of a fixed name, and an unrelated read.
+        assert!(tmpl("{{ toha_env_editor }}"));
+        assert!(!tmpl("{{ project_name }}"));
+        // A reserved but non-environment name is not a fixed read.
+        assert!(!tmpl("{{ toha_target_name }} {{ toha_host_os }}"));
+        // Self-shadow: the right-hand side reads the real value before the
+        // target binds; a constant right-hand side does not.
+        assert!(tmpl(
+            "{% set toha_env_editor = toha_env_editor %}{{ toha_env_editor }}"
+        ));
+        assert!(!tmpl(
+            "{% set toha_env_editor = \"code\" %}{{ toha_env_editor }}"
+        ));
+        // Value alias through assignment.
+        assert!(tmpl("{% set chosen = toha_env_shell %}{{ chosen }}"));
+        // `debug`, read or called, directly or aliased.
+        assert!(tmpl("{{ debug() }}"));
+        assert!(tmpl("{% set d = debug %}{{ d() }}"));
+        // Dynamic item operand is a read; a literal property string is not.
+        assert!(tmpl("{{ config[toha_env_user] }}"));
+        assert!(!tmpl("{{ config[\"toha_env_user\"] }}"));
+        assert!(!tmpl("{{ config.toha_env_user }}"));
+        // False branch and uncalled macro bodies are reachable.
+        assert!(tmpl(
+            "{% if flag %}a{% else %}{{ toha_env_visual }}{% endif %}"
+        ));
+        assert!(tmpl(
+            "{% macro unused() %}{{ toha_env_shell }}{% endmacro %}"
+        ));
+        // A conditional shadow does not leak past its block.
+        assert!(tmpl(
+            "{% if flag %}{% set toha_env_editor = 1 %}{% endif %}{{ toha_env_editor }}"
+        ));
+        // A macro parameter shadows the fixed name inside the body.
+        assert!(!tmpl(
+            "{% macro m(toha_env_editor) %}{{ toha_env_editor }}{% endmacro %}"
+        ));
+        // Expression mode.
+        assert!(expr("toha_env_user"));
+        assert!(!expr("answer + 1"));
+        assert!(expr("config[toha_env_user]"));
+        assert!(!expr("config[\"toha_env_user\"]"));
     }
 
     #[test]

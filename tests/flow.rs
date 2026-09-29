@@ -35,10 +35,16 @@ fn load_error(yaml: &str) -> String {
     Template::load(dir.path()).unwrap_err().to_string()
 }
 
+fn ctx() -> toha::context::InvocationContext {
+    toha::context::InvocationContext::for_target(
+        canonical_target(std::path::Path::new(".")).unwrap(),
+    )
+}
 fn seed() -> Seed {
     Seed {
         now: NOW.parse().unwrap(),
         defaults: IndexMap::new(),
+        context: ctx(),
     }
 }
 
@@ -214,7 +220,9 @@ interview:
         target.path(),
         vec![IndexMap::from([("cancel".into(), json!(true))])],
     );
-    let replayed = record.replay(&template).unwrap();
+    let replayed = record
+        .replay(&template, &canonical_target(target.path()).unwrap())
+        .unwrap();
     let Interview::Ended(ended) = replayed else {
         panic!("expected ended");
     };
@@ -397,7 +405,10 @@ interview:
             ("minimal".into(), json!(true)),
         ])],
     );
-    let Interview::Complete(completed) = record.replay(&template).unwrap() else {
+    let Interview::Complete(completed) = record
+        .replay(&template, &canonical_target(target.path()).unwrap())
+        .unwrap()
+    else {
         panic!("expected complete");
     };
     assert!(
@@ -472,7 +483,10 @@ fn b19_replay_reproduces_the_end_and_records_no_new_field() {
         vec![IndexMap::from([("proceed".into(), json!(false))])],
     );
     // Replay is deterministic: the same stored submission yields the same stop.
-    let Interview::Ended(ended) = record.replay(&template).unwrap() else {
+    let Interview::Ended(ended) = record
+        .replay(&template, &canonical_target(target.path()).unwrap())
+        .unwrap()
+    else {
         panic!("expected ended");
     };
     assert_eq!(ended.kind(), EndKind::Stop);
@@ -544,7 +558,9 @@ interview:
     )
     .unwrap();
     assert!(resolution.warnings().is_empty());
-    let interview = resolution.start(&template, NOW.parse().unwrap()).unwrap();
+    let interview = resolution
+        .start_with_context(&template, NOW.parse().unwrap(), ctx())
+        .unwrap();
     let ended = answer(interview, json!({}));
     assert!(
         matches!(ended, Interview::Ended(e) if e.kind() == EndKind::Stop),
@@ -558,7 +574,9 @@ interview:
     let bare =
         toha::interview::configured_defaults("sample", &template, &Default::default(), &default())
             .unwrap();
-    let interview = bare.start(&template, NOW.parse().unwrap()).unwrap();
+    let interview = bare
+        .start_with_context(&template, NOW.parse().unwrap(), ctx())
+        .unwrap();
     assert!(
         matches!(answer(interview, json!({})), Interview::Asking(_)),
         "the stop fired without a configured default"
@@ -638,7 +656,10 @@ fn b23_a_submission_after_a_terminal_interview_is_a_replay_error() {
             IndexMap::from([("mode".into(), json!("late"))]),
         ],
     );
-    let error = record.replay(&template).unwrap_err().to_string();
+    let error = record
+        .replay(&template, &canonical_target(target.path()).unwrap())
+        .unwrap_err()
+        .to_string();
     assert!(
         error.contains("submission after completed interview"),
         "{error}"
@@ -658,7 +679,10 @@ fn ended_documents_match_across_headless_and_staged() {
     let record = staged(target.path(), vec![submission.clone()]);
     let ctx = context(target.path(), &record);
 
-    let Interview::Ended(from_staged) = record.replay(&template).unwrap() else {
+    let Interview::Ended(from_staged) = record
+        .replay(&template, &canonical_target(target.path()).unwrap())
+        .unwrap()
+    else {
         panic!("staged did not end");
     };
     let Headless::Ended {

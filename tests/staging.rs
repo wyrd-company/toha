@@ -48,6 +48,9 @@ fn optional_null_validates_against_batch_schema() {
         Seed {
             now: "2026-01-02T03:04:05+00:00[UTC]".parse().unwrap(),
             defaults: Default::default(),
+            context: toha::context::InvocationContext::for_target(
+                canonical_target(std::path::Path::new(".")).unwrap(),
+            ),
         },
     )
     .unwrap() else {
@@ -143,6 +146,9 @@ fn one_shot(path: &Path, target: &Path) -> Value {
     let seed = Seed {
         now: support::expectation(path).now.parse().unwrap(),
         defaults: Default::default(),
+        context: toha::context::InvocationContext::for_target(
+            canonical_target(std::path::Path::new(".")).unwrap(),
+        ),
     };
     let interview = Interview::start(&template, seed).unwrap();
     let raw = protocol::parse_answers(&fixture_answers(path).to_string()).unwrap();
@@ -300,7 +306,12 @@ fn every_success_fixture_through_library_replay() {
         let Headless::Completed {
             completed,
             accepted,
-        } = protocol::answer_headless(&template, record.replay(&template).unwrap(), raw).unwrap()
+        } = protocol::answer_headless(
+            &template,
+            record.replay(&template, &canonical).unwrap(),
+            raw,
+        )
+        .unwrap()
         else {
             panic!("fixture did not complete: {}", fixture.display());
         };
@@ -312,7 +323,7 @@ fn every_success_fixture_through_library_replay() {
             .load(&canonical)
             .unwrap()
             .unwrap()
-            .replay(&template)
+            .replay(&template, &canonical)
             .unwrap()
         else {
             panic!("replay incomplete: {}", fixture.display());
@@ -759,6 +770,9 @@ fn explicit_null_differs_from_missing_in_one_shot_and_staged() {
     let seed = || Seed {
         now: support::expectation(fixture).now.parse().unwrap(),
         defaults: Default::default(),
+        context: toha::context::InvocationContext::for_target(
+            canonical_target(std::path::Path::new(".")).unwrap(),
+        ),
     };
     for (second, expected) in [(None, json!("abc")), (Some(Value::Null), Value::Null)] {
         let mut values = serde_json::Map::new();
@@ -866,7 +880,7 @@ fn skipped_group_has_same_batch_boundary_after_replay() {
     let store = Store::new(support::staged_dir(state.path()));
     let canonical = canonical_target(target.path()).unwrap();
     let saved = store.load(&canonical).unwrap().unwrap();
-    let Interview::Asking(replayed) = saved.replay(&template).unwrap() else {
+    let Interview::Asking(replayed) = saved.replay(&template, &canonical).unwrap() else {
         panic!()
     };
     let ctx = Context::new(&canonical, &saved);
@@ -1032,6 +1046,9 @@ fn headless_ignores_defined_skipped_id_but_rejects_unknown_id() {
     let seed = || Seed {
         now: "2026-01-02T03:04:05+00:00[UTC]".parse().unwrap(),
         defaults: Default::default(),
+        context: toha::context::InvocationContext::for_target(
+            canonical_target(std::path::Path::new(".")).unwrap(),
+        ),
     };
     let interview = Interview::start(&template, seed()).unwrap();
     let raw = protocol::parse_answers(r#"{"enabled":false,"hidden":"ignored"}"#).unwrap();
@@ -1099,7 +1116,7 @@ fn replay_stores_raw_answer_before_non_idempotent_format() {
         .load(&canonical)
         .unwrap()
         .unwrap()
-        .replay(&template)
+        .replay(&template, &canonical)
         .unwrap()
     else {
         panic!()
@@ -1152,6 +1169,9 @@ fn optional_select_enum_lists_only_its_options() {
         Seed {
             now: "2026-01-02T03:04:05+00:00[UTC]".parse().unwrap(),
             defaults: Default::default(),
+            context: toha::context::InvocationContext::for_target(
+                canonical_target(std::path::Path::new(".")).unwrap(),
+            ),
         },
     )
     .unwrap() else {

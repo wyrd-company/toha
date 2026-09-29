@@ -27,10 +27,102 @@ use cli::{
 };
 use toha::{
     AnswerError, Applied, ApplyOptions, EndKind, Ended, Interview, Plan, Step, Template,
+    context::{
+        EnvironmentDecision, ExecutionFacts, FixedEnvironment, FixedEnvironmentSource, HostFacts,
+        InvocationContext, SelectedTemplate,
+    },
     hook::ProcessRunner,
     protocol::{self, Context, Headless},
     staging::{self, CanonicalTarget, StagedRecord, Store},
 };
+
+/// The command adapter's live environment source: the process environment and
+/// native hostname. Called only under an explicit stage grant or a granted
+/// direct/new-apply need; never on a denied, no-need, or missing-trust path.
+#[derive(Default)]
+struct HostEnvironmentSource;
+impl FixedEnvironmentSource for HostEnvironmentSource {
+    fn capture(&mut self) -> FixedEnvironment {
+        FixedEnvironment::new(
+            env_value(if cfg!(windows) { "USERNAME" } else { "USER" }),
+            hostname(),
+            env_value("EDITOR"),
+            env_value("SHELL"),
+            env_value("VISUAL"),
+        )
+    }
+}
+/// An environment value, or `None` when absent, empty, or non-Unicode.
+fn env_value(key: &str) -> Option<String> {
+    std::env::var(key).ok().filter(|value| !value.is_empty())
+}
+#[cfg(unix)]
+fn hostname() -> Option<String> {
+    rustix::system::uname()
+        .nodename()
+        .to_str()
+        .ok()
+        .map(str::to_owned)
+        .filter(|value| !value.is_empty())
+}
+#[cfg(not(unix))]
+fn hostname() -> Option<String> {
+    None
+}
+/// Effective administrative authority: effective UID zero on Unix. No username
+/// inference, elevation, timeout, or subprocess.
+#[cfg(unix)]
+fn is_admin() -> bool {
+    rustix::process::geteuid().is_root()
+}
+#[cfg(not(unix))]
+fn is_admin() -> bool {
+    false
+}
+/// Builds a fresh current invocation context: admits environment access under
+/// `decision`, captures host and execution facts, and assembles the typed
+/// context. Only a stage refusal (`RequireStageGrant` with a need) errors here.
+fn build_context(
+    target: &CanonicalTarget,
+    resolved: &ResolvedTemplate,
+    template: &Template,
+    decision: EnvironmentDecision,
+    is_interactive: bool,
+) -> Result<InvocationContext, String> {
+    let mut source = HostEnvironmentSource;
+    let environment = template
+        .admit_environment(decision, &mut source)
+        .map_err(|e| staging::stage_admission_error(e).to_string())?;
+    let selected = SelectedTemplate::new(
+        resolved.formal_name.clone(),
+        template.name.clone(),
+        resolved.aliases.clone(),
+        resolved.source.clone(),
+    );
+    InvocationContext::new(
+        target.clone(),
+        selected,
+        HostFacts::capture(),
+        ExecutionFacts::new(is_admin(), is_interactive),
+        environment,
+    )
+    .map_err(|e| e.to_string())
+}
+/// The effective-trust gate for a direct/new-apply environment decision: an
+/// explicit `--trust`, or a current registry approval that matches the live
+/// executable surface.
+fn apply_environment_grant(trust: bool, resolved: &ResolvedTemplate, template: &Template) -> bool {
+    if trust {
+        return true;
+    }
+    match toha::HookSurface::of(template) {
+        Ok(surface) => matches!(
+            toha::evaluate_trust(resolved.approval.as_ref(), &surface.digest()),
+            toha::Trust::Trusted
+        ),
+        Err(_) => false,
+    }
+}
 
 /// Generate projects and files from templates.
 #[derive(Parser)]
@@ -121,6 +213,10 @@ enum Command {
             value_name = "FILE"
         )]
         r#async: Option<Option<String>>,
+        /// Capture trusted environment values (user, hostname, editor, shell,
+        /// visual) for this staged interview's templates that reference them.
+        #[arg(long)]
+        trust: bool,
     },
     /// Continue a staged interview with an answers document or terminal prompts.
     ///
@@ -471,20 +567,6 @@ fn resolve_error(error: ResolveError) -> Outcome {
         },
     }
 }
-fn record(
-    target: &staging::CanonicalTarget,
-    resolved: &ResolvedTemplate,
-    now: &jiff::Zoned,
-) -> StagedRecord {
-    StagedRecord::new(
-        target,
-        resolved.formal_name.clone(),
-        resolved.commit.clone(),
-        resolved.named,
-        now.to_string(),
-        vec![],
-    )
-}
 /// The configuration, registry, and directories that template names resolve against.
 struct Scope<'a> {
     config: &'a toha::config::Config,
@@ -493,7 +575,7 @@ struct Scope<'a> {
     cwd: &'a Path,
 }
 /// Whether the staged interview has questions remaining, for guidance only.
-fn progress(saved: &StagedRecord, scope: &Scope) -> Progress {
+fn progress(saved: &StagedRecord, scope: &Scope, target: &CanonicalTarget) -> Progress {
     let replayed = (|| {
         let resolved = cli::resolve::resume_template(
             &saved.template,
@@ -517,7 +599,10 @@ fn progress(saved: &StagedRecord, scope: &Scope) -> Progress {
         // A flow stop/abort is terminal but distinct from complete: nothing can
         // be applied, so its guidance names starting over, not `apply`.
         Some(
-            match saved.replay_with_resolution(&template, resolution).ok()? {
+            match saved
+                .replay_with_resolution(&template, resolution, target)
+                .ok()?
+            {
                 Interview::Complete(_) => Progress::Complete,
                 Interview::Ended(_) => Progress::Ended,
                 Interview::Asking(_) => Progress::Incomplete,
@@ -534,13 +619,14 @@ fn staged_refusal(
     path: &Path,
     saved: &StagedRecord,
     scope: &Scope,
+    target: &CanonicalTarget,
 ) -> Option<Outcome> {
     let formal =
         match cli::resolve::formal_name(arg, scope.config, scope.registry, scope.dirs, scope.cwd) {
             Ok(v) => v,
             Err(e) => return Some(resolve_error(e)),
         };
-    let progress = || progress(saved, scope);
+    let progress = || progress(saved, scope, target);
     if formal != saved.template {
         return Some(Outcome::Error(guidance::other_template(
             invocation,
@@ -559,7 +645,13 @@ fn staged_refusal(
         ))
     })
 }
-fn stage(template: String, path: PathBuf, output: Option<Option<String>>, dirs: &Dirs) -> Outcome {
+fn stage(
+    template: String,
+    path: PathBuf,
+    output: Option<Option<String>>,
+    trust: bool,
+    dirs: &Dirs,
+) -> Outcome {
     let (target, store) = match setup(&path, dirs) {
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
@@ -584,7 +676,7 @@ fn stage(template: String, path: PathBuf, output: Option<Option<String>>, dirs: 
             path: &path,
             output: output.as_ref().map(|file| file.as_deref()),
         };
-        return staged_refusal(&invocation, &template, &path, &saved, &scope)
+        return staged_refusal(&invocation, &template, &path, &saved, &scope, &target)
             .expect("stage refuses every staged target");
     }
     if output.is_none() && !io::stdin().is_terminal() {
@@ -602,8 +694,27 @@ fn stage(template: String, path: PathBuf, output: Option<Option<String>>, dirs: 
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
     };
-    let saved = record(&target, &resolved, &now);
-    let interview = match resolution.start(&template, now) {
+    // Stage uses only its explicit flag: with it, capture the fixed five once
+    // (even without a reference); without it, refuse a need before any progress.
+    let decision = if trust {
+        EnvironmentDecision::CarryStageGrant
+    } else {
+        EnvironmentDecision::RequireStageGrant
+    };
+    // The originating driver can prompt a human only on the terminal path.
+    let interactive = output.is_none();
+    let invocation = match build_context(&target, &resolved, &template, decision, interactive) {
+        Ok(v) => v,
+        Err(e) => return Outcome::Error(e),
+    };
+    let saved = StagedRecord::new_with_context(
+        invocation.clone(),
+        resolved.commit.clone(),
+        resolved.named,
+        now.to_string(),
+        vec![],
+    );
+    let interview = match resolution.start_with_context(&template, now, invocation) {
         Ok(v) => v,
         Err(e) => return Outcome::Error(e.to_string()),
     };
@@ -712,7 +823,7 @@ fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome 
         Err(e) => return Outcome::Error(e.to_string()),
     };
     report_config_warnings(resolution.warnings());
-    let interview = match saved.replay_with_resolution(&template, resolution) {
+    let interview = match saved.replay_with_resolution(&template, resolution, &target) {
         Ok(v) => v,
         Err(e) => {
             return Outcome::Error(guidance::replay_failed(
@@ -905,7 +1016,7 @@ fn run(
     if template.is_none() && answers.is_some() {
         let staged = existing
             .as_ref()
-            .map(|saved| (saved.template.as_str(), progress(saved, &scope)));
+            .map(|saved| (saved.template.as_str(), progress(saved, &scope, &target)));
         return Outcome::Error(guidance::answers_without_template(
             path,
             answers.as_deref().unwrap_or_default(),
@@ -922,7 +1033,7 @@ fn run(
         trust,
     };
     if let (Some(arg), Some(saved)) = (&template, &existing) {
-        if let Some(refusal) = staged_refusal(&invocation, arg, path, saved, &scope) {
+        if let Some(refusal) = staged_refusal(&invocation, arg, path, saved, &scope, &target) {
             return refusal;
         }
     }
@@ -954,8 +1065,24 @@ fn run(
                 Ok(v) => v,
                 Err(e) => return Outcome::Error(e),
             };
-            let saved = record(&target, &resolved, &now);
-            let interview = match resolution.start(&template, now) {
+            // Direct/new-apply grants environment access on explicit `--trust`
+            // or a current matching reviewed approval; otherwise it denies.
+            let decision = EnvironmentDecision::grant_if_needed(apply_environment_grant(
+                trust, &resolved, &template,
+            ));
+            let new_context =
+                match build_context(&target, &resolved, &template, decision, answers.is_none()) {
+                    Ok(v) => v,
+                    Err(e) => return Outcome::Error(e),
+                };
+            let saved = StagedRecord::new_with_context(
+                new_context.clone(),
+                resolved.commit.clone(),
+                resolved.named,
+                now.to_string(),
+                vec![],
+            );
+            let interview = match resolution.start_with_context(&template, now, new_context) {
                 Ok(v) => v,
                 Err(e) => return Outcome::Error(e.to_string()),
             };
@@ -1043,7 +1170,7 @@ fn run(
                 Err(e) => return Outcome::Error(e.to_string()),
             };
             report_config_warnings(resolution.warnings());
-            let interview = match saved.replay_with_resolution(&template, resolution) {
+            let interview = match saved.replay_with_resolution(&template, resolution, &target) {
                 Ok(v) => v,
                 Err(e) => {
                     return Outcome::Error(guidance::replay_failed(
@@ -1297,7 +1424,8 @@ fn main() -> ExitCode {
             template,
             path,
             r#async,
-        } => stage(template, path.clone(), r#async.clone(), &dirs)
+            trust,
+        } => stage(template, path.clone(), r#async.clone(), trust, &dirs)
             .retry(|formal| {
                 Invocation::Stage {
                     template: Arg::Given(guidance::formal_for("stage", formal)),

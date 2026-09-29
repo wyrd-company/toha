@@ -27,7 +27,7 @@ default = ["cli"]
 cli = ["dep:clap", "dep:inquire", "dep:include_dir"]
 
 [dependencies]
-minijinja = { version = "2.24", default-features = false, features = ["builtins", "serde", "json", "macros", "loop_controls"] }
+minijinja = { version = "2.24", default-features = false, features = ["builtins", "serde", "json", "macros", "loop_controls", "unstable_machinery"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_norway = "0.9"
@@ -45,6 +45,7 @@ inquire = { version = "0.9.4", features = ["editor"], optional = true }
 tempfile = "3"
 gix = { version = "0.87.1", default-features = false, features = ["blocking-network-client", "blocking-http-transport-curl-rustls", "worktree-mutation", "revision", "sha1"] }
 include_dir = { version = "0.7.4", optional = true }
+rustix = { version = "1", features = ["process", "system"] }
 
 [build-dependencies]
 tagver = "0.1.4"

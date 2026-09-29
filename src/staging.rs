@@ -2,6 +2,9 @@
 // relationships:
 //   implements: architecture
 // ---
+use crate::context::{
+    EnvironmentAdmissionError, InvocationContext, InvocationContextWire, RenderOrigin,
+};
 use crate::interview::Resolution;
 use crate::{AnswerError, Interview, RawAnswer, RawAnswers, Seed, Template};
 use indexmap::IndexMap;
@@ -26,6 +29,12 @@ pub struct StagedRecord {
     pub named: bool,
     pub now: String,
     pub submissions: Vec<IndexMap<String, Value>>,
+    /// The versioned invocation context. A record written by [`StagedRecord::new`]
+    /// carries the legacy projection; [`StagedRecord::new_with_context`] carries
+    /// the current context. A pre-context record on disk has no field and
+    /// deserializes as legacy.
+    #[serde(default, skip_serializing_if = "InvocationContextWire::is_legacy")]
+    context: InvocationContextWire,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -36,6 +45,28 @@ pub enum StagingError {
     Json(#[from] serde_json::Error),
     #[error("{0}")]
     Replay(String),
+    /// A stage need was analyzed but stage trust was not granted. The stage
+    /// adapter maps only this admission fault; it carries the authored location
+    /// and no captured value.
+    #[error("environment access at {reference} requires stage trust")]
+    EnvironmentTrustRequired { reference: RenderOrigin },
+    /// Any other environment-admission fault, retaining its typed source.
+    #[error("{source}")]
+    EnvironmentAdmission {
+        #[source]
+        source: EnvironmentAdmissionError,
+    },
+}
+
+/// Maps an environment-admission fault to the stage command's typed error. Only
+/// a trust refusal becomes [`StagingError::EnvironmentTrustRequired`]; every
+/// other fault keeps its typed source under [`StagingError::EnvironmentAdmission`].
+pub fn stage_admission_error(error: EnvironmentAdmissionError) -> StagingError {
+    match error {
+        EnvironmentAdmissionError::TrustRequired { reference } => {
+            StagingError::EnvironmentTrustRequired { reference }
+        }
+    }
 }
 
 /// A target identity produced only by [`canonical_target`].
@@ -285,6 +316,8 @@ impl Store {
 }
 
 impl StagedRecord {
+    /// Creates a legacy-projection record. Retained for existing crate callers;
+    /// current invocations use [`Self::new_with_context`].
     pub fn new(
         target: &CanonicalTarget,
         template: String,
@@ -300,22 +333,78 @@ impl StagedRecord {
             named,
             now,
             submissions,
+            context: InvocationContextWire::Legacy,
         }
     }
-    pub fn replay<'a>(&self, template: &'a Template) -> Result<Interview<'a>, StagingError> {
-        self.replay_with_defaults(template, IndexMap::new())
+
+    /// Creates a current record from a completed invocation context. The stored
+    /// target and formal name are derived from the context; the versioned wire
+    /// carries identity, host, execution, and the environment snapshot.
+    pub fn new_with_context(
+        context: InvocationContext,
+        commit: String,
+        named: bool,
+        now: String,
+        submissions: Vec<IndexMap<String, Value>>,
+    ) -> Self {
+        let (target, formal_name, wire) = context.staged_parts();
+        Self {
+            target: target.as_path().to_owned(),
+            template: formal_name.unwrap_or_default(),
+            commit,
+            named,
+            now,
+            submissions,
+            context: wire,
+        }
+    }
+
+    /// Restores the invocation context from the versioned wire, validating the
+    /// persisted target text against the producer-created carrier. A pre-context
+    /// record restores a legacy context.
+    pub(crate) fn invocation_context(
+        &self,
+        target: &CanonicalTarget,
+    ) -> Result<InvocationContext, StagingError> {
+        if canonical_target(&self.target)? != *target {
+            return Err(StagingError::Replay(
+                "staged record target does not match its storage key".into(),
+            ));
+        }
+        Ok(InvocationContext::from_wire(
+            target.clone(),
+            &self.template,
+            self.context.clone(),
+        ))
+    }
+
+    pub fn replay<'a>(
+        &self,
+        template: &'a Template,
+        target: &CanonicalTarget,
+    ) -> Result<Interview<'a>, StagingError> {
+        self.replay_with_defaults(template, IndexMap::new(), target)
     }
     pub fn replay_with_defaults<'a>(
         &self,
         template: &'a Template,
         defaults: IndexMap<crate::Id, RawAnswer>,
+        target: &CanonicalTarget,
     ) -> Result<Interview<'a>, StagingError> {
         let now = self
             .now
             .parse()
             .map_err(|e: jiff::Error| StagingError::Replay(e.to_string()))?;
-        let interview = Interview::start(template, Seed { now, defaults })
-            .map_err(|e| StagingError::Replay(e.to_string()))?;
+        let context = self.invocation_context(target)?;
+        let interview = Interview::start(
+            template,
+            Seed {
+                now,
+                defaults,
+                context,
+            },
+        )
+        .map_err(|e| StagingError::Replay(e.to_string()))?;
         self.replay_from(interview)
     }
 
@@ -323,13 +412,15 @@ impl StagedRecord {
         &self,
         template: &'a Template,
         resolution: Resolution,
+        target: &CanonicalTarget,
     ) -> Result<Interview<'a>, StagingError> {
         let now = self
             .now
             .parse()
             .map_err(|e: jiff::Error| StagingError::Replay(e.to_string()))?;
+        let context = self.invocation_context(target)?;
         let interview = resolution
-            .start(template, now)
+            .start_with_context(template, now, context)
             .map_err(|e| StagingError::Replay(e.to_string()))?;
         self.replay_from(interview)
     }

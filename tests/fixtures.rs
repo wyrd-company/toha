@@ -26,6 +26,7 @@ fn run(fixture: &Path, target: &Path) -> Result<Vec<String>, (u8, String)> {
         Seed {
             now: support::expectation(fixture).now.parse().unwrap(),
             defaults: indexmap::IndexMap::new(),
+            context: toha::context::InvocationContext::for_target(target.clone()),
         },
     )
     .map_err(|error| (1, error.to_string()))?;
@@ -103,18 +104,19 @@ fn run(fixture: &Path, target: &Path) -> Result<Vec<String>, (u8, String)> {
 
 fn planning_error(folder: &Path) -> String {
     let template = Template::load(folder).unwrap();
+    let target = tempfile::tempdir().unwrap();
+    let target = toha::staging::canonical_target(target.path()).unwrap();
     let Interview::Complete(completed) = Interview::start(
         &template,
         Seed {
             now: "2026-01-02T03:04:05+00:00[UTC]".parse().unwrap(),
             defaults: Default::default(),
+            context: toha::context::InvocationContext::for_target(target.clone()),
         },
     )
     .unwrap() else {
         panic!("expected complete interview")
     };
-    let target = tempfile::tempdir().unwrap();
-    let target = toha::staging::canonical_target(target.path()).unwrap();
     Plan::build(&template, &completed, &target)
         .unwrap_err()
         .to_string()
@@ -249,17 +251,18 @@ fn planning_fault_is_byte_equal_through_direct_staged_and_crate_routes() {
     assert_eq!(String::from_utf8(applied.stderr).unwrap(), direct_error);
 
     let template = Template::load(&template_path).unwrap();
+    let canonical = toha::staging::canonical_target(target.path()).unwrap();
     let Interview::Complete(completed) = Interview::start(
         &template,
         Seed {
             now: "2026-01-02T03:04:05+00:00[UTC]".parse().unwrap(),
             defaults: Default::default(),
+            context: toha::context::InvocationContext::for_target(canonical.clone()),
         },
     )
     .unwrap() else {
         panic!("expected complete interview")
     };
-    let canonical = toha::staging::canonical_target(target.path()).unwrap();
     let crate_error = Plan::build(&template, &completed, &canonical)
         .unwrap_err()
         .to_string();
@@ -309,6 +312,9 @@ fn rejected_batch_keeps_answers_unrecorded() {
                 .parse()
                 .unwrap(),
             defaults: indexmap::IndexMap::new(),
+            context: toha::context::InvocationContext::for_target(
+                toha::staging::canonical_target(std::path::Path::new(".")).unwrap(),
+            ),
         },
     )
     .unwrap() else {
@@ -381,6 +387,9 @@ fn basic_example_batch_by_batch_matches_single_submission() {
     let seed = || Seed {
         now: support::expectation(fixture).now.parse().unwrap(),
         defaults: indexmap::IndexMap::new(),
+        context: toha::context::InvocationContext::for_target(
+            toha::staging::canonical_target(std::path::Path::new(".")).unwrap(),
+        ),
     };
     let Interview::Asking(single) = Interview::start(&template, seed()).unwrap() else {
         panic!()
@@ -436,6 +445,9 @@ fn configured_default_replaces_question_default() {
                 .parse()
                 .unwrap(),
             defaults,
+            context: toha::context::InvocationContext::for_target(
+                toha::staging::canonical_target(std::path::Path::new(".")).unwrap(),
+            ),
         },
     )
     .unwrap() else {
@@ -474,6 +486,9 @@ fn configured_default_does_not_evaluate_question_default() {
             .parse()
             .unwrap(),
         defaults,
+        context: toha::context::InvocationContext::for_target(
+            toha::staging::canonical_target(std::path::Path::new(".")).unwrap(),
+        ),
     };
     let Interview::Asking(pending) = Interview::start(&template, seed).unwrap() else {
         panic!()
@@ -504,6 +519,9 @@ fn false_when_waits_for_all_node_references() {
         let seed = Seed {
             now: support::expectation(&fixture).now.parse().unwrap(),
             defaults: indexmap::IndexMap::new(),
+            context: toha::context::InvocationContext::for_target(
+                toha::staging::canonical_target(std::path::Path::new(".")).unwrap(),
+            ),
         };
         let Interview::Asking(first_batch) = Interview::start(&template, seed).unwrap() else {
             panic!("{name}: first batch")
@@ -555,6 +573,9 @@ fn check_preserves_format_evaluation_failure() {
     let seed = Seed {
         now: support::expectation(fixture).now.parse().unwrap(),
         defaults: indexmap::IndexMap::new(),
+        context: toha::context::InvocationContext::for_target(
+            toha::staging::canonical_target(std::path::Path::new(".")).unwrap(),
+        ),
     };
     let Interview::Asking(pending) = Interview::start(&template, seed).unwrap() else {
         panic!()
@@ -601,6 +622,9 @@ interview:
     let seed = Seed {
         now: "2026-01-02T03:04:05+00:00[UTC]".parse().unwrap(),
         defaults: indexmap::IndexMap::new(),
+        context: toha::context::InvocationContext::for_target(
+            toha::staging::canonical_target(std::path::Path::new(".")).unwrap(),
+        ),
     };
     let Interview::Asking(pending) = Interview::start(&template, seed).unwrap() else {
         panic!()

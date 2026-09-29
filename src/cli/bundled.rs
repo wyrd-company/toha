@@ -72,6 +72,8 @@ pub fn resolve(dirs: &Dirs) -> Result<ResolvedTemplate, ResolveError> {
         // The hookless demo is never trusted; it carries no approval digest.
         approval: None,
         named: false,
+        aliases: Vec::new(),
+        source: None,
     })
 }
 
