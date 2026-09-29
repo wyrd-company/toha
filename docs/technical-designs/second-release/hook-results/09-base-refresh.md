@@ -26,12 +26,12 @@ provenance only and changes no design semantics.
 
 ## Base
 
-- Base and merge-base: epic `e762570bd6169ed1c5097bab354371e991d9ee69`.
-- The branch holds eight design-only commits; every changed path is under
+- Base and merge-base: epic `76d48fde1e680b8aa8207485890e0277b231eab2`.
+- Every changed path on the branch is under
   `docs/technical-designs/second-release/hook-results/`.
-- The approved design-directory tree `8006175f9683dd0ac27c29965617daa35013d5c5`
-  is identical at the approval anchor and after the refresh, before this record
-  was added.
+- Apart from this record, the design-directory tree is identical to the
+  approved tree `8006175f9683dd0ac27c29965617daa35013d5c5` at the approval
+  anchor.
 
 | Artifact | SHA-256 (unchanged) |
 | --- | --- |
@@ -52,7 +52,7 @@ The published Postplan v2 raw HTML is byte-identical to the committed
 ## Composition with the landed runtime
 
 The base contains the landed context, confirm-flow, and include runtimes. Each
-premise the approved design relies on holds at `e762570`. Line citations in
+premise the approved design relies on holds at `76d48fd`. Line citations in
 `01-grounding.md` and `design.md` are anchored to the grounding base; the
 current locations are:
 
