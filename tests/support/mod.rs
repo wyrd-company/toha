@@ -429,11 +429,12 @@ pub fn plan_text_from_document(document: &serde_json::Value) -> String {
     let mut lines = Vec::new();
     if let Some(files) = document["files"].as_array() {
         for file in files {
-            lines.push(format!(
-                "{} {}",
-                file["action"].as_str().unwrap_or_default(),
-                file["path"].as_str().unwrap_or_default()
-            ));
+            let action = file["action"].as_str().unwrap_or_default();
+            let path = file["path"].as_str().unwrap_or_default();
+            match file["owner"].as_str() {
+                Some(owner) => lines.push(format!("{action} {path} ({owner})")),
+                None => lines.push(format!("{action} {path}")),
+            }
         }
     }
     if let Some(hooks) = document["hooks"].as_array() {

@@ -1269,40 +1269,61 @@ fn required_errors(batch: &Batch) -> Rejections {
         })
         .collect()
 }
-/// The per-path action of a completed plan, classified against the target's
-/// current bytes before any write: `create`/`overwrite`/`conflict` for a
-/// whole-file rule, `inject`/`update` for an edit.
+/// Classifies each planned write against the target's current bytes before any
+/// write: `create`/`overwrite`/`conflict` for a whole-file rule, `inject`/
+/// `update` for an edit (by whether the region or value is present), carrying the
+/// region key or JSON path an edit governs. A whole-file rule that a path also
+/// edits keeps its create/overwrite action; the edit folds into the generated
+/// image and is not classified against the not-yet-written target. An unchanged
+/// edit is omitted, as it writes nothing.
 #[allow(clippy::result_large_err)]
-fn plan_actions(
+fn classify_paths(
     plan: &Plan,
     target: &CanonicalTarget,
     force: bool,
-) -> Result<std::collections::HashMap<String, &'static str>, toha::ApplyError> {
+) -> Result<Vec<protocol::PlannedPath>, toha::ApplyError> {
     use toha::{EditReport, PlannedEdit};
-    let mut actions = std::collections::HashMap::new();
+    let mut paths = Vec::new();
     for file in &plan.files {
         let action = if plan.conflicts.contains(&file.path) {
             if force { "overwrite" } else { "conflict" }
         } else {
             "create"
         };
-        actions.insert(file.path.to_string(), action);
+        paths.push(protocol::PlannedPath {
+            path: file.path.to_string(),
+            action: action.to_string(),
+            owner: None,
+        });
     }
     for edit in &plan.edits {
+        if plan.files.iter().any(|file| file.path == *edit.path()) {
+            continue;
+        }
         let full = target.as_path().join(edit.path().as_path());
         let current = std::fs::read(&full).ok();
-        let report = match edit {
-            PlannedEdit::Region(region) => toha::report_region_edit(current.as_deref(), region)?,
-            PlannedEdit::JsonValue(json) => toha::report_json_edit(current.as_deref(), json)?,
+        let (report, owner) = match edit {
+            PlannedEdit::Region(region) => (
+                toha::report_region_edit(current.as_deref(), region)?,
+                region.region.to_string(),
+            ),
+            PlannedEdit::JsonValue(json) => (
+                toha::report_json_edit(current.as_deref(), json)?,
+                json.json_path.to_string(),
+            ),
         };
         let action = match report {
             EditReport::Inject => "inject",
             EditReport::Update | EditReport::Drift => "update",
             EditReport::Unchanged => continue,
         };
-        actions.insert(edit.path().to_string(), action);
+        paths.push(protocol::PlannedPath {
+            path: edit.path().to_string(),
+            action: action.to_string(),
+            owner: Some(owner),
+        });
     }
-    Ok(actions)
+    Ok(paths)
 }
 /// Maps an apply failure to a scripted `error` document by kind.
 fn scripted_apply_error(error: toha::ApplyError, context: &Context) -> Outcome {
@@ -1466,23 +1487,29 @@ fn scripted_completed(
     } else {
         TrustState::Untrusted
     };
+    // The planned paths, classified against the target before any write. Shared
+    // by the planned and applied documents.
+    let classified = match classify_paths(&plan, target, force) {
+        Ok(v) => v,
+        Err(e) => return scripted_apply_error(e, ctx),
+    };
     if dry_run {
         let code = if has_hooks && !trusted { 3 } else { 0 };
         return Outcome::Document(
-            protocol::planned_document(&plan, &messages, ctx, trust_state),
+            protocol::planned_document(&classified, &plan, &messages, ctx, trust_state),
             code,
         );
     }
     if has_hooks && !trusted {
         return Outcome::Document(
-            protocol::planned_document(&plan, &messages, ctx, TrustState::Untrusted),
+            protocol::planned_document(&classified, &plan, &messages, ctx, TrustState::Untrusted),
             3,
         );
     }
-    let actions = match plan_actions(&plan, target, force) {
-        Ok(v) => v,
-        Err(e) => return scripted_apply_error(e, ctx),
-    };
+    let actions: std::collections::HashMap<String, String> = classified
+        .iter()
+        .map(|entry| (entry.path.clone(), entry.action.clone()))
+        .collect();
     match plan.apply_reporting(
         target,
         ApplyOptions {
@@ -1508,9 +1535,8 @@ fn scripted_completed(
                         path: path.to_string(),
                         action: actions
                             .get(&path.to_string())
-                            .copied()
-                            .unwrap_or("create")
-                            .to_string(),
+                            .cloned()
+                            .unwrap_or_else(|| "create".to_string()),
                     })
                     .collect(),
                 messages,

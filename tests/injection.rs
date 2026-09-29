@@ -20,13 +20,14 @@ fn make_template(root: &Path, yaml: &str) -> std::path::PathBuf {
     folder
 }
 
-/// Runs `toha apply --answers <empty> <template> <target> [extra]` in isolation.
-/// Injection templates have no interview, so an empty answers document drives
-/// the headless route without a terminal.
+/// Runs `toha apply TEMPLATE TARGET --answers <envelope>` (the scripted route) in
+/// isolation. Injection templates have no interview, so an empty answers object
+/// inside the identity envelope drives the headless walk to completion.
 fn apply(template: &Path, target: &Path, extra: &[&str]) -> Output {
     let isolation = tempfile::tempdir().unwrap();
     let answers = isolation.path().join("answers.json");
-    fs::write(&answers, "{}").unwrap();
+    let formal = support::formal_name(template);
+    fs::write(&answers, support::envelope_text(&formal, &serde_json::json!({}))).unwrap();
     let mut command = support::isolated_command(isolation.path());
     command
         .arg("apply")
@@ -41,8 +42,10 @@ fn apply(template: &Path, target: &Path, extra: &[&str]) -> Output {
 fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
+/// The scripted route's diagnostic: the decoded `message`/`errors` of the JSON
+/// result document on standard output (a scripted fault is never on stderr).
 fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
+    support::diagnostic_text(&support::first_document(&output.stdout))
 }
 
 const REGION_TEMPLATE: &str = r#"name: sample
@@ -259,10 +262,10 @@ fn dry_run_reports_inject_then_update_and_writes_nothing() {
 
     let dry = apply(&template, &target, &["--dry-run"]);
     assert_eq!(dry.status.code(), Some(0), "{}", stderr(&dry));
+    let plan = support::plan_text_from_document(&support::first_document(&dry.stdout));
     assert!(
-        stdout(&dry).contains("inject package.json (scripts.build)"),
-        "{}",
-        stdout(&dry)
+        plan.contains("inject package.json (scripts.build)"),
+        "{plan}"
     );
     assert_eq!(fs::read(&file).unwrap(), before, "dry-run wrote the file");
 

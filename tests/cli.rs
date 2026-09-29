@@ -238,7 +238,14 @@ fn continue_prints_prior_batch_messages_once() {
         .unwrap();
     assert_eq!(stage.status.code(), Some(4));
     let answers = folder.path().join("answers.json");
-    std::fs::write(&answers, "{\"first\":\"Ada\"}").unwrap();
+    std::fs::write(
+        &answers,
+        support::envelope_text(
+            &support::formal_name(folder.path()),
+            &serde_json::json!({"first": "Ada"}),
+        ),
+    )
+    .unwrap();
     let first = support::isolated_command(state.path())
         .arg("continue")
         .arg(target.path())
@@ -264,21 +271,27 @@ fn continue_prints_prior_batch_messages_once() {
 #[test]
 fn default_render_failure_exits_one_without_writing() {
     let fixture = std::path::Path::new("tests/fixtures/err-default-render");
+    let template = fixture.join("template");
     let target = tempfile::tempdir().unwrap();
     let isolation = tempfile::tempdir().unwrap();
+    let answers = support::envelope_file(
+        isolation.path(),
+        &support::formal_name(&template),
+        &fixture.join("answers.json"),
+    );
     let output = support::isolated_command(isolation.path())
         .arg("apply")
-        .arg(support::folder_address(
-            &fixture.join("template").canonicalize().unwrap(),
-        ))
+        .arg(support::folder_address(&template.canonicalize().unwrap()))
         .arg(target.path())
         .arg("--answers")
-        .arg(fixture.join("answers.json"))
+        .arg(&answers)
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("second.default"), "{stderr}");
+    // The render fault is an `error` document whose decoded message names the
+    // failing default.
+    let message = support::diagnostic_text(&support::first_document(&output.stdout));
+    assert!(message.contains("second.default"), "{message}");
     assert!(std::fs::read_dir(target.path()).unwrap().next().is_none());
 }
 
@@ -298,7 +311,7 @@ fn trusted_script_runs_in_target() {
     permissions.set_mode(0o755);
     std::fs::set_permissions(&script, permissions).unwrap();
     let answers = folder.path().join("answers.json");
-    std::fs::write(&answers, "{}").unwrap();
+    std::fs::write(&answers, support::envelope_text(&support::formal_name(folder.path()), &serde_json::json!({}))).unwrap();
     let target = tempfile::tempdir().unwrap();
     let isolation = tempfile::tempdir().unwrap();
     let output = support::isolated_command(isolation.path())
@@ -357,7 +370,7 @@ fn trusted_hook_runs_once_per_item() {
     permissions.set_mode(0o755);
     std::fs::set_permissions(&script, permissions).unwrap();
     let answers = folder.path().join("answers.json");
-    std::fs::write(&answers, "{}").unwrap();
+    std::fs::write(&answers, support::envelope_text(&support::formal_name(folder.path()), &serde_json::json!({}))).unwrap();
     let target = tempfile::tempdir().unwrap();
     let isolation = tempfile::tempdir().unwrap();
     let output = support::isolated_command(isolation.path())
@@ -385,7 +398,7 @@ fn trusted_hook_runs_once_per_item() {
 
 #[cfg(unix)]
 #[test]
-fn trusted_apply_prints_written_files_before_hooks_run() {
+fn trusted_scripted_apply_reports_files_and_runs_hooks() {
     use std::os::unix::fs::PermissionsExt;
     let folder = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -402,12 +415,14 @@ fn trusted_apply_prints_written_files_before_hooks_run() {
     std::fs::write(folder.path().join("alpha.txt"), "alpha\n").unwrap();
     std::fs::write(folder.path().join("beta.txt"), "beta\n").unwrap();
     let script = folder.path().join("mark.sh");
-    std::fs::write(&script, "#!/bin/sh\necho HOOK-MARKER\n").unwrap();
+    // The scripted route's stdout is a single JSON document, so the hook records
+    // its run in a file rather than echoing to stdout.
+    std::fs::write(&script, "#!/bin/sh\nprintf HOOK-MARKER > mark.done\n").unwrap();
     let mut permissions = std::fs::metadata(&script).unwrap().permissions();
     permissions.set_mode(0o755);
     std::fs::set_permissions(&script, permissions).unwrap();
     let answers = folder.path().join("answers.json");
-    std::fs::write(&answers, "{}").unwrap();
+    std::fs::write(&answers, support::envelope_text(&support::formal_name(folder.path()), &serde_json::json!({}))).unwrap();
     let target = tempfile::tempdir().unwrap();
     let isolation = tempfile::tempdir().unwrap();
     // The second run overwrites both files with --force.
@@ -430,10 +445,21 @@ fn trusted_apply_prints_written_files_before_hooks_run() {
             "{extra:?}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        // The applied document lists the written files in write order, and the
+        // hook ran (recorded in mark.done). The files-before-hooks ordering is an
+        // apply invariant proved in apply.rs.
+        let document = support::first_document(&output.stdout);
+        let paths: Vec<&str> = document["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|file| file["path"].as_str().unwrap())
+            .collect();
+        assert_eq!(paths, ["alpha.txt", "beta.txt"], "{extra:?}");
+        assert_eq!(document["hooks"].as_array().unwrap().len(), 1, "{extra:?}");
         assert_eq!(
-            stdout.lines().collect::<Vec<_>>(),
-            ["alpha.txt", "beta.txt", "HOOK-MARKER"],
+            std::fs::read_to_string(target.path().join("mark.done")).unwrap(),
+            "HOOK-MARKER",
             "{extra:?}"
         );
     }

@@ -206,39 +206,32 @@ fn planned_hook_value(planned: &Planned<PlannedHook>) -> Value {
     };
     json!({"command": argv, "cwd": cwd.unwrap_or_else(|| ".".into())})
 }
+/// One planned write: its path, its action (`create`/`overwrite`/`conflict` for
+/// a whole-file rule, `inject`/`update` for an edit), and the region key or JSON
+/// path an edit governs. The CLI classifies each against the target before any
+/// write.
+pub struct PlannedPath {
+    pub path: String,
+    pub action: String,
+    pub owner: Option<String>,
+}
 /// The `planned` result document: every planned path with its action, the
 /// completion messages, the planned hooks, and whether they are trusted. Exit 0,
 /// or exit 3 when the hooks are untrusted.
 pub fn planned_document(
+    files: &[PlannedPath],
     plan: &crate::Plan,
     messages: &[String],
     context: &Context,
     trust: TrustState,
 ) -> Value {
-    let mut files: Vec<Value> = plan
-        .files
+    let files: Vec<Value> = files
         .iter()
-        .map(|file| {
-            let action = if plan.conflicts.contains(&file.path) {
-                "conflict"
-            } else {
-                "create"
-            };
-            json!({"path": file.path.to_string(), "action": action})
+        .map(|file| match &file.owner {
+            Some(owner) => json!({"path": file.path, "action": file.action, "owner": owner}),
+            None => json!({"path": file.path, "action": file.action}),
         })
         .collect();
-    // Injected targets are planned writes too; a create flag marks a target the
-    // edit would author, an update an existing target it would change.
-    for edit in &plan.edits {
-        let create = match edit {
-            crate::PlannedEdit::Region(region) => region.create,
-            crate::PlannedEdit::JsonValue(json) => json.create,
-        };
-        files.push(json!({
-            "path": edit.path().to_string(),
-            "action": if create { "inject" } else { "update" },
-        }));
-    }
     let hooks: Vec<Value> = plan.hooks.iter().map(planned_hook_value).collect();
     json!({"protocol":1, "status":"planned", "context":context_value(context),
         "files":files, "messages":messages, "hooks":hooks,
