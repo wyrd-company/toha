@@ -131,7 +131,8 @@ current conflict semantics.
   edits; same-path write-then-inject allowed) ✓.
 - **Dependency check.** The region checksum reuses the existing `sha2`
   dependency. JSON-family mutation adopts embedded `jsonc-parser` with its
-  `cst` feature; the source review and adoption case are in the JSON addendum.
+  `cst` and `serde_json` features; the source review and adoption case are in
+  the JSON addendum.
 - **Falsifiable scenarios** (become 1031 fixtures): (1) *twice-apply changes the
   file once* — the acceptance fixture, sole assertion on idempotency; (2)
   first-placement at an anchor and at EOF; (3) template body change replaces only
