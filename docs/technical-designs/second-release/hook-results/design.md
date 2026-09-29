@@ -98,12 +98,12 @@ pub struct HookNode {
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capture { pub stdout: bool, pub stderr: bool }
 
-// hook.rs — outcome carries opt-in captured streams; manual Debug hides them.
+// hook.rs — outcome carries opt-in raw captured bytes; manual Debug hides them.
 pub struct HookOutcome {
     pub success: bool,
     pub code: Option<i32>,
-    pub stdout: Option<String>,    // Some iff Capture.stdout
-    pub stderr: Option<String>,
+    pub stdout: Option<Vec<u8>>,   // raw bytes; Some iff Capture.stdout
+    pub stderr: Option<Vec<u8>>,   // apply strict-decodes after the failure gate
 }
 impl std::fmt::Debug for HookOutcome { /* success, code only — never bytes */ }
 
@@ -185,11 +185,12 @@ for (index, step) in hooks:
     hook = Ready(h)         → h
          | AfterHooks(d)    → d.render_hooks(&results)?      // ApplyError::Deferred
     symlink-check hook.cwd                                   // just before running
-    outcome = runner.run(hook)?                              // HookIo unchanged
-    stdout/stderr = decode(...)?                             // ApplyError::HookOutput on non-UTF-8
-    if hook.id: results.record(id, HookResult{ code, stdout, stderr })
+    outcome = runner.run(hook)?                              // HookIo unchanged; raw bytes
     if !outcome.success && !(hook.allow_failure && outcome.code.is_some()):
         return Err(ApplyError::Hook{ index, hook, outcome })  // Display unchanged, no bytes
+    if hook.id:                                              // decode strictly after the failure gate
+        stdout/stderr = decode(...)?                         // ApplyError::HookOutput on non-UTF-8
+        results.record(id, HookResult{ code, stdout, stderr })
 after_apply = Ready(s) → Some(s) | AfterHooks(d) → d.render_message(&results)?
 // results dropped here
 ```
