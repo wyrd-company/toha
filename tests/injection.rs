@@ -191,6 +191,65 @@ fn struct_json_inserts_typed_value_and_converges_without_force() {
 }
 
 #[test]
+fn unknown_extension_fails_loudly_and_a_marker_override_works() {
+    let root = tempfile::tempdir().unwrap();
+    let target = root.path().join("out");
+    fs::create_dir_all(&target).unwrap();
+    fs::write(target.join("data.xyz"), "start\n").unwrap();
+
+    // An unknown extension with no marker override is a planning error.
+    let bare = make_template(
+        root.path(),
+        "name: sample\ninject:\n  - into: \"data.xyz\"\n    region: block\n    content: \"x\"\n",
+    );
+    let output = apply(&bare, &target, &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("comment style"),
+        "{}",
+        stderr(&output)
+    );
+    assert_eq!(
+        fs::read_to_string(target.join("data.xyz")).unwrap(),
+        "start\n"
+    );
+
+    // A marker override injects into the same unknown extension.
+    let overridden = make_template(
+        root.path(),
+        "name: sample\ninject:\n  - into: \"data.xyz\"\n    region: block\n    marker: \";\"\n    content: \"value = 1\"\n",
+    );
+    let output = apply(&overridden, &target, &[]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let text = fs::read_to_string(target.join("data.xyz")).unwrap();
+    assert!(text.contains("; >>> toha:region block >>>"), "{text}");
+    assert!(text.contains("value = 1"), "{text}");
+}
+
+#[test]
+fn multiple_json_paths_on_one_target_commit_and_report_once() {
+    let root = tempfile::tempdir().unwrap();
+    let template = make_template(
+        root.path(),
+        "name: sample\ninject:\n  - into: \"package.json\"\n    struct: { path: \"scripts.build\", value: \"tsc\" }\n  - into: \"package.json\"\n    struct: { path: \"scripts.test\", value: \"vitest\" }\n",
+    );
+    let target = json_target(root.path(), "{\n  \"scripts\": {}\n}");
+    let output = apply(&template, &target, &[]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(target.join("package.json")).unwrap()).unwrap();
+    assert_eq!(value["scripts"]["build"], serde_json::json!("tsc"));
+    assert_eq!(value["scripts"]["test"], serde_json::json!("vitest"));
+    // The target is reported exactly once despite two edits.
+    assert_eq!(
+        stdout(&output).matches("package.json").count(),
+        1,
+        "{}",
+        stdout(&output)
+    );
+}
+
+#[test]
 fn dry_run_reports_inject_then_update_and_writes_nothing() {
     let root = tempfile::tempdir().unwrap();
     let template = make_template(root.path(), STRUCT_TEMPLATE);
