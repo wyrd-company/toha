@@ -201,15 +201,21 @@ enum Command {
     },
     /// Run the interview for a template and save the answers without writing files.
     ///
+    /// Without --async this is the person route: it prompts in a terminal and, at
+    /// completion, shows the dry-run plan and the apply instructions. With --async
+    /// it is the agent route: answer the batch with `continue PATH FILE`, then
+    /// `apply PATH`.
+    ///
     /// Multiline input uses an editor, or lines ending with . when no editor is available.
     Stage {
         /// Alias, short name, formal name, git address, or folder of the template.
         template: String,
         /// Target directory.
         path: PathBuf,
-        /// Emit the first question batch instead of prompting.
+        /// Emit the first question batch instead of prompting (the agent route).
         ///
-        /// Writes to FILE, or to standard output when no file is given.
+        /// Writes the batch to FILE and the instructions to standard output, or the
+        /// batch and instructions to standard output when no file is given.
         #[arg(
             short = 'a',
             long = "async",
@@ -224,14 +230,20 @@ enum Command {
     },
     /// Continue a staged interview with an answers document or terminal prompts.
     ///
+    /// With FILE (the agent route) it answers one batch and writes the next batch
+    /// and instructions, or the completion instructions when done. Without FILE
+    /// (the person route) it prompts and, at completion, shows the dry-run plan.
+    ///
     /// Multiline input uses an editor, or lines ending with . when no editor is available.
     Continue {
         /// Target directory of the staged interview.
         path: PathBuf,
-        /// Answers document for the current batch; - reads standard input.
+        /// Identity-bearing answers document for the current batch; - reads
+        /// standard input. The document names the template it answers:
+        /// {"template": <formal>, "answers": {...}}.
         ///
-        /// When absent, toha prompts in the terminal for every remaining question, or emits the
-        /// complete result document when none remain.
+        /// When absent, toha prompts in the terminal for every remaining question,
+        /// then shows the dry-run plan.
         #[arg(value_name = "FILE")]
         answers: Option<String>,
     },
@@ -242,6 +254,12 @@ enum Command {
     },
     /// Write the files of a staged or new interview and run its hooks.
     ///
+    /// `apply PATH` applies a complete staged interview, or reports the current
+    /// batch of an incomplete one without prompting (the agent route).
+    /// `apply TEMPLATE PATH` prompts in a terminal (the person route).
+    /// `apply TEMPLATE PATH --answers FILE` is the scripted route: one shot, one
+    /// JSON result document, never staged; it refuses when an interview is staged.
+    ///
     /// Multiline input uses an editor, or lines ending with . when no editor is available.
     #[command(
         override_usage = "toha apply [OPTIONS] [TEMPLATE] <PATH>",
@@ -251,8 +269,9 @@ enum Command {
         /// One operand is the target directory; two are the template and the target directory.
         #[arg(num_args = 1..=2, required = true, value_name = "PATH", hide = true)]
         paths: Vec<String>,
-        /// Answers document for a new interview, or for the staged interview of the named
-        /// template; - reads standard input.
+        /// Identity-bearing answers document for the scripted one-shot route; -
+        /// reads standard input. The document names the template it answers:
+        /// {"template": <formal>, "answers": {...}}.
         #[arg(short = 'A', long, value_name = "FILE")]
         answers: Option<String>,
         /// Overwrite existing files.

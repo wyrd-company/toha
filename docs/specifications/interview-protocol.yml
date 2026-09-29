@@ -4,10 +4,36 @@ relationships:
     - toha
 description: >-
   Defines the documents toha exchanges with a script or agent that answers an
-  interview across several processes, and the answers file accepted by headless
-  runs. `docs/specifications/interview-protocol.schema.yml` is the
-  machine-readable definition of the question batch, the answers document, and
-  the result document.
+  interview across several processes, and the identity-bearing answers document
+  callers submit. `docs/specifications/interview-protocol.schema.yml` is the
+  machine-readable definition of the answers-document envelope, the question
+  batch, and the result documents (`questions`, `applied`, `planned`, `error`,
+  and `ended`).
+
+  Answers-document envelope. Every external answers document has exactly two
+  top-level members: `template`, the formal name of the template it answers,
+  and `answers`, the answers keyed by question id. Toha compares the declared
+  `template` with the formal name the route has already established, by exact
+  string equality, before it evaluates any answer; it never trims, case-folds,
+  canonicalizes, resolves, fetches, or trust-checks the declared value. A
+  document authored for another template cannot be accepted because question
+  identifiers happen to match. A bare answer map, without the envelope, is
+  invalid; the diagnostic shows the required wrapper and the expected identity.
+  The envelope carries no target or commit, so one document answers another
+  target or another resolved commit of the same formal identity. In-memory crate
+  callers still build `RawAnswers` directly and drive `Pending::answer` or the
+  raw headless walk without the envelope.
+
+  Result documents. The scripted route (`apply TEMPLATE PATH --answers FILE`)
+  writes exactly one JSON result document for every outcome and nothing else:
+  `questions` (exit 4), `ended` (exit 0), `applied` (exit 0), `planned` (exit 0,
+  or exit 3 when hooks are untrusted), or `error` (exit 1, or exit 5 for an
+  ambiguous template). An `applied` document lists each written path with its
+  action, the messages, and the hooks that ran; a `planned` document lists each
+  planned path with its action, the messages, the planned hooks, and whether
+  they are trusted; an `error` document carries a `kind`, a `message`, and the
+  commands that finish, discard, or retry the request when there are any. There
+  is no `complete` document.
 
   Batches. `stage --async` and `continue` emit a question batch. A batch holds
   every pending question from the interview position up to, and not including,
@@ -103,11 +129,11 @@ description: >-
   `is required`, `is not a question in this template`, or `is already
   answered with "draft"`. A next batch holds
   errors only for held answers that failed when their questions were
-  reached. When the interview is complete, the
-  result has `status: complete`, holds the full flat answers object, and
-  holds the messages of the step that completed the interview.
-  `continue` without an answers argument on a complete interview emits that
-  complete result.
+  reached. When `continue PATH FILE` completes the interview it writes the
+  completion instructions only, naming `apply PATH --dry-run` and `apply PATH`,
+  and exits 0; there is no complete result document. `continue PATH FILE` on an
+  interview that is already complete or ended refuses before reading the
+  document.
 
   Flow control. A flow node in the interview can end or steer the run. When a
   flow `stop` or `abort` fires, every headless route — `stage --async`,
@@ -126,22 +152,22 @@ description: >-
   Modality. The modality is chosen by each call. `continue` with an answers
   file, or `-` for standard input, answers the current batch. `continue`
   without an answers argument prompts in the terminal for every remaining
-  question, and needs a terminal only while questions remain. `apply` on an
-  incomplete staged interview prompts in the same way when a terminal is
-  available, then applies. An interview
-  started in one modality continues in either.
+  question, and needs a terminal only while questions remain. `apply TEMPLATE
+  PATH` prompts the remaining questions in a terminal (the person route);
+  `apply PATH` reports the current batch with instructions and never prompts
+  (the agent route). An interview started in one modality continues in either.
 
-  Headless answers files. `apply` accepts an answers document with
-  `--answers`, for a new interview or for the interview staged at the target
-  for the same template. Toha submits the document as one answers document,
-  as `continue` does, so the same document records the same answers and
-  reports the same errors through either command. It then answers each
-  remaining batch from configured defaults, then from the question `default`.
-  When the document is rejected, or a required question has no answer, or a
-  question has an error for a value recorded earlier, the run stops, stages
-  the interview, and emits the batch that holds the question with its
-  errors. With `--dry-run`, the run emits that batch and leaves the staged
-  state unchanged.
+  Headless answers files. The scripted route `apply TEMPLATE PATH --answers
+  FILE` is one shot. It never stages, refuses with a `staged` error document
+  when an interview is staged at the path (before reading the document), and
+  writes exactly one JSON result document for every outcome. It submits the
+  envelope as one document, then answers each remaining batch from configured
+  defaults and the question `default`. When the document is rejected, or a
+  required question has no answer, or a held answer fails when its question is
+  reached, it reports a `questions` document with per-id errors (a missing
+  required question carries `is required`) and exit 4. A completed run reports
+  `applied` (or `planned` under `--dry-run` or a flow dry-run). It leaves the
+  staged and target bytes unchanged on any document or identity failure.
 
   Staged state. A staged interview is stored in the user state directory:
   `$XDG_STATE_HOME/toha/staged/` on Linux, with `~/.local/state` in place of

@@ -103,31 +103,35 @@ description: >-
   re-approves the currently installed surface without fetching, so an update
   that lapsed approval is recovered without re-adding the template.
 
-  Staged interviews. `apply <PATH>` on an incomplete staged interview prompts
-  in the terminal for the remaining questions, records each accepted batch in
-  the staged record, and applies the complete interview; with `--dry-run` it
-  records nothing. Without a terminal on standard input and standard output,
-  it emits the batch, names the commands that answer it on standard error, and
-  exits with code 4. A `<TEMPLATE>` argument names the template of a staged
-  interview when it resolves to the formal name that the staged record holds.
-  `apply <TEMPLATE> <PATH>` with an interview for that template staged at the
-  path runs as `apply <PATH>`. With `--answers`, the document answers the
-  staged interview as it answers a new headless run, and a complete result is
-  applied. `stage <TEMPLATE> <PATH>` with an interview for
-  that template staged at the path fails and names `continue` for an
-  incomplete interview, `apply` for a complete one, and `abort` followed by
-  the same `stage` command to start again. `stage` or `apply` with a
-  `<TEMPLATE>` whose formal name differs from the staged one fails, names both
-  templates, and names `abort` followed by the same command to replace the
-  staged interview and the `continue` and `apply` commands that finish it.
-  `continue <PATH>` on a complete interview emits the complete result
-  document, names `apply <PATH>` on standard error, and exits with code 0; an
-  answers document for a complete interview fails and names `apply`.
-  `continue`, `apply <PATH>`, and `abort` with no interview staged at the path
-  name `stage` and `apply` with a `<TEMPLATE>`. `continue` and `apply` on a
-  staged record that no longer replays against its template fail with exit
-  code 1, state that the staged interview cannot be resumed and why, and name
-  `abort` followed by `stage` to start the interview over.
+  Staged interviews. Each caller kind has its own route, and the route alone
+  fixes the input and output modality. `apply <PATH>` is the agent route: it
+  applies a complete staged interview, or, for an incomplete one, reports the
+  current batch with instructions naming `continue <PATH> <ANSWERS>`,
+  `continue <PATH>`, and `apply <PATH>`, and exits with code 4 — it never
+  prompts, with or without a terminal. `apply <TEMPLATE> <PATH>` is the person
+  route: with an interview for that template staged at the path (or a fresh
+  interview) it prompts the remaining questions in a terminal, records each
+  accepted batch, and applies at completion; with `--dry-run` it records and
+  writes nothing; without a terminal it refuses and names the agent route.
+  `apply <TEMPLATE> <PATH> --answers <FILE>` is the scripted route: one shot,
+  one JSON result document for every outcome, never staged, and it refuses with
+  a `staged` error document — before reading the document — when an interview is
+  staged at the path. `stage <TEMPLATE> <PATH>` with an interview for that
+  template staged at the path fails and names `continue` for an incomplete
+  interview, `apply` for a complete one, and `abort` followed by the same
+  `stage` command to start again. `stage` or `apply` with a `<TEMPLATE>` whose
+  formal name differs from the staged one fails, names both templates, and names
+  `abort` followed by the same command to replace the staged interview and the
+  `continue` and `apply` commands that finish it. `continue <PATH>` on a
+  complete interview shows the dry-run plan and the apply instructions on
+  standard output and exits with code 0; `continue <PATH> <FILE>` on a complete
+  or ended interview refuses before reading the document and names
+  `apply <PATH> --dry-run` and `apply <PATH>`. `continue`, `apply <PATH>`, and
+  `abort` with no interview staged at the path name `stage` and `apply` with a
+  `<TEMPLATE>`. `continue` and `apply` on a staged record that no longer replays
+  against its template fail with exit code 1, state that the staged interview
+  cannot be resumed and why, and name `abort` followed by `stage` to start the
+  interview over.
 
   Flow control. When a template's flow node ends the run, no files are written
   and no hooks run, a one-line notice that names the action and any `label` is
