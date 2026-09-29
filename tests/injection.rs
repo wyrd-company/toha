@@ -307,6 +307,86 @@ fn an_error_in_a_later_edit_leaves_every_target_unchanged() {
 }
 
 #[test]
+fn struct_rule_targeting_a_non_json_file_is_a_planning_error() {
+    let root = tempfile::tempdir().unwrap();
+    let template = make_template(
+        root.path(),
+        "name: sample\ninject:\n  - into: \"notes.txt\"\n    struct: { path: \"a\", value: 1 }\n",
+    );
+    let target = root.path().join("out");
+    fs::create_dir_all(&target).unwrap();
+    fs::write(target.join("notes.txt"), "hi\n").unwrap();
+    let output = apply(&template, &target, &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("not a .json"),
+        "{}",
+        stderr(&output)
+    );
+    // Nothing was written.
+    assert_eq!(
+        fs::read_to_string(target.join("notes.txt")).unwrap(),
+        "hi\n"
+    );
+}
+
+#[test]
+fn overlapping_struct_paths_on_one_target_are_a_planning_error() {
+    let root = tempfile::tempdir().unwrap();
+    let template = make_template(
+        root.path(),
+        "name: sample\ninject:\n  - into: \"c.json\"\n    struct: { path: \"a\", value: 1 }\n  - into: \"c.json\"\n    struct: { path: \"a.b\", value: 2 }\n",
+    );
+    let target = json_target(root.path(), "{}");
+    fs::rename(target.join("package.json"), target.join("c.json")).unwrap();
+    let output = apply(&template, &target, &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains("overlap"), "{}", stderr(&output));
+}
+
+#[test]
+fn duplicate_region_key_on_one_target_is_a_planning_error() {
+    let root = tempfile::tempdir().unwrap();
+    let template = make_template(
+        root.path(),
+        "name: sample\ninject:\n  - into: \"a.conf\"\n    region: dup\n    content: \"x\"\n  - into: \"a.conf\"\n    region: dup\n    content: \"y\"\n",
+    );
+    let target = root.path().join("out");
+    fs::create_dir_all(&target).unwrap();
+    fs::write(target.join("a.conf"), "base\n").unwrap();
+    let output = apply(&template, &target, &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("duplicate region"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn an_injected_target_through_a_symlink_is_refused() {
+    use std::os::unix::fs::symlink;
+    let root = tempfile::tempdir().unwrap();
+    let template = make_template(root.path(), STRUCT_TEMPLATE);
+    let target = root.path().join("out");
+    fs::create_dir_all(&target).unwrap();
+    // `package.json` is a symlink pointing outside the target.
+    let outside = root.path().join("outside.json");
+    fs::write(&outside, "{}").unwrap();
+    symlink(&outside, target.join("package.json")).unwrap();
+    let output = apply(&template, &target, &[]);
+    assert_eq!(output.status.code(), Some(1), "{}", stdout(&output));
+    assert!(
+        stderr(&output).to_lowercase().contains("symlink"),
+        "{}",
+        stderr(&output)
+    );
+    // The file the symlink points at was not written through.
+    assert_eq!(fs::read_to_string(&outside).unwrap(), "{}");
+}
+
+#[test]
 fn region_body_from_a_source_support_file() {
     let root = tempfile::tempdir().unwrap();
     // The region body is a rendered support file rather than inline content.
