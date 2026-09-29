@@ -174,12 +174,15 @@ impl Plan {
     ) -> Result<Self, PlanError> {
         // The plan renders under the completed interview's context. A current
         // context must carry the target the plan is applied to; a legacy context
-        // carries the same target restored during replay.
-        if completed.context().target() != target {
-            return Err(PlanError::ContextTarget);
-        }
+        // carries the same target restored during replay; a context-free start
+        // (`Resolution::start`) projects nothing and imposes no target check.
         let mut ctx = context_from_answers(&completed.answers, &template.data, &completed.now);
-        completed.context().project(&mut ctx);
+        if let Some(context) = completed.context() {
+            if context.target() != target {
+                return Err(PlanError::ContextTarget);
+            }
+            context.project(&mut ctx);
+        }
         let mut plan = Self {
             files: vec![],
             conflicts: vec![],

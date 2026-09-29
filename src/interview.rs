@@ -45,7 +45,10 @@ pub struct Seed {
 struct InterviewSeed {
     now: jiff::Zoned,
     defaults: IndexMap<Id, DefaultBankEntry>,
-    context: InvocationContext,
+    /// The invocation context, or `None` for the pre-context legacy projection
+    /// route used by [`Resolution::start`], which projects none of the reserved
+    /// names.
+    context: Option<InvocationContext>,
 }
 #[derive(Debug, Clone)]
 enum DefaultBankEntry {
@@ -129,8 +132,9 @@ pub struct Completed {
     pub now: jiff::Zoned,
     /// Whether a flow `dry-run` fired; re-derived each walk, never persisted.
     pub disposition: Disposition,
-    /// The immutable invocation context carried from the seed.
-    context: InvocationContext,
+    /// The immutable invocation context carried from the seed, or `None` for a
+    /// context-free start (`Resolution::start`).
+    context: Option<InvocationContext>,
     skipped: Skipped,
     step_start: usize,
 }
@@ -141,9 +145,10 @@ impl Completed {
     pub fn disposition(&self) -> Disposition {
         self.disposition
     }
-    /// The immutable invocation context this interview carried.
-    pub fn context(&self) -> &InvocationContext {
-        &self.context
+    /// The immutable invocation context this interview carried, or `None` for a
+    /// context-free start.
+    pub fn context(&self) -> Option<&InvocationContext> {
+        self.context.as_ref()
     }
     /// The one policy seam: how a completed interview's plan step is treated.
     pub fn step(&self) -> Step {
@@ -389,9 +394,11 @@ fn context(
 ) -> std::collections::BTreeMap<String, Value> {
     let mut values = context_from_answers(answers, &template.data, &seed.now);
     // The single context builder: a current invocation projects the seventeen
-    // reserved names; a legacy invocation projects none. Readiness, interview
-    // rendering, and planning all build the context here.
-    seed.context.project(&mut values);
+    // reserved names; a legacy or context-free invocation projects none.
+    // Readiness, interview rendering, and planning all build the context here.
+    if let Some(context) = &seed.context {
+        context.project(&mut values);
+    }
     values
 }
 fn has_refs(refs: &HashSet<String>, answers: &Answers, template: &Template) -> bool {
@@ -993,6 +1000,29 @@ impl Resolution {
         &self.warnings
     }
 
+    /// The existing consuming producer entry: moves each origin-bearing
+    /// `ResolvedDefault` into the configured default bank and starts with the
+    /// pre-context legacy projection (no reserved names). Its context-aware
+    /// sibling is [`Self::start_with_context`].
+    pub fn start<'a>(
+        self,
+        template: &'a Template,
+        now: jiff::Zoned,
+    ) -> Result<Interview<'a>, EvalError> {
+        Interview::start_with_bank(
+            template,
+            InterviewSeed {
+                now,
+                defaults: self
+                    .defaults
+                    .into_iter()
+                    .map(|(id, value)| (id, DefaultBankEntry::Configured(value)))
+                    .collect(),
+                context: None,
+            },
+        )
+    }
+
     /// Consumes the origin-bearing configured defaults and the supplied
     /// invocation context, moving each `ResolvedDefault` into the configured
     /// default bank. This is the configured sibling of [`Interview::start`]; it
@@ -1012,7 +1042,7 @@ impl Resolution {
                     .into_iter()
                     .map(|(id, value)| (id, DefaultBankEntry::Configured(value)))
                     .collect(),
-                context,
+                context: Some(context),
             },
         )
     }
@@ -1823,7 +1853,7 @@ impl<'a> Interview<'a> {
                     .into_iter()
                     .map(|(id, value)| (id, DefaultBankEntry::Seed(value)))
                     .collect(),
-                context: seed.context,
+                context: Some(seed.context),
             },
         )
     }
