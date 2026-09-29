@@ -69,8 +69,9 @@ reuse a top-level `data` key or another id.
 
 ## Show a message during the interview
 
-A message node shows rendered text when Toha reaches it. It does not ask for
-an answer or define a variable.
+A message node shows rendered text when Toha reaches it, in interview order.
+It does not ask for an answer or define a variable, and it carries only
+`message` and an optional `when`.
 
 ```yaml
 interview:
@@ -80,9 +81,22 @@ interview:
   - message: "Preparing the note for {{ title }}"
 ```
 
-Messages can also use `when`. If a rendered message is empty or contains only
-whitespace, Toha does not show it. For messages immediately before or after
-files are written, use top-level `messages`; see
+A message renders with whatever a node at its position can see: static `data`,
+the answers and computed values defined earlier in the interview, and the
+reserved `toha_` context values (see
+[Jinja and values](/docs/toha/template-jinja)). When its text names a value from
+a question still unanswered in the current batch, Toha waits for that answer
+before it shows the message, so a message never races a value it names.
+
+A message can use `when`, and can appear inside a group. Toha shows it only when
+it reaches the node on an active branch. A message inside a group whose `when`
+is false, or one a flow node skips past with `{ skip: rest }` or
+`{ skip: group }`, is inert and never shown, like any other skipped node. A
+message whose rendered text is empty or contains only whitespace is not shown
+either.
+
+These messages appear while the interview runs. For a message immediately before
+or after Toha writes the files, use the top-level `messages` map instead; see
 [Hooks and messages](/docs/toha/template-hooks).
 
 ## Place a hook in the interview
