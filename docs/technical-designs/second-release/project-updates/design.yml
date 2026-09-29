@@ -1,0 +1,192 @@
+$schema: https://refinery.systems/ontology/technical-design
+relationships:
+  realizes: toha
+  implements:
+    - command-line-interface
+    - interview-protocol
+    - template-format
+  references:
+    - architecture
+    - content-injection
+    - headless-recovery
+    - hook-results
+    - template-registry
+objective: >-
+  Let a project generated from a template follow that template's later changes:
+  record what each apply produced inside the project, render the template again
+  at a newer commit with the recorded answers, and merge the result with the
+  operator's edits by a three-way merge per ownership identity, in process and
+  without a subprocess. Adopt a project that has no record by asking the
+  interview again and writing only the record.
+background:
+  current-design: >-
+    Apply writes only rendered files into the target and records nothing there.
+    A conflict is an existing target file, and only --force overwrites it. The
+    resolved commit and the accepted raw submissions exist only in the staged
+    interview in the user's state directory, which is deleted after a
+    successful apply. The only template version identity is the resolved git
+    commit. Content injection adds Whole, Region, and JsonValue ownership
+    identities through Plan::mutations(). Hook results last one apply.
+  problems:
+    - >-
+      A template change cannot reach an already generated project without
+      overwriting every operator edit.
+    - >-
+      Nothing in a generated project says which template, commit, and answers
+      produced it.
+    - >-
+      Injection defers the removal of an ownership identity and the three-way
+      merge to this design.
+design-challenges:
+  base-without-duplication: >-
+    The merge base is what Toha wrote last. Storing it duplicates the template
+    and answer-derived content; re-deriving it depends on the old commit and on
+    a reproducible render.
+  untrusted-record: >-
+    The record is operator-editable and arrives through the project's own
+    history, so it must be parsed at a boundary and must never cause deletion
+    of content the template did not produce.
+  ownership-fidelity: >-
+    Whole, Region, and JsonValue each keep their approved semantics: a whole
+    file merges by line, a region merges inside its span under its checksum,
+    and a JSON value converges.
+  replay-fidelity: >-
+    Answers pass through format expressions and defaults, so replay must use the
+    accepted raw submissions and must tolerate questions added or removed
+    between template versions.
+proposed-design:
+  applied-record: >-
+    One JSON file per applied template at .toha/applied/<short-name>-<8 hex of
+    sha256(formal name)>.json, holding the formal name, the resolved commit (or
+    null for a folder template), the frozen generation instant, the accepted
+    raw submissions in order, and per-identity SHA-256 fingerprints for whole
+    files and JSON values plus region keys. No target path, contents, hook
+    output, trust, host or environment facts, or version member. Written last,
+    by temporary file and rename, by every apply route, update, and adopt.
+  merge-base: >-
+    The base is Plan::build of the recorded commit with the recorded
+    submissions replayed, each identity verified against its fingerprint or its
+    region end-marker checksum. An identity that cannot be verified runs in
+    fingerprint mode, which detects an operator edit but never merges by line
+    and never deletes.
+  reconciliation: >-
+    A pure function joins the record, the base plan, and the next plan by
+    ownership identity and yields add, update, merge, converge, retract,
+    release, or conflict per identity. Retract requires a verified base. A
+    merged region keeps the checksum of the template's intended body.
+  merge-engine: >-
+    gix-merge, through the merge feature of the existing gix dependency; Toha
+    calls gix::merge::blob::builtin_driver::text::merge directly with diff3
+    conflict style and never the configurable driver platform.
+  routes: >-
+    Person: update PATH and adopt TEMPLATE PATH. Script and agent: update
+    --answers FILE PATH and adopt --answers FILE TEMPLATE PATH, each writing one
+    JSON result document. Neither stages; both refuse while an interview is
+    staged at the path. The expected answers identity is the selected
+    application's template.
+  effect-order: >-
+    Refuse on a staged interview or unresolved Toha markers; resolve every
+    image; trust gate; refuse conflicts; UpToDate when nothing changes; replace
+    or delete targets; run the next template's hooks; write the record.
+  module: >-
+    A new public toha::project module (record, update, adopt) consumes
+    Plan::build, Plan::mutations, the injection resolvers, parse_and_verify, and
+    the staged-replay walk, and reuses apply's atomic commit and hook loop. The
+    injection module gains crate-private retraction and region-body helpers; its
+    public producer interface does not change.
+out-of-scope:
+  - Rename detection and history search for an adopted project's commit.
+  - Any change to injection ownership semantics, the answers-document contract,
+    the hook-result lifetime, the staged record, or trust.
+  - Commits, refs, or notes authored in the operator's repository.
+  - Per-question exclusion of answers from the record.
+  - New permissions, timeouts, pinned-version checks, or application
+    subprocesses.
+  - Canonical specification, schema, guide, and example edits, which the paired
+    implementation owns.
+decisions-for-approval:
+  record-carrier: >-
+    Recommend one JSON file per applied template under .toha/applied/ in the
+    project. Alternatives: one .toha-applied.json file (branches that update
+    different templates conflict in it); a git commit trailer or a git note/ref
+    (not copied by a default clone or a folder copy, and Toha would have to
+    write to the operator's repository).
+  reserve-record-path: >-
+    Capability restriction, disclosed for explicit approval. Recommend that
+    Plan::build reject template output under .toha/applied/, so a template
+    cannot overwrite a record. Today a template may write any relative path
+    outside .git. Alternative: no reservation, with a collision detected only
+    when the record is written, after files are already written.
+  merge-engine-dependency: >-
+    Recommend enabling the merge feature of the existing gix dependency, which
+    adds the gix-merge crate (gitoxide project). Alternatives: the diffy crate, a
+    new direct dependency from a smaller project; a git merge-file subprocess,
+    which is not proposed and would need separate approval.
+  merge-base-strategy: >-
+    Recommend recording render inputs plus fingerprints and re-deriving the
+    base, with fingerprint mode when the old commit is unavailable. Alternative:
+    store every written byte and value in the record, which gives full merges
+    offline at the cost of a large record, a second copy of answer-derived
+    content in the repository, and a second source of truth.
+  record-less-projects: >-
+    Recommend a toha adopt command that asks the interview again and writes only
+    the record. Alternative: refuse, which strands every project generated
+    before this feature.
+  hooks-on-update: >-
+    Recommend running the next template's hooks, under the existing trust gate,
+    whenever an update writes a file or the record, as an apply does.
+    Alternative: an authored hook attribute that limits a hook to apply or
+    update, which changes the template format and the trust guard test.
+  answers-in-project: >-
+    Recommend storing the accepted answers in the committed record, as
+    comparable tools do. Alternative: a per-question opt-out, which changes the
+    template format and makes every update ask that question again.
+  apply-always-records: >-
+    Recommend that every apply writes the record, so every generated project can
+    be updated. Alternative: an opt-in flag, which leaves most projects without
+    a record until adopted.
+  update-routes: >-
+    Recommend two routes for update and adopt, person and scripted, with agents
+    using the scripted route, because update never stages and derives
+    everything again on each run. Alternative: a staged agent route, which needs
+    an update mode in the staged record.
+validation:
+  - >-
+    Version A to B with an operator edit on lines the template also changed:
+    refuse writes nothing and lists the file; markers writes diff3 markers,
+    updates the other changed file, and exits 1.
+  - >-
+    A second update with no change is UpToDate, writes no byte, and runs no
+    hook.
+  - >-
+    A disappeared file, region, or JSON value is retracted when unedited and
+    released when edited; a forged record entry never causes a deletion.
+  - >-
+    A merged region changes only its span and keeps the intended-body checksum;
+    a plain apply then reports drift.
+  - >-
+    An operator change to an owned JSON value converges without --force and
+    leaves unrelated source unchanged.
+  - >-
+    An unavailable base commit runs fingerprint mode, never deletes, and refuses
+    edited-and-changed files.
+  - >-
+    Replay uses raw submissions (non-idempotent format fixture), drops answers
+    for removed questions, asks or reports added questions, and uses the
+    generated instant so dates are byte-stable.
+  - >-
+    The record is written last on every apply route; a hook failure leaves the
+    old record and a rerun converges.
+  - >-
+    Update and adopt refuse while an interview is staged; unresolved Toha
+    markers make update refuse; an answers document for another template fails
+    before evaluation.
+  - >-
+    Adopt writes only the record with render-derived fingerprints and reports
+    matches, differs, and absent.
+  - >-
+    Two applications in one project update independently and a cross-application
+    ownership collision is refused.
+  - >-
+    Person, scripted, and crate updates produce identical changes and bytes, and
+    no process starts except trusted hooks.
