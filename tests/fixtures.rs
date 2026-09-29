@@ -62,8 +62,15 @@ fn run(fixture: &Path, target: &Path) -> Result<Vec<String>, (u8, String)> {
         "{}",
         fixture.display()
     );
+    // A result-free after-apply is rendered at plan build (`Ready`); a
+    // result-reading one is retained (`AfterHooks`) and rendered during apply, so
+    // its text is checked through the applied output, not here.
+    let plan_after_apply = plan.after_apply.as_ref().and_then(|planned| match planned {
+        toha::Planned::Ready(text) => Some(text.clone()),
+        toha::Planned::AfterHooks(_) => None,
+    });
     assert_eq!(
-        plan.after_apply,
+        plan_after_apply,
         expect.after_apply,
         "{}",
         fixture.display()

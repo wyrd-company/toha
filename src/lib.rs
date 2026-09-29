@@ -24,7 +24,10 @@ pub use interview::{
     EvalError, Interview, Item, Pending, Prompt, PromptKind, RawAnswer, RawAnswers, Rejection,
     RejectionKind, Rejections, Seed, Step,
 };
-pub use plan::{Content, Plan, PlanError, PlannedFile, PlannedHook, PlannedProgram, TargetPath};
+pub use plan::{
+    Content, Deferred, Plan, PlanError, Planned, PlannedFile, PlannedHook, PlannedProgram,
+    TargetPath,
+};
 pub use review::{
     HookSurface, HookSurfaceDiff, HookView, ReviewDigest, ReviewError, ScriptDigest, Trust,
     evaluate_trust,

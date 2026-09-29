@@ -119,6 +119,17 @@ impl Tmpl {
     pub fn references(&self) -> &HashSet<String> {
         &self.referenced_ids
     }
+    /// The undeclared references with nested attribute chains preserved, so a
+    /// `<root>.<attr>` attribute read is distinguishable from a `<root>[...]`
+    /// subscript (which yields only `<root>`) and from an aliased or loop-bound
+    /// root (which degrades to a plain root read). Used by the hook-result
+    /// settle pass to tell a JSON key access from a metadata-field mistake.
+    pub(crate) fn nested_references(&self) -> HashSet<String> {
+        self.env
+            .get_template("value")
+            .expect("compiled template")
+            .undeclared_variables(true)
+    }
     pub fn source(&self) -> &str {
         &self.source
     }
@@ -149,6 +160,14 @@ impl Expr {
     }
     pub fn references(&self) -> &HashSet<String> {
         &self.referenced_ids
+    }
+    /// The undeclared references with nested attribute chains preserved (see
+    /// [`Tmpl::nested_references`]).
+    pub(crate) fn nested_references(&self) -> HashSet<String> {
+        environment()
+            .compile_expression(&self.source)
+            .expect("compiled expression")
+            .undeclared_variables(true)
     }
     pub fn source(&self) -> &str {
         &self.source

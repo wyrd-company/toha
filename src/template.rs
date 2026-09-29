@@ -13,7 +13,7 @@ use regex::Regex;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fmt, fs,
     path::{Path, PathBuf},
     sync::LazyLock,
@@ -80,6 +80,12 @@ pub struct Template {
     /// any compiled surface can observe a fixed environment value, and the first
     /// location that does.
     environment_need: EnvironmentNeed,
+    /// Every hook-result name a template author may read: each producer `id` and
+    /// each declared `status_id`. A reference whose root is in this set is a hook
+    /// result read, resolved by `settle_hook_results` at load, not an ordinary
+    /// undefined id. Used at plan time to decide whether a hook surface must
+    /// render after its producers run.
+    result_ids: HashSet<String>,
 }
 /// One compiled source-tree file: its relative path (as compiled path-segment
 /// templates) and its body, retained at load so planning renders without
@@ -246,6 +252,28 @@ pub struct HookNode {
     pub command: HookCommand,
     pub each: Option<Each>,
     pub when: Option<Expr>,
+    /// Opt-in result identity. `None` is a hook exactly as before this feature:
+    /// it produces no readable result and is byte-identical in every path.
+    pub id: Option<Id>,
+    /// The streams piped to Toha (and so readable), empty unless a stream is
+    /// read. An uncaptured stream inherits the terminal as before.
+    pub capture: Capture,
+    /// Literal opt-in; a nonzero exit is tolerated. Only ever true with a read
+    /// `id` (text) or a read `status_id` (JSON).
+    pub allow_failure: bool,
+    /// `parse: json`: the parsed stdout is read directly at `id`; execution
+    /// metadata moves to `status_id`.
+    pub parse_json: bool,
+    /// The author-declared name that carries `{exit_code, stdout, stderr,
+    /// parsed}` for a `parse: json` hook.
+    pub status_id: Option<Id>,
+}
+/// The streams a hook pipes to Toha so a later surface can read them. An
+/// uncaptured stream inherits the terminal exactly as before this feature.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Capture {
+    pub stdout: bool,
+    pub stderr: bool,
 }
 #[derive(Debug)]
 pub struct HookCommand {
@@ -511,6 +539,11 @@ struct Builder {
     /// Whether reserved context names collide with authored ids and resolve as
     /// available references (a current load) or not (a legacy staged load).
     reserves_context: bool,
+    /// Every hook `id` and `status_id` declared anywhere, pre-scanned before
+    /// parsing so a reference to one is recognised as a hook-result read rather
+    /// than an undefined id, on any surface. `settle_hook_results` then enforces
+    /// which surfaces may actually read one.
+    result_ids: HashSet<String>,
 }
 /// Collects question and computed ids from raw interview nodes, including nested groups.
 fn answer_ids(values: &[Value], ids: &mut HashSet<String>) {
@@ -521,6 +554,32 @@ fn answer_ids(values: &[Value], ids: &mut HashSet<String>) {
         if let Some(nodes) = map.get("nodes").and_then(Value::as_array) {
             answer_ids(nodes, ids);
         }
+    }
+}
+/// Records a hook command object's `id` and `status-id` string values.
+fn hook_result_ids(command: &Value, ids: &mut HashSet<String>) {
+    for key in ["id", "status-id"] {
+        if let Some(name) = command.get(key).and_then(Value::as_str) {
+            ids.insert(name.into());
+        }
+    }
+}
+/// Pre-scans every raw hook — top-level and interview (through groups) — for the
+/// `id` and `status-id` names, so a reference to one is a hook-result read rather
+/// than an undefined id on any surface.
+fn collect_result_ids(interview: &[Value], hooks: &[Value], ids: &mut HashSet<String>) {
+    fn interview_hooks(values: &[Value], ids: &mut HashSet<String>) {
+        for map in values.iter().filter_map(Value::as_object) {
+            if let Some(hook) = map.get("hook") {
+                hook_result_ids(hook, ids);
+            } else if let Some(nodes) = map.get("nodes").and_then(Value::as_array) {
+                interview_hooks(nodes, ids);
+            }
+        }
+    }
+    interview_hooks(interview, ids);
+    for command in hooks {
+        hook_result_ids(command, ids);
     }
 }
 impl Builder {
@@ -547,6 +606,10 @@ impl Builder {
                 && !local.contains(&name.as_str())
                 && !is_global(name)
                 && !(self.reserves_context && is_reserved(name))
+                // A hook `id`/`status_id` is a hook-result read, not an undefined
+                // id, on every surface. `settle_hook_results` decides whether the
+                // surface may read one; here it only stops the undefined-id error.
+                && !self.result_ids.contains(name)
             {
                 problem(
                     &mut self.problems,
@@ -698,6 +761,43 @@ impl Builder {
         }
         result
     }
+    /// Parses an optional hook `id`/`status-id`. A present name joins the authored
+    /// id space: it is registered for duplicate detection (so a second use of the
+    /// name, including `status-id` equal to `id`, is `duplicate id`) and checked
+    /// against the reserved context names.
+    fn optional_id(&mut self, value: Option<&Value>, path: &str) -> Option<Id> {
+        let value = value?;
+        match value.as_str().map(Id::parse) {
+            Some(Ok(id)) => {
+                if !self.names.insert(id.as_str().into()) {
+                    problem(&mut self.problems, path, format!("duplicate id: {id}"));
+                }
+                self.reserve(&id, path);
+                Some(id)
+            }
+            _ => {
+                problem(&mut self.problems, path, "invalid identifier");
+                None
+            }
+        }
+    }
+    /// Parses a hook `capture` list into the two-stream flags. The schema already
+    /// bounds it to a unique, non-empty list of `stdout`/`stderr`.
+    fn capture(&mut self, value: Option<&Value>, path: &str) -> Capture {
+        let mut capture = Capture::default();
+        for item in value.and_then(Value::as_array).into_iter().flatten() {
+            match item.as_str() {
+                Some("stdout") => capture.stdout = true,
+                Some("stderr") => capture.stderr = true,
+                _ => problem(
+                    &mut self.problems,
+                    path,
+                    "capture entries must be stdout or stderr",
+                ),
+            }
+        }
+        capture
+    }
     fn hook(
         &mut self,
         map: &Map<String, Value>,
@@ -709,10 +809,76 @@ impl Builder {
             None => None,
         };
         let command = self.bound(each.as_ref(), |b| b.hook_command(map, path))?;
+        // Opt-in result fields. Order matters: `id` registers before `status-id`,
+        // so `status-id` equal to `id` is caught as a duplicate.
+        let id = self.optional_id(map.get("id"), &format!("{path}.id"));
+        let capture = self.capture(map.get("capture"), &format!("{path}.capture"));
+        let allow_failure = map
+            .get("allow-failure")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let parse_json = matches!(map.get("parse").and_then(Value::as_str), Some("json"));
+        let status_id = self.optional_id(map.get("status-id"), &format!("{path}.status-id"));
+        // A hook with `each` runs once per item and records no single result.
+        if id.is_some() && each.is_some() {
+            problem(
+                &mut self.problems,
+                format!("{path}.id"),
+                "a hook with each cannot declare id",
+            );
+        }
+        let has_stream = capture.stdout || capture.stderr;
+        if has_stream && id.is_none() {
+            problem(
+                &mut self.problems,
+                format!("{path}.capture"),
+                "capture requires id",
+            );
+        }
+        if allow_failure && id.is_none() {
+            problem(
+                &mut self.problems,
+                format!("{path}.allow-failure"),
+                "allow-failure requires id",
+            );
+        }
+        if parse_json && id.is_none() {
+            problem(
+                &mut self.problems,
+                format!("{path}.parse"),
+                "parse requires id",
+            );
+        }
+        if status_id.is_some() && id.is_none() {
+            problem(
+                &mut self.problems,
+                format!("{path}.status-id"),
+                "status-id requires id",
+            );
+        }
+        if parse_json && !capture.stdout {
+            problem(
+                &mut self.problems,
+                format!("{path}.parse"),
+                "parse: json requires capture: [stdout]",
+            );
+        }
+        if status_id.is_some() && !parse_json {
+            problem(
+                &mut self.problems,
+                format!("{path}.status-id"),
+                "status-id requires parse: json",
+            );
+        }
         Some(HookNode {
             command,
             each,
             when,
+            id,
+            capture,
+            allow_failure,
+            parse_json,
+            status_id,
         })
     }
     fn hook_command(&mut self, map: &Map<String, Value>, path: &str) -> Option<HookCommand> {
@@ -1044,6 +1210,7 @@ impl Template {
             root: root.clone(),
             partials: partials.clone(),
             reserves_context,
+            result_ids: HashSet::new(),
         };
         if let Some(values) = &raw.data {
             b.answer_ids.extend(values.keys().cloned());
@@ -1051,6 +1218,13 @@ impl Template {
         answer_ids(
             raw.interview.as_deref().unwrap_or_default(),
             &mut b.answer_ids,
+        );
+        // Pre-scan every hook `id`/`status-id` so a reference to one is a
+        // hook-result read on any surface, not an undefined id.
+        collect_result_ids(
+            raw.interview.as_deref().unwrap_or_default(),
+            raw.hooks.as_deref().unwrap_or_default(),
+            &mut b.result_ids,
         );
         let mut data = IndexMap::new();
         if let Some(values) = &raw.data {
@@ -1188,6 +1362,23 @@ impl Template {
                 problems: b.problems,
             });
         }
+        // Resolve every hook-result read to a strictly-earlier producer, enforce
+        // the readable surfaces, capture, and JSON rules, before admission. This
+        // runs on a fully parsed, otherwise-clean template.
+        settle_hook_results(
+            &interview,
+            &files,
+            &hooks,
+            &messages,
+            &render_program,
+            &b.result_ids,
+            &mut b.problems,
+        );
+        if !b.problems.is_empty() {
+            return Err(LoadError {
+                problems: b.problems,
+            });
+        }
         let environment_need =
             compute_environment_need(&interview, &files, &hooks, &messages, &render_program);
         Ok(Self {
@@ -1208,6 +1399,7 @@ impl Template {
             render_program,
             reserves_context,
             environment_need,
+            result_ids: b.result_ids,
         })
     }
 }
@@ -1487,6 +1679,623 @@ impl NeedScan {
                 }
                 Node::Hook(h) => self.hook(h, label.as_str()),
                 Node::Flow(f) => self.opt_expr(f.when.as_ref(), &format!("{label}.when")),
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Hook results: load-time resolution (settle) and plan-time helpers.
+// ---------------------------------------------------------------------------
+
+impl Template {
+    /// Whether any reference names a declared hook result.
+    pub(crate) fn references_result(&self, refs: &HashSet<String>) -> bool {
+        refs.iter().any(|r| self.result_ids.contains(r))
+    }
+
+    /// Whether a top-level hook reads any hook result on one of its readable
+    /// surfaces, so planning must retain it and render it after its producers
+    /// run. A valid template never references a result from `run[0]` (a load
+    /// error), so scanning every argument is safe.
+    pub(crate) fn reads_results(&self, node: &HookNode) -> bool {
+        if self.result_ids.is_empty() {
+            return false;
+        }
+        let reads = |refs: &HashSet<String>| self.references_result(refs);
+        node.when.as_ref().is_some_and(|w| reads(w.references()))
+            || node
+                .command
+                .cwd
+                .as_ref()
+                .is_some_and(|c| reads(c.references()))
+            || match &node.command.program {
+                HookProgram::Run(args) => args.iter().any(|a| reads(a.references())),
+                HookProgram::Script { args, .. } => args.iter().any(|a| reads(a.references())),
+            }
+    }
+
+    /// Every declared producer's result spec, in run order (interview producers
+    /// first, then top-level), used to seed a not-run value for each before the
+    /// apply loop so every reader sees a bound value.
+    pub(crate) fn result_specs(&self) -> Vec<crate::hook::ResultSpec> {
+        fn walk(nodes: &[Node], specs: &mut Vec<crate::hook::ResultSpec>) {
+            for node in nodes {
+                match node {
+                    Node::Hook(h) => {
+                        if let Some(id) = &h.id {
+                            specs.push(crate::hook::ResultSpec {
+                                id: id.clone(),
+                                json: h.parse_json,
+                                status_id: h.status_id.clone(),
+                            });
+                        }
+                    }
+                    Node::Group(g) => walk(&g.nodes, specs),
+                    _ => {}
+                }
+            }
+        }
+        let mut specs = Vec::new();
+        walk(&self.interview, &mut specs);
+        for h in &self.hooks {
+            if let Some(id) = &h.id {
+                specs.push(crate::hook::ResultSpec {
+                    id: id.clone(),
+                    json: h.parse_json,
+                    status_id: h.status_id.clone(),
+                });
+            }
+        }
+        specs
+    }
+}
+
+/// One declared hook-result producer, with its position in the global run order.
+struct Producer {
+    id: Id,
+    path: String,
+    order: usize,
+    json: bool,
+    capture: Capture,
+    status_id: Option<Id>,
+    allow_failure: bool,
+    /// Whether the producer can be skipped, so a JSON `none` at `<id>` would be
+    /// ambiguous without a `status_id` to disambiguate via `exit_code is none`.
+    may_not_run: bool,
+}
+/// A resolved result name: which producer it belongs to and whether it is the
+/// producer's own `id` or its `status_id`.
+struct ByName {
+    producer: usize,
+    is_status: bool,
+}
+/// The reads observed for one result name across every allowed surface.
+#[derive(Default)]
+struct ReadInfo {
+    /// A bare reference to the whole result (no attribute), including a subscript
+    /// access, which reads the object.
+    bare: bool,
+    /// The attribute fields read, e.g. `exit_code`, `stdout`.
+    fields: HashSet<String>,
+}
+
+/// Splits a nested reference into its root id and first attribute, if any.
+/// `pkg` → (`pkg`, None); `pkg.name` → (`pkg`, `name`); `pkg.a.b` → (`pkg`, `a`).
+fn split_reference(reference: &str) -> (&str, Option<&str>) {
+    match reference.split_once('.') {
+        Some((root, rest)) => (root, Some(rest.split('.').next().unwrap_or(rest))),
+        None => (reference, None),
+    }
+}
+
+/// Collects interview hook producers in interview order, tracking whether each
+/// is skippable: an enclosing group `when`, its own `when`, `allow_failure`, or a
+/// preceding flow that can skip make it able to not run.
+fn collect_interview_producers(
+    nodes: &[Node],
+    prefix: &str,
+    group_when: bool,
+    seen_skip: &mut bool,
+    out: &mut Vec<Producer>,
+) {
+    for (i, node) in nodes.iter().enumerate() {
+        let path = format!("{prefix}[{i}]");
+        match node {
+            Node::Flow(f) => {
+                if matches!(
+                    f.action,
+                    FlowAction::Stop | FlowAction::Abort | FlowAction::Skip(_)
+                ) {
+                    *seen_skip = true;
+                }
+            }
+            Node::Group(group) => {
+                let inner = group_when || group.when.is_some();
+                collect_interview_producers(
+                    &group.nodes,
+                    &format!("{path}.nodes"),
+                    inner,
+                    seen_skip,
+                    out,
+                );
+            }
+            Node::Hook(h) => {
+                if let Some(id) = &h.id {
+                    let order = out.len();
+                    out.push(Producer {
+                        id: id.clone(),
+                        path: format!("{path}.hook"),
+                        order,
+                        json: h.parse_json,
+                        capture: h.capture,
+                        status_id: h.status_id.clone(),
+                        allow_failure: h.allow_failure,
+                        may_not_run: h.when.is_some()
+                            || group_when
+                            || h.allow_failure
+                            || *seen_skip,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Resolves every hook-result read to a strictly-earlier producer, enforces the
+/// readable surfaces, capture agreement, and the JSON rules, aggregating every
+/// violation into `problems`. Runs at load, before admission; results are values
+/// bound only in the apply loop.
+#[allow(clippy::too_many_arguments)]
+fn settle_hook_results(
+    interview: &[Node],
+    files: &[FileRule],
+    hooks: &[HookNode],
+    messages: &ApplyMessages,
+    render_program: &[SourceEntry],
+    result_ids: &HashSet<String>,
+    problems: &mut Vec<Problem>,
+) {
+    if result_ids.is_empty() {
+        return;
+    }
+    let mut producers = Vec::new();
+    let mut seen_skip = false;
+    collect_interview_producers(
+        interview,
+        "interview",
+        false,
+        &mut seen_skip,
+        &mut producers,
+    );
+    let interview_count = producers.len();
+    for (j, h) in hooks.iter().enumerate() {
+        if let Some(id) = &h.id {
+            producers.push(Producer {
+                id: id.clone(),
+                path: format!("hooks[{j}]"),
+                order: interview_count + j,
+                json: h.parse_json,
+                capture: h.capture,
+                status_id: h.status_id.clone(),
+                allow_failure: h.allow_failure,
+                may_not_run: h.when.is_some() || h.allow_failure,
+            });
+        }
+    }
+    let mut by_name: HashMap<String, ByName> = HashMap::new();
+    for (idx, p) in producers.iter().enumerate() {
+        by_name.insert(
+            p.id.as_str().to_owned(),
+            ByName {
+                producer: idx,
+                is_status: false,
+            },
+        );
+        if let Some(status) = &p.status_id {
+            by_name.insert(
+                status.as_str().to_owned(),
+                ByName {
+                    producer: idx,
+                    is_status: true,
+                },
+            );
+        }
+    }
+    let mut settle = Settle {
+        result_ids,
+        producers: &producers,
+        by_name: &by_name,
+        reads: HashMap::new(),
+        problems,
+    };
+    // Disallowed surfaces: any result reference is a load error.
+    settle.deny_interview(interview, "interview");
+    for (i, rule) in files.iter().enumerate() {
+        let path = format!("files[{i}]");
+        settle.deny_opt_expr(rule.when.as_ref(), &format!("{path}.when"));
+        settle.deny(rule.each.expr.references(), &format!("{path}.each"));
+        settle.deny(rule.path.references(), &format!("{path}.path"));
+        if let Some(body) = &rule.body {
+            settle.deny(body.references(), &format!("{path}.source"));
+        }
+    }
+    for entry in render_program {
+        let label = entry.source.display().to_string();
+        for segment in &entry.segments {
+            settle.deny(segment.references(), &format!("{label} (path)"));
+        }
+        if let SourceBody::Rendered(body) = &entry.body {
+            settle.deny(body.references(), &label);
+        }
+    }
+    settle.deny_opt_tmpl(messages.before_apply.as_ref(), "messages.before-apply");
+    // Allowed surfaces: later top-level hook when/run[1..]/args/cwd and after-apply.
+    for (j, h) in hooks.iter().enumerate() {
+        let order = interview_count + j;
+        let path = format!("hooks[{j}]");
+        if let Some(each) = &h.each {
+            settle.deny(each.expr.references(), &format!("{path}.each"));
+        }
+        if let Some(when) = &h.when {
+            settle.allow(&when.nested_references(), &format!("{path}.when"), order);
+        }
+        if let Some(cwd) = &h.command.cwd {
+            settle.allow(&cwd.nested_references(), &format!("{path}.cwd"), order);
+        }
+        match &h.command.program {
+            HookProgram::Run(args) => {
+                for (k, arg) in args.iter().enumerate() {
+                    if k == 0 {
+                        settle.deny(arg.references(), &format!("{path}.run[0]"));
+                    } else {
+                        settle.allow(&arg.nested_references(), &format!("{path}.run[{k}]"), order);
+                    }
+                }
+            }
+            HookProgram::Script { args, .. } => {
+                for (k, arg) in args.iter().enumerate() {
+                    settle.allow(
+                        &arg.nested_references(),
+                        &format!("{path}.args[{k}]"),
+                        order,
+                    );
+                }
+            }
+        }
+    }
+    if let Some(after) = &messages.after_apply {
+        settle.allow(
+            &after.nested_references(),
+            "messages.after-apply",
+            usize::MAX,
+        );
+    }
+    settle.finish();
+}
+
+/// The mutable state of one settle pass.
+struct Settle<'a> {
+    result_ids: &'a HashSet<String>,
+    producers: &'a [Producer],
+    by_name: &'a HashMap<String, ByName>,
+    reads: HashMap<String, ReadInfo>,
+    problems: &'a mut Vec<Problem>,
+}
+impl Settle<'_> {
+    /// A disallowed surface: any reference whose root is a result name is a load
+    /// error naming the readable surfaces.
+    fn deny(&mut self, refs: &HashSet<String>, path: &str) {
+        for name in refs {
+            if self.result_ids.contains(name) {
+                problem(
+                    self.problems,
+                    path,
+                    format!(
+                        "hook results are readable only in a later top-level hook \
+                         when/run[1..]/args/cwd and messages.after-apply: {name}"
+                    ),
+                );
+            }
+        }
+    }
+    fn deny_opt_tmpl(&mut self, tmpl: Option<&Tmpl>, path: &str) {
+        if let Some(tmpl) = tmpl {
+            self.deny(tmpl.references(), path);
+        }
+    }
+    fn deny_opt_expr(&mut self, expr: Option<&Expr>, path: &str) {
+        if let Some(expr) = expr {
+            self.deny(expr.references(), path);
+        }
+    }
+    fn deny_typed<T: Clone + serde::de::DeserializeOwned>(&mut self, typed: &Typed<T>, path: &str) {
+        self.deny(&typed.references(), path);
+    }
+    fn deny_opt_typed<T: Clone + serde::de::DeserializeOwned>(
+        &mut self,
+        typed: Option<&Typed<T>>,
+        path: &str,
+    ) {
+        if let Some(typed) = typed {
+            self.deny_typed(typed, path);
+        }
+    }
+    /// Walks every interview surface, denying a result read on any of them
+    /// (interview fields, and interview hook fields — interview hooks may
+    /// produce a result but never read one).
+    fn deny_interview(&mut self, nodes: &[Node], prefix: &str) {
+        for (i, node) in nodes.iter().enumerate() {
+            let label = format!("{prefix}[{i}]");
+            match node {
+                Node::Question(q) => {
+                    self.deny(q.prompt.references(), &format!("{label}.prompt"));
+                    self.deny_opt_tmpl(q.description.as_ref(), &format!("{label}.description"));
+                    self.deny_opt_tmpl(q.placeholder.as_ref(), &format!("{label}.placeholder"));
+                    self.deny_typed(&q.required, &format!("{label}.required"));
+                    self.deny_opt_expr(q.when.as_ref(), &format!("{label}.when"));
+                    self.deny_opt_typed(q.validate.min.as_ref(), &format!("{label}.validate.min"));
+                    self.deny_opt_typed(q.validate.max.as_ref(), &format!("{label}.validate.max"));
+                    self.deny_opt_expr(q.format.as_ref(), &format!("{label}.format"));
+                    match &q.kind {
+                        QuestionKind::Text { default } | QuestionKind::Multiline { default } => {
+                            self.deny_opt_tmpl(default.as_ref(), &format!("{label}.default"));
+                        }
+                        QuestionKind::Confirm { default } => {
+                            self.deny_opt_typed(default.as_ref(), &format!("{label}.default"));
+                        }
+                        QuestionKind::Select { options, default } => {
+                            self.deny_typed(options, &format!("{label}.options"));
+                            self.deny_opt_tmpl(default.as_ref(), &format!("{label}.default"));
+                        }
+                        QuestionKind::MultiSelect { options, default } => {
+                            self.deny_typed(options, &format!("{label}.options"));
+                            self.deny_opt_typed(default.as_ref(), &format!("{label}.default"));
+                        }
+                        QuestionKind::TextLoop { default, min, max } => {
+                            self.deny_opt_typed(default.as_ref(), &format!("{label}.default"));
+                            self.deny_opt_typed(min.as_ref(), &format!("{label}.loop.min"));
+                            self.deny_opt_typed(max.as_ref(), &format!("{label}.loop.max"));
+                        }
+                    }
+                }
+                Node::Computed(c) => {
+                    self.deny_opt_expr(c.when.as_ref(), &format!("{label}.when"));
+                    self.deny(c.expr.references(), &format!("{label}.computed"));
+                }
+                Node::Group(g) => {
+                    self.deny_opt_expr(g.when.as_ref(), &format!("{label}.when"));
+                    self.deny_interview(&g.nodes, &format!("{label}.nodes"));
+                }
+                Node::Message(m) => {
+                    self.deny_opt_expr(m.when.as_ref(), &format!("{label}.when"));
+                    self.deny(m.text.references(), &format!("{label}.message"));
+                }
+                Node::Hook(h) => {
+                    self.deny_opt_expr(h.when.as_ref(), &format!("{label}.when"));
+                    if let Some(each) = &h.each {
+                        self.deny(each.expr.references(), &format!("{label}.each"));
+                    }
+                    self.deny_opt_tmpl(h.command.cwd.as_ref(), &format!("{label}.cwd"));
+                    match &h.command.program {
+                        HookProgram::Run(args) => {
+                            for (k, arg) in args.iter().enumerate() {
+                                self.deny(arg.references(), &format!("{label}.run[{k}]"));
+                            }
+                        }
+                        HookProgram::Script { args, .. } => {
+                            for (k, arg) in args.iter().enumerate() {
+                                self.deny(arg.references(), &format!("{label}.args[{k}]"));
+                            }
+                        }
+                    }
+                }
+                Node::Flow(f) => {
+                    self.deny_opt_expr(f.when.as_ref(), &format!("{label}.when"));
+                }
+            }
+        }
+    }
+    /// An allowed surface reading results at `reader_order`. Resolves each result
+    /// reference to a strictly-earlier producer and enforces field, capture, and
+    /// JSON rules.
+    fn allow(&mut self, nested: &HashSet<String>, path: &str, reader_order: usize) {
+        for reference in nested {
+            let (root, field) = split_reference(reference);
+            if !self.result_ids.contains(root) {
+                continue;
+            }
+            let Some(by_name) = self.by_name.get(root) else {
+                problem(
+                    self.problems,
+                    path,
+                    format!("hook result read before hook `{root}` runs: {root}"),
+                );
+                continue;
+            };
+            let producer = &self.producers[by_name.producer];
+            if producer.order >= reader_order {
+                problem(
+                    self.problems,
+                    path,
+                    format!("hook result read before hook `{root}` runs: {root}"),
+                );
+                continue;
+            }
+            let info = self.reads.entry(root.to_owned()).or_default();
+            match field {
+                Some(f) => {
+                    info.fields.insert(f.to_owned());
+                }
+                None => info.bare = true,
+            }
+            if by_name.is_status {
+                if let Some(f) = field {
+                    match f {
+                        "exit_code" | "parsed" | "stdout" => {}
+                        "stderr" => {
+                            if !producer.capture.stderr {
+                                problem(
+                                    self.problems,
+                                    path,
+                                    format!(
+                                        "hook `{}` does not capture stderr; add `capture: [stderr]`",
+                                        producer.id
+                                    ),
+                                );
+                            }
+                        }
+                        other => problem(
+                            self.problems,
+                            path,
+                            format!("unknown hook result field: {root}.{other}"),
+                        ),
+                    }
+                }
+            } else if producer.json {
+                // The parsed value is read directly; a metadata-field attribute is
+                // a likely mistake, so name the subscript escape and status-id.
+                if let Some(f @ ("exit_code" | "stdout" | "stderr")) = field {
+                    let status = producer
+                        .status_id
+                        .as_ref()
+                        .map(Id::as_str)
+                        .unwrap_or("status-id");
+                    problem(
+                        self.problems,
+                        path,
+                        format!(
+                            "hook {root} parses stdout as JSON; use {root}['{f}'] for a JSON key \
+                             or {status}.{f} for metadata"
+                        ),
+                    );
+                }
+            } else if let Some(f) = field {
+                match f {
+                    "exit_code" => {}
+                    "stdout" => {
+                        if !producer.capture.stdout {
+                            problem(
+                                self.problems,
+                                path,
+                                format!(
+                                    "hook `{root}` does not capture stdout; add `capture: [stdout]`"
+                                ),
+                            );
+                        }
+                    }
+                    "stderr" => {
+                        if !producer.capture.stderr {
+                            problem(
+                                self.problems,
+                                path,
+                                format!(
+                                    "hook `{root}` does not capture stderr; add `capture: [stderr]`"
+                                ),
+                            );
+                        }
+                    }
+                    other => problem(
+                        self.problems,
+                        path,
+                        format!("unknown hook result field: {root}.{other}"),
+                    ),
+                }
+            }
+        }
+    }
+    /// Per-producer checks that need every read observed: allow-failure must be
+    /// read, a captured stream must be read, and a skippable JSON producer needs
+    /// a status-id.
+    fn finish(&mut self) {
+        for producer in self.producers {
+            let id = producer.id.as_str();
+            let read = self.reads.contains_key(id);
+            let status_read = producer
+                .status_id
+                .as_ref()
+                .is_some_and(|s| self.reads.contains_key(s.as_str()));
+            if producer.allow_failure {
+                if producer.json {
+                    match &producer.status_id {
+                        None => problem(
+                            self.problems,
+                            &producer.path,
+                            "allow-failure on a parse: json hook requires status-id; \
+                             add status-id: <name> and read <name>.exit_code",
+                        ),
+                        Some(status) if !status_read => problem(
+                            self.problems,
+                            &producer.path,
+                            format!(
+                                "the result of {status} is never read; read {status}.exit_code \
+                                 in a later hook or in messages.after-apply"
+                            ),
+                        ),
+                        Some(_) => {}
+                    }
+                } else if !read {
+                    problem(
+                        self.problems,
+                        &producer.path,
+                        format!(
+                            "the result of {id} is never read; read {id}.exit_code in a later \
+                             hook or in messages.after-apply"
+                        ),
+                    );
+                }
+            }
+            if producer.json
+                && producer.status_id.is_none()
+                && producer.may_not_run
+                && !producer.allow_failure
+            {
+                problem(
+                    self.problems,
+                    &producer.path,
+                    format!(
+                        "parse: json hook `{id}` may not run; declare status-id so its \
+                         exit_code is readable"
+                    ),
+                );
+            }
+            // Captured-never-read.
+            if producer.json {
+                // stdout is the parse source, always used; stderr is metadata.
+                if producer.capture.stderr {
+                    let ok = producer.status_id.as_ref().is_some_and(|s| {
+                        self.reads
+                            .get(s.as_str())
+                            .is_some_and(|r| r.bare || r.fields.contains("stderr"))
+                    });
+                    if !ok {
+                        problem(
+                            self.problems,
+                            &producer.path,
+                            format!("captured stderr of hook `{id}` is never read"),
+                        );
+                    }
+                }
+            } else {
+                for (captured, stream) in [
+                    (producer.capture.stdout, "stdout"),
+                    (producer.capture.stderr, "stderr"),
+                ] {
+                    if captured {
+                        let ok = self
+                            .reads
+                            .get(id)
+                            .is_some_and(|r| r.bare || r.fields.contains(stream));
+                        if !ok {
+                            problem(
+                                self.problems,
+                                &producer.path,
+                                format!("captured {stream} of hook `{id}` is never read"),
+                            );
+                        }
+                    }
+                }
             }
         }
     }

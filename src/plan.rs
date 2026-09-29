@@ -7,12 +7,17 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use std::collections::BTreeMap;
+
+use serde_json::Value;
+
 use crate::{
     fault::TemplateFault,
+    hook::{HookResults, ResultSpec},
     interview::Completed,
-    jinja::{Tmpl, context_from_answers},
+    jinja::{Expr, Tmpl, context_from_answers},
     staging::CanonicalTarget,
-    template::Template,
+    template::{Capture, HookNode, HookProgram, Id, Template},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,9 +96,24 @@ pub(crate) fn has_symlink_component(
 pub struct Plan {
     pub files: Vec<PlannedFile>,
     pub conflicts: Vec<TargetPath>,
-    pub hooks: Vec<PlannedHook>,
+    pub hooks: Vec<Planned<PlannedHook>>,
     pub before_apply: Option<String>,
-    pub after_apply: Option<String>,
+    pub after_apply: Option<Planned<String>>,
+    /// Every declared producer, seeded not-run before the apply loop so a reader
+    /// of a skipped producer sees a bound `none`. Empty when no hook declares a
+    /// result. Not part of the reviewable or persisted surface.
+    pub(crate) result_seed: Vec<ResultSpec>,
+}
+/// A surface rendered at plan build (`Ready`) or retained to render in the apply
+/// loop after its producer hooks run (`AfterHooks`). A result-free surface — the
+/// overwhelming common case — is always `Ready` and identical to before this
+/// feature.
+#[derive(Debug)]
+pub enum Planned<T> {
+    Ready(T),
+    /// Boxed so a `Vec<Planned<PlannedHook>>` stays small: the deferred case is
+    /// rare and carries a large retained render program.
+    AfterHooks(Box<Deferred>),
 }
 #[derive(Debug)]
 pub struct PlannedFile {
@@ -106,11 +126,43 @@ pub enum Content {
     Rendered(String),
     Copied(PathBuf),
 }
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PlannedHook {
     pub program: PlannedProgram,
     pub cwd: Option<TargetPath>,
     pub template_root: PathBuf,
+    /// Opt-in result identity. `None` is a hook exactly as before this feature.
+    pub id: Option<Id>,
+    pub capture: Capture,
+    pub allow_failure: bool,
+    pub parse_json: bool,
+    pub status_id: Option<Id>,
+}
+impl std::fmt::Debug for PlannedHook {
+    /// Prints the pre-feature fields always and the new fields only when they are
+    /// non-default, so a hook without a result is byte-identical to before.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("PlannedHook");
+        s.field("program", &self.program)
+            .field("cwd", &self.cwd)
+            .field("template_root", &self.template_root);
+        if self.id.is_some() {
+            s.field("id", &self.id);
+        }
+        if self.capture != Capture::default() {
+            s.field("capture", &self.capture);
+        }
+        if self.allow_failure {
+            s.field("allow_failure", &self.allow_failure);
+        }
+        if self.parse_json {
+            s.field("parse_json", &self.parse_json);
+        }
+        if self.status_id.is_some() {
+            s.field("status_id", &self.status_id);
+        }
+        s.finish()
+    }
 }
 #[derive(Debug, Clone)]
 pub enum PlannedProgram {
@@ -124,6 +176,165 @@ impl PlannedHook {
             PlannedProgram::Script { path, args } => std::iter::once(path.display().to_string())
                 .chain(args.iter().cloned())
                 .collect(),
+        }
+    }
+}
+
+/// A hook or after-apply message retained at plan build to render in the apply
+/// loop, after its producer hooks have run and their results are known. Opaque:
+/// it owns its compiled result-reading fields, one plan-time context, and its
+/// eagerly-rendered parts (`run[0]`, the script path). A hook's `each` is already
+/// expanded at build, so one `Deferred` is one planned invocation.
+#[derive(Debug)]
+pub struct Deferred(DeferredKind);
+#[derive(Debug)]
+enum DeferredKind {
+    Hook(Box<DeferredHook>),
+    Message(Box<DeferredMessage>),
+}
+#[derive(Debug)]
+struct DeferredHook {
+    label: String,
+    template_root: PathBuf,
+    context: BTreeMap<String, Value>,
+    when: Option<Expr>,
+    program: DeferredProgram,
+    cwd: Option<Tmpl>,
+    id: Option<Id>,
+    capture: Capture,
+    allow_failure: bool,
+    parse_json: bool,
+    status_id: Option<Id>,
+}
+#[derive(Debug)]
+enum DeferredProgram {
+    /// `run[0]` is rendered eagerly (it cannot read a result); the tail carries
+    /// its original one-based index for error attribution.
+    Run {
+        head: String,
+        tail: Vec<(usize, Tmpl)>,
+    },
+    Script {
+        path: PathBuf,
+        args: Vec<(usize, Tmpl)>,
+    },
+}
+#[derive(Debug)]
+struct DeferredMessage {
+    template_root: PathBuf,
+    context: BTreeMap<String, Value>,
+    tmpl: Tmpl,
+}
+impl Deferred {
+    /// The source-form argv and cwd of a deferred hook, for the dry-run/trust
+    /// listing: `run[0]` shows its rendered value, later arguments and cwd show
+    /// their template source with `{{ id.field }}` placeholders intact.
+    pub fn hook_preview(&self) -> Option<(Vec<String>, Option<String>)> {
+        let DeferredKind::Hook(hook) = &self.0 else {
+            return None;
+        };
+        let argv = match &hook.program {
+            DeferredProgram::Run { head, tail } => std::iter::once(head.clone())
+                .chain(tail.iter().map(|(_, t)| t.source().to_owned()))
+                .collect(),
+            DeferredProgram::Script { path, args } => std::iter::once(path.display().to_string())
+                .chain(args.iter().map(|(_, t)| t.source().to_owned()))
+                .collect(),
+        };
+        Some((argv, hook.cwd.as_ref().map(|t| t.source().to_owned())))
+    }
+    /// Renders a deferred hook against the results known so far. Returns the one
+    /// planned invocation, or none when its deferred `when` is false (it does not
+    /// run; its result stays not-run).
+    pub(crate) fn render_hooks(
+        &self,
+        results: &HookResults,
+    ) -> Result<Vec<PlannedHook>, PlanError> {
+        let DeferredKind::Hook(hook) = &self.0 else {
+            return Ok(vec![]);
+        };
+        let mut ctx = hook.context.clone();
+        results.project(&mut ctx);
+        if let Some(when) = &hook.when {
+            let active = when
+                .eval(&ctx)
+                .map_err(|e| hook.fault("when", when.source(), &e.to_string()))?
+                .is_true();
+            if !active {
+                return Ok(vec![]);
+            }
+        }
+        let program = match &hook.program {
+            DeferredProgram::Run { head, tail } => {
+                let mut argv = vec![head.clone()];
+                for (i, tmpl) in tail {
+                    argv.push(tmpl.render(&ctx).map_err(|e| {
+                        hook.fault(&format!("run[{i}]"), tmpl.source(), &e.to_string())
+                    })?);
+                }
+                PlannedProgram::Run(argv)
+            }
+            DeferredProgram::Script { path, args } => {
+                let mut rendered = Vec::new();
+                for (i, tmpl) in args {
+                    rendered.push(tmpl.render(&ctx).map_err(|e| {
+                        hook.fault(&format!("args[{i}]"), tmpl.source(), &e.to_string())
+                    })?);
+                }
+                PlannedProgram::Script {
+                    path: path.clone(),
+                    args: rendered,
+                }
+            }
+        };
+        let cwd = match &hook.cwd {
+            Some(tmpl) => {
+                let text = tmpl
+                    .render(&ctx)
+                    .map_err(|e| hook.fault("cwd", tmpl.source(), &e.to_string()))?;
+                (!text.is_empty())
+                    .then(|| TargetPath::parse(&text))
+                    .transpose()
+                    .map_err(PlanError::Path)?
+            }
+            None => None,
+        };
+        Ok(vec![PlannedHook {
+            program,
+            cwd,
+            template_root: hook.template_root.clone(),
+            id: hook.id.clone(),
+            capture: hook.capture,
+            allow_failure: hook.allow_failure,
+            parse_json: hook.parse_json,
+            status_id: hook.status_id.clone(),
+        }])
+    }
+    /// Renders a deferred after-apply message against the final results.
+    pub(crate) fn render_message(
+        &self,
+        results: &HookResults,
+    ) -> Result<Option<String>, PlanError> {
+        let DeferredKind::Message(message) = &self.0 else {
+            return Ok(None);
+        };
+        let mut ctx = message.context.clone();
+        results.project(&mut ctx);
+        let text = message.tmpl.render(&ctx).map_err(|e| PlanError::Render {
+            path: message.template_root.clone(),
+            message: e.to_string(),
+        })?;
+        Ok((!text.trim().is_empty()).then_some(text))
+    }
+}
+impl DeferredHook {
+    fn fault(&self, field: &str, source: &str, message: &str) -> PlanError {
+        PlanError::Render {
+            path: self.template_root.clone(),
+            message: format!(
+                "template error in {}.{field} `{source}`: {message}",
+                self.label
+            ),
         }
     }
 }
@@ -189,6 +400,7 @@ impl Plan {
             hooks: vec![],
             before_apply: None,
             after_apply: None,
+            result_seed: template.result_specs(),
         };
         // Render the retained source-tree program; it is not reopened here.
         for entry in &template.render_program {
@@ -279,10 +491,25 @@ impl Plan {
                 plan.add(path, content, origin.clone(), target.as_path())?;
             }
         }
+        // Interview hooks were rendered during the interview; they may produce a
+        // result but never read one, so they are always ready.
         for hook in &completed.hooks {
-            plan.hooks.push(plan_hook(hook, template)?);
+            plan.hooks.push(Planned::Ready(plan_hook(hook, template)?));
         }
+        // A top-level hook that reads a result is retained and rendered in the
+        // apply loop; one that does not is rendered here exactly as before. `each`
+        // is expanded eagerly in both paths, so the slot count is fixed at build.
         for (i, hook) in template.hooks.iter().enumerate() {
+            let label = format!("hooks[{i}]");
+            if template.reads_results(hook) {
+                for context in each_contexts(hook, &ctx, &label, template)? {
+                    plan.hooks
+                        .push(Planned::AfterHooks(Box::new(build_deferred_hook(
+                            hook, &label, context, template,
+                        )?)));
+                }
+                continue;
+            }
             if let Some(when) = &hook.when {
                 if !when
                     .eval(&ctx)
@@ -307,20 +534,36 @@ impl Plan {
                     ),
                 })?;
             for hook in &rendered {
-                plan.hooks.push(plan_hook(hook, template)?);
+                plan.hooks.push(Planned::Ready(plan_hook(hook, template)?));
             }
         }
-        for (source, target_message) in [
-            (&template.messages.before_apply, &mut plan.before_apply),
-            (&template.messages.after_apply, &mut plan.after_apply),
-        ] {
-            if let Some(source) = source {
+        // before-apply never reads a result (it runs before hooks); after-apply
+        // may, so it is retained when it does.
+        if let Some(source) = &template.messages.before_apply {
+            let text = source.render(&ctx).map_err(|e| PlanError::Render {
+                path: template.root.clone(),
+                message: e.to_string(),
+            })?;
+            if !text.trim().is_empty() {
+                plan.before_apply = Some(text);
+            }
+        }
+        if let Some(source) = &template.messages.after_apply {
+            if template.references_result(source.references()) {
+                plan.after_apply = Some(Planned::AfterHooks(Box::new(Deferred(
+                    DeferredKind::Message(Box::new(DeferredMessage {
+                        template_root: template.root.clone(),
+                        context: ctx.clone(),
+                        tmpl: recompile_tmpl(source),
+                    })),
+                ))));
+            } else {
                 let text = source.render(&ctx).map_err(|e| PlanError::Render {
                     path: template.root.clone(),
                     message: e.to_string(),
                 })?;
                 if !text.trim().is_empty() {
-                    *target_message = Some(text);
+                    plan.after_apply = Some(Planned::Ready(text));
                 }
             }
         }
@@ -383,7 +626,91 @@ fn plan_hook(
         program,
         cwd,
         template_root: template.root.clone(),
+        id: hook.id.clone(),
+        capture: hook.capture,
+        allow_failure: hook.allow_failure,
+        parse_json: hook.parse_json,
+        status_id: hook.status_id.clone(),
     })
+}
+
+/// The plan-time contexts a top-level hook expands to: one per `each` item, or a
+/// single copy of `ctx` without `each`. `each` never reads a result, so it is
+/// evaluated eagerly here even for a deferred hook.
+fn each_contexts(
+    hook: &HookNode,
+    ctx: &BTreeMap<String, Value>,
+    label: &str,
+    template: &Template,
+) -> Result<Vec<BTreeMap<String, Value>>, PlanError> {
+    match &hook.each {
+        None => Ok(vec![ctx.clone()]),
+        Some(each) => each.contexts(ctx).map_err(|message| PlanError::Render {
+            path: template.root.clone(),
+            message: format!(
+                "template error in {label}.each `{}`: {message}",
+                each.expr.source()
+            ),
+        }),
+    }
+}
+
+/// Builds one deferred invocation of a result-reading top-level hook: `run[0]`
+/// (or the script path) is rendered eagerly against `context`; every result-
+/// reading field is retained compiled to render in the apply loop.
+fn build_deferred_hook(
+    hook: &HookNode,
+    label: &str,
+    context: BTreeMap<String, Value>,
+    template: &Template,
+) -> Result<Deferred, PlanError> {
+    let render_head = |tmpl: &Tmpl, field: &str| {
+        tmpl.render(&context).map_err(|e| PlanError::Render {
+            path: template.root.clone(),
+            message: format!("template error in {label}.{field} `{}`: {e}", tmpl.source()),
+        })
+    };
+    let program = match &hook.command.program {
+        HookProgram::Run(args) => DeferredProgram::Run {
+            head: render_head(&args[0], "run[0]")?,
+            tail: args[1..]
+                .iter()
+                .enumerate()
+                .map(|(k, t)| (k + 1, recompile_tmpl(t)))
+                .collect(),
+        },
+        HookProgram::Script { path, args } => DeferredProgram::Script {
+            path: template.root.join(path),
+            args: args
+                .iter()
+                .enumerate()
+                .map(|(k, t)| (k, recompile_tmpl(t)))
+                .collect(),
+        },
+    };
+    Ok(Deferred(DeferredKind::Hook(Box::new(DeferredHook {
+        label: label.to_owned(),
+        template_root: template.root.clone(),
+        context,
+        when: hook.when.as_ref().map(recompile_expr),
+        program,
+        cwd: hook.command.cwd.as_ref().map(recompile_tmpl),
+        id: hook.id.clone(),
+        capture: hook.capture,
+        allow_failure: hook.allow_failure,
+        parse_json: hook.parse_json,
+        status_id: hook.status_id.clone(),
+    }))))
+}
+
+/// Rebuilds an owned `Tmpl` from an already-validated one; used to move the
+/// result-reading fields into a `Deferred` (the compiled `Tmpl` is not `Clone`).
+/// The source compiled once at load, so recompilation cannot fail.
+fn recompile_tmpl(tmpl: &Tmpl) -> Tmpl {
+    Tmpl::compile(tmpl.source().to_owned()).expect("previously compiled template")
+}
+fn recompile_expr(expr: &Expr) -> Expr {
+    Expr::compile(expr.source().to_owned()).expect("previously compiled expression")
 }
 #[cfg(test)]
 mod tests {

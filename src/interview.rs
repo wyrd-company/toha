@@ -179,6 +179,13 @@ pub fn skipped_warning(id: &Id) -> String {
 pub struct RenderedHook {
     pub program: RenderedProgram,
     pub cwd: Option<String>,
+    /// Opt-in result identity, carried from the hook node so the plan and apply
+    /// can record this hook's result. `None` for a hook exactly as before.
+    pub id: Option<crate::template::Id>,
+    pub capture: crate::template::Capture,
+    pub allow_failure: bool,
+    pub parse_json: bool,
+    pub status_id: Option<crate::template::Id>,
 }
 #[derive(Debug, Clone)]
 pub enum RenderedProgram {
@@ -221,6 +228,11 @@ fn render_hook(
     Ok(RenderedHook {
         program,
         cwd: hook.command.cwd.as_ref().map(render("cwd")).transpose()?,
+        id: hook.id.clone(),
+        capture: hook.capture,
+        allow_failure: hook.allow_failure,
+        parse_json: hook.parse_json,
+        status_id: hook.status_id.clone(),
     })
 }
 /// Renders a hook once, or once per item of its `each`.

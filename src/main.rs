@@ -26,7 +26,7 @@ use cli::{
     resolve::{ResolveError, ResolvedTemplate},
 };
 use toha::{
-    AnswerError, Applied, ApplyOptions, EndKind, Ended, Interview, Plan, Step, Template,
+    AnswerError, Applied, ApplyOptions, EndKind, Ended, Interview, Plan, Planned, Step, Template,
     context::{
         EnvironmentDecision, ExecutionFacts, FixedEnvironment, FixedEnvironmentSource, HostFacts,
         InvocationContext, SelectedTemplate,
@@ -478,14 +478,20 @@ fn plan_lines(plan: &Plan, force: bool) -> Vec<String> {
         };
         lines.push(format!("{action} {}", file.path));
     }
-    for hook in &plan.hooks {
+    for planned in &plan.hooks {
+        // A deferred hook lists its source form: `run[0]` rendered, later
+        // arguments and cwd showing their `{{ id.field }}` placeholders. It runs
+        // nothing (dry-run), so no result is read.
+        let (argv, cwd) = match planned {
+            Planned::Ready(hook) => (hook.argv(), hook.cwd.as_ref().map(ToString::to_string)),
+            Planned::AfterHooks(deferred) => deferred
+                .hook_preview()
+                .expect("a deferred plan hook previews as a hook"),
+        };
         lines.push(format!(
             "hook {:?} cwd {}",
-            hook.argv(),
-            hook.cwd
-                .as_ref()
-                .map(ToString::to_string)
-                .unwrap_or_else(|| ".".into())
+            argv,
+            cwd.unwrap_or_else(|| ".".into())
         ));
     }
     lines
