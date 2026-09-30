@@ -243,6 +243,65 @@ fn generator_twice_fixture_agrees_across_person_scripted_agent_and_crate_routes(
     );
 }
 
+#[test]
+fn a_seeded_plan_is_single_target_and_refuses_a_foreign_target() {
+    // Behavior 18 (single-target plan): a seeded interview's plan renders exactly
+    // the one subpath carried in its context, and `Plan::build` refuses any other
+    // target with `PlanError::ContextTarget`. Sole-kill: remove that guard in
+    // src/plan.rs and this `refuses` assertion fails.
+    use indexmap::IndexMap;
+    use toha::{
+        Interview, Plan, PlanError, RawAnswer, Template,
+        config::{ConfigEntry, DefaultSource, PresetName},
+        interview::{SnapshotSeed, configured_defaults},
+        staging::canonical_target,
+        template::Id,
+    };
+
+    let template = Template::load(&fixture().join("template").canonicalize().unwrap()).unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let beta = canonical_target(&work.path().join("src/widgets/beta")).unwrap();
+    let gamma = canonical_target(&work.path().join("src/widgets/gamma")).unwrap();
+
+    // A hand-built seed (no git needed): style=panel differs from the default.
+    let mut defaults: IndexMap<Id, RawAnswer> = IndexMap::new();
+    defaults.insert(Id::parse("style").unwrap(), RawAnswer(json!("panel")));
+    let seed = SnapshotSeed {
+        defaults,
+        from: "01M3TB4T089FWECKM1BNEM4J3H".to_owned(),
+    };
+    let presets: IndexMap<PresetName, ConfigEntry<Value>> = IndexMap::new();
+    let mappings: IndexMap<String, IndexMap<Id, ConfigEntry<DefaultSource>>> = IndexMap::new();
+    let resolution =
+        configured_defaults(&beta.to_string(), &template, &presets, &mappings).unwrap();
+    let context = toha::context::InvocationContext::for_target(beta.clone());
+    let (interview, _w) = resolution
+        .start_with_seed(&template, NOW.parse().unwrap(), context, Some(seed))
+        .unwrap();
+    let mut answer: IndexMap<Id, RawAnswer> = IndexMap::new();
+    answer.insert(Id::parse("label").unwrap(), RawAnswer(json!("Beta")));
+    let completed = match interview {
+        Interview::Asking(p) => match p.answer(answer) {
+            Ok(Interview::Complete(c)) => c,
+            _ => panic!("expected a completed interview"),
+        },
+        _ => panic!("expected an asking interview"),
+    };
+
+    // The plan targets exactly beta: one file, built against beta.
+    let plan = Plan::build(&template, &completed, &beta).unwrap();
+    assert_eq!(plan.files.len(), 1, "one file, one target");
+
+    // Building against any other target is refused: the plan is single-target.
+    assert!(
+        matches!(
+            Plan::build(&template, &completed, &gamma),
+            Err(PlanError::ContextTarget)
+        ),
+        "a seeded plan refuses a target other than its context"
+    );
+}
+
 /// The valid snapshots `snapshots list --json` reports for one target.
 fn snapshot_list(iso: &Path, target: &Path) -> Vec<Value> {
     let mut list = support::isolated_command(iso);

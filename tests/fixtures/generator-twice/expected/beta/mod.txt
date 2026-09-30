@@ -1,3 +1,3 @@
 label=Beta
-style=card
-tests=True
+style=panel
+tests=False
