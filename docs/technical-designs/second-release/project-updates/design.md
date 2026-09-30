@@ -600,8 +600,22 @@ pub fn apply(plan: Plan, inputs: SnapshotInputs, project: Option<&Project>,
              options: ApplyOptions, runner: &dyn HookRunner)
     -> Result<Applied, ApplyError>;               // Applied gains `snapshot: SnapshotOutcome`
 
-// --from and --baseline, after the interview completed (the CLI uses the
-// crate-private update replay adapter; a crate caller drives the interview).
+// Drive an update interview from a base snapshot's recorded submissions. This
+// is the thin seam a command driver consumes; it wraps the crate-private replay
+// adapter and returns its three typed outcomes over already-public interview
+// types (the adapter itself, its queue mechanics, stays crate-private).
+pub fn drive_update<'a>(template: &'a Template, seed: Seed,
+                        recorded: &[IndexMap<Id, RawAnswer>],
+                        overrides: RawAnswers, reanswer: bool)
+    -> Result<UpdateDrive<'a>, EvalError>;
+pub enum UpdateDrive<'a> {
+    Completed { completed: Completed, submissions: Vec<IndexMap<Id, RawAnswer>> },
+    Ask { pending: Pending<'a>, rejections: Rejections },   // the route takes over
+    Ended(Ended),
+}
+
+// --from and --baseline, after the interview completed (the driver drives the
+// interview through `drive_update`; a crate caller may drive it any way).
 pub fn merge_apply(project: &Project, base: Base, template: &Template,
                    completed: &Completed, inputs: SnapshotInputs,
                    options: MergeOptions, runner: &dyn HookRunner)
@@ -628,10 +642,13 @@ pub enum SkipReason { NotGit, NoCommit, Dirty, NothingChanged, DryRun }
 
 `Plan::build`, `Plan::apply`, `Plan::mutations`, the injection resolvers, the
 interview engine, and the answers-document operations keep their public
-signatures. Crate-private additions: the update replay adapter; a destination seam in
-`apply.rs` that applies a plan built for the real target into another
-directory or in-memory images; and retraction helpers in the injection module
-that reuse its resolvers.
+signatures. The update replay adapter is crate-private; the command driver
+reaches it only through the `drive_update` seam above, which adds no interview
+behaviour and exposes no gitoxide or adapter-internal type. Crate-private
+additions: the update replay adapter; a destination seam in `apply.rs` that
+applies a plan built for the real target into another directory or in-memory
+images; and retraction helpers in the injection module that reuse its
+resolvers.
 `StagedRecord` gains the optional `base` and `reanswer` members. No gitoxide
 type appears in a public signature.
 
