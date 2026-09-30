@@ -547,3 +547,84 @@ fn agent_stages_continues_and_applies_a_staged_update() {
     let output = again.output().unwrap();
     assert_ne!(output.status.code(), Some(0), "the record should be gone");
 }
+
+#[test]
+fn the_final_agent_apply_path_refuses_a_dirty_target() {
+    // The resume path re-checks cleanliness so `apply PATH` never merges onto a
+    // dirty tree, even though the stage was recorded when the tree was clean.
+    let iso = tempfile::tempdir().unwrap();
+    let template_dir = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    write_one_question(template_dir.path());
+    target_repo(target.path());
+
+    let formal = support::formal_name(template_dir.path());
+    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+
+    // Baseline the first version and commit it clean.
+    let env_first = envelope(
+        iso.path(),
+        "first.json",
+        &formal,
+        serde_json::json!({ "name": "sample-value" }),
+    );
+    let mut baseline = support::isolated_command(iso.path());
+    baseline
+        .arg("apply")
+        .arg(&address)
+        .arg(target.path())
+        .arg("--baseline")
+        .arg("--answers")
+        .arg(&env_first);
+    let document = support::first_document(&baseline.output().unwrap().stdout);
+    let snapshot = document["snapshot"]["id"].as_str().unwrap().to_owned();
+    git(target.path(), &["add", "."]);
+    git(target.path(), &["commit", "--quiet", "-m", "baseline"]);
+
+    // Stage and complete an update while the tree is clean.
+    add_second_question(template_dir.path());
+    let mut stage = support::isolated_command(iso.path());
+    stage
+        .arg("stage")
+        .arg(&address)
+        .arg(target.path())
+        .arg("--from")
+        .arg(&snapshot)
+        .arg("--async");
+    assert_eq!(stage.output().unwrap().status.code(), Some(4), "stage");
+    let env_color = envelope(
+        iso.path(),
+        "color.json",
+        &formal,
+        serde_json::json!({ "color": "blue" }),
+    );
+    let mut cont = support::isolated_command(iso.path());
+    cont.arg("continue").arg(target.path()).arg(&env_color);
+    assert_eq!(cont.output().unwrap().status.code(), Some(0), "continue");
+
+    // The operator dirties the target after staging but before applying.
+    std::fs::write(target.path().join("greeting.txt"), "operator is editing\n").unwrap();
+
+    // `apply PATH` refuses the dirty target and writes nothing.
+    let mut apply = support::isolated_command(iso.path());
+    apply.arg("apply").arg(target.path());
+    let applied = apply.output().unwrap();
+    assert_ne!(
+        applied.status.code(),
+        Some(0),
+        "apply must refuse a dirty target: {applied:?}"
+    );
+    assert!(
+        String::from_utf8_lossy(&applied.stderr).contains("uncommitted changes")
+            || String::from_utf8_lossy(&applied.stdout).contains("uncommitted changes"),
+        "names the dirty target: {}{}",
+        String::from_utf8_lossy(&applied.stdout),
+        String::from_utf8_lossy(&applied.stderr)
+    );
+    // The operator's edit is untouched and no merge output (color.txt) appeared.
+    assert_eq!(
+        std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
+        "operator is editing\n"
+    );
+    assert!(!target.path().join("color.txt").exists(), "nothing written");
+}

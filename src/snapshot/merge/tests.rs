@@ -829,6 +829,96 @@ fn the_candidate_builder_and_merge_apply_a_from_update_end_to_end() {
 }
 
 #[test]
+fn a_successful_update_preserves_the_committed_snapshot_ref_and_reports_it() {
+    // Behavior 31, post-commit side: a successful write is NOT an unsuccessful
+    // exit, so its candidate ref is preserved (not cleaned up), the reported
+    // `Written.snapshot` equals the surviving ref, and the committed index tree
+    // equals the working tree for the target (`git commit` succeeds cleanly).
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q", "-b", "main"]);
+    write(&root.join("app/both.txt"), b"ONE\ntwo\nthree\nfour\nfive\n");
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "operator"]);
+    let head = git(root, &["rev-parse", "HEAD"]);
+    make_snapshot(
+        root,
+        BASE_ID,
+        "app",
+        &[("both.txt", b"one\ntwo\nthree\nfour\nfive\n")],
+    );
+
+    let src = tempfile::tempdir().unwrap();
+    let project = open(root, "app");
+    // Template v2 changes only line 5 — a clean merge with the operator's line 1.
+    let new = super::build_candidate(
+        &project,
+        &Base::Snapshot(read_snapshot(&project, BASE_ID)),
+        plan_of(vec![plan_file(
+            src.path(),
+            "both.txt",
+            "one\ntwo\nthree\nfour\nFIVE\n",
+        )]),
+        capture_inputs(&head),
+        true,
+        &crate::hook::ProcessRunner,
+    )
+    .unwrap();
+    let new_id = *new.id();
+
+    let before = git(root, &["for-each-ref", "refs/toha/snapshots/"]);
+    assert!(
+        before.contains(&new_id.to_string()) && before.contains(BASE_ID),
+        "the candidate ref exists before the merge: {before}"
+    );
+
+    let result = merge_into_worktree(
+        &project,
+        &Base::Snapshot(read_snapshot(&project, BASE_ID)),
+        &new,
+        &MergeOptions {
+            trusted: true,
+            dry_run: false,
+        },
+    )
+    .unwrap();
+
+    // The reported snapshot equals the captured candidate.
+    match &result {
+        Merged::Written { snapshot, .. } => {
+            assert_eq!(*snapshot, new_id, "the report names the committed snapshot")
+        }
+        other => panic!("expected a written update, got {other:?}"),
+    }
+
+    // Post-commit: the candidate ref is preserved (a successful exit never cleans
+    // it up), alongside the base — no ref was lost by the successful commit.
+    let after = git(root, &["for-each-ref", "refs/toha/snapshots/"]);
+    assert!(
+        after.contains(&new_id.to_string()),
+        "the committed snapshot ref is preserved: {after}"
+    );
+    assert!(
+        after.contains(BASE_ID),
+        "the base ref is preserved: {after}"
+    );
+
+    // The committed result is consistent: staging the merged worktree and
+    // committing succeeds with no unmerged paths, and the merged bytes are on disk.
+    assert_eq!(
+        std::fs::read_to_string(root.join("app/both.txt")).unwrap(),
+        "ONE\ntwo\nthree\nfour\nFIVE\n",
+    );
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "apply update"]);
+    let committed = git(root, &["show", "HEAD:app/both.txt"]);
+    assert_eq!(
+        committed, "ONE\ntwo\nthree\nfour\nFIVE",
+        "the committed tree equals the merged working tree",
+    );
+}
+
+#[test]
 fn an_already_current_update_reports_no_change_and_carries_the_frozen_instant() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
