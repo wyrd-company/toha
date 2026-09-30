@@ -76,6 +76,14 @@ pub fn fixtures() -> Vec<PathBuf> {
         .unwrap()
         .map(|entry| entry.unwrap().path().canonicalize().unwrap())
         .filter(|path| path.is_dir())
+        // `update-*` fixtures drive the data-driven update harness
+        // (tests/update_fixtures.rs), not the standard single-apply runner.
+        .filter(|path| {
+            !path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("update-"))
+        })
         .collect();
     paths.sort();
     paths

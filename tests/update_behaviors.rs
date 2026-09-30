@@ -287,3 +287,62 @@ fn b11_a_json_value_the_template_changes_is_updated_and_unrelated_keys_stay() {
     );
     assert_eq!(merged["name"], "operator", "unrelated key kept: {merged}");
 }
+
+#[test]
+fn b11_a_json_value_both_sides_change_conflicts() {
+    let iso = tempfile::tempdir().unwrap();
+    let template_dir = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(template_dir.path().join("template")).unwrap();
+    std::fs::write(
+        template_dir.path().join("template.yml"),
+        "name: pkg\ninject:\n  - into: package.json\n    struct:\n      path: \"scripts.build\"\n      value: \"build-a\"\n",
+    )
+    .unwrap();
+    target_repo(target.path());
+    std::fs::write(
+        target.path().join("package.json"),
+        "{\n  \"name\": \"operator\",\n  \"scripts\": {}\n}\n",
+    )
+    .unwrap();
+    commit(target.path(), "package");
+    let formal = support::formal_name(template_dir.path());
+    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let env = envelope(iso.path(), "a.json", &formal, serde_json::json!({}));
+    let snapshot = plain_apply(iso.path(), &address, &env, target.path());
+
+    // The operator changes the same value the template owns, then the template
+    // changes it too: both sides changed the same line, so it conflicts.
+    let applied = std::fs::read_to_string(target.path().join("package.json")).unwrap();
+    std::fs::write(
+        target.path().join("package.json"),
+        applied.replace("build-a", "build-operator"),
+    )
+    .unwrap();
+    commit(target.path(), "operator edit");
+    std::fs::write(
+        template_dir.path().join("template.yml"),
+        "name: pkg\ninject:\n  - into: package.json\n    struct:\n      path: \"scripts.build\"\n      value: \"build-b\"\n",
+    )
+    .unwrap();
+
+    let document = update_from(iso.path(), &address, &snapshot, None, target.path());
+    assert_eq!(document["status"], "applied", "{document}");
+    assert!(
+        document["merge"]["conflicted"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p == "package.json"),
+        "package.json is reported conflicted: {document}"
+    );
+    let merged = std::fs::read_to_string(target.path().join("package.json")).unwrap();
+    assert!(
+        merged.contains("<<<<<<<") && merged.contains(">>>>>>>"),
+        "conflict markers present: {merged}"
+    );
+    assert!(
+        merged.contains("build-operator"),
+        "operator bytes present: {merged}"
+    );
+}
