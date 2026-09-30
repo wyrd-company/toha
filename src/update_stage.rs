@@ -126,11 +126,14 @@ pub fn stage(
         Ok(None) => {}
         Err(error) => return Outcome::Error(error.to_string()),
     }
-    let interactive = async_out.is_none();
-    if interactive && !io::stdin().is_terminal() {
-        return Outcome::Error(guidance::no_terminal(
-            template_arg.as_deref().unwrap_or("the template"),
-            path,
+    // Staging an update is the agent route: it saves the interview for a later
+    // `continue`. A person applies an update in one shot with `apply ... --from`,
+    // which prompts the questions the recorded answers do not settle.
+    if async_out.is_none() {
+        return Outcome::Error(format!(
+            "staging an update is the agent route; run it with --async, or apply it \
+             interactively with `apply ... --from` at {}",
+            path.display()
         ));
     }
     let prep = match update::prepare(
@@ -140,7 +143,7 @@ pub fn stage(
         dirs,
         trust,
         PrepareMode::Stage,
-        interactive,
+        false,
     ) {
         Ok(value) => value,
         Err(outcome) => return outcome,

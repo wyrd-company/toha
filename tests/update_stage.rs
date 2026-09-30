@@ -62,6 +62,277 @@ fn envelope(dir: &Path, name: &str, formal: &str, answers: Value) -> std::path::
     path
 }
 
+/// Baseline-apply `address` (name=Alice) into `target`, commit clean, and return
+/// the snapshot id.
+fn baseline(iso: &Path, address: &str, formal: &str, target: &Path, trust: bool) -> String {
+    let env = envelope(
+        iso,
+        "alice.json",
+        formal,
+        serde_json::json!({ "name": "Alice" }),
+    );
+    let mut command = support::isolated_command(iso);
+    command
+        .arg("apply")
+        .arg(address)
+        .arg(target)
+        .arg("--baseline")
+        .arg("--answers")
+        .arg(&env);
+    if trust {
+        command.arg("--trust");
+    }
+    let document = support::first_document(&command.output().unwrap().stdout);
+    let id = document["snapshot"].as_str().unwrap().to_owned();
+    git(target, &["add", "."]);
+    git(target, &["commit", "--quiet", "-m", "baseline"]);
+    id
+}
+
+#[cfg(unix)]
+#[test]
+fn a_person_apply_from_prompts_a_new_question_then_merges() {
+    use expectrl::{Expect, Session};
+    let iso = tempfile::tempdir().unwrap();
+    let template_dir = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    write_one_question(template_dir.path());
+    target_repo(target.path());
+    let formal = support::formal_name(template_dir.path());
+    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let snapshot = baseline(iso.path(), &address, &formal, target.path(), false);
+    add_second_question(template_dir.path());
+
+    // `apply ADDRESS TARGET --from ID` at a terminal prompts the new question and
+    // merges the update when it is answered.
+    let mut command = support::isolated_command(iso.path());
+    command
+        .arg("apply")
+        .arg(&address)
+        .arg(target.path())
+        .arg("--from")
+        .arg(&snapshot);
+    // The batch the replay cannot complete carries both questions, so the person
+    // is prompted for `name` (with the recorded value as the default) and the new
+    // `color`. Accepting the default keeps the name; the new answer settles it.
+    let mut session = Session::spawn(command).unwrap();
+    session.expect("Name").unwrap();
+    session.send_line("Alice").unwrap();
+    session.expect("Colour").unwrap();
+    session.send_line("blue").unwrap();
+    session.expect(expectrl::Eof).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(target.path().join("color.txt")).unwrap(),
+        "blue\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
+        "Hello Alice\n"
+    );
+}
+
+#[test]
+fn stage_baseline_then_continue_and_apply_records_a_snapshot() {
+    let iso = tempfile::tempdir().unwrap();
+    let template_dir = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    write_one_question(template_dir.path());
+    target_repo(target.path());
+    let formal = support::formal_name(template_dir.path());
+    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+
+    // Stage a baseline update: there is no recorded answer, so it asks `name`.
+    let mut stage = support::isolated_command(iso.path());
+    stage
+        .arg("stage")
+        .arg(&address)
+        .arg(target.path())
+        .arg("--baseline")
+        .arg("--async");
+    let staged = stage.output().unwrap();
+    assert_eq!(staged.status.code(), Some(4), "stage: {staged:?}");
+    let document = support::first_document(&staged.stdout);
+    assert!(
+        document["schema"]["properties"]["name"].is_object(),
+        "{document}"
+    );
+
+    // Answer it and apply: the whole render is merged from empty, saving a snapshot.
+    let env = envelope(
+        iso.path(),
+        "n.json",
+        &formal,
+        serde_json::json!({ "name": "Zoe" }),
+    );
+    let mut cont = support::isolated_command(iso.path());
+    cont.arg("continue").arg(target.path()).arg(&env);
+    assert_eq!(cont.output().unwrap().status.code(), Some(0));
+
+    let mut apply = support::isolated_command(iso.path());
+    apply.arg("apply").arg(target.path());
+    let document = support::first_document(&apply.output().unwrap().stdout);
+    assert_eq!(document["update"], "applied", "{document}");
+    assert_eq!(
+        std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
+        "Hello Zoe\n"
+    );
+}
+
+#[test]
+fn stage_reanswer_re_asks_a_recorded_answer() {
+    let iso = tempfile::tempdir().unwrap();
+    let template_dir = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    write_one_question(template_dir.path());
+    target_repo(target.path());
+    let formal = support::formal_name(template_dir.path());
+    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let snapshot = baseline(iso.path(), &address, &formal, target.path(), false);
+
+    // `--reanswer` offers `name` again even though the base answered it.
+    let mut stage = support::isolated_command(iso.path());
+    stage
+        .arg("stage")
+        .arg(&address)
+        .arg(target.path())
+        .arg("--from")
+        .arg(&snapshot)
+        .arg("--reanswer")
+        .arg("--async");
+    let staged = stage.output().unwrap();
+    assert_eq!(staged.status.code(), Some(4), "reanswer stage: {staged:?}");
+    let document = support::first_document(&staged.stdout);
+    assert_eq!(
+        document["schema"]["properties"]["name"]["default"], "Alice",
+        "{document}"
+    );
+
+    // Answer with a new value and apply: the greeting changes.
+    let env = envelope(
+        iso.path(),
+        "b.json",
+        &formal,
+        serde_json::json!({ "name": "Bob" }),
+    );
+    let mut cont = support::isolated_command(iso.path());
+    cont.arg("continue").arg(target.path()).arg(&env);
+    assert_eq!(cont.output().unwrap().status.code(), Some(0));
+    let mut apply = support::isolated_command(iso.path());
+    apply.arg("apply").arg(target.path());
+    let document = support::first_document(&apply.output().unwrap().stdout);
+    assert_eq!(document["update"], "applied", "{document}");
+    assert_eq!(
+        std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
+        "Hello Bob\n"
+    );
+}
+
+#[test]
+fn stage_refuses_before_any_batch_when_env_needs_trust() {
+    let iso = tempfile::tempdir().unwrap();
+    let template_dir = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    // A template that references a captured environment value.
+    std::fs::create_dir_all(template_dir.path().join("template")).unwrap();
+    std::fs::write(
+        template_dir.path().join("template.yml"),
+        "name: greeter\ndescription: A greeting\ninterview:\n  - id: name\n    type: text\n    prompt: Name\n    required: true\n",
+    )
+    .unwrap();
+    std::fs::write(
+        template_dir.path().join("template/greeting.txt"),
+        "Hello {{ name }} from {{ toha_env_user }}\n",
+    )
+    .unwrap();
+    target_repo(target.path());
+    let formal = support::formal_name(template_dir.path());
+    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let snapshot = baseline(iso.path(), &address, &formal, target.path(), true);
+
+    // Without --trust the stage refuses before asking anything.
+    let mut stage = support::isolated_command(iso.path());
+    stage
+        .arg("stage")
+        .arg(&address)
+        .arg(target.path())
+        .arg("--from")
+        .arg(&snapshot)
+        .arg("--async");
+    let output = stage.output().unwrap();
+    assert_ne!(output.status.code(), Some(0), "env stage should refuse");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("trust"),
+        "expected a trust refusal: {stderr}"
+    );
+    // Nothing was staged.
+    let mut apply = support::isolated_command(iso.path());
+    apply.arg("apply").arg(target.path());
+    let applied = apply.output().unwrap();
+    let stderr = String::from_utf8_lossy(&applied.stderr);
+    assert!(
+        stderr.contains("git") || stderr.contains("staged") || stderr.contains("nothing"),
+        "no update staged: {stderr}"
+    );
+}
+
+#[test]
+fn a_continue_with_a_foreign_identity_leaves_the_staged_update_unchanged() {
+    let iso = tempfile::tempdir().unwrap();
+    let template_dir = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    write_one_question(template_dir.path());
+    target_repo(target.path());
+    let formal = support::formal_name(template_dir.path());
+    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let snapshot = baseline(iso.path(), &address, &formal, target.path(), false);
+    add_second_question(template_dir.path());
+
+    // Stage the update (asks `color`).
+    let mut stage = support::isolated_command(iso.path());
+    stage
+        .arg("stage")
+        .arg(&address)
+        .arg(target.path())
+        .arg("--from")
+        .arg(&snapshot)
+        .arg("--async");
+    assert_eq!(stage.output().unwrap().status.code(), Some(4));
+
+    // A continue naming a foreign template is rejected; the record is unchanged.
+    let wrong = envelope(
+        iso.path(),
+        "wrong.json",
+        "not-the-template",
+        serde_json::json!({ "color": "blue" }),
+    );
+    let mut bad = support::isolated_command(iso.path());
+    bad.arg("continue").arg(target.path()).arg(&wrong);
+    let output = bad.output().unwrap();
+    assert_ne!(
+        output.status.code(),
+        Some(0),
+        "foreign identity should refuse"
+    );
+    assert!(!target.path().join("color.txt").exists(), "nothing applied");
+
+    // The staged update still answers the right document afterward.
+    let right = envelope(
+        iso.path(),
+        "right.json",
+        &formal,
+        serde_json::json!({ "color": "blue" }),
+    );
+    let mut good = support::isolated_command(iso.path());
+    good.arg("continue").arg(target.path()).arg(&right);
+    assert_eq!(
+        good.output().unwrap().status.code(),
+        Some(0),
+        "the record survived"
+    );
+}
+
 #[test]
 fn agent_stages_continues_and_applies_a_staged_update() {
     let iso = tempfile::tempdir().unwrap();

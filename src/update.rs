@@ -10,20 +10,23 @@
 //! `--answers` envelope supplies overrides and `--reanswer` re-asks every answer.
 //! `--baseline` merges the whole render against an empty base, so unrelated local
 //! edits survive. An update refuses a dirty target, a snapshot taken for another
-//! target, and a template whose source is not the snapshot's (identity 17). The
-//! interactive person route and the staged agent continuation land in later
-//! slices.
+//! target, and a template whose source is not the snapshot's (identity 17). At a
+//! terminal a one-shot update prompts the questions the recorded answers do not
+//! settle; the agent stages it with `stage --from` (see `update_stage`).
 
 use std::path::Path;
 
 use indexmap::IndexMap;
 use serde_json::{Value, json};
+use std::io::IsTerminal;
 use toha::context::InvocationContext;
 use toha::hook::ProcessRunner;
 use toha::interview::Seed;
+
 use toha::snapshot::{
     Action, Base, Change, Cleanliness, CommitId, ConflictKind, FrozenNow, MergeOptions, Merged,
-    Project, Revision, Snapshot, SnapshotInputs, UpdateDrive, drive_update, merge_apply,
+    Project, Revision, Snapshot, SnapshotInputs, UpdateDrive, drive_update, drive_update_resume,
+    merge_apply,
 };
 use toha::template::{Id, Template};
 use toha::{RawAnswer, RawAnswers};
@@ -89,6 +92,13 @@ pub fn run_update(
         None => IndexMap::new(),
     };
 
+    // The person route (no `--answers`, a terminal) prompts the questions the
+    // recorded answers do not settle, then merges; the script and agent route
+    // reports them.
+    if answers.is_none() && std::io::stdin().is_terminal() {
+        return person_update(prep, &base, reanswer, dry_run);
+    }
+
     let seed = Seed {
         now: prep.now.clone(),
         defaults: prep.configured_defaults.clone(),
@@ -143,6 +153,47 @@ pub fn run_update(
     };
 
     finish_merge(prep, &base, completed, submissions, dry_run)
+}
+
+/// The person route for a one-shot update: prompt the questions the recorded
+/// answers do not settle — re-driving through the adapter each round so a batch
+/// the recorded answers cover is never prompted — then merge.
+fn person_update(prep: Prepared, base: &UpdateBase, reanswer: bool, dry_run: bool) -> Outcome {
+    let mut staged: Vec<IndexMap<Id, RawAnswer>> = Vec::new();
+    loop {
+        let seed = Seed {
+            now: prep.now.clone(),
+            defaults: prep.configured_defaults.clone(),
+            context: prep.context.clone(),
+        };
+        let driven =
+            match drive_update_resume(&prep.template, seed, &prep.recorded, &staged, reanswer) {
+                Ok(value) => value,
+                Err(error) => return Outcome::Error(error.to_string()),
+            };
+        match driven {
+            UpdateDrive::Completed {
+                completed,
+                submissions,
+            } => return finish_merge(prep, base, completed, submissions, dry_run),
+            UpdateDrive::Ask { pending, .. } => {
+                let submission =
+                    match crate::terminal::prompt_batch(&pending, &mut crate::terminal::InquireAsk)
+                    {
+                        Ok(submission) => submission,
+                        Err(error) => return Outcome::Error(error),
+                    };
+                staged.push(submission);
+            }
+            UpdateDrive::Ended(ended) => {
+                eprintln!("{}", crate::guidance::flow_ended(&ended));
+                return Outcome::Error(format!(
+                    "the template ended the interview: {:?}",
+                    ended.kind()
+                ));
+            }
+        }
+    }
 }
 
 /// The shared pieces an update route needs after resolving its base and
