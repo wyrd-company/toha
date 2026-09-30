@@ -387,3 +387,139 @@ fn a_write_failure_rolls_back_and_leaves_the_index_unwritten() {
         "candidate ref removed after rollback"
     );
 }
+
+fn action_of(result: &Merged, path: &str) -> Option<Action> {
+    if let Merged::Written { changes, .. } = result {
+        changes
+            .iter()
+            .find(|c| c.path.as_str() == path)
+            .map(|c| c.action)
+    } else {
+        None
+    }
+}
+
+fn run_merge(root: &Path) -> Merged {
+    let project = open(root, "app");
+    let base = read_snapshot(&project, BASE_ID);
+    let new = read_snapshot(&project, NEW_ID);
+    merge_into_worktree(
+        &project,
+        &Base::Snapshot(base),
+        &new,
+        &MergeOptions {
+            trusted: true,
+            dry_run: false,
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn an_add_add_conflict_keeps_operator_bytes_and_is_classified() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q", "-b", "main"]);
+    write(&root.join("app/keep.txt"), b"k\n");
+    write(&root.join("app/conf.txt"), b"operator\n"); // operator added conf.txt
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "operator"]);
+
+    make_snapshot(root, BASE_ID, "app", &[("keep.txt", b"k\n")]); // base has no conf.txt
+    make_snapshot(
+        root,
+        NEW_ID,
+        "app",
+        &[("keep.txt", b"k\n"), ("conf.txt", b"template\n")],
+    );
+
+    let result = run_merge(root);
+    assert_eq!(
+        action_of(&result, "app/conf.txt"),
+        Some(Action::Conflicted(ConflictKind::AddAdd))
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("app/conf.txt")).unwrap(),
+        "operator\n",
+        "operator bytes kept"
+    );
+    assert!(
+        git(root, &["ls-files", "-u"]).contains("conf.txt"),
+        "conflict stages present"
+    );
+}
+
+#[test]
+fn a_modify_delete_conflict_is_classified() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q", "-b", "main"]);
+    write(&root.join("app/gone.txt"), b"bye\nuser edit\n");
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "operator"]);
+    make_snapshot(root, BASE_ID, "app", &[("gone.txt", b"bye\n")]);
+    make_snapshot(root, NEW_ID, "app", &[("keep.txt", b"k\n")]);
+
+    let result = run_merge(root);
+    assert_eq!(
+        action_of(&result, "app/gone.txt"),
+        Some(Action::Conflicted(ConflictKind::ModifyDelete))
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("app/gone.txt")).unwrap(),
+        "bye\nuser edit\n"
+    );
+}
+
+#[test]
+fn a_binary_changed_on_both_sides_is_classified_and_keeps_operator_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q", "-b", "main"]);
+    write(&root.join("app/logo.bin"), b"\x89BIN\x00user\x00");
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "operator"]);
+    make_snapshot(root, BASE_ID, "app", &[("logo.bin", b"\x89BIN\x00v1\x00")]);
+    make_snapshot(root, NEW_ID, "app", &[("logo.bin", b"\x89BIN\x00v2\x00")]);
+
+    let result = run_merge(root);
+    assert_eq!(
+        action_of(&result, "app/logo.bin"),
+        Some(Action::Conflicted(ConflictKind::Binary))
+    );
+    assert_eq!(
+        std::fs::read(root.join("app/logo.bin")).unwrap(),
+        b"\x89BIN\x00user\x00",
+        "operator bytes kept"
+    );
+    let unmerged = git(root, &["ls-files", "-u"]);
+    assert!(
+        unmerged.contains(" 1\tapp/logo.bin") && unmerged.contains(" 3\tapp/logo.bin"),
+        "stages 1/2/3: {unmerged}"
+    );
+}
+
+#[test]
+fn a_file_replaced_by_a_directory_is_a_file_directory_conflict() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-b", "main", "-q"]);
+    write(&root.join("app/item"), b"operator file\n"); // operator keeps it a file
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "operator"]);
+    make_snapshot(root, BASE_ID, "app", &[("item", b"base file\n")]);
+    // The template turns `item` into a directory.
+    make_snapshot(root, NEW_ID, "app", &[("item/sub.txt", b"now a dir\n")]);
+
+    let result = run_merge(root);
+    // `app/item` (the operator's file) is a file/directory conflict.
+    assert_eq!(
+        action_of(&result, "app/item"),
+        Some(Action::Conflicted(ConflictKind::FileDirectory))
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("app/item")).unwrap(),
+        "operator file\n",
+        "operator file kept"
+    );
+}

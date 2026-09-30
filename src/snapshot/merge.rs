@@ -168,18 +168,23 @@ fn merge_inner(
     let merged_entries = flat_entries(project, merged_sub)?;
     let theirs_entries = flat_entries(project, theirs_sub)?;
 
-    let conflicted: Vec<RepoPath> = outcome
-        .conflicts
-        .iter()
-        .filter(|c| c.is_unresolved(how))
-        .filter_map(|c| RepoPath::parse(&c.ours.location().to_str_lossy()).ok())
+    // Classify each unresolved conflict by kind, keyed by repository-relative path.
+    let mut conflict_kinds: std::collections::BTreeMap<String, ConflictKind> =
+        std::collections::BTreeMap::new();
+    for c in outcome.conflicts.iter().filter(|c| c.is_unresolved(how)) {
+        let location = c.ours.location().to_str_lossy().into_owned();
+        conflict_kinds.insert(location, classify_conflict(repo, c));
+    }
+    let conflicted: Vec<RepoPath> = conflict_kinds
+        .keys()
+        .filter_map(|p| RepoPath::parse(p).ok())
         .collect();
 
     let mut changes = Vec::new();
     for (path, (id, mode)) in &merged_entries {
         let repo_path = repo_path_for(target, path);
-        let action = if conflicted.iter().any(|p| p.as_str() == repo_path.as_str()) {
-            Action::Conflicted(ConflictKind::Content)
+        let action = if let Some(kind) = conflict_kinds.get(repo_path.as_str()) {
+            Action::Conflicted(*kind)
         } else if let Some((ours_id, _)) = ours_entries.get(path) {
             if ours_id == id {
                 continue; // unchanged for the operator
@@ -199,9 +204,14 @@ fn merge_inner(
     }
     for path in ours_entries.keys() {
         if !merged_entries.contains_key(path) {
+            let repo_path = repo_path_for(target, path);
+            let action = match conflict_kinds.get(repo_path.as_str()) {
+                Some(kind) => Action::Conflicted(*kind),
+                None => Action::Deleted,
+            };
             changes.push(Change {
-                path: repo_path_for(target, path),
-                action: Action::Deleted,
+                path: repo_path,
+                action,
             });
         }
     }
@@ -230,6 +240,14 @@ fn merge_inner(
         return Err(MergeError::Occupied(occupied));
     }
 
+    // Paths whose conflict is not a content merge keep the operator's file on
+    // disk (their diff3 body is not written); a content conflict writes markers.
+    let keep_operator: std::collections::BTreeSet<String> = conflict_kinds
+        .iter()
+        .filter(|(_, kind)| !matches!(kind, ConflictKind::Content))
+        .map(|(path, _)| path.clone())
+        .collect();
+
     // Steps 6-7: take the index lock, re-check for drift, then write the merged
     // files and index in one transaction that rolls back on any write failure.
     commit_transaction(
@@ -237,6 +255,7 @@ fn merge_inner(
         &ours_entries,
         &merged_entries,
         target,
+        &keep_operator,
         &mut outcome,
         merged_full,
         how,
@@ -282,6 +301,7 @@ fn commit_transaction(
     ours: &Entries,
     merged: &Entries,
     target: &RepoPath,
+    keep_operator: &std::collections::BTreeSet<String>,
     outcome: &mut gix::merge::tree::Outcome<'_>,
     merged_full: gix::ObjectId,
     how: gix::merge::tree::TreatAsUnresolved,
@@ -326,6 +346,7 @@ fn commit_transaction(
         ours,
         merged,
         target,
+        keep_operator,
         &mut done,
     );
     if let Err(err) = result {
@@ -354,6 +375,7 @@ fn write_all(
     ours: &Entries,
     merged: &Entries,
     target: &RepoPath,
+    keep_operator: &std::collections::BTreeSet<String>,
     done: &mut Vec<Restorable>,
 ) -> Result<(), MergeError> {
     // Writes and modifications.
@@ -363,6 +385,11 @@ fn write_all(
             continue; // unchanged for the operator
         }
         let repo_rel = repo_path_for(target, path).as_str().to_owned();
+        if keep_operator.contains(&repo_rel) || ancestor_kept(&repo_rel, keep_operator) {
+            // A non-content conflict, or a path under a file/directory conflict
+            // whose ancestor stays the operator's file, keeps the operator's disk.
+            continue;
+        }
         drift_check(pipeline, state, &repo_rel, expected.map(|(o, _)| *o))?;
         let bytes = worktree_bytes(repo, pipeline, *id, &repo_rel)?;
         write_atomically(workdir, &repo_rel, &bytes, *mode)?;
@@ -378,6 +405,9 @@ fn write_all(
             continue;
         }
         let repo_rel = repo_path_for(target, path).as_str().to_owned();
+        if keep_operator.contains(&repo_rel) {
+            continue; // a modify/delete conflict keeps the operator's file on disk
+        }
         drift_check(pipeline, state, &repo_rel, Some(*id))?;
         let full = workdir.join(&repo_rel);
         if full.exists() {
@@ -644,6 +674,70 @@ fn repo_path_for(target: &RepoPath, sub: &BString) -> RepoPath {
         format!("{}/{}", target.as_str(), sub)
     };
     RepoPath::parse(&joined).unwrap_or_else(|_| RepoPath::root())
+}
+
+/// Classify one unresolved conflict into the kind Toha reports. Stages are
+/// `[base, ours, theirs]`.
+fn classify_conflict(
+    repo: &gix::Repository,
+    conflict: &gix::merge::tree::Conflict,
+) -> ConflictKind {
+    use gix::merge::tree::ResolutionFailure;
+    let entries = conflict.entries();
+    let is_dir = |i: usize| entries[i].as_ref().is_some_and(|e| e.mode.is_tree());
+    let present = |i: usize| entries[i].is_some();
+
+    if is_dir(0)
+        || is_dir(1)
+        || is_dir(2)
+        || matches!(
+            conflict.resolution,
+            Err(ResolutionFailure::OursDirectoryTheirsNonDirectoryTheirsRenamed { .. })
+                | Err(ResolutionFailure::OursModifiedTheirsDirectoryThenOursRenamed { .. })
+        )
+    {
+        return ConflictKind::FileDirectory;
+    }
+    let (bp, op, tp) = (present(0), present(1), present(2));
+    if !bp && op && tp {
+        return ConflictKind::AddAdd;
+    }
+    if bp && (op ^ tp) {
+        return ConflictKind::ModifyDelete;
+    }
+    // A content conflict: binary when either changed side is binary.
+    if op && tp {
+        let binary = [1usize, 2]
+            .iter()
+            .any(|&i| entries[i].as_ref().is_some_and(|e| is_binary(repo, e.id)));
+        if binary {
+            return ConflictKind::Binary;
+        }
+    }
+    ConflictKind::Content
+}
+
+/// Whether any ancestor directory of `repo_rel` is a kept file/directory
+/// conflict path (the operator's file stays, so the template's colliding
+/// directory content beneath it is not written).
+fn ancestor_kept(repo_rel: &str, keep_operator: &std::collections::BTreeSet<String>) -> bool {
+    let mut prefix = repo_rel;
+    while let Some((parent, _)) = prefix.rsplit_once('/') {
+        if keep_operator.contains(parent) {
+            return true;
+        }
+        prefix = parent;
+    }
+    false
+}
+
+/// Whether a blob is binary, by git's heuristic: a NUL byte in the first 8000
+/// bytes.
+fn is_binary(repo: &gix::Repository, id: gix::ObjectId) -> bool {
+    match repo.find_object(id) {
+        Ok(object) => object.data.iter().take(8000).any(|&b| b == 0),
+        Err(_) => false,
+    }
 }
 
 /// Remove this invocation's candidate ref, only if it still points at the commit
