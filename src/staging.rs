@@ -374,7 +374,7 @@ impl StagedRecord {
     /// Restores the invocation context from the versioned wire, validating the
     /// persisted target text against the producer-created carrier. A pre-context
     /// record restores a legacy context.
-    pub(crate) fn invocation_context(
+    pub fn invocation_context(
         &self,
         target: &CanonicalTarget,
     ) -> Result<InvocationContext, StagingError> {

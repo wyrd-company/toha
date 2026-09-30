@@ -60,7 +60,15 @@ pub fn run_update(
         Ok(value) => value,
         Err(error) => return Outcome::Error(error),
     };
-    let prep = match prepare(&base, template_arg, &target, dirs, trust) {
+    let prep = match prepare(
+        &base,
+        template_arg,
+        &target,
+        dirs,
+        trust,
+        PrepareMode::Apply,
+        false,
+    ) {
         Ok(value) => value,
         Err(outcome) => return outcome,
     };
@@ -156,12 +164,21 @@ pub(crate) struct Prepared {
 /// Open the project, resolve the base snapshot and template, enforce the update
 /// preconditions and identity (17), and build the render context and trust
 /// grant. Shared by the one-shot update route and the staged update flow.
+/// How `prepare` grants the environment and computes trust: an `apply` merges
+/// now; a `stage` captures the grant for later batches.
+pub(crate) enum PrepareMode {
+    Apply,
+    Stage,
+}
+
 pub(crate) fn prepare(
     base: &UpdateBase,
     template_arg: Option<String>,
     target: &toha::staging::CanonicalTarget,
     dirs: &Dirs,
     trust: bool,
+    mode: PrepareMode,
+    interactive: bool,
 ) -> Result<Prepared, Outcome> {
     let project = match Project::open(target) {
         Ok(Some(project)) => project,
@@ -263,9 +280,26 @@ pub(crate) fn prepare(
         None => runtime_now,
     };
 
-    let trusted = apply_environment_grant(trust, &resolved, &template);
-    let decision = EnvironmentDecision::grant_if_needed(trusted);
-    let context = match build_context(target, &resolved, &template, decision, false) {
+    // The environment decision and trust grant. An apply grants env values when
+    // the template is already trusted (an approval or `--trust`). A stage
+    // captures the fixed five when `--trust` is given, discovers the references
+    // upfront, and refuses before any batch when one needs trust it lacks, so the
+    // grant carries through every later batch and the apply.
+    let (decision, trusted) = match mode {
+        PrepareMode::Apply => {
+            let trusted = apply_environment_grant(trust, &resolved, &template);
+            (EnvironmentDecision::grant_if_needed(trusted), trusted)
+        }
+        PrepareMode::Stage => {
+            let decision = if trust {
+                EnvironmentDecision::CarryStageGrant
+            } else {
+                EnvironmentDecision::RequireStageGrant
+            };
+            (decision, trust)
+        }
+    };
+    let context = match build_context(target, &resolved, &template, decision, interactive) {
         Ok(value) => value,
         Err(error) => return Err(Outcome::Error(error)),
     };
@@ -287,6 +321,129 @@ pub(crate) fn prepare(
         recorded,
         trusted,
     })
+}
+
+/// Restore the pieces a staged-update resume needs from its record: reopen the
+/// project, re-resolve the template and base snapshot, restore the identity-
+/// bearing context (not rebuilt), and recompute the trust grant for the apply.
+/// The target's cleanliness is re-checked so a merge never runs on a dirty tree.
+pub(crate) fn resume_prepared(
+    saved: &crate::StagedRecord,
+    base: &UpdateBase,
+    target: &toha::staging::CanonicalTarget,
+    dirs: &Dirs,
+    trust: bool,
+) -> Result<(Prepared, Vec<IndexMap<Id, RawAnswer>>), Outcome> {
+    let project = match Project::open(target) {
+        Ok(Some(project)) => project,
+        Ok(None) => {
+            return Err(Outcome::Error(
+                "the target is not inside a git repository; an update needs git".to_owned(),
+            ));
+        }
+        Err(error) => return Err(Outcome::Error(error.to_string())),
+    };
+    match project.cleanliness() {
+        Ok(Cleanliness::Clean) => {}
+        Ok(Cleanliness::Dirty { .. }) => {
+            return Err(Outcome::Error(
+                "the target has uncommitted changes; commit or discard them before an update"
+                    .to_owned(),
+            ));
+        }
+        Err(error) => return Err(Outcome::Error(error.to_string())),
+    }
+
+    let (merge_base, base_snapshot) = match base {
+        UpdateBase::From(id) => match project.find(id) {
+            Ok(snapshot) => (Base::Snapshot(snapshot.clone()), Some(snapshot)),
+            Err(error) => return Err(Outcome::Error(error.to_string())),
+        },
+        UpdateBase::Baseline => (Base::Empty, None),
+    };
+    if let Some(snapshot) = &base_snapshot {
+        if snapshot.target() != project.target() {
+            return Err(Outcome::Error(format!(
+                "the snapshot was taken for target {:?}, not {:?}",
+                snapshot.target().as_str(),
+                project.target().as_str()
+            )));
+        }
+    }
+
+    let cwd = std::env::current_dir().map_err(|e| Outcome::Error(e.to_string()))?;
+    let (config, registry) = cli_context(dirs, &cwd)?;
+    let resolved = match crate::cli::resolve::resume_template(
+        &saved.template,
+        &saved.commit,
+        saved.named,
+        &config,
+        &registry,
+        dirs,
+        &cwd,
+    ) {
+        Ok(value) => value,
+        Err(error) => return Err(crate::resolve_error(error)),
+    };
+    let template = match load_template(&resolved) {
+        Ok(value) => value,
+        Err(error) => return Err(Outcome::Error(error)),
+    };
+
+    let (resolution, _) = match resolution(&resolved.formal_name, &template, &config) {
+        Ok(value) => value,
+        Err(error) => return Err(Outcome::Error(error)),
+    };
+    let (configured_defaults, _) = resolution.into_flat_defaults();
+    let now = match saved.now.parse::<jiff::Zoned>() {
+        Ok(value) => value,
+        Err(error) => return Err(Outcome::Error(error.to_string())),
+    };
+    let context = match saved.invocation_context(target) {
+        Ok(value) => value,
+        Err(error) => return Err(Outcome::Error(error.to_string())),
+    };
+    let trusted = apply_environment_grant(trust, &resolved, &template);
+    let recorded = match &base_snapshot {
+        Some(snapshot) => recorded_submissions(snapshot).map_err(Outcome::Error)?,
+        None => Vec::new(),
+    };
+    let staged = to_raw_staged(&saved.submissions).map_err(Outcome::Error)?;
+
+    Ok((
+        Prepared {
+            project,
+            merge_base,
+            base_snapshot,
+            resolved,
+            template,
+            now,
+            context,
+            configured_defaults,
+            recorded,
+            trusted,
+        },
+        staged,
+    ))
+}
+
+/// A staged record's stored submissions as the interview's raw answers.
+fn to_raw_staged(
+    stored: &[IndexMap<String, Value>],
+) -> Result<Vec<IndexMap<Id, RawAnswer>>, String> {
+    stored
+        .iter()
+        .map(|submission| {
+            submission
+                .iter()
+                .map(|(key, value)| {
+                    Id::parse(key)
+                        .map(|id| (id, RawAnswer(value.clone())))
+                        .map_err(|message| format!("staged answer id {key:?}: {message}"))
+                })
+                .collect::<Result<IndexMap<_, _>, _>>()
+        })
+        .collect()
 }
 
 /// Build the snapshot inputs from a completed update interview and merge them

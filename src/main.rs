@@ -6,6 +6,7 @@ mod cli {
     pub mod templates;
 }
 mod update;
+mod update_stage;
 // ---
 // relationships:
 //   implements: architecture
@@ -229,6 +230,16 @@ enum Command {
         /// visual) for this staged interview's templates that reference them.
         #[arg(long)]
         trust: bool,
+        /// Stage an update from a base snapshot: replay its recorded answers and
+        /// ask only what the new version needs. The value is a snapshot id.
+        #[arg(long, value_name = "ID", conflicts_with = "baseline")]
+        from: Option<String>,
+        /// Stage an update from an empty base.
+        #[arg(long)]
+        baseline: bool,
+        /// Re-ask every recorded answer instead of replaying it.
+        #[arg(long, requires = "from")]
+        reanswer: bool,
     },
     /// Continue a staged interview with an answers document or terminal prompts.
     ///
@@ -506,6 +517,11 @@ enum Outcome {
     },
 }
 impl Outcome {
+    /// Whether the outcome reports a successful result document (not an error).
+    /// The staged update apply removes its record only on success.
+    pub(crate) fn is_success(&self) -> bool {
+        matches!(self, Self::Document(_, 0))
+    }
     /// Names `command` with each formal name when the template name is ambiguous.
     fn retry(self, command: impl Fn(&str) -> String) -> Self {
         match self {
@@ -1029,6 +1045,10 @@ fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome 
         Ok(None) => return Outcome::Error(guidance::nothing_staged(&path)),
         Err(e) => return Outcome::Error(e.to_string()),
     };
+    // A staged update resumes through the update replay adapter and merges.
+    if update_stage::is_staged_update(&saved) {
+        return update_stage::continue_staged(saved, &path, answers, dirs);
+    }
     let (config, registry, cwd) = match environment(dirs) {
         Ok(v) => v,
         Err(e) => return e,
@@ -1801,6 +1821,15 @@ fn run(
         Ok(v) => v,
         Err(e) => return Outcome::Error(e.to_string()),
     };
+    // `apply PATH` on a staged update resumes it through the update replay
+    // adapter and merges from the base.
+    if answers.is_none() {
+        if let Some(saved) = &existing {
+            if update_stage::is_staged_update(saved) {
+                return update_stage::apply_staged(saved.clone(), path, trust, dirs);
+            }
+        }
+    }
     let (config, registry, cwd) = match environment(dirs) {
         Ok(v) => v,
         Err(e) => return e,
@@ -2148,16 +2177,39 @@ fn main() -> ExitCode {
             path,
             r#async,
             trust,
-        } => stage(template, path.clone(), r#async.clone(), trust, &dirs)
-            .retry(|formal| {
-                Invocation::Stage {
-                    template: Arg::Given(guidance::formal_for("stage", formal)),
-                    path: &path,
-                    output: r#async.as_ref().map(|file| file.as_deref()),
-                }
-                .command()
-            })
-            .finish(),
+            from,
+            baseline,
+            reanswer,
+        } => {
+            // A staged update (`stage --from`/`--baseline`) drives the update
+            // replay adapter; a plain stage starts a fresh interview.
+            if from.is_some() || baseline {
+                let base = match from {
+                    Some(id) => update::UpdateBase::From(id),
+                    None => update::UpdateBase::Baseline,
+                };
+                return update_stage::stage(
+                    base,
+                    Some(template),
+                    &path,
+                    r#async,
+                    reanswer,
+                    trust,
+                    &dirs,
+                )
+                .finish();
+            }
+            stage(template, path.clone(), r#async.clone(), trust, &dirs)
+                .retry(|formal| {
+                    Invocation::Stage {
+                        template: Arg::Given(guidance::formal_for("stage", formal)),
+                        path: &path,
+                        output: r#async.as_ref().map(|file| file.as_deref()),
+                    }
+                    .command()
+                })
+                .finish()
+        }
         Command::Continue { path, answers } => continue_run(path, answers, &dirs).finish(),
         Command::Abort { path } => abort(path, &dirs).finish(),
         Command::Templates(args) => {

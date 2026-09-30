@@ -6,8 +6,8 @@ use indexmap::IndexMap;
 use inquire::{Confirm, Editor, MultiSelect, Select, Text};
 use serde_json::{Value, json};
 use toha::{
-    Answer, AnswerError, CheckError, Completed, Ended, Interview, Item, Prompt, PromptKind,
-    RawAnswer, RawAnswers,
+    Answer, AnswerError, CheckError, Completed, Ended, Interview, Item, Pending, Prompt,
+    PromptKind, RawAnswer, RawAnswers,
 };
 
 /// The terminal outcome of a driven interview: a normal completion, or a flow
@@ -207,6 +207,41 @@ pub(crate) fn drive<'a>(
     accepted: impl FnMut(IndexMap<String, Value>) -> Result<(), String>,
 ) -> Result<Session, String> {
     drive_to(interview, ask, accepted, &mut std::io::stdout())
+}
+
+/// Prompt one pending batch, validating each answer against the batch and
+/// re-asking on rejection, and return the accepted raw submission. The staged
+/// update person route uses this and drives the next batch through the update
+/// adapter, so that a batch the recorded answers cover is not re-prompted.
+pub(crate) fn prompt_batch(
+    pending: &Pending<'_>,
+    ask: &mut impl Ask,
+) -> Result<RawAnswers, String> {
+    let mut submission = RawAnswers::new();
+    for item in &pending.batch().items {
+        match item {
+            Item::Message(message) => println!("{message}"),
+            Item::Prompt(prompt) => {
+                if let Some(error) = pending.batch().errors.iter().find(|e| e.id == prompt.id) {
+                    print_error(&error.to_string())?;
+                }
+                loop {
+                    let value = ask_value(ask, prompt)?;
+                    match pending.check(&prompt.id, RawAnswer(value.clone())) {
+                        Ok(_) => {
+                            submission.insert(prompt.id.clone(), RawAnswer(value));
+                            break;
+                        }
+                        Err(CheckError::Rejected(rejection)) => {
+                            print_error(&rejection.to_string())?
+                        }
+                        Err(CheckError::Eval(error)) => return Err(error.to_string()),
+                    }
+                }
+            }
+        }
+    }
+    Ok(submission)
 }
 
 fn drive_to<'a>(
