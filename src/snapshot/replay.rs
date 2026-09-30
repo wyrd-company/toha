@@ -57,6 +57,12 @@ pub(crate) fn replay<'a>(
     overrides: RawAnswers,
     reanswer: bool,
 ) -> Result<Replay<'a>, EvalError> {
+    // On entry the seed carries the configured presets. They are the lowest
+    // priority: a question the base neither asked nor whose value a route
+    // overrides still takes its preset, so a new question with a preset is
+    // answered, not asked.
+    let presets = seed.defaults.clone();
+
     // A per-id queue of recorded values, in recorded order.
     let mut queue: HashMap<Id, VecDeque<RawAnswer>> = HashMap::new();
     for submission in recorded {
@@ -69,18 +75,25 @@ pub(crate) fn replay<'a>(
     for (id, raw) in &overrides {
         queue.insert(id.clone(), VecDeque::from([raw.clone()]));
     }
+    // A configured preset fills an id neither recorded nor overridden.
+    for (id, raw) in &presets {
+        queue
+            .entry(id.clone())
+            .or_insert_with(|| VecDeque::from([raw.clone()]));
+    }
 
     // The route falls back to the recorded (then overridden) values as defaults.
-    let mut defaults: IndexMap<Id, RawAnswer> = IndexMap::new();
+    // They layer over any defaults the seed already carries — the configured
+    // presets — so a question the base never answered keeps its preset while a
+    // recorded value or an override wins for its own id.
     for submission in recorded {
         for (id, raw) in submission {
-            defaults.insert(id.clone(), raw.clone());
+            seed.defaults.insert(id.clone(), raw.clone());
         }
     }
     for (id, raw) in overrides {
-        defaults.insert(id, raw);
+        seed.defaults.insert(id, raw);
     }
-    seed.defaults = defaults;
 
     let mut interview = Interview::start(template, seed)?;
     let mut submissions = Vec::new();

@@ -121,11 +121,14 @@ pub fn run_update(
 
     // 3. The frozen instant: carried from the base for `--from` so a
     //    date-rendering template stays byte-stable; the runtime instant for a
-    //    baseline.
-    let (_resolution, runtime_now) = match resolution(&resolved.formal_name, &template, &config) {
+    //    baseline. The configured defaults seed the interview so a question the
+    //    new version adds, which the base never answered, still takes its
+    //    preset; a recorded answer or an override overrides the preset below.
+    let (resolution, runtime_now) = match resolution(&resolved.formal_name, &template, &config) {
         Ok(value) => value,
         Err(error) => return Outcome::Error(error),
     };
+    let (configured_defaults, _) = resolution.into_flat_defaults();
     let now = match &base_snapshot {
         Some(snapshot) => snapshot.generated().get().clone(),
         None => runtime_now,
@@ -168,7 +171,7 @@ pub fn run_update(
     //    into the seed so an unfinished batch can still report through a record.
     let seed = Seed {
         now: now.clone(),
-        defaults: IndexMap::new(),
+        defaults: configured_defaults,
         context: context.clone(),
     };
     let driven = match drive_update(&template, seed, &recorded, overrides, reanswer) {

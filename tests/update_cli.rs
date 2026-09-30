@@ -296,6 +296,79 @@ fn a_new_required_question_is_reported_as_questions() {
 }
 
 #[test]
+fn a_configured_preset_answers_a_new_question() {
+    let iso = tempfile::tempdir().unwrap();
+    let template_dir = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    write_template(template_dir.path());
+    target_repo(target.path());
+
+    let formal = support::formal_name(template_dir.path());
+    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let env_alice = envelope(
+        iso.path(),
+        "alice.json",
+        &formal,
+        serde_json::json!({ "name": "Alice" }),
+    );
+
+    // Record a baseline with the one-question template, then commit clean.
+    let mut baseline = support::isolated_command(iso.path());
+    baseline
+        .arg("apply")
+        .arg(&address)
+        .arg(target.path())
+        .arg("--baseline")
+        .arg("--answers")
+        .arg(&env_alice);
+    let document = support::first_document(&baseline.output().unwrap().stdout);
+    let snapshot = document["snapshot"].as_str().unwrap().to_owned();
+    git(target.path(), &["add", "."]);
+    git(target.path(), &["commit", "--quiet", "-m", "baseline"]);
+
+    // The template grows a required question the base never answered, and a file
+    // that renders it.
+    std::fs::write(
+        template_dir.path().join("template.yml"),
+        "name: greeter\ndescription: A greeting\ninterview:\n  - id: name\n    type: text\n    prompt: Name\n    required: true\n  - id: color\n    type: text\n    prompt: Colour\n    required: true\n",
+    )
+    .unwrap();
+    std::fs::write(
+        template_dir.path().join("template/color.txt"),
+        "{{ color }}\n",
+    )
+    .unwrap();
+
+    // A configured default supplies the new question, so the update completes
+    // headlessly instead of asking.
+    let config_path = iso.path().join("config/toha/config.yml");
+    std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &config_path,
+        format!("template-defaults:\n  {formal:?}:\n    color: green\n"),
+    )
+    .unwrap();
+
+    let mut update = support::isolated_command(iso.path());
+    update
+        .arg("apply")
+        .arg(target.path())
+        .arg("--from")
+        .arg(&snapshot)
+        .arg("--answers")
+        .arg(&env_alice);
+    let output = update.output().unwrap();
+    assert!(output.status.success(), "update failed: {output:?}");
+    let document = support::first_document(&output.stdout);
+    assert_eq!(document["update"], "applied", "{document}");
+    assert_eq!(
+        std::fs::read_to_string(target.path().join("color.txt")).unwrap(),
+        "green\n",
+        "the configured preset must answer the new question"
+    );
+}
+
+#[test]
 fn from_an_unknown_snapshot_is_an_error() {
     let iso = tempfile::tempdir().unwrap();
     let target = tempfile::tempdir().unwrap();
