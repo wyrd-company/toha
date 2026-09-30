@@ -13,10 +13,6 @@ mod capture;
 mod merge;
 mod project;
 mod record;
-// TEMPORARY: the update replay adapter is tested but its consumer is the CLI
-// --from/--reanswer route, which lands in the next slice and removes this allow.
-// Recorded on task 1029.
-#[allow(dead_code)]
 mod replay;
 
 pub use capture::CaptureInputs;
@@ -31,3 +27,4 @@ pub use record::{
     CommitId, FrozenNow, Origin, PathOwnership, ProjectPoint, RepoPath, Revision, Snapshot,
     SnapshotDoc, SnapshotError, SnapshotId, Timestamp,
 };
+pub use replay::{Replay, replay};

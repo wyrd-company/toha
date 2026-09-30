@@ -5,6 +5,7 @@ mod cli {
     pub mod snapshots;
     pub mod templates;
 }
+mod update;
 // ---
 // relationships:
 //   implements: architecture
@@ -284,6 +285,17 @@ enum Command {
         /// Run the hooks of this template for this run.
         #[arg(long)]
         trust: bool,
+        /// Update from a base snapshot: re-render the template and merge the
+        /// difference into the target. The value is a snapshot id or id prefix.
+        #[arg(long, value_name = "ID", conflicts_with = "baseline")]
+        from: Option<String>,
+        /// Update from an empty base: merge the whole render into the target,
+        /// three-way against nothing, so unrelated local edits survive.
+        #[arg(long)]
+        baseline: bool,
+        /// Re-ask every recorded answer instead of replaying it.
+        #[arg(long, requires = "from")]
+        reanswer: bool,
     },
     /// Manage the project's update snapshots.
     Snapshots {
@@ -2050,12 +2062,25 @@ fn main() -> ExitCode {
             force,
             dry_run,
             trust,
+            from,
+            baseline,
+            reanswer,
         } => {
             let (template, path) = match paths.as_slice() {
                 [path] => (None, PathBuf::from(path)),
                 [template, path] => (Some(template.clone()), PathBuf::from(path)),
                 _ => unreachable!("clap requires one or two operands"),
             };
+            if from.is_some() || baseline {
+                let base = match from {
+                    Some(id) => update::UpdateBase::From(id),
+                    None => update::UpdateBase::Baseline,
+                };
+                return update::run_update(
+                    base, template, &path, answers, reanswer, dry_run, trust, &dirs,
+                )
+                .finish();
+            }
             run(
                 template,
                 &path,

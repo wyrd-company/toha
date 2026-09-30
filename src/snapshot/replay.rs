@@ -28,7 +28,7 @@ use crate::template::{Id, Template};
 
 /// The outcome of driving the interview from recorded submissions.
 #[allow(clippy::large_enum_variant)]
-pub(crate) enum Replay<'a> {
+pub enum Replay<'a> {
     /// The interview completed; `submissions` are the raw values actually
     /// submitted, in batch order, for the new snapshot to record.
     Completed {
@@ -50,7 +50,7 @@ pub(crate) enum Replay<'a> {
 /// route `overrides` (already verified) applied first. `seed` carries the frozen
 /// instant and context; its defaults are set here to the recorded/override
 /// values so the route falls back to them.
-pub(crate) fn replay<'a>(
+pub fn replay<'a>(
     template: &'a Template,
     mut seed: Seed,
     recorded: &[IndexMap<Id, RawAnswer>],

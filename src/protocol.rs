@@ -485,6 +485,17 @@ pub fn answer_document_once<'a>(
     }
 }
 
+/// Verify an answers envelope's identity against `expected_template` and return
+/// its raw answer map. The update route uses this to read override answers and to
+/// enforce that an update document names the base snapshot's template: the same
+/// exact-string identity check the scripted route applies, before any evaluation.
+pub fn verify_answers(
+    expected_template: &str,
+    text: &str,
+) -> Result<RawAnswers, AnswersDocumentError> {
+    parse_and_verify(expected_template, text).map(|verified| verified.raw)
+}
+
 /// The scripted route: verifies the document identity, then drives the existing
 /// multi-batch headless walk. The whole document is one submission; later batches
 /// take their defaults.

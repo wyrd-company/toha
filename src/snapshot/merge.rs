@@ -256,7 +256,6 @@ fn build_candidate(
         runner,
     )
     .map_err(|e| MergeError::Git(format!("apply: {e}")))?;
-    eprintln!("DBG after apply");
 
     // Step 6: capture the new snapshot from the checkout, then read it back.
     let id = capture::capture(
@@ -370,7 +369,12 @@ fn merge_inner(
     let head_tree = repo.head_tree().map_err(git)?.id().detach();
     let base_files = match base {
         Base::Snapshot(snapshot) => snapshot_files_tree(project, snapshot.id())?,
-        Base::Empty => gix::ObjectId::empty_tree(repo.object_hash()),
+        // Write the empty tree so the merge can read it as the base; the
+        // well-known id is otherwise not guaranteed to be present in the odb.
+        Base::Empty => repo
+            .write_object(gix::objs::Tree::empty())
+            .map_err(git)?
+            .detach(),
     };
     let new_files = snapshot_files_tree(project, new.id())?;
 
