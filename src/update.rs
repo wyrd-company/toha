@@ -131,9 +131,12 @@ pub fn run_update(
         None => runtime_now,
     };
 
-    // 4. The interview context, the same a fresh apply builds.
-    let decision =
-        EnvironmentDecision::grant_if_needed(apply_environment_grant(trust, &resolved, &template));
+    // 4. The interview context, the same a fresh apply builds. Trust is the
+    //    preflight a fresh apply runs: an explicit `--trust`, or a current
+    //    registry approval that matches the template's live hook surface, so an
+    //    established approval runs the update's hooks without `--trust`.
+    let trusted = apply_environment_grant(trust, &resolved, &template);
+    let decision = EnvironmentDecision::grant_if_needed(trusted);
     let context = match build_context(&target, &resolved, &template, decision, false) {
         Ok(value) => value,
         Err(error) => return Outcome::Error(error),
@@ -243,10 +246,7 @@ pub fn run_update(
         generated,
         submissions: submissions.into_iter().map(raw_to_values).collect(),
     };
-    let options = MergeOptions {
-        trusted: trust,
-        dry_run,
-    };
+    let options = MergeOptions { trusted, dry_run };
 
     match merge_apply(
         &project,
