@@ -2674,31 +2674,17 @@ mod report_tests {
     }
 
     #[test]
-    fn a_report_write_failure_preserves_the_committed_result_and_does_not_panic() {
-        // A merge has committed (files, index, and the snapshot ref are written)
-        // and its result document is about to be reported. A broken pipe at the
-        // reporting output boundary must surface as an error — never a panic —
-        // and must leave the committed result, index, worktree, and ref intact:
-        // the reporting boundary holds no repository handle and mutates nothing.
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        git(root, &["init", "-q", "-b", "main"]);
-        std::fs::write(root.join("greeting.txt"), b"Hello sample-value\n").unwrap();
-        git(root, &["add", "-A"]);
-        git(root, &["commit", "-q", "-m", "apply update"]);
-        let head = git(root, &["rev-parse", "HEAD"]);
-        // A committed snapshot ref, as a successful update saves.
-        git(
-            root,
-            &["update-ref", "refs/toha/snapshots/01J9Z8XR7Q", &head],
-        );
-
-        // The committed result/index/worktree/ref, captured before reporting.
-        let file_before = std::fs::read(root.join("greeting.txt")).unwrap();
-        let index_before = std::fs::read(root.join(".git/index")).unwrap();
-        let head_before = git(root, &["rev-parse", "HEAD"]);
-
-        // The result document of a successful update.
+    fn a_report_write_failure_surfaces_an_error_and_never_panics() {
+        // The reporting boundary renders the result document; a broken pipe (or
+        // any output error) there must surface as an error, never a panic and
+        // never a silent swallow. This is the one real kill on this seam
+        // (mutation M26: reintroducing the panicking `println!` makes render stop
+        // honouring the injected writer, so the result is no longer an error).
+        // That the committed repository cannot be touched is proved structurally
+        // by render's signature — render(self, out, err) takes an `Outcome` of
+        // owned strings/JSON and holds no repository handle — and, against a real
+        // committed update, by
+        // `a_real_committed_update_survives_a_report_write_failure`.
         let outcome = Outcome::Document(
             serde_json::json!({
                 "protocol": 1,
@@ -2708,8 +2694,141 @@ mod report_tests {
             }),
             0,
         );
+        let mut err = Vec::new();
+        let result = outcome.render(&mut FailingWriter, &mut err);
+        assert!(
+            result.is_err(),
+            "a broken pipe at the report boundary surfaces as an error, not a panic"
+        );
+    }
 
-        // Rendering to a failing writer surfaces the io error (no panic, no swallow).
+    #[test]
+    fn a_real_committed_update_survives_a_report_write_failure() {
+        // The actual-state proof for finding 3: drive a genuine committed update
+        // through the same library merge the CLI uses, then render its real
+        // result document through the same reporting boundary with a failing
+        // writer. The exact worktree bytes, the raw on-disk index, and the FULL
+        // snapshot ref-map — captured from the real update before the report —
+        // must be byte-identical after the report fails.
+        use indexmap::IndexMap;
+        use toha::interview::{Interview, Seed};
+        use toha::snapshot::{
+            Base, FrozenNow, MergeOptions, Merged, Project, Revision, SnapshotInputs,
+        };
+        use toha::template::{Id, Template};
+        use toha::{RawAnswer, RawAnswers};
+
+        // A template with one required question and one rendered file.
+        let tdir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tdir.path().join("template")).unwrap();
+        std::fs::write(
+            tdir.path().join("template.yml"),
+            "name: greeter\ndescription: d\ninterview:\n  - id: name\n    type: text\n    prompt: Name\n    required: true\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tdir.path().join("template/greeting.txt"),
+            "Hello {{ name }}\n",
+        )
+        .unwrap();
+        let template = Template::load(tdir.path()).unwrap();
+
+        // A committed git target.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git(root, &["init", "-q", "-b", "main"]);
+        std::fs::write(root.join("seed.txt"), b"seed\n").unwrap();
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-q", "-m", "seed"]);
+
+        // Complete the interview with the one answer.
+        let target = toha::staging::canonical_target(root).unwrap();
+        let seed = Seed {
+            now: "2026-03-14T09:26:53+00:00[UTC]".parse().unwrap(),
+            defaults: IndexMap::new(),
+            context: toha::context::InvocationContext::for_target(target.clone()),
+        };
+        let mut raw = RawAnswers::new();
+        raw.insert(
+            Id::parse("name").unwrap(),
+            RawAnswer(serde_json::json!("sample-value")),
+        );
+        let completed = match Interview::start(&template, seed).unwrap() {
+            Interview::Asking(pending) => match pending.answer(raw).unwrap() {
+                Interview::Complete(completed) => completed,
+                other => panic!("the one required question was answered: {other:?}"),
+            },
+            other => panic!("the template asks its required question: {other:?}"),
+        };
+
+        // A real committed baseline update: merge_apply writes the worktree, the
+        // index, and the snapshot ref, exactly as the CLI update route does.
+        let mut submission = IndexMap::new();
+        submission.insert(
+            Id::parse("name").unwrap(),
+            serde_json::json!("sample-value"),
+        );
+        let project = Project::open(&target).unwrap().unwrap();
+        let merged = toha::snapshot::merge_apply(
+            &project,
+            Base::Empty,
+            &template,
+            &completed,
+            SnapshotInputs {
+                template: "forge:demo/greeter@stable".to_owned(),
+                revision: Revision::Unversioned,
+                generated: FrozenNow::new(completed.now.clone()),
+                submissions: vec![submission],
+            },
+            MergeOptions {
+                trusted: true,
+                dry_run: false,
+            },
+            &toha::hook::ProcessRunner,
+        )
+        .unwrap();
+        let Merged::Written {
+            snapshot, changes, ..
+        } = merged
+        else {
+            panic!("a baseline merge writes: {merged:?}");
+        };
+        assert!(
+            !changes.is_empty(),
+            "the baseline merge added the rendered file"
+        );
+
+        // The real result document, built as the update route builds it.
+        let outcome = Outcome::Document(
+            serde_json::json!({
+                "protocol": 1,
+                "status": "applied",
+                "snapshot": { "id": snapshot.to_string() },
+                "merge": { "changes": [], "conflicted": [] }
+            }),
+            0,
+        );
+
+        // The exact committed state, captured from the real update before report.
+        let refmap = |root: &std::path::Path| {
+            git(
+                root,
+                &[
+                    "for-each-ref",
+                    "--format=%(refname) %(objectname)",
+                    "refs/toha/snapshots/",
+                ],
+            )
+        };
+        let file_before = std::fs::read(root.join("greeting.txt")).unwrap();
+        let index_before = std::fs::read(root.join(".git/index")).unwrap();
+        let refmap_before = refmap(root);
+        assert!(
+            refmap_before.contains(&snapshot.to_string()),
+            "the update saved its snapshot ref: {refmap_before}"
+        );
+
+        // Reporting to a failing writer surfaces the error (no panic, no swallow).
         let mut err = Vec::new();
         let result = outcome.render(&mut FailingWriter, &mut err);
         assert!(
@@ -2717,26 +2836,21 @@ mod report_tests {
             "a broken pipe at the report boundary surfaces as an error"
         );
 
-        // The committed result/index/worktree/ref are untouched by the report path.
+        // The real committed result is byte-identical after the failed report.
         assert_eq!(
             std::fs::read(root.join("greeting.txt")).unwrap(),
             file_before,
-            "the committed worktree file is preserved"
+            "the committed worktree is preserved"
         );
         assert_eq!(
             std::fs::read(root.join(".git/index")).unwrap(),
             index_before,
-            "the committed index is preserved"
+            "the raw on-disk index is preserved"
         );
         assert_eq!(
-            git(root, &["rev-parse", "HEAD"]),
-            head_before,
-            "HEAD preserved"
-        );
-        let refs = git(root, &["for-each-ref", "refs/toha/snapshots/"]);
-        assert!(
-            refs.contains("01J9Z8XR7Q"),
-            "the committed snapshot ref is preserved: {refs}"
+            refmap(root),
+            refmap_before,
+            "the full snapshot ref-map is preserved"
         );
     }
 
