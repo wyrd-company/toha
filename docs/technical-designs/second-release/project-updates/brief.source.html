@@ -1,580 +1,329 @@
 <section id="title">
-  <p class="kicker">Toha 0.2.0 · Design checkpoint</p>
+  <p class="kicker">Toha 0.2.0 · Design checkpoint · revision 3</p>
   <h1>Keep generated projects up to date</h1>
   <p>
-    When a template improves, a project made from it can take the improvement
-    without losing the changes its owner made.
+    Every apply saves a snapshot of what it wrote. Later, an apply from that
+    snapshot merges the template's new version into the project the way
+    <code>git merge</code> would.
   </p>
   <p>
     <span class="tag">design only</span>
-    <span class="tag warn">9 decisions need approval</span>
-    <span class="tag warn">1 capability restriction disclosed</span>
+    <span class="tag warn">4 decisions need approval</span>
+    <span class="tag warn">4 disclosures need approval</span>
   </p>
 </section>
 
 <section id="task">
   <h2>Task</h2>
   <p>
-    Design <code>toha update</code>: bring a generated project from template
-    version A to version B, keep the owner's edits, and show a clear conflict
-    when both changed the same lines.
+    Let a project made from a template take the template's later versions
+    without losing its owner's edits, using git and the owner's own git habits.
   </p>
   <div class="two">
     <div>
       <p><strong>Today</strong></p>
       <ul>
-        <li>Toha writes files and forgets.</li>
-        <li>Nothing in the project says which template or answers made it.</li>
-        <li>The only way to take a template change is <code>--force</code>, which overwrites every edit.</li>
+        <li>Apply writes files and remembers nothing.</li>
+        <li>A newer template can only overwrite the project (<code>--force</code>).</li>
       </ul>
     </div>
     <div>
-      <p><strong>Designed</strong></p>
+      <p><strong>With this design</strong></p>
       <ul>
-        <li>Every apply leaves a small record in the project.</li>
-        <li><code>toha update</code> redoes the template at the new version with the same answers.</li>
-        <li>It merges line by line, the way git merges branches.</li>
+        <li>Every apply in a clean git target saves a snapshot.</li>
+        <li><code>toha apply TEMPLATE PATH --from SNAPSHOT</code> merges the new version in.</li>
+        <li>Conflicts look exactly like a <code>git merge</code> conflict.</li>
       </ul>
     </div>
   </div>
 </section>
 
-<section id="how">
-  <h2>How the merge works</h2>
-  <p>For every file Toha made, it compares three versions:</p>
-  <table>
-    <thead><tr><th>Version</th><th>Where it comes from</th></tr></thead>
-    <tbody>
-      <tr><td><strong>Base</strong>: what Toha wrote last time</td><td>The template at version A, with the recorded answers</td></tr>
-      <tr><td><strong>Yours</strong>: the file now</td><td>The project on disk, with the owner's edits</td></tr>
-      <tr><td><strong>New</strong>: what Toha would write now</td><td>The template at version B, with the same answers</td></tr>
-    </tbody>
-  </table>
-  <ul>
-    <li>Only the template changed: take the new version.</li>
-    <li>Only you changed it: keep yours.</li>
-    <li>Both changed different lines: combine both.</li>
-    <li>Both changed the same lines: <strong>conflict</strong>. Nothing is written unless you ask for conflict markers.</li>
-  </ul>
-</section>
-
-<section id="walkthrough">
-  <section id="walk-record">
-    <h2>Walkthrough: the record</h2>
-    <div class="two">
-      <div>
-        <p><strong>Project before this design</strong></p>
-        <pre><code class="language-sh">sample-service/
-├── README.md
-├── config/app.toml
-└── src/app.txt</code></pre>
-      </div>
-      <div>
-        <p><strong>Project after an apply</strong></p>
-        <pre><code class="language-sh">sample-service/
-├── .toha/applied/
-│   └── receipt-5e1d0c7a.json
-├── README.md
-├── config/app.toml
-└── src/app.txt</code></pre>
-      </div>
-    </div>
-    <p>
-      The record is committed with the project, so it survives clone, copy, and
-      move. There is one small file per template used in the project.
-    </p>
+<section id="outcome">
+  <section id="outcome-scenario">
+    <h2>Acceptance scenario (agreed)</h2>
+    <ol>
+      <li>An operator applies version A in a clean git repo and commits; Toha reports snapshot S1; they push the branch and S1.</li>
+      <li>They edit <code>README.md</code> on lines version B also changes.</li>
+      <li>A teammate clones, runs <code>toha init</code>, fetches; <code>toha snapshots list</code> marks S1 as the likely base.</li>
+      <li><code>toha apply …@B . --from S1</code>: <code>src/app.txt</code> updated, <code>src/health.txt</code> added, <code>README.md</code> conflicted (<code>git status</code> shows <code>UU</code>); new snapshot S2.</li>
+      <li>They resolve, commit, push S2. The same command from S2 says "already at B" and changes nothing.</li>
+    </ol>
   </section>
-  <section id="walk-dry-run">
-    <h2>Walkthrough: preview an update</h2>
-    <pre><code class="language-plaintext">$ toha update ./sample-service --dry-run
-receipt: 3f9a1c2 -> 8be0d41
-update   src/app.txt        (whole)                # template changed, you did not
-merge    README.md          (whole)                # both changed, lines combine
-update   config/app.toml    (region features)      # the template's block changed
-converge package.json       (value scripts.build)  # value set back to the template's
-add      src/health.txt     (whole)                # new in the template
-retract  docs/legacy.md     (whole)                # dropped, you never edited it
-release  notes/todo.md      (whole)                # dropped, you edited it: now yours
-conflict src/routes.txt     (whole, 2 hunks)       # both changed the same lines</code></pre>
-    <p class="muted">Text after <code>#</code> explains each line; it is not part of the output.</p>
-    <p class="muted">Toha never deletes a file its owner edited.</p>
+  <section id="outcome-how">
+    <h2>How an update works</h2>
+    <svg viewBox="0 0 900 300" width="100%" role="img" aria-label="Old snapshot and new snapshot merged onto the project at HEAD">
+      <rect x="20" y="30" width="220" height="70" rx="8" fill="none" stroke="currentColor"/>
+      <text x="130" y="60" text-anchor="middle" font-size="20" fill="currentColor">Base snapshot S1</text>
+      <text x="130" y="85" text-anchor="middle" font-size="15" fill="currentColor">what version A wrote</text>
+      <rect x="20" y="200" width="220" height="70" rx="8" fill="none" stroke="currentColor"/>
+      <text x="130" y="230" text-anchor="middle" font-size="20" fill="currentColor">Project at HEAD</text>
+      <text x="130" y="255" text-anchor="middle" font-size="15" fill="currentColor">the operator's side</text>
+      <rect x="330" y="30" width="240" height="70" rx="8" fill="none" stroke="currentColor"/>
+      <text x="450" y="60" text-anchor="middle" font-size="20" fill="currentColor">New snapshot S2</text>
+      <text x="450" y="85" text-anchor="middle" font-size="15" fill="currentColor">version B, in a throwaway copy</text>
+      <rect x="650" y="115" width="230" height="80" rx="8" fill="none" stroke="currentColor" stroke-width="2"/>
+      <text x="765" y="148" text-anchor="middle" font-size="20" fill="currentColor">Three-way merge</text>
+      <text x="765" y="173" text-anchor="middle" font-size="15" fill="currentColor">files + git index, uncommitted</text>
+      <line x1="240" y1="65" x2="330" y2="65" stroke="currentColor" stroke-dasharray="6 4"/>
+      <text x="285" y="55" text-anchor="middle" font-size="13" fill="currentColor">built from</text>
+      <line x1="240" y1="95" x2="650" y2="150" stroke="currentColor"/>
+      <text x="420" y="138" font-size="14" fill="currentColor">base</text>
+      <line x1="570" y1="80" x2="650" y2="130" stroke="currentColor"/>
+      <text x="600" y="120" font-size="14" fill="currentColor">theirs</text>
+      <line x1="240" y1="235" x2="650" y2="175" stroke="currentColor"/>
+      <text x="430" y="225" font-size="14" fill="currentColor">ours</text>
+    </svg>
+    <p class="muted">Snapshots live under <code>refs/toha/snapshots/&lt;id&gt;</code>: parentless commits, not branches, invisible in the project's history.</p>
   </section>
-  <section id="walk-conflict">
-    <h2>Walkthrough: a conflict</h2>
-    <div class="two">
-      <div>
-        <p><strong>Default: nothing written</strong></p>
-        <pre><code class="language-sh">$ toha update ./sample-service
-conflicting changes, nothing written:
-  src/routes.txt (whole, 2 hunks)
-to write git-style conflict markers:
-  toha update --on-conflict markers ./sample-service</code></pre>
-      </div>
-      <div>
-        <p><strong>With markers: resolve by hand</strong></p>
-        <pre><code class="language-sh">&lt;&lt;&lt;&lt;&lt;&lt;&lt; operator
-route /orders  -> handler_v2
-||||||| toha 3f9a1c2
-route /orders  -> handler
-=======
-route /orders  -> orders_handler
-&gt;&gt;&gt;&gt;&gt;&gt;&gt; toha 8be0d41</code></pre>
-      </div>
-    </div>
-    <p>
-      The next update refuses while markers remain, so unresolved markers are
-      never merged in as content.
-    </p>
-  </section>
-</section>
-
-<section id="ownership">
-  <section id="own-kinds">
-    <h2>Three kinds of ownership, three rules</h2>
+  <section id="outcome-commands">
+    <h2>Commands</h2>
     <table>
-      <thead><tr><th>Toha owns</th><th>Example</th><th>On update</th></tr></thead>
+      <thead><tr><th>Command</th><th>What it does</th></tr></thead>
       <tbody>
-        <tr><td>A whole file</td><td><code>src/app.txt</code></td><td>Line-by-line merge with your edits</td></tr>
-        <tr><td>A marked region in your file</td><td>a block in <code>config/app.toml</code></td><td>Merge inside the region only. Text outside the markers is never touched.</td></tr>
-        <tr><td>One value in a JSON file</td><td><code>scripts.build</code> in <code>package.json</code></td><td>Set to the template's value, as injection already does. The rest of the file is untouched.</td></tr>
+        <tr><td><code>apply T P</code></td><td>As today; also saves a snapshot when the git target was clean</td></tr>
+        <tr><td><code>apply T P --from ID</code></td><td>Update from snapshot ID; asks only new questions; <code>--reanswer</code> revisits all</td></tr>
+        <tr><td><code>apply T P --baseline</code></td><td>Adopt a project that has no snapshot (merge against nothing)</td></tr>
+        <tr><td><code>snapshots list</code></td><td>Snapshots with template version, project commit, branch; marks the likely base</td></tr>
+        <tr><td><code>snapshots clean</code></td><td>Pick snapshots to remove; <code>--keep N</code>; JSON for agents</td></tr>
+        <tr><td><code>init</code></td><td>Adds the git fetch setting so clones receive snapshots</td></tr>
       </tbody>
     </table>
-    <p class="muted">
-      These rules come from the approved content-injection design. Update keeps
-      them; it does not treat a region or a JSON value as a whole file.
-    </p>
-  </section>
-  <section id="own-region">
-    <h2>Region example</h2>
-    <div class="two">
-      <div>
-        <p><strong>Before update</strong></p>
-        <pre><code class="language-ini">[application]
-# >>> toha:region features >>>
-analytics_enabled = true
-# <<< toha:end features sha256:a7f3… <<<
-name = "sample-service"</code></pre>
-      </div>
-      <div>
-        <p><strong>After update (template adds a line)</strong></p>
-        <pre><code class="language-ini">[application]
-# >>> toha:region features >>>
-analytics_enabled = true
-analytics_sample_rate = 0.1
-# <<< toha:end features sha256:5c02… <<<
-name = "sample-service"</code></pre>
-      </div>
-    </div>
-    <p>The owner's <code>name</code> line outside the markers stays as it is.</p>
-  </section>
-  <section id="own-removed">
-    <h2>When the template drops something</h2>
-    <table>
-      <thead><tr><th>Dropped item</th><th>Owner did not edit it</th><th>Owner edited it</th></tr></thead>
-      <tbody>
-        <tr><td>Whole file</td><td>Deleted</td><td>Kept; Toha stops owning it</td></tr>
-        <tr><td>Region</td><td>Markers and text removed</td><td>Markers removed, text kept</td></tr>
-        <tr><td>JSON value</td><td>Key removed</td><td>Value kept</td></tr>
-      </tbody>
-    </table>
-    <p>
-      A deletion needs proof that Toha really wrote that content, so an edited
-      or forged record can never cause data loss.
-    </p>
+    <p class="muted">Toha never commits, pushes, fetches, or runs <code>git init</code>. It prints the <code>git push</code> line for each snapshot.</p>
   </section>
 </section>
 
-<section id="adoption">
-  <h2>Projects made before this feature</h2>
-  <div class="two">
-    <div>
-      <p><strong>No record: update refuses</strong></p>
-      <pre><code class="language-sh">$ toha update ./old-service
-./old-service has no applied record
-to adopt it: toha adopt TEMPLATE ./old-service</code></pre>
-    </div>
-    <div>
-      <p><strong>Adopt once, then update</strong></p>
-      <pre><code class="language-sh">$ toha adopt forge:catalog/receipt@stable \
-    ./old-service --at 3f9a1c2
-? Label: Sample
-matches  src/app.txt
-differs  README.md
-recorded .toha/applied/receipt-5e1d0c7a.json</code></pre>
-    </div>
-  </div>
-  <p>
-    Adopt asks the questions again and writes only the record. It never changes
-    the project's files. Differences count as the owner's edits.
-  </p>
+<section id="decisions">
+  <section id="decisions-needed">
+    <h2>Decisions needed first</h2>
+    <ol>
+      <li class="fragment"><strong>Owned content merges by line.</strong> An injected region or JSON value merges like the rest of the file: overlapping edits conflict, separate edits both apply. <em>Recommended.</em> Alternative: Toha's value always wins, silently.</li>
+      <li class="fragment"><strong>Dates stay put.</strong> Every render uses the date of the first snapshot, so a rendered date does not change at each update. <em>Recommended.</em></li>
+      <li class="fragment"><strong>No git drivers.</strong> Toha never runs git merge or filter programs (for example git-lfs); such paths are reported as conflicts and left as the operator has them. <em>Recommended.</em> Alternative: run them as git does, which starts external programs.</li>
+      <li class="fragment"><strong>Hook files carried forward.</strong> A file a hook rewrote unchanged is kept, not deleted. Cost: a file a hook stops making is never removed by an update. <em>Recommended.</em></li>
+    </ol>
+  </section>
+  <section id="disclosures">
+    <h2>Disclosures (each needs explicit approval)</h2>
+    <ul>
+      <li><strong>New effect on apply:</strong> every apply in a clean git target writes git objects and one ref under <code>refs/toha/snapshots/</code>. No branch, index, HEAD, or remote is touched.</li>
+      <li><strong>New effect on update:</strong> <code>--from</code> and <code>--baseline</code> write the git index (merged entries and conflict stages), as <code>git merge</code> does.</li>
+      <li><strong>Git config:</strong> <code>toha init</code>, when run, adds one fetch setting to the repo's local config.</li>
+      <li><strong>Dependency:</strong> two more features of the existing <code>gix</code> 0.87.1 (<code>merge</code>, <code>status</code>), adding <code>gix-merge</code>, <code>gix-imara-diff</code>, <code>gix-status</code>, <code>gix-dir</code> from <a href="https://github.com/GitoxideLabs/gitoxide">gitoxide</a>.</li>
+      <li class="muted">No new permission, timeout, pinned-version check, or subprocess. No capability is removed.</li>
+    </ul>
+  </section>
+  <section id="decided">
+    <h2>Already decided with Bob</h2>
+    <ul>
+      <li>Git required for updates; no <code>update</code> command; the user picks the base snapshot.</li>
+      <li>No upgrade/downgrade labels; clean target required; Toha never commits.</li>
+      <li>Hooks run only in a throwaway checkout; non-file hook effects are not Toha's concern.</li>
+      <li>Snapshots are parentless with stable time-ordered ids; the user shares them with git.</li>
+      <li>All three caller routes; monorepo targets scoped to their directory.</li>
+    </ul>
+  </section>
 </section>
 
 <section id="pre-mortem">
   <h2>Pre-mortem: why this could fail</h2>
-  <table>
-    <thead><tr><th>Failure</th><th>What prevents it</th></tr></thead>
-    <tbody>
-      <tr><td>Answers replay differently, so the old version cannot be rebuilt</td><td>Record the raw answers exactly as staging does; drop answers for removed questions; freeze the time value</td></tr>
-      <tr><td>A bad record deletes the owner's files</td><td>Delete only when the rebuilt old version proves Toha wrote it</td></tr>
-      <tr><td>The old template version is gone upstream</td><td>Safe mode: detect edits, never delete, refuse unclear merges</td></tr>
-      <tr><td>A crash leaves files new but the record old</td><td>Record written last; rerunning finishes the job</td></tr>
-      <tr><td>Dates in files change on every update</td><td>The first apply's time is reused</td></tr>
-      <tr><td>The merge library starts another program</td><td>Only the built-in text merge function is called; a test fails if a process starts</td></tr>
-    </tbody>
-  </table>
+  <ul>
+    <li class="fragment"><strong>An operator edit is lost.</strong> Guarded by git merge rules, index conflict stages, a re-check under the index lock, rollback, and never deleting a file Toha only edits inside.</li>
+    <li class="fragment"><strong>Wrong base.</strong> The user picks it; Toha marks the likely one and refuses a snapshot of another template or directory.</li>
+    <li class="fragment"><strong>Teammates never get snapshots.</strong> Refs are not fetched by default; <code>toha init</code> and printed push lines make it one step each.</li>
+    <li class="fragment"><strong>gitoxide cannot do a step in process.</strong> The spike proved every step; removing git drivers in memory is the one unproven point and the first implementation check.</li>
+    <li class="fragment"><strong>Replaying answers breaks on a changed interview.</strong> A dedicated replay adapter handles new, removed, rejected, and looped questions.</li>
+  </ul>
 </section>
 
-<section id="module-seam">
+<section id="seams">
   <h2>Module and seam</h2>
-  <svg viewBox="0 0 1100 430" font-family="-apple-system, Segoe UI, sans-serif" width="100%" height="430" role="img" aria-label="Module diagram">
-    <defs><marker id="h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="#71717a"/></marker></defs>
-    <rect fill="#161616" stroke="#52525b" stroke-width="1.5" x="380" y="10" width="340" height="60" rx="8"/>
-    <text font-size="17" fill="#e5e5e5" x="550" y="37" text-anchor="middle">Commands: apply · update · adopt</text>
-    <text font-size="14" fill="#a3a3a3" x="550" y="58" text-anchor="middle">parse input, pick the route, print results</text>
-    <rect fill="#10281f" stroke="#34d399" stroke-width="2" x="330" y="120" width="440" height="130" rx="8"/>
-    <text font-size="17" fill="#e5e5e5" x="550" y="148" text-anchor="middle">NEW: project module</text>
-    <text font-size="14" fill="#a3a3a3" x="550" y="175" text-anchor="middle">record — read and check the record, write it last</text>
-    <text font-size="14" fill="#a3a3a3" x="550" y="198" text-anchor="middle">update — rebuild old, build new, merge per item</text>
-    <text font-size="14" fill="#a3a3a3" x="550" y="221" text-anchor="middle">adopt — build once, write only the record</text>
-    <rect fill="#161616" stroke="#52525b" stroke-width="1.5" x="20" y="310" width="240" height="100" rx="8"/>
-    <text font-size="17" fill="#e5e5e5" x="140" y="340" text-anchor="middle">Planner + injection</text>
-    <text font-size="14" fill="#a3a3a3" x="140" y="365" text-anchor="middle">render a version; list</text>
-    <text font-size="14" fill="#a3a3a3" x="140" y="385" text-anchor="middle">what Toha owns (unchanged)</text>
-    <rect fill="#161616" stroke="#52525b" stroke-width="1.5" x="290" y="310" width="240" height="100" rx="8"/>
-    <text font-size="17" fill="#e5e5e5" x="410" y="340" text-anchor="middle">Interview + staging</text>
-    <text font-size="14" fill="#a3a3a3" x="410" y="365" text-anchor="middle">replay recorded answers</text>
-    <text font-size="14" fill="#a3a3a3" x="410" y="385" text-anchor="middle">(engine unchanged)</text>
-    <rect fill="#161616" stroke="#52525b" stroke-width="1.5" x="560" y="310" width="240" height="100" rx="8"/>
-    <text font-size="17" fill="#e5e5e5" x="680" y="340" text-anchor="middle">Apply</text>
-    <text font-size="14" fill="#a3a3a3" x="680" y="365" text-anchor="middle">safe file replace;</text>
-    <text font-size="14" fill="#a3a3a3" x="680" y="385" text-anchor="middle">trusted hooks (unchanged)</text>
-    <rect fill="#10281f" stroke="#34d399" stroke-width="2" x="830" y="310" width="250" height="100" rx="8"/>
-    <text font-size="17" fill="#e5e5e5" x="955" y="340" text-anchor="middle">gitoxide merge</text>
-    <text font-size="14" fill="#a3a3a3" x="955" y="365" text-anchor="middle">in-process text merge</text>
-    <text font-size="14" fill="#a3a3a3" x="955" y="385" text-anchor="middle">(feature of existing dependency)</text>
-    <path stroke="#71717a" stroke-width="1.5" fill="none" marker-end="url(#h)" d="M550,70 L550,118"/>
-    <path stroke="#71717a" stroke-width="1.5" fill="none" marker-end="url(#h)" d="M420,250 L160,308"/>
-    <path stroke="#71717a" stroke-width="1.5" fill="none" marker-end="url(#h)" d="M500,250 L420,308"/>
-    <path stroke="#71717a" stroke-width="1.5" fill="none" marker-end="url(#h)" d="M600,250 L670,308"/>
-    <path stroke="#71717a" stroke-width="1.5" fill="none" marker-end="url(#h)" d="M700,250 L930,308"/>
+  <svg viewBox="0 0 900 320" width="100%" role="img" aria-label="CLI calls the new snapshot module, which consumes plan, apply, interview and gitoxide">
+    <rect x="260" y="10" width="380" height="50" rx="8" fill="none" stroke="currentColor"/>
+    <text x="450" y="42" text-anchor="middle" font-size="18" fill="currentColor">CLI: apply · stage · snapshots · init</text>
+    <rect x="200" y="100" width="500" height="100" rx="8" fill="none" stroke="currentColor" stroke-width="2"/>
+    <text x="450" y="128" text-anchor="middle" font-size="19" fill="currentColor">snapshot/ (new)</text>
+    <text x="450" y="155" text-anchor="middle" font-size="14" fill="currentColor">project · record · replay · capture · merge</text>
+    <text x="450" y="178" text-anchor="middle" font-size="14" fill="currentColor">the only code that names gitoxide's repo, status, merge, index</text>
+    <rect x="20" y="245" width="200" height="60" rx="8" fill="none" stroke="currentColor"/>
+    <text x="120" y="272" text-anchor="middle" font-size="15" fill="currentColor">plan · interview</text>
+    <text x="120" y="292" text-anchor="middle" font-size="12" fill="currentColor">unchanged</text>
+    <rect x="250" y="245" width="200" height="60" rx="8" fill="none" stroke="currentColor"/>
+    <text x="350" y="272" text-anchor="middle" font-size="15" fill="currentColor">apply · inject</text>
+    <text x="350" y="292" text-anchor="middle" font-size="12" fill="currentColor">crate-private seams</text>
+    <rect x="480" y="245" width="200" height="60" rx="8" fill="none" stroke="currentColor"/>
+    <text x="580" y="272" text-anchor="middle" font-size="15" fill="currentColor">hooks · trust</text>
+    <text x="580" y="292" text-anchor="middle" font-size="12" fill="currentColor">unchanged</text>
+    <rect x="710" y="245" width="170" height="60" rx="8" fill="none" stroke="currentColor"/>
+    <text x="795" y="272" text-anchor="middle" font-size="15" fill="currentColor">gix + merge, status</text>
+    <text x="795" y="292" text-anchor="middle" font-size="12" fill="currentColor">in process</text>
+    <line x1="450" y1="60" x2="450" y2="100" stroke="currentColor"/>
+    <line x1="300" y1="200" x2="120" y2="245" stroke="currentColor"/>
+    <line x1="400" y1="200" x2="350" y2="245" stroke="currentColor"/>
+    <line x1="500" y1="200" x2="580" y2="245" stroke="currentColor"/>
+    <line x1="600" y1="200" x2="795" y2="245" stroke="currentColor"/>
   </svg>
-  <p class="muted">New: the project module, and gitoxide's merge feature. Everything else is reused unchanged. A command reaches a written file through three source files.</p>
+  <p class="muted">Crate-private additions: the update replay adapter, a destination seam in <code>apply.rs</code> (apply a plan into the throwaway copy or in memory), and retraction helpers in the injection module.</p>
 </section>
 
-<section id="public-interfaces">
+<section id="interface">
   <section id="pi-cli">
     <h2>Public interfaces: commands</h2>
-    <table>
-      <thead><tr><th>Who</th><th>Command</th><th>Result</th></tr></thead>
-      <tbody>
-        <tr><td>Person</td><td><code>toha update PATH</code></td><td>Asks only questions the new version needs; lists changes</td></tr>
-        <tr><td>Script, agent</td><td><code>toha update --answers FILE PATH</code></td><td>One JSON result for every outcome</td></tr>
-        <tr><td>Person</td><td><code>toha adopt TEMPLATE PATH</code></td><td>Asks the questions; writes the record only</td></tr>
-        <tr><td>Script, agent</td><td><code>toha adopt --answers FILE TEMPLATE PATH</code></td><td>One JSON result</td></tr>
-        <tr><td>Everyone</td><td><code>toha apply …</code> (existing)</td><td>Now also writes the record</td></tr>
-      </tbody>
-    </table>
-    <p>Options for <code>update</code>:</p>
-    <ul>
-      <li><code>--dry-run</code> and <code>--trust</code>, as for <code>apply</code></li>
-      <li><code>--on-conflict refuse</code> (default) or <code>--on-conflict markers</code></li>
-      <li><code>--to COMMIT</code> and <code>--template NAME</code> to pick the version and the template</li>
-    </ul>
-    <p class="muted">Exit codes keep today's meanings: 0, 1, 3, 4, 5.</p>
+    <pre><code class="language-sh">toha apply TEMPLATE PATH [--from ID | --baseline] [--reanswer] [--answers FILE] [--dry-run] [--trust]
+toha stage TEMPLATE PATH [--from ID | --baseline] [--reanswer] --async
+toha snapshots list  [PATH] [--json]
+toha snapshots clean [PATH] [--keep N] [--remove FILE] [--force]
+toha init [PATH] [--remote NAME]</code></pre>
+    <p>Scripted results reuse <code>applied</code>, <code>planned</code>, <code>questions</code>, <code>ended</code>, <code>error</code>; <code>applied</code> gains <code>snapshot</code> and <code>merge</code>. Exits: 0 ok, 1 refused or conflicted, 3 untrusted, 4 questions.</p>
   </section>
-  <section id="pi-crate">
+  <section id="pi-crate" class="scrollable">
     <h2>Public interfaces: Rust crate</h2>
-    <pre><code class="language-rust">// toha::project
-ProjectRecord::open(&amp;CanonicalTarget) -&gt; Result&lt;Option&lt;ProjectRecord&gt;, RecordError&gt;
-ProjectRecord::application(&amp;self, Option&lt;&amp;str&gt;) -&gt; Result&lt;&amp;Application, UpdateError&gt;
-ProjectRecord::begin_update(&amp;self, app, base: Option&lt;&amp;Template&gt;, next: &amp;Template,
-                            next_revision: Revision, context: InvocationContext)
-    -&gt; Result&lt;Begun, UpdateError&gt;
-Begun::with_document(self, text: &amp;str) -&gt; Result&lt;Begun, SubmitDocumentError&gt;
-Begun::plan(self, completed: Completed) -&gt; Result&lt;UpdatePlan, UpdateError&gt;
-UpdatePlan::changes(&amp;self) -&gt; &amp;[Change]
-UpdatePlan::apply(self, UpdateOptions, &amp;dyn HookRunner) -&gt; Result&lt;Updated, UpdateError&gt;
-project::apply(plan, &amp;Provenance, &amp;Completed, &amp;CanonicalTarget, ApplyOptions, runner)
-    -&gt; Result&lt;Applied, ApplyError&gt;
-project::adopt(&amp;Provenance, &amp;Template, &amp;Completed, &amp;CanonicalTarget, replace: bool)
-    -&gt; Result&lt;Adopted, AdoptError&gt;</code></pre>
-    <p class="muted">
-      Existing planner, apply, injection, interview, and staging signatures do
-      not change.
-    </p>
+    <pre><code class="language-rust">// toha::snapshot
+pub struct Project;   // open(target) -> Option&lt;Project&gt;; cleanliness; snapshots; find; likely_bases; remove; add_fetch
+pub struct Snapshot;  // id, template, source, revision, target, created, generated, project, built_from, submissions
+
+pub fn apply(plan: Plan, inputs: SnapshotInputs, project: Option&lt;&amp;Project&gt;,
+             options: ApplyOptions, runner: &amp;dyn HookRunner) -&gt; Result&lt;Applied, ApplyError&gt;;
+pub fn merge_apply(project: &amp;Project, base: Base, template: &amp;Template, completed: &amp;Completed,
+                   inputs: SnapshotInputs, options: MergeOptions, runner: &amp;dyn HookRunner)
+    -&gt; Result&lt;Merged, MergeError&gt;;   // AlreadyCurrent | NeedsTrust | Planned | Written</code></pre>
+    <p class="muted">No gitoxide type is public. <code>Plan</code>, the interview engine, and the answers-document operations keep their signatures. Crate-private: the update replay adapter, a destination seam in <code>apply.rs</code>, and retraction helpers in the injection module.</p>
   </section>
 </section>
 
-<section id="data-structures">
-  <section id="ds-record">
-    <h2>Data structures: the record file</h2>
-    <div class="two">
-      <div>
-        <pre><code class="language-json">{
-  "template": "forge:catalog/receipt@stable",
-  "commit": "3f9a1c2e8d7b…c5b4a39",
-  "generated": "2026-03-14T09:26:53+00:00[UTC]",
-  "submissions": [
-    { "label": "Sample", "quantity": 4 },
-    { "use_vcs": true }
-  ],
-  "owned": {
-    "files":   { "README.md": "sha256:9c1e…" },
-    "regions": { "config/app.toml": ["features"] },
-    "values":  { "package.json":
-                 { "scripts.build": "sha256:77f2…" } }
-  }
-}</code></pre>
-      </div>
-      <div>
-        <ul>
-          <li><strong>template, commit</strong>: which template and exact version</li>
-          <li><strong>generated</strong>: the time of the first apply, reused so dates stay stable</li>
-          <li><strong>submissions</strong>: the answers as typed, before formatting</li>
-          <li><strong>owned</strong>: what Toha owns, with fingerprints to detect edits</li>
-        </ul>
-        <p class="muted">
-          Not stored: file contents, the project's path, hook output, trust,
-          user name, or host name.
-        </p>
-      </div>
-    </div>
+<section id="data">
+  <section id="ds-snapshot">
+    <h2>Data structures: a snapshot</h2>
+    <pre><code class="language-json">refs/toha/snapshots/01JA2B8M4R…   (commit, no parent)
+  snapshot.json
+  files/…                          (output, paths relative to the target)
+
+{ "snapshot": 1, "id": "01JA2B8M4R…",
+  "template": "forge:catalog/receipt@stable", "source": "forge:catalog/receipt",
+  "commit": "8be0d41…", "target": "services/sample-service",
+  "created": "…", "generated": "…",
+  "project": { "commit": "a41c0de…", "branch": "main" },
+  "built_from": "01J9Z4K7QX…",
+  "submissions": [ { "label": "Sample" } ],
+  "paths": { "src/app.txt": { "origin": "toha" },
+             "package.json": { "origin": "edit", "values": ["scripts.build"], "regions": [] },
+             "package-lock.json": { "origin": "hook" } } }</code></pre>
   </section>
-  <section id="ds-types">
-    <h2>Data structures: Rust types</h2>
-    <pre><code class="language-rust">pub struct Application {
-    template: FormalName,
-    revision: Revision,                 // Commit(CommitId) | Unversioned
-    generated: FrozenNow,
-    submissions: Vec&lt;IndexMap&lt;Id, serde_json::Value&gt;&gt;,
-    owned: Ownership,
-}
-pub struct Ownership {
-    files:   BTreeMap&lt;TargetPath, Fingerprint&gt;,
-    regions: BTreeMap&lt;TargetPath, BTreeSet&lt;RegionKey&gt;&gt;,  // marker holds checksum
-    values:  BTreeMap&lt;TargetPath, BTreeMap&lt;JsonPath, Fingerprint&gt;&gt;,
-}
-pub enum Action { Add, Update, Merge, Converge, Retract, Release, Conflict(ConflictKind) }
-pub enum ConflictKind { Content { hunks: usize }, Binary, DeleteModify, AddAdd }
-pub enum Updated { UpToDate, Written { .. }, NeedsTrust(UpdatePlan) }</code></pre>
+  <section id="ds-rules">
+    <h2>Data structures: what a snapshot captures</h2>
+    <ul>
+      <li><strong>toha:</strong> every file the plan owns, even if unchanged.</li>
+      <li><strong>edit:</strong> files Toha edits inside, with the regions and JSON values it owns; a dropped injection is removed <em>inside</em> the file, and a file that no longer owns anything is released to the operator, never deleted.</li>
+      <li><strong>hook:</strong> files hooks created or changed; carried forward when a hook rewrites them unchanged.</li>
+      <li>Left out: untracked ignored files, submodules, changes outside the target.</li>
+      <li>Symbolic links kept as links; executable bit kept; line endings stored as <code>git add</code> would.</li>
+    </ul>
+    <p class="muted">A fetched snapshot is checked before use: no parent, only <code>snapshot.json</code> and <code>files/</code>, valid schema, paths match.</p>
   </section>
 </section>
 
-<section id="behaviors">
-  <section id="beh-1">
-    <h2>Behaviors to prove (1 of 2)</h2>
+<section id="tested">
+  <section id="tested-1">
+    <h2>Behaviors to prove (1 of 3): the merge</h2>
     <table>
-      <thead><tr><th>Test</th><th>It fails if…</th></tr></thead>
+      <thead><tr><th>Behavior</th><th>Falsified when</th></tr></thead>
       <tbody>
-        <tr><td>Version A→B with an edited file, same lines: refuse writes nothing; markers writes markers, exit 1</td><td>clean files are written during a refused conflict</td></tr>
-        <tr><td>A second update with no change writes nothing, runs no hook</td><td>the time is not frozen, or the record is rewritten</td></tr>
-        <tr><td>Dropped file: deleted if unedited, kept if edited</td><td>an edited file is deleted</td></tr>
-        <tr><td>A forged record entry cannot delete a file</td><td>deletion skips the proof check</td></tr>
-        <tr><td>A region merge changes only the region; plain apply then reports drift</td><td>the checksum covers merged owner text</td></tr>
-        <tr><td>An edited JSON value converges; comments and other keys stay</td><td>JSON values are merged three-way</td></tr>
-        <tr><td>Old version unavailable: safe mode, no deletes</td><td>safe mode deletes or merges without a base</td></tr>
+        <tr><td>The acceptance scenario across two clones</td><td>stage 2 is not the operator's bytes, <code>git commit</code> succeeds with conflicts, or the rerun changes a byte</td></tr>
+        <tr><td>One-sided changes apply; both-sided overlapping lines conflict</td><td>an operator line or template line is lost</td></tr>
+        <tr><td>Removed template file: deleted if unedited, conflict if edited</td><td>an edited file is deleted</td></tr>
+        <tr><td>Operator files no snapshot names are untouched (also at repo root)</td><td>any such byte changes</td></tr>
+        <tr><td>Dropped injection is retracted inside the file</td><td>the operator's file is deleted</td></tr>
+        <tr><td>Occupied paths, concurrent changes, write failure</td><td>anything is written, or rollback leaves a trace</td></tr>
       </tbody>
     </table>
   </section>
-  <section id="beh-2">
-    <h2>Behaviors to prove (2 of 2)</h2>
+  <section id="tested-2">
+    <h2>Behaviors to prove (2 of 3): snapshots and answers</h2>
     <table>
-      <thead><tr><th>Test</th><th>It fails if…</th></tr></thead>
+      <thead><tr><th>Behavior</th><th>Falsified when</th></tr></thead>
       <tbody>
-        <tr><td>A non-repeatable <code>format</code> answer replays the same</td><td>formatted answers are recorded</td></tr>
-        <tr><td>Removed question dropped; new question asked or reported (exit 4)</td><td>removed answers are replayed</td></tr>
-        <tr><td>Every apply route writes the record last; a hook failure keeps the old record</td><td>the record is written before hooks</td></tr>
-        <tr><td>Update and adopt refuse while an interview is staged</td><td>they read or change staged state</td></tr>
-        <tr><td>Leftover markers make the next update refuse</td><td>the marker check is removed</td></tr>
-        <tr><td>Adopt writes only the record; fingerprints come from the template</td><td>fingerprints come from disk</td></tr>
-        <tr><td>Two templates in one project update independently</td><td>ownership collisions are allowed</td></tr>
-        <tr><td>No process starts except trusted hooks</td><td>the merge uses gitoxide's external-driver path</td></tr>
+        <tr><td>Snapshot only in a clean git target; not on dry run or no change</td><td>a dirty apply leaves a ref</td></tr>
+        <tr><td>Capture rules: plan targets, hook files, carry-forward, links, CRLF</td><td>an unchanged template file is deleted next update</td></tr>
+        <tr><td>Replay: raw answers; new, removed, rejected, looped questions</td><td>a non-idempotent <code>format</code> differs, or replay aborts</td></tr>
+        <tr><td><code>--answers</code> overrides; <code>--reanswer</code>; identity check</td><td>another template's document is evaluated</td></tr>
+        <tr><td>Already current by commit, answers, and files</td><td>an edited folder template counts as current</td></tr>
+        <tr><td><code>@A</code> → <code>@B</code> is the same template</td><td>the scenario is refused</td></tr>
       </tbody>
     </table>
+  </section>
+  <section id="tested-3">
+    <h2>Behaviors to prove (3 of 3): routes, commands, guards</h2>
+    <table>
+      <thead><tr><th>Behavior</th><th>Falsified when</th></tr></thead>
+      <tbody>
+        <tr><td>Agent route stages the base; re-checks clean at <code>apply PATH</code></td><td>a dirtied target is merged</td></tr>
+        <tr><td>Untrusted hooks exit 3; dry run runs no hook</td><td>the hook runner is called</td></tr>
+        <tr><td><code>snapshots list</code> likely base by ancestry, then by content</td><td>no mark after a squash</td></tr>
+        <tr><td><code>snapshots clean</code> exact removal; whole-template refusal</td><td>a partial removal happens</td></tr>
+        <tr><td><code>toha init</code> idempotent, no push setting</td><td>config changes twice or gains a push line</td></tr>
+        <tr><td>No process except trusted hooks, with drivers configured</td><td><code>strace</code> sees another <code>execve</code></td></tr>
+        <tr><td>Forged snapshots refused</td><td>a render starts</td></tr>
+      </tbody>
+    </table>
+    <p class="muted">30 behaviors in total, each with a sole-kill guard in the design.</p>
   </section>
 </section>
 
 <section id="out-of-scope">
   <h2>Out of scope</h2>
   <ul>
-    <li>Detecting renamed files (a move is a remove plus an add).</li>
-    <li>Searching project history to guess which version made an old project.</li>
-    <li>Changing the approved rules for injection, answers files, hook results, staged interviews, or trust.</li>
-    <li>Toha making commits, tags, or notes in the owner's git repository.</li>
-    <li>Letting a question keep its answer out of the record.</li>
-    <li>New permissions, timeouts, version checks, or starting other programs.</li>
+    <li>Rename detection and moving a target directory.</li>
+    <li>Upgrade/downgrade labels (version ordering).</li>
+    <li>Pushing, fetching, pruning, committing, <code>git init</code>.</li>
+    <li>Onboarding in <code>toha init</code> (backlog task 1108).</li>
+    <li>Hook effects that are not committed files.</li>
+    <li>Honouring git merge and filter drivers.</li>
+    <li>Changes to injection's apply-time rules, the answers-document contract, hook results, or trust.</li>
   </ul>
 </section>
 
-<section id="reviewer-focus">
+<section id="review">
   <h2>Reviewer focus</h2>
-  <ol>
-    <li>No path can delete an owner-edited file, even with a forged record.</li>
-    <li>Replay reproduces the original answers: raw values, removed questions filtered, frozen time.</li>
-    <li>Region and JSON value keep the approved injection rules.</li>
-    <li>The record is written last, and a rerun after any failure converges.</li>
-    <li>The merge never starts another program.</li>
-    <li>Staged interviews are never read or changed by update or adopt.</li>
-  </ol>
+  <ul>
+    <li>Any path where an operator edit is lost without a conflict (retraction, capture rules, occupied paths, rollback).</li>
+    <li>The index write: stages, cached tree, lock, and re-check.</li>
+    <li>The update replay adapter against the unchanged interview engine.</li>
+    <li>The in-memory driver removal at every gitoxide entry point.</li>
+    <li>The snapshot boundary against a forged ref from a teammate.</li>
+  </ul>
+  <p class="muted">A read-only reviewer from another model family reviewed this design twice: 14 findings, then 4 more on the fixes (3 blockers in all). All are addressed in this revision.</p>
 </section>
 
 <section id="alternatives">
-  <section id="alt-carrier">
-    <h2>Alternatives explored: where the record lives</h2>
-    <table>
-      <thead><tr><th>Option</th><th>Result</th></tr></thead>
-      <tbody>
-        <tr><td><strong>Files in the project</strong> <code>.toha/applied/</code></td><td><span class="tag">chosen</span> Travels with every copy; works without git; same approach as <a href="https://copier.readthedocs.io/en/stable/updating/">copier</a> and <a href="https://github.com/cruft/cruft">cruft</a></td></tr>
-        <tr><td>One shared file</td><td>Two branches updating different templates would conflict in it</td></tr>
-        <tr><td>Git commit message trailer</td><td>Lost by squash or copy; Toha would have to write commits</td></tr>
-        <tr><td><a href="https://git-scm.com/docs/git-notes">Git notes</a> or a custom ref</td><td>A normal clone does not copy them</td></tr>
-      </tbody>
-    </table>
-  </section>
-  <section id="alt-base">
-    <h2>Alternatives explored: the merge base</h2>
-    <div class="two">
-      <div>
-        <p><strong>Rebuild the old version</strong> <span class="tag">chosen</span></p>
-        <ul>
-          <li>Record stays small and readable</li>
-          <li>One source of truth: the template</li>
-          <li>Needs the old version; safe mode without it</li>
-        </ul>
-      </div>
-      <div>
-        <p><strong>Store every written file in the record</strong></p>
-        <ul>
-          <li>Full merges even offline</li>
-          <li>Large record; a second copy of every file</li>
-          <li>Answer-derived content committed twice</li>
-        </ul>
-      </div>
-    </div>
-    <p class="muted">Two independent designs explored these two shapes; a separate judge scored both.</p>
-  </section>
-  <section id="alt-engine">
-    <h2>Alternatives explored: the merge engine</h2>
-    <table>
-      <thead><tr><th>Option</th><th>Result</th></tr></thead>
-      <tbody>
-        <tr><td><strong><a href="https://docs.rs/gix-merge/0.20.1/gix_merge/blob/builtin_driver/text/index.html">gix-merge</a></strong>, part of <a href="https://github.com/GitoxideLabs/gitoxide">gitoxide</a> (~12k stars, active)</td><td><span class="tag">chosen</span> Already a Toha dependency; turn on its <code>merge</code> feature; git's own merge rules, in process</td></tr>
-        <tr><td><a href="https://github.com/bmwill/diffy">diffy</a> (~120 stars)</td><td>Pure Rust, but a new, smaller dependency</td></tr>
-        <tr><td><a href="https://git-scm.com/docs/git-merge-file">git merge-file</a> as a program</td><td><span class="tag err">not proposed</span> Starts another program and needs git installed</td></tr>
-      </tbody>
-    </table>
-  </section>
-</section>
-
-<section id="decisions">
-  <section id="dec-1">
-    <h2>Decisions needed first (1 of 3)</h2>
-    <table>
-      <thead><tr><th>#</th><th>Decision</th><th>Recommendation</th><th>Other option</th></tr></thead>
-      <tbody>
-        <tr><td>1</td><td>Where the record lives</td><td><strong>One file per template in <code>.toha/applied/</code></strong></td><td>One shared file; git notes</td></tr>
-        <tr><td>2</td><td><span class="tag warn">restriction</span> Templates may not write into <code>.toha/applied/</code></td><td><strong>Reserve that folder</strong>, so a template cannot overwrite a record</td><td>No reservation; a clash fails late, after files are written</td></tr>
-        <tr><td>3</td><td>Merge engine</td><td><strong>Turn on gitoxide's <code>merge</code> feature</strong> (adds <code>gix-merge</code>)</td><td><code>diffy</code> crate</td></tr>
-      </tbody>
-    </table>
-  </section>
-  <section id="dec-2">
-    <h2>Decisions needed first (2 of 3)</h2>
-    <table>
-      <thead><tr><th>#</th><th>Decision</th><th>Recommendation</th><th>Other option</th></tr></thead>
-      <tbody>
-        <tr><td>4</td><td>How to get the merge base</td><td><strong>Rebuild the old version; safe mode if it is gone</strong></td><td>Store every written file in the record</td></tr>
-        <tr><td>5</td><td>Projects without a record</td><td><strong><code>toha adopt</code></strong> writes only the record</td><td>Refuse</td></tr>
-        <tr><td>6</td><td>Hooks during update</td><td><strong>Run them, with trust, when update writes anything</strong>, as apply does</td><td>New template setting to limit hooks to apply or update</td></tr>
-      </tbody>
-    </table>
-  </section>
-  <section id="dec-3">
-    <h2>Decisions needed first (3 of 3)</h2>
-    <table>
-      <thead><tr><th>#</th><th>Decision</th><th>Recommendation</th><th>Other option</th></tr></thead>
-      <tbody>
-        <tr><td>7</td><td>Answers are committed in the project</td><td><strong>Store them</strong>, as copier and cruft do</td><td>Per-question opt-out (template format change)</td></tr>
-        <tr><td>8</td><td>Every apply writes a record</td><td><strong>Always</strong>, so every project can be updated</td><td>Opt-in flag</td></tr>
-        <tr><td>9</td><td>How scripts and agents call update</td><td><strong>One-shot <code>--answers FILE</code></strong>; update never saves a half-done interview</td><td>A saved agent session like <code>stage</code>/<code>continue</code></td></tr>
-      </tbody>
-    </table>
-  </section>
-</section>
-
-<section id="disclosures">
-  <h2>Disclosures for separate approval</h2>
-  <div class="check">
-    <strong>Capability restriction.</strong> Today a template may write any path
-    outside <code>.git</code>. With decision 2, a template that writes into
-    <code>.toha/applied/</code> fails before anything is written.
-  </div>
-  <div class="check">
-    <strong>New effect.</strong> Every <code>toha apply</code> adds
-    <code>.toha/applied/&lt;name&gt;.json</code> to the project (decision 8).
-  </div>
-  <div class="check">
-    <strong>New dependency code.</strong> gitoxide's <code>merge</code> feature
-    adds the <code>gix-merge</code> crate (decision 3). It can run external merge
-    drivers; Toha never calls that part, and a test enforces it.
-  </div>
-  <p>
-    No new permission, timeout, version check, or application subprocess.
-  </p>
+  <h2>Alternatives explored</h2>
+  <table>
+    <thead><tr><th>Alternative</th><th>Why not</th></tr></thead>
+    <tbody>
+      <tr><td>Record files in the project (<code>.toha/applied/</code>) and re-render the old version (Copier, Cruft)</td><td>Fails when the old template or render cannot be reproduced; adds Toha files to every project</td></tr>
+      <tr><td>A template branch merged into the project (JHipster)</td><td>Adds merge commits; breaks when history is squashed or rebased</td></tr>
+      <tr><td>Snapshots chained by git parents, compacted on clean</td><td>Forced ref updates and resurrected history for every teammate</td></tr>
+      <tr><td>A committed pointer file naming the base</td><td>Bob chose user selection to keep Toha files out of the project</td></tr>
+      <tr><td>A separate <code>update</code> command</td><td>Apply already is a merge; <code>update</code> means refreshing installed templates</td></tr>
+      <tr><td>Shelling out to <code>git merge-file</code></td><td>A subprocess; gitoxide does it in process</td></tr>
+    </tbody>
+  </table>
 </section>
 
 <section id="size">
-  <h2>Size</h2>
-  <p>
-    About <strong>4 to 6 working days</strong> of agent time, done as five
-    reviewable steps:
-  </p>
-  <ol>
-    <li>Merge engine adapter and its tests</li>
-    <li>Record format, reading and checking, and writing it on every apply</li>
-    <li>Update core: rebuild, compare, merge per item, safe mode</li>
-    <li>Commands, results, adopt, and the version A→B fixtures</li>
-    <li>Specifications, schema, user guide, and example</li>
-  </ol>
-  <p class="muted">
-    It starts after the answers-file work (caller routes and identity) is
-    merged, because update uses its answers check.
-  </p>
+  <h2>Size and complexity</h2>
+  <div class="two">
+    <div>
+      <p><strong>Size: XL</strong></p>
+      <p>About 4–6 focused agent days: the snapshot module, replay adapter, two crate-private seams, three commands, spec and schema updates, and a two-clone fixture harness.</p>
+    </div>
+    <div>
+      <p><strong>Complexity: high, with this plan</strong></p>
+      <p>The risky parts are proven by the spike (tree merge, index stages, refs, checkout). The remaining risk is breadth: many edge cases, each with a named fixture.</p>
+    </div>
+  </div>
 </section>
 
-<section id="complexity">
-  <h2>Complexity</h2>
-  <p><span class="tag warn">high</span></p>
-  <ul>
-    <li>First Toha data stored inside the project, and the first line merge.</li>
-    <li>Three ownership kinds times five situations each, plus safe mode.</li>
-    <li>Rebuilding an old version must reproduce the original answers exactly.</li>
-  </ul>
-  <p>With this plan it stays manageable:</p>
-  <ul>
-    <li>The deciding logic is one pure function, tested without files or processes.</li>
-    <li>The planner, injection, interview engine, and hooks are reused unchanged.</li>
-    <li>Every rule above has a named test that fails if the rule is removed.</li>
-  </ul>
-</section>
-
-<section id="approval">
+<section id="next">
   <h2>What approval covers</h2>
-  <p>This exact design revision and the nine decisions:</p>
-  <table>
-    <thead><tr><th>Artifact</th><th>SHA-256</th></tr></thead>
-    <tbody>
-      <tr><td><code>project-updates/design.md</code></td><td><code>a91e58689cbb…f108</code></td></tr>
-      <tr><td><code>project-updates/design.yml</code></td><td><code>ec3f109e3fbe…c101</code></td></tr>
-    </tbody>
-  </table>
-  <p>
-    It builds on the approved designs for content injection, caller routes and
-    answers identity, and hook results, and changes none of them.
-  </p>
-  <p class="muted">
-    Full hashes, the deck source hash, and the branch commit are recorded on the
-    design task. Reply with approval, changes, or a different option for any
-    decision.
-  </p>
+  <p>This exact revision: <code>design.md</code>, <code>design.yml</code>, and this deck, with the 4 decisions and 4 disclosures.</p>
+  <p>After approval: the implementation task (1029) is refined with this revision, its interfaces, and the 30 behaviors, and waits for the caller-routes work already merged into the epic.</p>
 </section>

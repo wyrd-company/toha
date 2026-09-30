@@ -20,9 +20,10 @@ code at `epic/second-release` @ `7a966c6`, and the gitoxide spike.
 
 - **Content injection.** Apply-time ownership is unchanged: the throwaway
   checkout applies the plan with the approved resolvers. Update behaviour for
-  owned regions and values was left to this design; the design makes a change
-  from both sides a text conflict and asks for approval of that choice
-  (`owned-value-conflicts`). A `.json` target keeps its strict check because the
+  owned regions and values was left to this design; the design merges owned
+  content by line like the rest of the file (overlapping edits conflict) and
+  asks for approval of that choice (`owned-content-merge`). Retraction reuses
+  the resolvers and never deletes an operator file. A `.json` target keeps its strict check because the
   resolver runs unchanged.
 - **Caller routes.** The three routes, the result statuses, the exit table, the
   staged refusal, and identity checking through `parse_and_verify` are reused.
@@ -108,8 +109,11 @@ cached tree is dropped after entries change; driver programs are a process path.
 
 ## Cross-review
 
-A read-only reviewer from another model family reviewed the design. Its
-fourteen findings are addressed in the design: injected files are recorded
+A read-only reviewer from another model family reviewed the design twice. The
+second pass checked each first-pass finding and raised four more (released
+edit paths, ownership transitions, the replay outcome and resume contract, and
+a dry run built by the same code as the update); all are addressed. The
+first-pass findings are addressed as follows: injected files are recorded
 with their owned regions and values and are retracted, never deleted; every plan
 target is captured, including unchanged ones; ignore rules exclude only
 untracked files; the template is matched by source identity; answers go through

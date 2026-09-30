@@ -243,20 +243,30 @@ A path is captured when it is under the target and one of these holds:
   base snapshot's content and origin, because a hook that rewrites a file
   unchanged cannot be told apart from a hook that no longer produces it.
 - **Retraction (`--from` only):** it has origin `edit` in the base snapshot and
-  owns a region or JSON value the new plan does not produce. Toha retracts
-  that ownership in the throwaway checkout (a region loses its marker lines
-  and span, a JSON value loses its key, with the same strict `.json` check the
-  JSON resolver applies) and captures the file with origin `edit` and the
-  ownership that remains. A file with origin `edit` is never removed by an
-  update.
+  owns a region or JSON value that the new plan neither produces nor covers. A
+  new whole-file mutation of the path covers all of its old ownership; a new
+  JSON value covers the old values at or below its JSON path; a new region
+  covers the old region with the same key. Toha retracts only the uncovered
+  ownership (a region loses its marker lines and span; a JSON value loses its
+  key, array elements from the highest index down; with the same strict
+  `.json` check the JSON resolver applies) and captures the file with origin
+  `edit` and the ownership that remains, which may be none.
 
 A path with origin `toha` in the base snapshot that the new plan does not
 produce is not captured, so the merge sees the template removing it.
+
+A path with origin `edit` that owns nothing in the base snapshot is
+**released**: it is not captured, and the merge leaves it out of the base tree
+as well (see The merge), so the file stays with the operator exactly as it is.
+A file with origin `edit` is never removed by an update.
 
 A path is not captured when it is untracked in `HEAD` and git ignores it, when
 it is a gitlink or lies inside a submodule, or when it is outside the target
 (a hook change outside the target is reported as a warning). A tracked file
 stays capturable even if an ignore rule now matches it.
+
+Ignore rules are the ones git applies in the project: the `.gitignore` files
+of `HEAD`, the repository's `info/exclude`, and the user's global excludes.
 
 Capture reads symbolic links without following them and records them as links.
 It records the executable bit. It converts file content to its stored form with
@@ -284,7 +294,10 @@ error (exit 2).
 An update does not reuse the staged-replay walk as it is, because that walk
 treats a rejected recorded answer as fatal, submits recorded batches whole, and
 has no way to override an answer. A crate-private update replay adapter drives
-the unchanged interview engine instead:
+the unchanged interview engine instead. Its outcome is one typed value:
+completed (with the accepted raw submissions), ask (the pending batch, its
+defaults, the rejections, and the adapter to continue), ended, or an engine
+fault.
 
 1. It turns the recorded submissions into a queue of values per question id,
    in recorded order, so a question asked more than once (in a loop) gets its
@@ -307,6 +320,13 @@ raw values as defaults.
 
 The new snapshot records the raw values actually submitted.
 
+On the agent route, the staged interview holds `base`, `reanswer`, and, as
+today, the raw submissions accepted so far. Resuming rebuilds the adapter from
+the base snapshot, replays the staged submissions (which this template already
+accepted) through the existing walk, removes from each id's queue as many
+values as that id has been answered, and continues at the pending batch. No
+recorded value is lost or used twice.
+
 ### Already current
 
 After the render, when the new snapshot would have the same `commit`, the same
@@ -317,10 +337,14 @@ decides, so an edited folder template is never mistaken for an unchanged one.
 
 ### Dry run
 
-`--dry-run` builds the plan and the merge in memory from the base snapshot and
-the rendered files, with no throwaway checkout and no hooks, and reports the
-changes. Output a hook would produce is reported as `not previewed: hook
-output`. It writes nothing to the project and saves no snapshot.
+`--dry-run` runs the same candidate-tree builder as a real update on in-memory
+images of the target's files at `HEAD`: the same ownership transitions,
+retractions, injection resolution, capture, carry-forward, and release rules,
+with no throwaway checkout and no hooks. It then runs the same merge in memory
+and reports the changes. A hook-origin path is carried forward unchanged, and
+the report says `not previewed: hook output`. For every path no hook touches,
+the preview equals what the real update writes. It writes nothing to the
+project and saves no snapshot.
 
 ### The throwaway checkout
 
@@ -330,18 +354,23 @@ output`. It writes nothing to the project and saves no snapshot.
 2. Build the plan for the project's real target and with the snapshot's
    `generated` instant, so everything the template renders (paths, the
    invocation context, dates) is what an apply in the project would render.
-3. Apply the plan with the throwaway checkout as the destination, through a
+3. Compute the ownership transitions from the base snapshot's `paths` and
+   `Plan::mutations()`, and apply the uncovered retractions to the checkout
+   first.
+4. Apply the plan with the throwaway checkout as the destination, through a
    crate-private destination seam in `apply.rs`: whole files replace what the
    checkout holds, and regions and JSON values are written as the template
    intends, as with `--force`. The checkout is a copy, so nothing the operator
    owns is at risk.
-4. Run the new version's hooks there, in the existing hook loop, under the
+5. Run the new version's hooks there, in the existing hook loop, under the
    existing trust gate.
-5. Apply the retractions, then capture the new snapshot by the rules above and
-   save it under its ref.
-6. Delete the checkout.
+6. Capture the new snapshot by the rules above and save it under its ref.
+7. Delete the checkout.
 
-A failure in steps 1–5 ends the apply. The project is untouched, and no ref is
+Steps 3, 4, and 6 are one candidate-tree builder that works on a directory or
+on in-memory images; the dry run uses the same builder without step 5.
+
+A failure in steps 1–6 ends the apply. The project is untouched, and no ref is
 saved.
 
 ### The merge
@@ -351,7 +380,8 @@ whole-repository trees, so conflict paths are repository-relative and files
 outside the target cannot change:
 
 - base = the `HEAD` tree with the target directory replaced by `files/` of the
-  `--from` snapshot (an empty directory for `--baseline`);
+  `--from` snapshot, without its released paths (an empty directory for
+  `--baseline`);
 - ours = the `HEAD` tree (the operator side);
 - theirs = the `HEAD` tree with the target directory replaced by `files/` of the
   new snapshot (the template side).
@@ -405,7 +435,8 @@ any merge state, and it never commits.
 
 Toha refuses, writing nothing, when a path the merge would add or replace is
 occupied on disk by an untracked file or directory, ignored or not, as `git
-merge` does; the message names the paths.
+merge` does; the message names the paths. The check is repeated under the
+index lock in step 6.
 
 ### Order of effects
 
@@ -418,14 +449,20 @@ merge` does; the message names the paths.
 5  merge in memory; refuse on occupied paths
 6  take the index lock; re-check HEAD, the index checksum, and that the target
    is still clean; any drift -> release the lock, delete the new ref, refuse
-7  write merged files (each by temporary file and rename), then the index
-   through the lock
+7  write merged files, each by temporary file and rename, each only after
+   checking that the path on disk still holds its HEAD content (or is still
+   absent); then the index through the lock
 8  print the change list, the snapshot, and the share command
 ```
 
+The check in step 7 narrows, but cannot close, the window in which another
+program writes a target file; `git merge` has the same window. A path that
+changed since step 6 stops the write and starts the rollback.
+
 If step 7 fails, Toha restores every path it wrote or deleted from `HEAD` (the
-target was clean, so `HEAD` holds the operator's content), removes files it
-created, releases the index lock without writing, and deletes the new ref. If
+target was clean, so `HEAD` holds the operator's content) and removes files it
+created, in each case only when the path still holds what Toha wrote; a path
+changed by another program is left alone and named. It releases the index lock without writing, and deletes the new ref. If
 that rollback also fails, the error names the paths and the target-scoped
 recovery: `git restore --source=HEAD --staged --worktree -- <target>` and
 `git clean -d --force -- <target>`, which touch nothing outside the target and
@@ -539,7 +576,8 @@ pub fn apply(plan: Plan, inputs: SnapshotInputs, project: Option<&Project>,
              options: ApplyOptions, runner: &dyn HookRunner)
     -> Result<Applied, ApplyError>;               // Applied gains `snapshot: SnapshotOutcome`
 
-// --from and --baseline, after the interview completed through `UpdateReplay`.
+// --from and --baseline, after the interview completed (the CLI uses the
+// crate-private update replay adapter; a crate caller drives the interview).
 pub fn merge_apply(project: &Project, base: Base, template: &Template,
                    completed: &Completed, inputs: SnapshotInputs,
                    options: MergeOptions, runner: &dyn HookRunner)
@@ -556,19 +594,6 @@ pub struct Change { pub path: RepoPath, pub action: Action }
 pub enum Action { Added, Updated, Merged, Deleted, Conflicted(ConflictKind), NotPreviewed }
 pub enum ConflictKind { Content, AddAdd, ModifyDelete, FileDirectory, Binary, Driver }
 
-// Answers for --from.
-pub struct UpdateReplay<'t> { /* private: queues per id, overrides, rejections */ }
-impl<'t> UpdateReplay<'t> {
-    pub fn new(base: &Snapshot, template: &'t Template, reanswer: bool) -> Self;
-    pub fn with_document(self, text: &str) -> Result<Self, SubmitDocumentError>; // parse_and_verify
-    pub fn advance(self, interview: Interview<'t>) -> Replayed<'t>;
-}
-pub enum Replayed<'t> {
-    Completed(Completed),
-    Ask { pending: Pending<'t>, defaults: RawAnswers, rejected: Vec<Rejection>, replay: UpdateReplay<'t> },
-    Ended(Ended),
-}
-
 pub struct SnapshotInputs {                        // what the snapshot records
     pub template: String, pub revision: Revision, pub generated: FrozenNow,
     pub submissions: Vec<IndexMap<Id, serde_json::Value>>,
@@ -579,9 +604,10 @@ pub enum SkipReason { NotGit, NoCommit, Dirty, NothingChanged, DryRun }
 
 `Plan::build`, `Plan::apply`, `Plan::mutations`, the injection resolvers, the
 interview engine, and the answers-document operations keep their public
-signatures. Crate-private additions: a destination seam in `apply.rs` that
-applies a plan built for the real target into another directory, and
-retraction helpers in the injection module that reuse its resolvers.
+signatures. Crate-private additions: the update replay adapter; a destination seam in
+`apply.rs` that applies a plan built for the real target into another
+directory or in-memory images; and retraction helpers in the injection module
+that reuse its resolvers.
 `StagedRecord` gains the optional `base` and `reanswer` members. No gitoxide
 type appears in a public signature.
 
@@ -594,7 +620,7 @@ CLI  apply (--from, --baseline, --reanswer) · stage · snapshots list|clean · 
 snapshot/            new public module
   project.rs   open repo (drivers removed) · clean check · refs · likely base · init
   record.rs    snapshot boundary (commit, tree, snapshot.json) · ULID
-  replay.rs    UpdateReplay over the interview engine
+  replay.rs    update replay adapter (crate-private) over the interview engine
   capture.rs   plan targets, hook changes, carry-forward, retraction → tree → commit → ref
   merge.rs     throwaway checkout · tree merge · occupied-path check · locked write · rollback
   │ consumes, unchanged                     │ reuses crate-internally
@@ -673,7 +699,11 @@ A plain apply's `applied` result gains `snapshot`: `{ "id": ... }` or
     file.
 12. An injection the new version drops is retracted: the region's markers and
     span, or the JSON key, are removed; the rest of the operator's file stays;
-    the file is never deleted; a relaxed `.json` target refuses the update.
+    a relaxed `.json` target refuses the update. Across A→B→C, where B drops
+    the file's last injection and C has none, the operator's file is never
+    deleted. Ownership transitions keep new output: an owned value replaced by
+    ownership of its parent object, a region replaced by whole-file ownership,
+    and removal of two array elements.
 13. Replay: raw submissions (non-idempotent `format` fixture) replay; answers
     for removed questions are dropped; an added required question in an early
     batch is asked with the other batch values as defaults (person) or
@@ -694,14 +724,19 @@ A plain apply's `applied` result gains `snapshot`: `{ "id": ... }` or
 18. `--baseline` produces add/add conflicts for differing files, keeps
     identical ones, adds the rest, and records `built_from: null`.
 19. The agent route: `stage --from` records the base, `continue` answers the
-    added questions, and `apply PATH` merges; a target made dirty after
-    `stage` refuses at `apply PATH`.
+    added questions, and `apply PATH` merges; a pause at an added early
+    question resumes with every later recorded answer used exactly once; a
+    target made dirty after `stage` refuses at `apply PATH`.
 20. Untrusted hooks return `planned` with `trusted: false`, exit 3, and write
-    nothing to the project; a dry run calls the hook runner zero times.
+    nothing to the project; a dry run calls the hook runner zero times, and
+    for every path no hook touches (including an injection-only removal) its
+    report equals what the real update writes.
 21. A hook failure in the throwaway checkout leaves the project unchanged and
     no new ref.
-22. An untracked or ignored file occupying a path the merge adds, and a
-    directory where the template adds a file, refuse with nothing written.
+22. An untracked or ignored file occupying a path the merge adds refuses with
+    nothing written; a tracked directory where the template adds a file is a
+    file/directory conflict; a binary file changed on both sides keeps the
+    operator's bytes on disk with stages 1–3.
 23. A change to a target file, to `HEAD`, or to the index between the start and
     the write refuses with nothing written and no new ref.
 24. A write failure injected after each file write rolls back to `HEAD`,
@@ -737,6 +772,13 @@ A plain apply's `applied` result gains `snapshot`: `{ "id": ... }` or
   forward: fails 8.
 - Let a dropped injection omit its file instead of retracting inside it: fails
   12.
+- Keep a released path in the merge base: the A→B→C file is deleted; fails 12.
+- Retract after applying the new plan, or without coverage: the parent-object
+  transition loses its child; fails 12.
+- Build the dry-run tree with separate code: the injection-only removal
+  previews as a deletion; fails 20.
+- Rebuild the resumed queues without removing consumed values: a later answer
+  is used twice; fails 19.
 - Compare the formal name with its reference instead of the source identity:
   fails 17.
 - Decide already current by commit and answers without the `files/` tree: fails
