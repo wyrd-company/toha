@@ -67,6 +67,12 @@ impl Project {
         &self.rel
     }
 
+    /// The opened repository, with drivers already stripped. Crate-internal seams
+    /// (capture, merge) read and write git objects through it.
+    pub(crate) fn repo(&self) -> &gix::Repository {
+        &self.repo
+    }
+
     /// Capture a snapshot of the applied target after a plain apply or a
     /// baseline adoption, with no base snapshot. Returns the saved id.
     pub fn capture(

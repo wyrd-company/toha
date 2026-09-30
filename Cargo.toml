@@ -45,7 +45,7 @@ sha2 = "0.10"
 jsonc-parser = { version = "0.34.0", features = ["cst", "serde_json"] }
 inquire = { version = "0.9.4", features = ["editor"], optional = true }
 tempfile = "3"
-gix = { version = "0.87.1", default-features = false, features = ["blocking-network-client", "blocking-http-transport-curl-rustls", "worktree-mutation", "revision", "sha1", "status"] }
+gix = { version = "0.87.1", default-features = false, features = ["blocking-network-client", "blocking-http-transport-curl-rustls", "worktree-mutation", "revision", "sha1", "status", "merge"] }
 include_dir = { version = "0.7.4", optional = true }
 rustix = { version = "1", features = ["process", "system"] }
 
