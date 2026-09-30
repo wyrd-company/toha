@@ -398,6 +398,49 @@ fn snapshots_lists_valid_target_snapshots_newest_first() {
 }
 
 #[test]
+fn snapshots_all_lists_every_target_while_snapshots_stays_target_scoped() {
+    let dir = tempfile::tempdir().unwrap();
+    repo_with_app(dir.path());
+    // Two applications of the same source at two different subpaths.
+    make_snapshot(dir.path(), ID_A, "app", &one_file(), None, false, None);
+    make_snapshot(dir.path(), ID_B, "other", &one_file(), None, false, None);
+
+    let project = open_at(&dir.path().join("app")).expect("in git");
+
+    // Repository-wide: both subpaths' snapshots, newest first.
+    let all: Vec<String> = project
+        .snapshots_all()
+        .unwrap()
+        .iter()
+        .filter_map(|l| match l {
+            Listed::Valid(s) => Some(s.id().to_string()),
+            Listed::Invalid { .. } => None,
+        })
+        .collect();
+    assert_eq!(
+        all,
+        vec![ID_B.to_string(), ID_A.to_string()],
+        "repository-wide, newest first, both targets"
+    );
+
+    // Target-scoped: only this target's snapshot, unchanged.
+    let scoped: Vec<String> = project
+        .snapshots()
+        .unwrap()
+        .iter()
+        .filter_map(|l| match l {
+            Listed::Valid(s) => Some(s.id().to_string()),
+            Listed::Invalid { .. } => None,
+        })
+        .collect();
+    assert_eq!(
+        scoped,
+        vec![ID_A.to_string()],
+        "target-scoped listing preserved: only the app snapshot"
+    );
+}
+
+#[test]
 fn find_resolves_a_unique_prefix_and_reports_ambiguity_and_absence() {
     // ID_A and ID_C share only the first ten characters, so a twelve-character
     // prefix distinguishes them while the shared six-character prefix does not.

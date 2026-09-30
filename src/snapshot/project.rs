@@ -145,13 +145,22 @@ impl Project {
                 Listed::Invalid { .. } => true,
             })
             .collect();
-        // Newest first: ULIDs sort by creation time, invalids after valids.
-        listed.sort_by(|a, b| match (a, b) {
-            (Listed::Valid(x), Listed::Valid(y)) => y.id().cmp(x.id()),
-            (Listed::Valid(_), Listed::Invalid { .. }) => std::cmp::Ordering::Less,
-            (Listed::Invalid { .. }, Listed::Valid(_)) => std::cmp::Ordering::Greater,
-            (Listed::Invalid { r#ref: x, .. }, Listed::Invalid { r#ref: y, .. }) => x.cmp(y),
-        });
+        sort_listed_newest_first(&mut listed);
+        Ok(listed)
+    }
+
+    /// Every snapshot in the repository, newest first, regardless of target, plus
+    /// every snapshot ref that cannot be read, listed as invalid with its reason.
+    ///
+    /// The repository-wide sibling of [`Project::snapshots`], which is
+    /// target-scoped. The generate axis (`--like`) seeds a new application from a
+    /// prior one that lives at a *different* subpath, so its snapshot's `target`
+    /// is not this project's target; a target-scoped listing would never find it.
+    /// This is purely additive and reuses the same ref enumeration and validation;
+    /// it changes no target-scoped behaviour and writes nothing.
+    pub fn snapshots_all(&self) -> Result<Vec<Listed>, ProjectError> {
+        let mut listed = self.all_snapshots()?;
+        sort_listed_newest_first(&mut listed);
         Ok(listed)
     }
 
@@ -725,6 +734,19 @@ pub struct FetchSetting {
     pub remote: String,
     pub refspec: String,
     pub added: bool,
+}
+
+/// Sort a listing newest first: valid snapshots by descending ULID (ULIDs sort
+/// by creation time), invalids after valids and among themselves by ref name.
+/// Shared by the target-scoped [`Project::snapshots`] and the repository-wide
+/// [`Project::snapshots_all`] so both order identically.
+fn sort_listed_newest_first(listed: &mut [Listed]) {
+    listed.sort_by(|a, b| match (a, b) {
+        (Listed::Valid(x), Listed::Valid(y)) => y.id().cmp(x.id()),
+        (Listed::Valid(_), Listed::Invalid { .. }) => std::cmp::Ordering::Less,
+        (Listed::Invalid { .. }, Listed::Valid(_)) => std::cmp::Ordering::Greater,
+        (Listed::Invalid { r#ref: x, .. }, Listed::Invalid { r#ref: y, .. }) => x.cmp(y),
+    });
 }
 
 /// Remove every named `filter.<name>` and `merge.<name>` driver subsection from

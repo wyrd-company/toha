@@ -738,6 +738,15 @@ fn strip_reference(template: &str) -> &str {
         .map_or(template, |(source, _)| source)
 }
 
+/// The source identity of a template's formal name: the formal name without its
+/// `@reference`. Two applications of the same source across template versions
+/// share this identity, so a generator seeds one from another; a foreign source
+/// does not. The canonical single source of truth for the generate axis's
+/// source-vs-formal-name comparison.
+pub fn source_identity(formal_name: &str) -> &str {
+    strip_reference(formal_name)
+}
+
 /// Turn a wire path entry into a validated [`Origin`], refusing region or value
 /// lists on an origin that cannot own them.
 fn validate_origin(path: &str, entry: PathWire) -> Result<Origin, SnapshotError> {

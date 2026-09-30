@@ -284,6 +284,30 @@ fn generated_ids_are_unique_and_time_ordered() {
 }
 
 #[test]
+fn source_identity_strips_the_reference_and_leaves_a_bare_source() {
+    // A versioned formal name yields the source without its `@reference`, so two
+    // versions of one source share an identity.
+    assert_eq!(
+        super::source_identity("forge:catalog/receipt@stable"),
+        "forge:catalog/receipt"
+    );
+    assert_eq!(
+        super::source_identity("forge:catalog/receipt@a1b2c3d"),
+        "forge:catalog/receipt"
+    );
+    // A bare source is its own identity.
+    assert_eq!(
+        super::source_identity("forge:catalog/receipt"),
+        "forge:catalog/receipt"
+    );
+    // A different source stays distinct.
+    assert_ne!(
+        super::source_identity("forge:catalog/invoice@v2"),
+        super::source_identity("forge:catalog/receipt@v2")
+    );
+}
+
+#[test]
 fn folder_template_serialises_a_null_commit() {
     let id: SnapshotId = SAMPLE_ID.parse().unwrap();
     let doc = SnapshotDoc::new(
