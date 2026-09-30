@@ -54,6 +54,25 @@ struct InterviewSeed {
 enum DefaultBankEntry {
     Seed(RawAnswer),
     Configured(ResolvedDefault),
+    /// A default sourced from a snapshot's recorded answers (the generate axis's
+    /// `--like`). Carries the snapshot id as provenance so a prompt or a
+    /// rejection can name where the default came from. Precedence is resolved
+    /// before the bank is built, so a `Snapshot` entry and a `Configured` entry
+    /// never coexist for one id: the bank still holds exactly one occupant per id.
+    Snapshot {
+        raw: RawAnswer,
+        from: String,
+    },
+}
+/// A snapshot-sourced seed for [`Resolution::start_with_seed`]: the folded
+/// defaults (one raw answer per id) and the snapshot id they came from. Built at
+/// the CLI-side boundary from a selected snapshot; the engine never sees a
+/// `Snapshot`, a `Project`, or any gitoxide type.
+#[derive(Debug, Clone)]
+pub struct SnapshotSeed {
+    pub defaults: IndexMap<Id, RawAnswer>,
+    /// The snapshot id, for prompt and rejection provenance and the result docs.
+    pub from: String,
 }
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
@@ -294,6 +313,8 @@ enum PreparedDefaultSource {
     Template { expression: Option<String> },
     Configured(ConfiguredDefaultOrigin),
     Seed,
+    /// A snapshot-seeded default, naming the snapshot it came from.
+    Snapshot { from: String },
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptKind {
@@ -529,6 +550,9 @@ fn render_default(
                 &value.raw,
                 PreparedDefaultSource::Configured(value.origin.clone()),
             ),
+            DefaultBankEntry::Snapshot { raw, from } => {
+                (raw, PreparedDefaultSource::Snapshot { from: from.clone() })
+            }
         };
         return parse_kind(id, kind, raw.0.clone())
             .map(|answer| Some(PreparedDefault { answer, source }))
@@ -695,7 +719,11 @@ fn make_prompt(
                         ),
                     ));
                 }
-                PreparedDefaultSource::Seed => {}
+                // A snapshot-seeded default is an optional default, like a replay
+                // seed: keep it shown so the person can accept or override, and
+                // let the headless walk re-ask (exit 4) rather than writing an
+                // invalid value. It is never a hard error.
+                PreparedDefaultSource::Seed | PreparedDefaultSource::Snapshot { .. } => {}
             }
         }
     }
@@ -1057,6 +1085,79 @@ impl Resolution {
                 context: Some(context),
             },
         )
+    }
+
+    /// Start an interview with snapshot-sourced defaults layered over the
+    /// configured defaults (the generate axis, `--like`). For each question the
+    /// template defines, precedence resolves at this seam, before the bank is
+    /// built, so the single-occupant invariant holds:
+    ///
+    ///   1. a snapshot value that parses to the question's kind → a `Snapshot`
+    ///      entry, shadowing any configured entry for that id;
+    ///   2. else the configured default (this `Resolution`) → a `Configured` entry;
+    ///   3. else the template's own `default` expression (no bank entry);
+    ///   4. else the question is asked.
+    ///
+    /// A snapshot value whose kind no longer matches the question is dropped and
+    /// returned as a warning; it falls through to (2)/(3) and is never a hard
+    /// error and never forces an invalid value. A snapshot value for an id the
+    /// template no longer defines is silently ignored (ordinary template
+    /// evolution). With `seed == None` this is byte-for-byte `start_with_context`,
+    /// so the no-`--like` path and every driver's parity are unchanged.
+    pub fn start_with_seed<'a>(
+        self,
+        template: &'a Template,
+        now: jiff::Zoned,
+        context: InvocationContext,
+        seed: Option<SnapshotSeed>,
+    ) -> Result<(Interview<'a>, Vec<String>), EvalError> {
+        let Some(seed) = seed else {
+            // None ≡ start_with_context: the configured defaults enter the bank
+            // exactly as they do without a seed, and no warning is produced.
+            return self
+                .start_with_context(template, now, context)
+                .map(|interview| (interview, Vec::new()));
+        };
+        let mut defaults: IndexMap<Id, DefaultBankEntry> = self
+            .defaults
+            .into_iter()
+            .map(|(id, value)| (id, DefaultBankEntry::Configured(value)))
+            .collect();
+        let mut warnings = Vec::new();
+        for (id, raw) in seed.defaults {
+            // A snapshot value for an id the template no longer defines is
+            // ignored: templates evolve, and a seed is optional.
+            let Some(question) = question_by_id(&template.interview, &id) else {
+                continue;
+            };
+            // Only a kind-matching value becomes a default; a wrong-kind value is
+            // dropped with a warning and the id falls back to its configured or
+            // template default. The bank keeps one occupant per id: a Snapshot
+            // entry replaces the configured entry for that id in place.
+            if parse_kind(&id, prompt_kind(question), raw.0.clone()).is_ok() {
+                defaults.insert(
+                    id,
+                    DefaultBankEntry::Snapshot {
+                        raw,
+                        from: seed.from.clone(),
+                    },
+                );
+            } else {
+                warnings.push(format!(
+                    "warning: snapshot {} default for \"{id}\" does not match the question's type; ignored",
+                    seed.from
+                ));
+            }
+        }
+        Interview::start_with_bank(
+            template,
+            InterviewSeed {
+                now,
+                defaults,
+                context: Some(context),
+            },
+        )
+        .map(|interview| (interview, warnings))
     }
 
     pub fn into_flat_defaults(self) -> (IndexMap<Id, RawAnswer>, Vec<String>) {
@@ -2020,6 +2121,33 @@ impl<'a> Pending<'a> {
                                         "default {} from {} is not allowed: {}",
                                         v.to_json(),
                                         configured_default_source(&p.id),
+                                        r.message
+                                    ),
+                                )
+                                .into(),
+                                e => e,
+                            })
+                    }
+                    // A snapshot-seeded default the new template rejects on a
+                    // constraint re-asks (the rejection stands, exit 4); it is
+                    // never written. The message names the snapshot it came from.
+                    Some(v)
+                        if matches!(
+                            self.batch.default_sources.get(&p.id),
+                            Some(PreparedDefaultSource::Snapshot { .. })
+                        ) =>
+                    {
+                        let from = match self.batch.default_sources.get(&p.id) {
+                            Some(PreparedDefaultSource::Snapshot { from }) => from.clone(),
+                            _ => unreachable!("matched a snapshot default source"),
+                        };
+                        self.check_inner(&p.id, RawAnswer(v.to_json()))
+                            .map_err(|e| match e {
+                                CheckError::Rejected(r) => rejection(
+                                    &p.id,
+                                    format!(
+                                        "default {} from snapshot {from} is not allowed: {}",
+                                        v.to_json(),
                                         r.message
                                     ),
                                 )
