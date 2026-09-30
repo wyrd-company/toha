@@ -1,6 +1,7 @@
 mod cli {
     pub mod bundled;
     pub mod guidance;
+    pub mod like;
     pub mod resolve;
     pub mod snapshots;
     pub mod templates;
@@ -240,6 +241,13 @@ enum Command {
         /// Re-ask every recorded answer instead of replaying it.
         #[arg(long, requires = "from")]
         reanswer: bool,
+        /// Seed answer defaults from a snapshot of a prior application of the
+        /// same source (the generate axis). The optional value is `latest`, a
+        /// snapshot id or id prefix (>= 6 characters), or omitted to pick from a
+        /// list (the person route only). Mutually exclusive with --from and
+        /// --baseline.
+        #[arg(long, value_name = "SELECTOR", num_args = 0..=1, conflicts_with_all = ["from", "baseline"])]
+        like: Option<Option<String>>,
     },
     /// Continue a staged interview with an answers document or terminal prompts.
     ///
@@ -307,6 +315,13 @@ enum Command {
         /// Re-ask every recorded answer instead of replaying it.
         #[arg(long, requires = "from")]
         reanswer: bool,
+        /// Seed answer defaults from a snapshot of a prior application of the
+        /// same source (the generate axis). The optional value is `latest`, a
+        /// snapshot id or id prefix (>= 6 characters), or omitted to pick from a
+        /// list (the person route only). Mutually exclusive with --from and
+        /// --baseline.
+        #[arg(long, value_name = "SELECTOR", num_args = 0..=1, conflicts_with_all = ["from", "baseline"])]
+        like: Option<Option<String>>,
     },
     /// Manage the project's update snapshots.
     Snapshots {
@@ -717,6 +732,160 @@ fn resolution(
     report_config_warnings(resolution.warnings());
     Ok((resolution, now))
 }
+/// The parsed `--like` request from clap's `Option<Option<String>>`: absent, a
+/// bare flag (picker on the person route; usage error elsewhere), or an explicit
+/// selector.
+enum LikeFlag {
+    Absent,
+    Bare,
+    Select(cli::like::LikeSelector),
+}
+impl LikeFlag {
+    fn parse(like: Option<Option<String>>) -> Self {
+        match like {
+            None => LikeFlag::Absent,
+            Some(None) => LikeFlag::Bare,
+            Some(Some(value)) if value == "latest" => {
+                LikeFlag::Select(cli::like::LikeSelector::Latest)
+            }
+            Some(Some(value)) => LikeFlag::Select(cli::like::LikeSelector::Reference(value)),
+        }
+    }
+    fn is_present(&self) -> bool {
+        !matches!(self, LikeFlag::Absent)
+    }
+}
+/// Why a `--like` request could not be resolved: a usage error (bare selector on
+/// a non-interactive route, exit 2) or a snapshot error (exit 1).
+struct LikeReject {
+    message: String,
+    /// `true` for a usage error (exit 2); `false` for a snapshot error (exit 1).
+    usage: bool,
+}
+impl LikeReject {
+    fn usage(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            usage: true,
+        }
+    }
+}
+impl From<cli::like::LikeError> for LikeReject {
+    fn from(error: cli::like::LikeError) -> Self {
+        Self {
+            message: error.to_string(),
+            usage: false,
+        }
+    }
+}
+/// A repository-open or read fault while resolving `--like` is a snapshot error
+/// (exit 1), not a usage error.
+fn project_reject(error: toha::snapshot::ProjectError) -> LikeReject {
+    LikeReject {
+        message: error.to_string(),
+        usage: false,
+    }
+}
+/// Resolve a `--like` request against the target repository into a seed, or
+/// `None` when there is nothing to seed from and the request does not require a
+/// snapshot (flag absent, or a person-route picker with no candidates or a
+/// "none" choice). `interactive` selects the person route, where a bare `--like`
+/// opens a picker; on every other route a bare `--like` is a usage error.
+fn resolve_like_seed(
+    flag: LikeFlag,
+    interactive: bool,
+    source: &str,
+    target: &CanonicalTarget,
+) -> Result<Option<cli::like::LikeSeed>, LikeReject> {
+    let selector = match flag {
+        LikeFlag::Absent => return Ok(None),
+        LikeFlag::Bare if !interactive => {
+            return Err(LikeReject::usage(
+                "--like needs a selector here: name a snapshot id or `latest`",
+            ));
+        }
+        LikeFlag::Bare => None, // the person picker
+        LikeFlag::Select(selector) => Some(selector),
+    };
+    let project = toha::snapshot::Project::open(target).map_err(project_reject)?;
+    match selector {
+        Some(cli::like::LikeSelector::Reference(reference)) => {
+            let snapshot = cli::like::find_required(project.as_ref(), source, &reference)?;
+            Ok(Some(cli::like::seed(&snapshot)))
+        }
+        Some(cli::like::LikeSelector::Latest) => {
+            let project = project
+                .as_ref()
+                .ok_or(cli::like::LikeError::NoProject)
+                .map_err(LikeReject::from)?;
+            let candidates = cli::like::candidates(project, source).map_err(project_reject)?;
+            match cli::like::latest(&candidates) {
+                Some(snapshot) => Ok(Some(cli::like::seed(snapshot))),
+                None => Err(LikeReject::from(cli::like::LikeError::Missing {
+                    source: source.to_owned(),
+                })),
+            }
+        }
+        // Bare, interactive: the person picker. No project or no candidate means
+        // there is nothing to offer, so proceed with a normal apply.
+        None => {
+            let Some(project) = project.as_ref() else {
+                return Ok(None);
+            };
+            let candidates = cli::like::candidates(project, source).map_err(project_reject)?;
+            if candidates.is_empty() {
+                return Ok(None);
+            }
+            match pick_snapshot(&candidates).map_err(LikeReject::usage)? {
+                Some(index) => Ok(Some(cli::like::seed(&candidates[index]))),
+                None => Ok(None),
+            }
+        }
+    }
+}
+/// Re-read the snapshot a staged generate pinned (`saved.seed`) and rebuild its
+/// engine seed, so a resumed interview seeds the identical defaults. The pin is
+/// an exact id, so a newer same-source snapshot added between stage and resume
+/// does not change it; a pinned snapshot that is now missing, invalid, or of a
+/// foreign source fails clearly (exit 1). `None` when nothing was pinned.
+fn resolve_pinned_seed(
+    pin: Option<&str>,
+    source: &str,
+    target: &CanonicalTarget,
+) -> Result<Option<toha::interview::SnapshotSeed>, String> {
+    let Some(pin) = pin else {
+        return Ok(None);
+    };
+    let project = toha::snapshot::Project::open(target).map_err(|error| error.to_string())?;
+    let snapshot = cli::like::find_required(project.as_ref(), source, pin)
+        .map_err(|error| error.to_string())?;
+    Ok(Some(cli::like::seed(&snapshot).engine))
+}
+/// The person-route picker: list the source's applications newest first and let
+/// the person choose one to seed from, or "none". Returns the chosen index, or
+/// `None` for "none". Prompts only here; the pure selection functions never do.
+fn pick_snapshot(candidates: &[toha::snapshot::Snapshot]) -> Result<Option<usize>, String> {
+    const NONE_LABEL: &str = "none (ask every question)";
+    let mut options: Vec<String> = candidates
+        .iter()
+        .map(|snapshot| {
+            format!(
+                "{} ({}, {})",
+                snapshot.id(),
+                snapshot.source(),
+                snapshot.target()
+            )
+        })
+        .collect();
+    options.push(NONE_LABEL.to_owned());
+    let chosen = inquire::Select::new("Seed defaults from which application?", options.clone())
+        .prompt()
+        .map_err(|error| error.to_string())?;
+    Ok(options
+        .iter()
+        .position(|option| option == &chosen)
+        .and_then(|index| (index < candidates.len()).then_some(index)))
+}
 fn setup(path: &Path, dirs: &Dirs) -> Result<(staging::CanonicalTarget, Store), String> {
     let target = staging::canonical_target(path).map_err(|e| e.to_string())?;
     Ok((target, Store::new(dirs.state.clone())))
@@ -780,11 +949,19 @@ fn progress(saved: &StagedRecord, scope: &Scope, target: &CanonicalTarget) -> Pr
         )
         .ok()?;
         report_config_warnings(resolution.warnings());
+        // A generate-staged record re-reads its pinned seed so the guidance
+        // reflects the same remaining questions the resume will show.
+        let pinned_seed = resolve_pinned_seed(
+            saved.seed.as_deref(),
+            toha::snapshot::source_identity(&resolved.formal_name),
+            target,
+        )
+        .ok()?;
         // A flow stop/abort is terminal but distinct from complete: nothing can
         // be applied, so its guidance names starting over, not `apply`.
         Some(
             match saved
-                .replay_with_resolution(&template, resolution, target)
+                .replay_with_seed(&template, resolution, pinned_seed, target)
                 .ok()?
             {
                 Interview::Complete(_) => Progress::Complete,
@@ -834,6 +1011,7 @@ fn stage(
     path: PathBuf,
     output: Option<Option<String>>,
     trust: bool,
+    like: Option<Option<String>>,
     dirs: &Dirs,
 ) -> Outcome {
     let (target, store) = match setup(&path, dirs) {
@@ -891,15 +1069,47 @@ fn stage(
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
     };
-    let saved = StagedRecord::new_with_context(
+    // Resolve `--like`: the person route (no `--async`) may open a picker; the
+    // agent route (`--async`) rejects a bare `--like` as a usage error.
+    let like_seed = match resolve_like_seed(
+        LikeFlag::parse(like),
+        interactive,
+        toha::snapshot::source_identity(&resolved.formal_name),
+        &target,
+    ) {
+        Ok(v) => v,
+        Err(reject) => {
+            return if interactive {
+                Outcome::Error(reject.message)
+            } else {
+                like_reject_document(reject, None)
+            };
+        }
+    };
+    if interactive {
+        if let Some(seed) = &like_seed {
+            println!("seed defaults from snapshot {}", seed.label);
+        }
+    }
+    let seed_from = like_seed.as_ref().map(|seed| seed.id.to_string());
+    let mut saved = StagedRecord::new_with_context(
         invocation.clone(),
         resolved.commit.clone(),
         resolved.named,
         now.to_string(),
         vec![],
     );
-    let interview = match resolution.start_with_context(&template, now, invocation) {
-        Ok(v) => v,
+    saved.seed = seed_from.clone();
+    let interview = match resolution.start_with_seed(
+        &template,
+        now,
+        invocation,
+        like_seed.map(|seed| seed.engine),
+    ) {
+        Ok((interview, warnings)) => {
+            report_config_warnings(&warnings);
+            interview
+        }
         Err(e) => return Outcome::Error(e.to_string()),
     };
     let installed = trustable(&resolved, &registry);
@@ -938,8 +1148,10 @@ fn stage(
     let formal = resolved.formal_name.clone();
     match interview {
         Interview::Asking(pending) => {
-            let document =
-                protocol::batch_document(pending.batch(), &context(&target, &saved), None);
+            let document = with_seed(
+                protocol::batch_document(pending.batch(), &context(&target, &saved), None),
+                seed_from.as_deref(),
+            );
             if let Err(e) = store.save(&target, &saved) {
                 return Outcome::Error(e.to_string());
             }
@@ -1104,7 +1316,16 @@ fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome 
     };
     report_config_warnings(resolution.warnings());
     let installed = trustable(&resolved, &registry);
-    let interview = match saved.replay_with_resolution(&template, resolution, &target) {
+    // Re-read the pinned generate seed, if any, so the resumed defaults match.
+    let pinned_seed = match resolve_pinned_seed(
+        saved.seed.as_deref(),
+        toha::snapshot::source_identity(&resolved.formal_name),
+        &target,
+    ) {
+        Ok(v) => v,
+        Err(e) => return Outcome::Error(guidance::replay_failed(&path, &saved.template, &e)),
+    };
+    let interview = match saved.replay_with_seed(&template, resolution, pinned_seed, &target) {
         Ok(v) => v,
         Err(e) => {
             return Outcome::Error(guidance::replay_failed(
@@ -1210,10 +1431,9 @@ fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome 
             }
             match interview {
                 Interview::Asking(next) => Outcome::Agent {
-                    document: Some(protocol::batch_document(
-                        next.batch(),
-                        &context(&target, &saved),
-                        None,
+                    document: Some(with_seed(
+                        protocol::batch_document(next.batch(), &context(&target, &saved), None),
+                        saved.seed.as_deref(),
                     )),
                     instructions: instructions(
                         &AgentOutcome::Batch {
@@ -1246,10 +1466,13 @@ fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome 
             // Nothing is saved for a rejected document.
             let errors = guidance::explain_rejections(&rejections, &path, &saved.template);
             Outcome::Agent {
-                document: Some(protocol::batch_document(
-                    pending.batch(),
-                    &context(&target, &saved),
-                    Some(&errors),
+                document: Some(with_seed(
+                    protocol::batch_document(
+                        pending.batch(),
+                        &context(&target, &saved),
+                        Some(&errors),
+                    ),
+                    saved.seed.as_deref(),
                 )),
                 instructions: instructions(
                     &AgentOutcome::Batch {
@@ -1324,6 +1547,35 @@ fn instructions(outcome: &AgentOutcome, path: &Path) -> String {
     }
 }
 /// One scripted `error` result document with its tabled exit code.
+/// The result document for a `--like` rejection on a document route: a usage
+/// error (exit 2) for a bare selector where one is required, or a snapshot error
+/// (exit 1) for an unknown, ambiguous, wrong-source, or absent selector.
+fn like_reject_document(reject: LikeReject, context: Option<&Context>) -> Outcome {
+    let (kind, code) = if reject.usage {
+        (ErrorKind::Input, 2)
+    } else {
+        (ErrorKind::Snapshot, 1)
+    };
+    Outcome::Document(
+        protocol::error_document(
+            &ResultError {
+                kind,
+                message: reject.message,
+                commands: vec![],
+            },
+            context,
+        ),
+        code,
+    )
+}
+/// Add the optional `seed: { from }` member to a result document when `--like`
+/// seeded the interview; leaves the document unchanged otherwise.
+fn with_seed(mut document: serde_json::Value, seed_from: Option<&str>) -> serde_json::Value {
+    if let (Some(from), Some(object)) = (seed_from, document.as_object_mut()) {
+        object.insert("seed".to_owned(), serde_json::json!({ "from": from }));
+    }
+    document
+}
 fn scripted_error(
     kind: ErrorKind,
     message: String,
@@ -1444,6 +1696,7 @@ fn scripted_apply_error(error: toha::ApplyError, context: &Context) -> Outcome {
 /// The scripted route: `apply TEMPLATE PATH --answers FILE`. One shot. It never
 /// stages, refuses when an interview is staged (before reading the document),
 /// and writes exactly one JSON result document for every outcome.
+#[allow(clippy::too_many_arguments)]
 fn scripted(
     template_arg: String,
     path: &Path,
@@ -1451,6 +1704,7 @@ fn scripted(
     force: bool,
     dry_run: bool,
     trust: bool,
+    like: Option<Option<String>>,
     dirs: &Dirs,
 ) -> Outcome {
     // 1. Construct one canonical target and check for a staged record.
@@ -1512,8 +1766,27 @@ fn scripted(
         vec![],
     );
     let ctx = context(&target, &saved);
-    let interview = match resolution.start_with_context(&template, now, new_context) {
+    // The scripted route is non-interactive: a bare `--like` is a usage error.
+    let like_seed = match resolve_like_seed(
+        LikeFlag::parse(like),
+        false,
+        toha::snapshot::source_identity(&resolved.formal_name),
+        &target,
+    ) {
         Ok(v) => v,
+        Err(reject) => return like_reject_document(reject, Some(&ctx)),
+    };
+    let seed_from = like_seed.as_ref().map(|seed| seed.id.to_string());
+    let interview = match resolution.start_with_seed(
+        &template,
+        now,
+        new_context,
+        like_seed.map(|seed| seed.engine),
+    ) {
+        Ok((interview, warnings)) => {
+            report_config_warnings(&warnings);
+            interview
+        }
         Err(e) => return scripted_error(ErrorKind::Render, e.to_string(), vec![], Some(&ctx)),
     };
     // 4. Read the document once as UTF-8.
@@ -1550,7 +1823,10 @@ fn scripted(
             // carries those rejections. Agent routes take one step and leave an
             // unanswered question pending without such an error.
             Outcome::Document(
-                protocol::batch_document(pending.batch(), &ctx, Some(&rejections)),
+                with_seed(
+                    protocol::batch_document(pending.batch(), &ctx, Some(&rejections)),
+                    seed_from.as_deref(),
+                ),
                 4,
             )
         }
@@ -1562,7 +1838,16 @@ fn scripted(
             completed,
             accepted,
         } => scripted_completed(
-            &template, completed, accepted, &target, &resolved, &ctx, force, dry_run, trust,
+            &template,
+            completed,
+            accepted,
+            &target,
+            &resolved,
+            &ctx,
+            force,
+            dry_run,
+            trust,
+            seed_from.as_deref(),
         ),
     }
 }
@@ -1580,6 +1865,7 @@ fn scripted_completed(
     force: bool,
     dry_run: bool,
     trust: bool,
+    seed_from: Option<&str>,
 ) -> Outcome {
     let dry_run = dry_run || matches!(completed.step(), Step::Plan { apply: false });
     let live_surface = match toha::HookSurface::of(template) {
@@ -1618,13 +1904,25 @@ fn scripted_completed(
     if dry_run {
         let code = if has_hooks && !trusted { 3 } else { 0 };
         return Outcome::Document(
-            protocol::planned_document(&classified, &plan, &messages, ctx, trust_state),
+            with_seed(
+                protocol::planned_document(&classified, &plan, &messages, ctx, trust_state),
+                seed_from,
+            ),
             code,
         );
     }
     if has_hooks && !trusted {
         return Outcome::Document(
-            protocol::planned_document(&classified, &plan, &messages, ctx, TrustState::Untrusted),
+            with_seed(
+                protocol::planned_document(
+                    &classified,
+                    &plan,
+                    &messages,
+                    ctx,
+                    TrustState::Untrusted,
+                ),
+                seed_from,
+            ),
             3,
         );
     }
@@ -1690,7 +1988,7 @@ fn scripted_completed(
                 resolved,
                 accepted,
             );
-            let mut document = protocol::applied_document(&report, ctx);
+            let mut document = with_seed(protocol::applied_document(&report, ctx), seed_from);
             if let Some(object) = document.as_object_mut() {
                 object.insert("snapshot".to_owned(), snapshot);
             }
@@ -1849,6 +2147,7 @@ fn scripted_resolve_error(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run(
     template: Option<String>,
     path: &Path,
@@ -1856,13 +2155,25 @@ fn run(
     force: bool,
     dry_run: bool,
     trust: bool,
+    like: Option<Option<String>>,
     dirs: &Dirs,
 ) -> Outcome {
     // Scripted route: apply TEMPLATE PATH --answers FILE. One shot, one result
     // document, never staged.
     if let (Some(template), Some(answers_file)) = (template.clone(), answers.clone()) {
-        return scripted(template, path, answers_file, force, dry_run, trust, dirs);
+        return scripted(
+            template,
+            path,
+            answers_file,
+            force,
+            dry_run,
+            trust,
+            like,
+            dirs,
+        );
     }
+    // `--like` seeds a fresh application; resume re-reads any pinned seed.
+    let like = LikeFlag::parse(like);
     let (target, store) = match setup(path, dirs) {
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
@@ -1922,6 +2233,16 @@ fn run(
     }
     // A template named for its own staged interview resumes that interview.
     let template = template.filter(|_| existing.is_none());
+    // `--like` seeds a new application; it has nothing to attach to on a resume
+    // (`apply PATH`, or `apply TEMPLATE PATH` naming a staged interview), whose
+    // seed is already pinned in the staged record and re-read below.
+    if like.is_present() && template.is_none() {
+        return Outcome::Error(
+            "--like applies to a new application (apply TEMPLATE PATH); a resumed interview \
+             already pinned its seed when it was staged"
+                .to_owned(),
+        );
+    }
     let mut terminal_run = false;
     // The stored approval digest of the template resolved by name, compared to
     // the live executable surface once the template is loaded.
@@ -1960,6 +2281,19 @@ fn run(
                 Ok(v) => v,
                 Err(e) => return Outcome::Error(e),
             };
+            // The person route is interactive: a bare `--like` opens the picker.
+            let like_seed = match resolve_like_seed(
+                like,
+                true,
+                toha::snapshot::source_identity(&resolved.formal_name),
+                &target,
+            ) {
+                Ok(v) => v,
+                Err(reject) => return Outcome::Error(reject.message),
+            };
+            if let Some(seed) = &like_seed {
+                println!("seed defaults from snapshot {}", seed.label);
+            }
             let mut saved = StagedRecord::new_with_context(
                 new_context.clone(),
                 resolved.commit.clone(),
@@ -1967,8 +2301,17 @@ fn run(
                 now.to_string(),
                 vec![],
             );
-            let interview = match resolution.start_with_context(&template, now, new_context) {
-                Ok(v) => v,
+            saved.seed = like_seed.as_ref().map(|seed| seed.id.to_string());
+            let interview = match resolution.start_with_seed(
+                &template,
+                now,
+                new_context,
+                like_seed.map(|seed| seed.engine),
+            ) {
+                Ok((interview, warnings)) => {
+                    report_config_warnings(&warnings);
+                    interview
+                }
                 Err(e) => return Outcome::Error(e.to_string()),
             };
             // Save each accepted batch so an interrupt leaves a resumable record;
@@ -2022,16 +2365,29 @@ fn run(
                 Err(e) => return Outcome::Error(e.to_string()),
             };
             report_config_warnings(resolution.warnings());
-            let interview = match saved.replay_with_resolution(&template, resolution, &target) {
+            // Re-read the pinned seed, if the staged interview was generated with
+            // `--like`, so the resumed defaults match the staged run exactly.
+            let pinned_seed = match resolve_pinned_seed(
+                saved.seed.as_deref(),
+                toha::snapshot::source_identity(&resolved.formal_name),
+                &target,
+            ) {
                 Ok(v) => v,
                 Err(e) => {
-                    return Outcome::Error(guidance::replay_failed(
-                        path,
-                        &saved.template,
-                        &e.to_string(),
-                    ));
+                    return Outcome::Error(guidance::replay_failed(path, &saved.template, &e));
                 }
             };
+            let interview =
+                match saved.replay_with_seed(&template, resolution, pinned_seed, &target) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return Outcome::Error(guidance::replay_failed(
+                            path,
+                            &saved.template,
+                            &e.to_string(),
+                        ));
+                    }
+                };
             match interview {
                 Interview::Ended(ended) => {
                     return ended_outcome(&ended, &target, &store);
@@ -2068,10 +2424,13 @@ fn run(
                 // instructions and never prompts. Nothing new is saved.
                 Interview::Asking(pending) => {
                     return Outcome::Agent {
-                        document: Some(protocol::batch_document(
-                            pending.batch(),
-                            &context(&target, &saved),
-                            None,
+                        document: Some(with_seed(
+                            protocol::batch_document(
+                                pending.batch(),
+                                &context(&target, &saved),
+                                None,
+                            ),
+                            saved.seed.as_deref(),
                         )),
                         instructions: instructions(
                             &AgentOutcome::ApplyIncomplete {
@@ -2233,6 +2592,7 @@ fn main() -> ExitCode {
             from,
             baseline,
             reanswer,
+            like,
         } => {
             // A staged update (`stage --from`/`--baseline`) drives the update
             // replay adapter; a plain stage starts a fresh interview.
@@ -2252,7 +2612,7 @@ fn main() -> ExitCode {
                 )
                 .finish();
             }
-            stage(template, path.clone(), r#async.clone(), trust, &dirs)
+            stage(template, path.clone(), r#async.clone(), trust, like, &dirs)
                 .retry(|formal| {
                     Invocation::Stage {
                         template: Arg::Given(guidance::formal_for("stage", formal)),
@@ -2296,6 +2656,7 @@ fn main() -> ExitCode {
             from,
             baseline,
             reanswer,
+            like,
         } => {
             let (template, path) = match paths.as_slice() {
                 [path] => (None, PathBuf::from(path)),
@@ -2319,6 +2680,7 @@ fn main() -> ExitCode {
                 force,
                 dry_run,
                 trust,
+                like,
                 &dirs,
             )
             .retry(|formal| {

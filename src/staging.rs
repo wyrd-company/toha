@@ -5,7 +5,7 @@
 use crate::context::{
     EnvironmentAdmissionError, InvocationContext, InvocationContextWire, RenderOrigin,
 };
-use crate::interview::Resolution;
+use crate::interview::{Resolution, SnapshotSeed};
 use crate::{AnswerError, Interview, RawAnswer, RawAnswers, Seed, Template};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -37,6 +37,14 @@ pub struct StagedRecord {
     /// Whether the staged update re-asks every recorded answer.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub reanswer: bool,
+    /// The snapshot `--like` seeded from, if any (the generate axis). A pinned
+    /// id, re-read from git on resume so `continue`/`apply PATH` rebuild the
+    /// identical seeded defaults; the record stores no prior-application answers.
+    /// Orthogonal to and mutually exclusive with the update axis's `base`:
+    /// `--like` (generate) and `--from` (update) never combine, so the two
+    /// optional members never both apply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<String>,
     /// The versioned invocation context. A record written by [`StagedRecord::new`]
     /// carries the legacy projection; [`StagedRecord::new_with_context`] carries
     /// the current context. A pre-context record on disk has no field and
@@ -343,6 +351,7 @@ impl StagedRecord {
             submissions,
             base: None,
             reanswer: false,
+            seed: None,
             context: InvocationContextWire::Legacy,
         }
     }
@@ -367,6 +376,7 @@ impl StagedRecord {
             submissions,
             base: None,
             reanswer: false,
+            seed: None,
             context: wire,
         }
     }
@@ -433,6 +443,30 @@ impl StagedRecord {
         let context = self.invocation_context(target)?;
         let interview = resolution
             .start_with_context(template, now, context)
+            .map_err(|e| StagingError::Replay(e.to_string()))?;
+        self.replay_from(interview)
+    }
+
+    /// Replay a generate-axis staged interview, layering a snapshot seed over the
+    /// configured resolution through [`Resolution::start_with_seed`]. The caller
+    /// re-reads the pinned snapshot (`self.seed`) from git and folds it, so the
+    /// resumed defaults are identical to the staged run's. With `seed == None`
+    /// this is byte-for-byte [`Self::replay_with_resolution`]. Any wrong-kind
+    /// warning was already reported at stage time; resume discards it.
+    pub fn replay_with_seed<'a>(
+        &self,
+        template: &'a Template,
+        resolution: Resolution,
+        seed: Option<SnapshotSeed>,
+        target: &CanonicalTarget,
+    ) -> Result<Interview<'a>, StagingError> {
+        let now = self
+            .now
+            .parse()
+            .map_err(|e: jiff::Error| StagingError::Replay(e.to_string()))?;
+        let context = self.invocation_context(target)?;
+        let (interview, _warnings) = resolution
+            .start_with_seed(template, now, context, seed)
             .map_err(|e| StagingError::Replay(e.to_string()))?;
         self.replay_from(interview)
     }

@@ -310,11 +310,15 @@ struct PreparedDefault {
 }
 #[derive(Debug, Clone)]
 enum PreparedDefaultSource {
-    Template { expression: Option<String> },
+    Template {
+        expression: Option<String>,
+    },
     Configured(ConfiguredDefaultOrigin),
     Seed,
     /// A snapshot-seeded default, naming the snapshot it came from.
-    Snapshot { from: String },
+    Snapshot {
+        from: String,
+    },
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptKind {

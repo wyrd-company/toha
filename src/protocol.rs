@@ -282,6 +282,9 @@ pub enum ErrorKind {
     Render,
     Hook,
     Ambiguous,
+    /// A `--like` seed selector could not be honoured (unknown, ambiguous,
+    /// wrong-source, absent, or no project). Exit 1.
+    Snapshot,
 }
 impl ErrorKind {
     fn as_str(self) -> &'static str {
@@ -296,6 +299,7 @@ impl ErrorKind {
             Self::Render => "render",
             Self::Hook => "hook",
             Self::Ambiguous => "ambiguous",
+            Self::Snapshot => "snapshot",
         }
     }
 }
