@@ -88,6 +88,16 @@ impl SnapshotId {
     pub fn has_prefix(&self, prefix: &str) -> bool {
         self.to_string().starts_with(prefix)
     }
+
+    /// Generate a fresh id from the current time and system entropy. Used at the
+    /// runtime edge when a capture saves a new snapshot; tests use
+    /// [`SnapshotId::from_parts`] for a deterministic id.
+    pub fn generate() -> Self {
+        let millis = jiff::Timestamp::now().as_millisecond().max(0) as u64;
+        let mut entropy = [0u8; 10];
+        getrandom::fill(&mut entropy).expect("system entropy");
+        Self::from_parts(millis, entropy)
+    }
 }
 
 /// Map one input character to its canonical Crockford digit, folding case and
@@ -239,6 +249,11 @@ pub struct ProjectPoint {
 }
 
 impl ProjectPoint {
+    /// A `HEAD` point at `commit`, on `branch` (or detached when `None`).
+    pub fn new(commit: CommitId, branch: Option<String>) -> Self {
+        Self { commit, branch }
+    }
+
     pub fn commit(&self) -> &CommitId {
         &self.commit
     }
@@ -321,6 +336,11 @@ pub struct PathOwnership {
 }
 
 impl PathOwnership {
+    /// A captured path with its ownership.
+    pub fn new(path: TargetPath, origin: Origin) -> Self {
+        Self { path, origin }
+    }
+
     pub fn path(&self) -> &TargetPath {
         &self.path
     }
@@ -394,6 +414,107 @@ pub struct SnapshotDoc {
     built_from: Option<SnapshotId>,
     submissions: Vec<IndexMap<String, serde_json::Value>>,
     paths: Vec<PathOwnership>,
+}
+
+impl SnapshotDoc {
+    /// Assemble a snapshot document from its parts. `source` is derived from the
+    /// template's formal name. `paths` must equal the set of files the capture
+    /// puts under `files/`; the caller keeps that agreement.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        id: SnapshotId,
+        template: String,
+        revision: Revision,
+        target: RepoPath,
+        created: Timestamp,
+        generated: FrozenNow,
+        project: ProjectPoint,
+        built_from: Option<SnapshotId>,
+        submissions: Vec<IndexMap<String, serde_json::Value>>,
+        paths: Vec<PathOwnership>,
+    ) -> Self {
+        let source = strip_reference(&template).to_owned();
+        Self {
+            id,
+            template,
+            source,
+            revision,
+            target,
+            created,
+            generated,
+            project,
+            built_from,
+            submissions,
+            paths,
+        }
+    }
+
+    pub fn id(&self) -> &SnapshotId {
+        &self.id
+    }
+
+    pub fn target(&self) -> &RepoPath {
+        &self.target
+    }
+
+    /// Every captured path and its ownership.
+    pub fn paths(&self) -> &[PathOwnership] {
+        &self.paths
+    }
+
+    /// Serialise to the canonical `snapshot.json` bytes. The read boundary
+    /// ([`Snapshot::validate`]) accepts exactly what this writes.
+    pub fn to_json_bytes(&self) -> Vec<u8> {
+        let wire = DocWire {
+            snapshot: SNAPSHOT_FORMAT,
+            id: self.id.to_string(),
+            template: self.template.clone(),
+            source: self.source.clone(),
+            commit: match &self.revision {
+                Revision::Commit(commit) => Some(commit.as_str().to_owned()),
+                Revision::Unversioned => None,
+            },
+            target: self.target.to_string(),
+            created: self.created.to_string(),
+            generated: self.generated.to_string(),
+            project: ProjectWire {
+                commit: self.project.commit.as_str().to_owned(),
+                branch: self.project.branch.clone(),
+            },
+            built_from: self.built_from.map(|id| id.to_string()),
+            submissions: self.submissions.clone(),
+            paths: self
+                .paths
+                .iter()
+                .map(|entry| (entry.path.to_string(), PathWire::from(entry.origin.clone())))
+                .collect(),
+        };
+        let mut bytes = serde_json::to_vec_pretty(&wire).expect("snapshot serialises");
+        bytes.push(b'\n');
+        bytes
+    }
+}
+
+impl From<Origin> for PathWire {
+    fn from(origin: Origin) -> Self {
+        match origin {
+            Origin::Toha => PathWire {
+                origin: OriginWire::Toha,
+                regions: Vec::new(),
+                values: Vec::new(),
+            },
+            Origin::Hook => PathWire {
+                origin: OriginWire::Hook,
+                regions: Vec::new(),
+                values: Vec::new(),
+            },
+            Origin::Edit { regions, values } => PathWire {
+                origin: OriginWire::Edit,
+                regions,
+                values,
+            },
+        }
+    }
 }
 
 /// A validated snapshot: its document plus the id proven equal to its ref.

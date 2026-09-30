@@ -3890,6 +3890,7 @@ dependencies = [
  "assert_cmd",
  "clap",
  "expectrl",
+ "getrandom 0.3.4",
  "gix 0.87.1",
  "globset",
  "heck",

@@ -216,3 +216,98 @@ fn folder_template_has_unversioned_revision() {
     let snapshot = Snapshot::validate(id, json.as_bytes(), &files()).unwrap();
     assert_eq!(snapshot.revision(), &Revision::Unversioned);
 }
+
+// ---- Write path: to_json_bytes round-trips through validate ----
+
+#[test]
+fn snapshot_doc_round_trips_through_serialisation_and_validation() {
+    let id: SnapshotId = SAMPLE_ID.parse().unwrap();
+    let doc = SnapshotDoc::new(
+        id,
+        "forge:catalog/receipt@stable".to_owned(),
+        Revision::Commit(CommitId::parse("8be0d41c2f0000000000000000000000000000a1").unwrap()),
+        RepoPath::parse("services/sample-service").unwrap(),
+        Timestamp::parse("2026-09-30T04:12:00Z").unwrap(),
+        FrozenNow::parse("2026-03-14T09:26:53+00:00[UTC]").unwrap(),
+        ProjectPoint::new(
+            CommitId::parse("a41c0de00000000000000000000000000000beef").unwrap(),
+            Some("main".to_owned()),
+        ),
+        None,
+        vec![],
+        vec![
+            PathOwnership::new(TargetPath::parse("src/app.txt").unwrap(), Origin::Toha),
+            PathOwnership::new(
+                TargetPath::parse("config/app.toml").unwrap(),
+                Origin::Edit {
+                    regions: vec!["features".to_owned()],
+                    values: vec![],
+                },
+            ),
+            PathOwnership::new(
+                TargetPath::parse("package-lock.json").unwrap(),
+                Origin::Hook,
+            ),
+        ],
+    );
+
+    let bytes = doc.to_json_bytes();
+    let files: BTreeSet<String> = doc
+        .paths()
+        .iter()
+        .map(|entry| entry.path().to_string())
+        .collect();
+    let snapshot = Snapshot::validate(id, &bytes, &files).expect("round-trips");
+    // Every observable field survives serialise-then-validate unchanged.
+    assert_eq!(snapshot.id(), doc.id());
+    assert_eq!(snapshot.template(), "forge:catalog/receipt@stable");
+    assert_eq!(snapshot.source(), "forge:catalog/receipt");
+    assert_eq!(
+        snapshot.revision(),
+        &Revision::Commit(CommitId::parse("8be0d41c2f0000000000000000000000000000a1").unwrap())
+    );
+    assert_eq!(snapshot.target().as_str(), "services/sample-service");
+    assert_eq!(snapshot.project().branch(), Some("main"));
+    assert_eq!(snapshot.built_from(), None);
+    assert_eq!(
+        snapshot.paths(),
+        doc.paths(),
+        "captured paths and origins survive"
+    );
+}
+
+#[test]
+fn generated_ids_are_unique_and_time_ordered() {
+    let a = SnapshotId::generate();
+    let b = SnapshotId::generate();
+    assert_ne!(a, b, "system entropy makes ids unique");
+}
+
+#[test]
+fn folder_template_serialises_a_null_commit() {
+    let id: SnapshotId = SAMPLE_ID.parse().unwrap();
+    let doc = SnapshotDoc::new(
+        id,
+        "local:folder".to_owned(),
+        Revision::Unversioned,
+        RepoPath::root(),
+        Timestamp::parse("2026-09-30T04:12:00Z").unwrap(),
+        FrozenNow::parse("2026-03-14T09:26:53+00:00[UTC]").unwrap(),
+        ProjectPoint::new(
+            CommitId::parse("a41c0de00000000000000000000000000000beef").unwrap(),
+            None,
+        ),
+        None,
+        vec![],
+        vec![PathOwnership::new(
+            TargetPath::parse("x.txt").unwrap(),
+            Origin::Toha,
+        )],
+    );
+    let bytes = doc.to_json_bytes();
+    assert!(String::from_utf8_lossy(&bytes).contains("\"commit\": null"));
+    let files: BTreeSet<String> = ["x.txt".to_owned()].into_iter().collect();
+    let snapshot = Snapshot::validate(id, &bytes, &files).unwrap();
+    assert_eq!(snapshot.revision(), &Revision::Unversioned);
+    assert_eq!(snapshot.target(), &RepoPath::root());
+}
