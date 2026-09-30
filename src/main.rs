@@ -1514,17 +1514,22 @@ fn scripted(
             // The scripted route never staged, so an abort removes nothing.
             Outcome::Document(protocol::ended_document(&ended, &ctx), 0)
         }
-        Headless::Completed { completed, .. } => scripted_completed(
-            &template, completed, &target, &resolved, &ctx, force, dry_run, trust,
+        Headless::Completed {
+            completed,
+            accepted,
+        } => scripted_completed(
+            &template, completed, accepted, &target, &resolved, &ctx, force, dry_run, trust,
         ),
     }
 }
 /// The scripted `Completed` tail: build the plan, then report `planned` (dry run
-/// or untrusted hooks) or apply and report `applied`.
+/// or untrusted hooks) or apply and report `applied`, capturing the snapshot of
+/// the apply when the project allows it.
 #[allow(clippy::too_many_arguments)]
 fn scripted_completed(
     template: &Template,
     completed: Completed,
+    accepted: Vec<indexmap::IndexMap<String, serde_json::Value>>,
     target: &CanonicalTarget,
     resolved: &ResolvedTemplate,
     ctx: &Context,
@@ -1583,6 +1588,11 @@ fn scripted_completed(
         .iter()
         .map(|entry| (entry.path.clone(), entry.action.clone()))
         .collect();
+    // The snapshot save rule reads cleanliness before the apply writes.
+    let project = toha::snapshot::Project::open(target).unwrap_or_default();
+    let was_clean = project
+        .as_ref()
+        .is_some_and(|p| matches!(p.cleanliness(), Ok(toha::snapshot::Cleanliness::Clean)));
     match plan.apply_reporting(
         target,
         ApplyOptions {
@@ -1624,7 +1634,20 @@ fn scripted_completed(
                     })
                     .collect(),
             };
-            Outcome::Document(protocol::applied_document(&report, ctx), 0)
+            let snapshot = plain_apply_snapshot(
+                project.as_ref(),
+                was_clean,
+                target,
+                template,
+                &completed,
+                resolved,
+                accepted,
+            );
+            let mut document = protocol::applied_document(&report, ctx);
+            if let Some(object) = document.as_object_mut() {
+                object.insert("snapshot".to_owned(), snapshot);
+            }
+            Outcome::Document(document, 0)
         }
         // Trust was granted above, so an untrusted plan cannot occur here.
         Ok(Applied::NeedsTrust(_)) => scripted_error(
@@ -1634,6 +1657,53 @@ fn scripted_completed(
             Some(ctx),
         ),
         Err(error) => scripted_apply_error(error, ctx),
+    }
+}
+/// The `snapshot` member of a plain apply's `applied` document: `{ "id": ... }`
+/// when the apply saved a snapshot, or `{ "skipped": "<reason>" }` when the save
+/// rule declined. The plan is rebuilt for the capture because `apply` consumes
+/// it; it renders the same mutation targets from the same template and answers.
+fn plain_apply_snapshot(
+    project: Option<&toha::snapshot::Project>,
+    was_clean: bool,
+    target: &CanonicalTarget,
+    template: &Template,
+    completed: &Completed,
+    resolved: &ResolvedTemplate,
+    submissions: Vec<indexmap::IndexMap<String, serde_json::Value>>,
+) -> serde_json::Value {
+    use toha::snapshot::{FrozenNow, Revision, SnapshotOutcome};
+
+    let Some(project) = project else {
+        return serde_json::json!({ "skipped": toha::snapshot::SkipReason::NotGit.as_str() });
+    };
+    let plan = match Plan::build(template, completed, target) {
+        Ok(plan) => plan,
+        Err(error) => return serde_json::json!({ "error": error.to_string() }),
+    };
+    let revision = if resolved.commit.is_empty() {
+        Revision::Unversioned
+    } else {
+        match toha::snapshot::CommitId::parse(&resolved.commit) {
+            Ok(commit) => Revision::Commit(commit),
+            Err(error) => return serde_json::json!({ "error": error.to_string() }),
+        }
+    };
+    let generated = FrozenNow::new(completed.now.clone());
+    match project.save_after_apply(
+        target.as_path(),
+        &plan,
+        resolved.formal_name.clone(),
+        revision,
+        generated,
+        submissions,
+        was_clean,
+    ) {
+        Ok(SnapshotOutcome::Saved(id)) => serde_json::json!({ "id": id.to_string() }),
+        Ok(SnapshotOutcome::Skipped(reason)) => {
+            serde_json::json!({ "skipped": reason.as_str() })
+        }
+        Err(error) => serde_json::json!({ "error": error.to_string() }),
     }
 }
 /// Maps a resolve failure on the scripted route to a `source` or `ambiguous`

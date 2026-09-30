@@ -69,6 +69,23 @@ $defs:
       `overwrite` an existing one, refuse it as a `conflict` in a dry run, or
       `inject`/`update` a region or value of a target.
     enum: [ create, overwrite, conflict, inject, update ]
+  snapshot_outcome:
+    description: >-
+      What the apply did about its snapshot: the `id` it saved, the reason it
+      `skipped` the save, or a capture `error` after the files were written.
+    type: object
+    additionalProperties: false
+    properties:
+      id:
+        type: string
+      skipped:
+        enum: [ not-git, no-commit, dirty, nothing-changed, dry-run ]
+      error:
+        type: string
+    oneOf:
+      - required: [ id ]
+      - required: [ skipped ]
+      - required: [ error ]
   batch:
     type: object
     additionalProperties: false
@@ -110,7 +127,7 @@ $defs:
       success. Captured hook streams never appear here.
     type: object
     additionalProperties: false
-    required: [ protocol, status, context, files, messages, hooks ]
+    required: [ protocol, status, context, files, messages, hooks, snapshot ]
     properties:
       protocol:
         const: 1
@@ -144,6 +161,8 @@ $defs:
               type: [ integer, "null" ]
             success:
               type: boolean
+      snapshot:
+        $ref: "#/$defs/snapshot_outcome"
   planned:
     description: >-
       The scripted route planned the files and hooks and wrote nothing (a CLI or

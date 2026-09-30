@@ -582,6 +582,95 @@ impl Project {
         }
         Ok(())
     }
+
+    /// Decide and, when the rules allow, capture the snapshot of a plain apply.
+    /// A plain apply saves a snapshot when the target is inside a repository with
+    /// a commit, was clean before the apply, and the apply changed a path;
+    /// otherwise it saves nothing and names why. `was_clean` is the target's
+    /// cleanliness taken before the apply wrote; `source_dir` is the target the
+    /// apply wrote into. The caller reports [`SkipReason::NotGit`] when there is
+    /// no project and [`SkipReason::DryRun`] when nothing was applied.
+    #[allow(clippy::too_many_arguments)]
+    pub fn save_after_apply(
+        &self,
+        source_dir: &std::path::Path,
+        plan: &crate::plan::Plan,
+        template: String,
+        revision: crate::snapshot::Revision,
+        generated: crate::snapshot::FrozenNow,
+        submissions: Vec<indexmap::IndexMap<String, serde_json::Value>>,
+        was_clean: bool,
+    ) -> Result<SnapshotOutcome, SnapshotError> {
+        use crate::snapshot::record::{CommitId, ProjectPoint, Timestamp};
+
+        // No commit: there is no HEAD point to record.
+        let head = match self.repo.head_id() {
+            Ok(head) => head.detach(),
+            Err(_) => return Ok(SnapshotOutcome::Skipped(SkipReason::NoCommit)),
+        };
+        // A target that was dirty before the apply saves nothing.
+        if !was_clean {
+            return Ok(SnapshotOutcome::Skipped(SkipReason::Dirty));
+        }
+        // Nothing changed: the apply left a clean target and wrote no new file.
+        if matches!(self.cleanliness(), Ok(Cleanliness::Clean)) {
+            return Ok(SnapshotOutcome::Skipped(SkipReason::NothingChanged));
+        }
+
+        let commit = CommitId::parse(&head.to_hex().to_string())
+            .map_err(|err| SnapshotError::Git(err.to_string()))?;
+        let branch = self
+            .repo
+            .head_name()
+            .map_err(|err| SnapshotError::Git(err.to_string()))?
+            .map(|name| name.shorten().to_string());
+        let inputs = crate::snapshot::capture::CaptureInputs {
+            id: SnapshotId::generate(),
+            template,
+            revision,
+            generated,
+            created: Timestamp::now(),
+            project: ProjectPoint::new(commit, branch),
+            submissions,
+        };
+        let id = self.capture(source_dir, plan, None, inputs)?;
+        Ok(SnapshotOutcome::Saved(id))
+    }
+}
+
+/// What a plain apply did about its snapshot: saved one, or skipped it and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SnapshotOutcome {
+    Saved(SnapshotId),
+    Skipped(SkipReason),
+}
+
+/// Why a plain apply saved no snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkipReason {
+    /// The target is not inside a git repository.
+    NotGit,
+    /// The repository has no commit yet.
+    NoCommit,
+    /// The target had uncommitted changes before the apply.
+    Dirty,
+    /// The apply changed no path.
+    NothingChanged,
+    /// The apply was a dry run.
+    DryRun,
+}
+
+impl SkipReason {
+    /// The stable name of a skip reason for a result document.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SkipReason::NotGit => "not-git",
+            SkipReason::NoCommit => "no-commit",
+            SkipReason::Dirty => "dirty",
+            SkipReason::NothingChanged => "nothing-changed",
+            SkipReason::DryRun => "dry-run",
+        }
+    }
 }
 
 /// One entry from [`Project::snapshots`]: a valid snapshot, or a ref that could

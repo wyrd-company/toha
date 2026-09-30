@@ -22,6 +22,7 @@ pub use merge::{
 };
 pub use project::{
     Cleanliness, FetchSetting, LikelyBase, LikelyBaseBy, Listed, Project, ProjectError, Removed,
+    SkipReason, SnapshotOutcome,
 };
 pub use record::{
     CommitId, FrozenNow, Origin, PathOwnership, ProjectPoint, RepoPath, Revision, Snapshot,
