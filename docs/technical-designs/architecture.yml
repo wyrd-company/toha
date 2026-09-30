@@ -54,11 +54,27 @@ proposed-design:
     documents. `source` parses template addresses and fetches git templates
     with gitoxide. `registry` reads and writes `templates.yml` layers and
     resolves a template argument. `config` reads and merges configuration
-    layers. `staging` stores staged interviews. `jinja` owns the minijinja
+    layers. `staging` stores staged interviews. `snapshot` records an apply's
+    output as a git snapshot, opens a project's repository, and merges a
+    template update from a base snapshot. `jinja` owns the minijinja
     environment, the compiled value types, and the toha filters; it is
     private to the library. The binary holds argument parsing, the terminal
     prompt driver, output formatting, the exit-code mapping, and the embedded
     skills.
+
+    The `snapshot` module opens the target's repository once through gitoxide
+    (gix features: worktree-mutation, revision, sha1, status, merge) and removes
+    every configured merge and filter driver from the in-memory configuration so
+    no driver program starts during status, checkout, conversion, or merge. It
+    records a snapshot as a parentless commit under `refs/toha/snapshots/<id>`,
+    captures the applied files, and applies a template update by building a
+    candidate tree through a throwaway checkout and merging it three-way into the
+    working tree under an index lock. The update replay adapter, which drives the
+    interview engine from a base snapshot's recorded answers, is crate-private;
+    the command driver reaches it through the `drive_update`/`drive_update_resume`
+    seam, which returns the adapter's typed outcome over already-public interview
+    types. `StagedRecord` gains optional `base` and `reanswer` members for a
+    staged update. No gitoxide type appears in a public signature.
 
   template-module: >-
     `Template::load(folder: &Path) -> Result<Template, LoadError>` is the only

@@ -118,6 +118,18 @@ features:
   update-templates: >-
     Refreshes installed templates that follow a branch to the newest commit
     of that branch.
+  snapshot-applies: >-
+    Records the output of an apply into a git target as a snapshot — a parentless
+    commit under a Toha-owned ref — so a later update knows what it wrote. A
+    snapshot holds the rendered files and the answers that produced them;
+    snapshots list, clean without pushing, and fetch as ordinary git objects.
+  update-projects: >-
+    Re-renders a template into a project it already generated and merges the
+    difference three-way from a base snapshot, so the template's changes reach
+    the project while the operator's own edits survive and a conflict is left for
+    the operator to resolve. An update replays the recorded answers and asks only
+    what the new version needs; a baseline adopts an existing project from an
+    empty base.
   name-templates: >-
     Resolves templates by alias, short name, or formal name, and reports
     ambiguous short names with the commands to resolve them.
@@ -132,6 +144,7 @@ benefits:
     Keeps template repositories organized, because configuration, support
     material, and rendered files live in separate places.
   - Holds several templates in one repository and several versions of one template side by side.
+  - Carries a template's later changes into a project it already generated while the operator's own edits survive.
   - >-
     Makes template logic one language, Jinja, for conditions, computed values,
     defaults, and rendering.

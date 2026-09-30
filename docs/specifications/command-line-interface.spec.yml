@@ -45,6 +45,34 @@ commands:
           to standard output.
         value:
           type: path
+      - name: trust
+        flags: [ --trust ]
+        kind: flag
+        description: >-
+          Capture the trusted environment values (user, hostname, editor, shell,
+          visual) this staged interview's templates reference. The grant is
+          discovered before any batch and carries through every later batch and
+          the apply.
+      - name: from
+        flags: [ --from ]
+        kind: option
+        conflicts-with: [ baseline ]
+        description: >-
+          Stage an update from a base snapshot: replay its recorded answers and
+          ask only what the new version needs. The person route prompts; the
+          agent route (with --async) reports the batch. The value is a snapshot
+          id.
+        value:
+          type: string
+      - name: baseline
+        flags: [ --baseline ]
+        kind: flag
+        description: Stage an update from an empty base.
+      - name: reanswer
+        flags: [ --reanswer ]
+        kind: flag
+        requires: [ from ]
+        description: Re-ask every recorded answer instead of replaying it.
     output:
       modes:
         - name: human-readable
@@ -178,6 +206,31 @@ commands:
           interview is staged at the path.
         value:
           type: path
+      - name: from
+        flags: [ --from ]
+        kind: option
+        conflicts-with: [ baseline ]
+        description: >-
+          Update the project from a base snapshot: re-render the template,
+          replay the snapshot's recorded answers, ask only what the new version
+          needs, and merge the difference three-way into the target so the
+          operator's edits survive. The value is a snapshot id. Refuses a dirty
+          target, a snapshot taken for another target, and a template whose
+          source is not the snapshot's.
+        value:
+          type: string
+      - name: baseline
+        flags: [ --baseline ]
+        kind: flag
+        description: >-
+          Update from an empty base: merge the whole render into the target,
+          three-way against nothing, adopting an existing project and recording
+          its first snapshot.
+      - name: reanswer
+        flags: [ --reanswer ]
+        kind: flag
+        requires: [ from ]
+        description: Re-ask every recorded answer instead of replaying it.
     output:
       modes:
         - name: human-readable
@@ -198,7 +251,10 @@ commands:
             JSON result document on standard output for every outcome — `applied`,
             `planned`, `questions`, `error`, or `ended` — and nothing else. An
             uncaptured hook's stdout is forwarded to standard error so the result
-            document stays alone on standard output.
+            document stays alone on standard output. A plain apply's `applied`
+            document carries a `snapshot` member; an update (`--from` or
+            `--baseline`) carries a `snapshot` and a `merge` member, and reports
+            `already-current` when the re-render equals the base.
           machine-readable: true
       exit-codes:
         - code: 0
@@ -235,6 +291,104 @@ commands:
           meaning: >-
             The template name is ambiguous; the scripted route emits an `error`
             document of kind `ambiguous` listing the matches.
+  - name: init
+    summary: Configure a repository to fetch update snapshots from a remote.
+    mode: non-interactive
+    positional-arguments:
+      - name: path
+        position: 0
+        required: false
+        description: Target directory; the current directory by default.
+        value:
+          type: directory
+    options:
+      - name: remote
+        flags: [ --remote ]
+        kind: option
+        description: The remote to add the snapshot fetch refspec to; `origin` by default.
+        value:
+          type: string
+    output:
+      modes:
+        - name: human-readable
+          description: A line stating the fetch refspec was added, or already present.
+          machine-readable: false
+      exit-codes:
+        - code: 0
+          meaning: The fetch refspec is present.
+        - code: 1
+          meaning: The target is not inside a git repository, or the remote does not exist.
+  - name: snapshots
+    summary: List or remove the update snapshots of a target.
+    mode: non-interactive
+    subcommands:
+      - name: list
+        summary: List the target's snapshots, newest first, marking a likely base.
+        positional-arguments:
+          - name: path
+            position: 0
+            required: false
+            description: Target directory; the current directory by default.
+            value:
+              type: directory
+        options:
+          - name: json
+            flags: [ --json ]
+            kind: flag
+            description: Write one JSON document instead of a human-readable list.
+        output:
+          modes:
+            - name: human-readable
+              description: One line per snapshot, newest first, marking a likely base.
+              machine-readable: false
+            - name: result
+              description: >-
+                With --json, the `snapshots list` document validated against
+                `#/$defs/list` in `docs/specifications/snapshot.schema.yml`.
+              machine-readable: true
+          exit-codes:
+            - code: 0
+              meaning: The snapshots were listed.
+            - code: 1
+              meaning: The target is not inside a git repository.
+      - name: clean
+        summary: Remove snapshots named in a JSON document (the script and agent route).
+        positional-arguments:
+          - name: path
+            position: 0
+            required: false
+            description: Target directory; the current directory by default.
+            value:
+              type: directory
+        options:
+          - name: remove
+            flags: [ --remove ]
+            kind: option
+            description: >-
+              A JSON document `{ "remove": ["<id>", ...] }` naming the exact
+              snapshots to remove; `-` reads standard input. Removes the refs in
+              process and reports the `git push --delete` commands; it never
+              pushes.
+            value:
+              type: path
+          - name: force
+            flags: [ --force ]
+            kind: flag
+            description: Allow removing every snapshot of a source.
+        output:
+          modes:
+            - name: result
+              description: >-
+                The `snapshots clean` document validated against `#/$defs/clean`
+                in `docs/specifications/snapshot.schema.yml`.
+              machine-readable: true
+          exit-codes:
+            - code: 0
+              meaning: The named snapshots were removed or reported not found.
+            - code: 1
+              meaning: >-
+                The target is not inside a git repository, the document is
+                malformed, or `--remove` was not given.
   - name: abort
     summary: Delete the staged interview for a target directory.
     mode: non-interactive

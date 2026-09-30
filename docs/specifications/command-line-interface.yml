@@ -262,6 +262,35 @@ description: >-
   `0.1.1-alpha.0.3`. With no reachable tag, or no commit, the version starts
   from `0.0.0-alpha.0`. A build uses the package version when no repository
   has the package root as its work tree, or when tagver fails.
+
+
+  Snapshots. An apply into a git target records its output as a snapshot when the
+  target is inside a repository with a commit, was clean before the apply, and
+  the apply changed a captured path; otherwise it applies as before and the
+  `applied` document's `snapshot` member names why it saved none (`not-git`,
+  `no-commit`, `dirty`, `nothing-changed`, or `dry-run`). `snapshots list` shows
+  a target's snapshots, newest first, and marks the one most likely to be a base.
+  `snapshots clean` removes snapshots named in a `{ "remove": [...] }` document
+  and reports the `git push --delete` commands to remove them from a remote; it
+  never pushes. `init` adds a fetch refspec to an existing remote so a clone can
+  fetch a project's snapshots.
+
+
+  Project updates. `apply --from <snapshot>` re-renders the template, replays the
+  snapshot's recorded answers, asks only what the new version needs, and merges
+  the difference three-way into the target, so the template's changes arrive
+  while the operator's own edits survive; a conflict is written with markers and
+  left for the operator. `apply --baseline` merges the whole render from an empty
+  base, adopting an existing project. An update refuses a dirty target, a
+  snapshot taken for another target, and a `<TEMPLATE>` whose source is not the
+  snapshot's. At a terminal a one-shot update prompts what it cannot settle from
+  the recorded answers; `--answers` supplies overrides; `--reanswer` re-asks
+  every answer. An agent stages an update with `stage --from`/`--baseline` and
+  drives it through `continue` and `apply PATH`, which resume through the update
+  replay adapter and merge from the base. An update reports `applied` or
+  `planned` with a `merge` member and, when it saved one, a `snapshot` member,
+  or `already-current` when the re-render equals the base; an untrusted update
+  reports `planned` with `trusted: false` and writes nothing.
 format: cli
 validation-criteria: >-
   A conforming command line matches
