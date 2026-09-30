@@ -24,6 +24,9 @@ use crate::plan::TargetPath;
 /// The document format version this build writes and is the only one it reads.
 const SNAPSHOT_FORMAT: u32 = 1;
 
+/// The ref namespace that holds every snapshot.
+pub(crate) const SNAPSHOT_REF_PREFIX: &str = "refs/toha/snapshots/";
+
 // ---------------------------------------------------------------------------
 // SnapshotId — a ULID
 // ---------------------------------------------------------------------------
@@ -589,6 +592,27 @@ pub enum SnapshotError {
     Ownership { path: String },
     #[error("snapshot paths do not equal the files under files/")]
     PathsFilesMismatch,
+    #[error("snapshot commit has a parent")]
+    HasParent,
+    #[error("snapshot tree is missing snapshot.json")]
+    MissingSnapshotJson,
+    #[error("snapshot.json is not a regular file")]
+    SnapshotJsonNotBlob,
+    #[error("snapshot files/ is not a tree")]
+    FilesNotTree,
+    #[error("snapshot tree has an unexpected entry: {0}")]
+    ExtraTreeEntry(String),
+    #[error("snapshot files/ contains a non-regular entry: {0}")]
+    BadFileEntry(String),
+    #[error("unknown snapshot: {0}")]
+    Unknown(String),
+    #[error("ambiguous snapshot prefix {prefix} matches {matches:?}")]
+    Ambiguous {
+        prefix: String,
+        matches: Vec<String>,
+    },
+    #[error("cannot read snapshot from git: {0}")]
+    Git(String),
 }
 
 #[cfg(test)]

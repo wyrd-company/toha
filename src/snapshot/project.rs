@@ -12,9 +12,11 @@
 //! written in its stored form.
 
 use gix::bstr::{BString, ByteSlice};
+use gix::objs::tree::EntryKind;
 
-use crate::snapshot::record::RepoPath;
+use crate::snapshot::record::{RepoPath, SNAPSHOT_REF_PREFIX, Snapshot, SnapshotError, SnapshotId};
 use crate::staging::CanonicalTarget;
+use std::collections::BTreeSet;
 
 /// A target directory inside a git repository, opened with driver programs
 /// disabled in memory.
@@ -104,6 +106,186 @@ impl Project {
             Cleanliness::Dirty { paths }
         })
     }
+
+    /// Every snapshot whose `target` is this project's target, newest first, plus
+    /// every snapshot ref that cannot be read, listed as invalid with its reason.
+    pub fn snapshots(&self) -> Result<Vec<Listed>, ProjectError> {
+        let mut listed: Vec<Listed> = self
+            .all_snapshots()?
+            .into_iter()
+            .filter(|entry| match entry {
+                Listed::Valid(snapshot) => snapshot.target() == &self.rel,
+                Listed::Invalid { .. } => true,
+            })
+            .collect();
+        // Newest first: ULIDs sort by creation time, invalids after valids.
+        listed.sort_by(|a, b| match (a, b) {
+            (Listed::Valid(x), Listed::Valid(y)) => y.id().cmp(x.id()),
+            (Listed::Valid(_), Listed::Invalid { .. }) => std::cmp::Ordering::Less,
+            (Listed::Invalid { .. }, Listed::Valid(_)) => std::cmp::Ordering::Greater,
+            (Listed::Invalid { r#ref: x, .. }, Listed::Invalid { r#ref: y, .. }) => x.cmp(y),
+        });
+        Ok(listed)
+    }
+
+    /// Resolve a snapshot from any unique prefix of at least six characters,
+    /// across every valid snapshot in the repository regardless of its target so
+    /// that a snapshot for another target can still be named and refused later.
+    pub fn find(&self, prefix: &str) -> Result<Snapshot, SnapshotError> {
+        let normalised = SnapshotId::parse_prefix(prefix)?;
+        let mut matches: Vec<Snapshot> = self
+            .all_snapshots()
+            .map_err(|err| SnapshotError::Git(err.to_string()))?
+            .into_iter()
+            .filter_map(|entry| match entry {
+                Listed::Valid(snapshot) if snapshot.id().has_prefix(&normalised) => Some(snapshot),
+                _ => None,
+            })
+            .collect();
+        match matches.len() {
+            0 => Err(SnapshotError::Unknown(prefix.to_owned())),
+            1 => Ok(matches.pop().expect("one match")),
+            _ => Err(SnapshotError::Ambiguous {
+                prefix: prefix.to_owned(),
+                matches: matches.iter().map(|s| s.id().to_string()).collect(),
+            }),
+        }
+    }
+
+    /// Read every ref under the snapshot namespace, valid or not.
+    fn all_snapshots(&self) -> Result<Vec<Listed>, ProjectError> {
+        let platform = self
+            .repo
+            .references()
+            .map_err(|err| ProjectError::Snapshot(SnapshotError::Git(err.to_string())))?;
+        let iter = platform
+            .prefixed(SNAPSHOT_REF_PREFIX)
+            .map_err(|err| ProjectError::Snapshot(SnapshotError::Git(err.to_string())))?;
+        let mut out = Vec::new();
+        for reference in iter {
+            let mut reference = reference
+                .map_err(|err| ProjectError::Snapshot(SnapshotError::Git(err.to_string())))?;
+            let full = reference.name().as_bstr().to_str_lossy().into_owned();
+            let id_segment = full.strip_prefix(SNAPSHOT_REF_PREFIX).unwrap_or(&full);
+            let id = match id_segment.parse::<SnapshotId>() {
+                Ok(id) => id,
+                Err(err) => {
+                    out.push(Listed::Invalid {
+                        r#ref: full,
+                        reason: err.to_string(),
+                    });
+                    continue;
+                }
+            };
+            match self.read_snapshot(&mut reference, id) {
+                Ok(snapshot) => out.push(Listed::Valid(snapshot)),
+                Err(err) => out.push(Listed::Invalid {
+                    r#ref: full,
+                    reason: err.to_string(),
+                }),
+            }
+        }
+        Ok(out)
+    }
+
+    /// Read and validate one snapshot ref, applying the git-level checks the
+    /// document boundary cannot: the commit is parentless, its tree holds exactly
+    /// `snapshot.json` (a regular blob) and, unless empty, `files/` (a tree), and
+    /// every entry under `files/` is a regular file, an executable, or a symlink
+    /// with no gitlink and nothing outside `files/`.
+    fn read_snapshot(
+        &self,
+        reference: &mut gix::Reference<'_>,
+        id: SnapshotId,
+    ) -> Result<Snapshot, SnapshotError> {
+        let commit = reference
+            .peel_to_commit()
+            .map_err(|err| SnapshotError::Git(err.to_string()))?;
+        if commit.parent_ids().next().is_some() {
+            return Err(SnapshotError::HasParent);
+        }
+        let tree = commit
+            .tree()
+            .map_err(|err| SnapshotError::Git(err.to_string()))?;
+
+        let mut snapshot_json = None;
+        let mut files_tree = None;
+        for entry in tree.iter() {
+            let entry = entry.map_err(|err| SnapshotError::Git(err.to_string()))?;
+            let name = entry.filename().to_str_lossy().into_owned();
+            match name.as_str() {
+                "snapshot.json" => {
+                    if entry.mode().kind() != EntryKind::Blob {
+                        return Err(SnapshotError::SnapshotJsonNotBlob);
+                    }
+                    snapshot_json = Some(entry.oid().to_owned());
+                }
+                "files" => {
+                    if entry.mode().kind() != EntryKind::Tree {
+                        return Err(SnapshotError::FilesNotTree);
+                    }
+                    files_tree = Some(entry.oid().to_owned());
+                }
+                _ => return Err(SnapshotError::ExtraTreeEntry(name)),
+            }
+        }
+
+        let json_oid = snapshot_json.ok_or(SnapshotError::MissingSnapshotJson)?;
+        let mut files = BTreeSet::new();
+        if let Some(tree_oid) = files_tree {
+            self.collect_files(tree_oid, "", &mut files)?;
+        }
+        let bytes = self
+            .repo
+            .find_object(json_oid)
+            .map_err(|err| SnapshotError::Git(err.to_string()))?
+            .data
+            .clone();
+        Snapshot::validate(id, &bytes, &files)
+    }
+
+    /// Collect the leaf paths under a `files/` tree, refusing a gitlink.
+    fn collect_files(
+        &self,
+        tree_oid: gix::ObjectId,
+        prefix: &str,
+        files: &mut BTreeSet<String>,
+    ) -> Result<(), SnapshotError> {
+        let tree = self
+            .repo
+            .find_tree(tree_oid)
+            .map_err(|err| SnapshotError::Git(err.to_string()))?;
+        for entry in tree.iter() {
+            let entry = entry.map_err(|err| SnapshotError::Git(err.to_string()))?;
+            let name = entry.filename().to_str_lossy().into_owned();
+            let path = if prefix.is_empty() {
+                name
+            } else {
+                format!("{prefix}/{name}")
+            };
+            match entry.mode().kind() {
+                EntryKind::Tree => self.collect_files(entry.oid().to_owned(), &path, files)?,
+                EntryKind::Blob | EntryKind::BlobExecutable | EntryKind::Link => {
+                    files.insert(path);
+                }
+                EntryKind::Commit => return Err(SnapshotError::BadFileEntry(path)),
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One entry from [`Project::snapshots`]: a valid snapshot, or a ref that could
+/// not be read together with the reason.
+///
+/// A valid snapshot carries its whole validated document, so it is much larger
+/// than the invalid variant; the size gap is intended, as the common list holds
+/// valid entries.
+#[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
+pub enum Listed {
+    Valid(Snapshot),
+    Invalid { r#ref: String, reason: String },
 }
 
 /// Remove every named `filter.<name>` and `merge.<name>` driver subsection from
@@ -164,6 +346,8 @@ pub enum ProjectError {
     Path(String),
     #[error("{0}")]
     Io(String),
+    #[error(transparent)]
+    Snapshot(#[from] SnapshotError),
 }
 
 #[cfg(test)]
