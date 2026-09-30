@@ -398,6 +398,38 @@ fn snapshots_lists_valid_target_snapshots_newest_first() {
 }
 
 #[test]
+fn open_discovers_from_an_existing_ancestor_for_a_not_yet_created_target() {
+    // The bounded capture fix: a target subdirectory an apply has not created
+    // yet still resolves its repository, with the correct target-relative
+    // identity. Removing the ancestor walk (discovering from the target itself)
+    // would return None here.
+    let dir = tempfile::tempdir().unwrap();
+    repo_with_app(dir.path());
+    let fresh = dir.path().join("src/widgets/alpha");
+    assert!(!fresh.exists(), "the target does not exist yet");
+    let project = open_at(&fresh).expect("a fresh subpath still opens its repository");
+    assert_eq!(
+        project.target(),
+        &RepoPath::parse("src/widgets/alpha").unwrap(),
+        "the target-relative identity is the intended subpath, not the ancestor"
+    );
+}
+
+#[test]
+fn open_refuses_a_target_outside_the_working_tree() {
+    // The containment bound is preserved: a path outside the working tree is
+    // still refused, even though discovery now starts from an existing ancestor.
+    let dir = tempfile::tempdir().unwrap();
+    repo_with_app(dir.path());
+    // A nested repository: opening its subpath must not escape into the parent.
+    let outside = tempfile::tempdir().unwrap();
+    let target = canonical_target(&outside.path().join("elsewhere")).unwrap();
+    // `outside` is not in `dir`'s repository, so open returns None (no repo),
+    // never a project rooted at `dir` with an escaping rel.
+    assert!(Project::open(&target).expect("open").is_none());
+}
+
+#[test]
 fn snapshots_all_lists_every_target_while_snapshots_stays_target_scoped() {
     let dir = tempfile::tempdir().unwrap();
     repo_with_app(dir.path());

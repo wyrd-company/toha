@@ -295,4 +295,173 @@ mod tests {
         assert!(built.label.contains("gh:example/widget"));
         assert!(built.label.contains("src/widgets/alpha"));
     }
+
+    // ----------------------------------------------------------------------
+    // Git-backed source-identity behavior (behaviors 4 and 17), exercising the
+    // real `Project` reader through `candidates` and `find_required`.
+    // ----------------------------------------------------------------------
+
+    use std::path::Path;
+    use std::process::Command;
+
+    fn git(repo: &Path, args: &[&str]) {
+        let ok = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.invalid")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "git {args:?}");
+    }
+
+    fn git_out(repo: &Path, index: Option<&Path>, args: &[&str]) -> String {
+        let mut cmd = Command::new("git");
+        cmd.arg("-C").arg(repo).args(args);
+        if let Some(index) = index {
+            cmd.env("GIT_INDEX_FILE", index);
+        }
+        let out = cmd
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.invalid")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+        String::from_utf8(out.stdout).unwrap().trim().to_owned()
+    }
+
+    fn hash_object(repo: &Path, bytes: &[u8]) -> String {
+        use std::io::Write;
+        let mut child = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["hash-object", "-w", "--stdin"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(bytes).unwrap();
+        String::from_utf8(child.wait_with_output().unwrap().stdout)
+            .unwrap()
+            .trim()
+            .to_owned()
+    }
+
+    /// Write one snapshot ref (`snapshot.json` + `files/x.txt`) from an
+    /// in-memory doc, so the real reader validates it.
+    fn write_ref(repo: &Path, id: &str, template: &str, target: &str) {
+        let doc = SnapshotDoc::new(
+            id.parse().unwrap(),
+            template.to_owned(),
+            Revision::Unversioned,
+            RepoPath::parse(target).unwrap(),
+            Timestamp::parse("2026-09-30T04:12:00Z").unwrap(),
+            FrozenNow::parse("2026-03-14T09:26:53+00:00[UTC]").unwrap(),
+            ProjectPoint::new(
+                CommitId::parse("a41c0de00000000000000000000000000000beef").unwrap(),
+                None,
+            ),
+            None,
+            vec![batch(&[("label", json!("Alpha"))])],
+            vec![PathOwnership::new(
+                toha::TargetPath::parse("x.txt").unwrap(),
+                Origin::Toha,
+            )],
+        );
+        let index = repo.join(format!(".idx-{id}"));
+        let _ = std::fs::remove_file(&index);
+        let json_oid = hash_object(repo, &doc.to_json_bytes());
+        let file_oid = hash_object(repo, b"x\n");
+        git_out(
+            repo,
+            Some(&index),
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("100644,{json_oid},snapshot.json"),
+            ],
+        );
+        git_out(
+            repo,
+            Some(&index),
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("100644,{file_oid},files/x.txt"),
+            ],
+        );
+        let tree = git_out(repo, Some(&index), &["write-tree"]);
+        let commit = git_out(repo, None, &["commit-tree", &tree, "-m", "snapshot"]);
+        git_out(
+            repo,
+            None,
+            &["update-ref", &format!("refs/toha/snapshots/{id}"), &commit],
+        );
+        let _ = std::fs::remove_file(&index);
+    }
+
+    fn open(repo: &Path, sub: &str) -> Project {
+        let target = toha::staging::canonical_target(&repo.join(sub)).unwrap();
+        Project::open(&target).unwrap().expect("in git")
+    }
+
+    #[test]
+    fn candidates_and_find_required_match_on_source_identity_across_versions() {
+        // Behaviors 4 (source identity, not formal name) and 17 (repository-wide
+        // source-filtered selection): a snapshot recorded at `@v1` seeds an apply
+        // of the same source at another version; a foreign source is refused and
+        // is not a candidate.
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        git(repo, &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("seed.txt"), "seed\n").unwrap();
+        git(repo, &["add", "-A"]);
+        git(repo, &["commit", "-q", "-m", "seed"]);
+        // Two applications of one source at different subpaths and a foreign one.
+        write_ref(repo, ID_A, "gh:example/widget@v1", "src/widgets/alpha");
+        write_ref(repo, ID_B, "gh:example/widget@v2", "src/widgets/beta");
+        write_ref(
+            repo,
+            "01JA2B8M4R0C7W1Y5F3H9K2S70",
+            "gh:example/gadget@v1",
+            "src/gadgets/one",
+        );
+
+        // Selection runs from a fresh, not-yet-created subpath.
+        let project = open(repo, "src/widgets/gamma");
+
+        // The source `gh:example/widget` matches both versions, newest first, and
+        // excludes the foreign `gh:example/gadget`.
+        let cands = candidates(&project, "gh:example/widget").unwrap();
+        let ids: Vec<String> = cands.iter().map(|s| s.id().to_string()).collect();
+        assert_eq!(ids, vec![ID_B.to_owned(), ID_A.to_owned()], "{ids:?}");
+
+        // find_required accepts the `@v1` snapshot for the bare source identity.
+        let found = find_required(Some(&project), "gh:example/widget", ID_A).unwrap();
+        assert_eq!(found.id().to_string(), ID_A);
+
+        // A foreign source is refused with WrongSource, naming both sources.
+        let err = find_required(
+            Some(&project),
+            "gh:example/widget",
+            "01JA2B8M4R0C7W1Y5F3H9K2S70",
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, LikeError::WrongSource { .. }),
+            "foreign source refused: {err:?}"
+        );
+    }
 }

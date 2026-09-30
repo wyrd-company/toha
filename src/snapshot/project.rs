@@ -37,8 +37,20 @@ impl Project {
     /// Open the repository that contains `target`, or `Ok(None)` when the target
     /// is not inside a git repository. The returned project has every configured
     /// driver removed from its in-memory config.
+    ///
+    /// Discovery starts from the nearest ancestor of `target` that exists on
+    /// disk, so a target subdirectory an `apply` has not created yet still
+    /// resolves its repository (an approved clean-git generate into a fresh
+    /// subpath, and its repository-wide snapshot reader, both open the project
+    /// before the subpath exists). The target-relative identity, path validation,
+    /// and repository-containment bound are unchanged: `rel` is still computed
+    /// from `target` itself against the canonical working tree, and a target
+    /// outside the working tree is still refused. For a target that already
+    /// exists, the nearest existing ancestor is the target, so discovery is
+    /// byte-for-byte as before.
     pub fn open(target: &CanonicalTarget) -> Result<Option<Project>, ProjectError> {
-        let mut repo = match gix::discover(target.as_path()) {
+        let discover_from = nearest_existing_ancestor(target.as_path());
+        let mut repo = match gix::discover(&discover_from) {
             Ok(repo) => repo,
             Err(gix::discover::Error::Discover(err)) if is_not_a_repository(&err) => {
                 return Ok(None);
@@ -596,13 +608,15 @@ impl Project {
     /// A plain apply saves a snapshot when the target is inside a repository with
     /// a commit, was clean before the apply, and the apply changed a path;
     /// otherwise it saves nothing and names why. `was_clean` is the target's
-    /// cleanliness taken before the apply wrote; `source_dir` is the target the
-    /// apply wrote into. The caller reports [`SkipReason::NotGit`] when there is
-    /// no project and [`SkipReason::DryRun`] when nothing was applied.
-    #[allow(clippy::too_many_arguments)]
+    /// cleanliness taken before the apply wrote. The apply wrote into the real
+    /// working tree at the project's target, so capture reads from the
+    /// repository working-tree root and addresses each file by its repo-relative
+    /// path (root and subpath targets alike), never by joining a target-relative
+    /// path onto the target directory. The caller reports [`SkipReason::NotGit`]
+    /// when there is no project and [`SkipReason::DryRun`] when nothing was
+    /// applied.
     pub fn save_after_apply(
         &self,
-        source_dir: &std::path::Path,
         plan: &crate::plan::Plan,
         template: String,
         revision: crate::snapshot::Revision,
@@ -611,6 +625,17 @@ impl Project {
         was_clean: bool,
     ) -> Result<SnapshotOutcome, SnapshotError> {
         use crate::snapshot::record::{CommitId, ProjectPoint, Timestamp};
+
+        // The apply wrote into the working tree; capture reads from its root so a
+        // repo-relative path (`<target>/<file>`) resolves once, not doubled onto
+        // the target directory. Canonicalized to match `Project::open`'s `rel`.
+        let workdir = self
+            .repo
+            .workdir()
+            .ok_or_else(|| SnapshotError::Git("repository has no working tree".into()))?
+            .to_owned()
+            .canonicalize()
+            .map_err(|err| SnapshotError::Git(err.to_string()))?;
 
         // No commit: there is no HEAD point to record.
         let head = match self.repo.head_id() {
@@ -645,7 +670,7 @@ impl Project {
         let plan_paths = crate::snapshot::capture::group_plan(plan);
         match crate::snapshot::capture::capture_if_changed(
             &self.repo,
-            source_dir,
+            &workdir,
             &self.rel,
             &plan_paths,
             inputs,
@@ -775,6 +800,23 @@ pub(crate) fn strip_drivers(repo: &mut gix::Repository) -> Result<(), ProjectErr
         .commit()
         .map_err(|err| ProjectError::Config(err.to_string()))?;
     Ok(())
+}
+
+/// The nearest ancestor of `path` (including `path` itself) that exists on disk.
+/// A `CanonicalTarget` always has an existing ancestor (its canonicalization
+/// walked up to one), so this terminates at or above the working tree, and
+/// discovery walks up to the repository from there.
+fn nearest_existing_ancestor(path: &std::path::Path) -> std::path::PathBuf {
+    let mut current = path;
+    loop {
+        if current.exists() {
+            return current.to_owned();
+        }
+        match current.parent() {
+            Some(parent) => current = parent,
+            None => return current.to_owned(),
+        }
+    }
 }
 
 /// Whether a discovery error means there simply is no repository, as opposed to
