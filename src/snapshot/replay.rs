@@ -28,7 +28,7 @@ use crate::template::{Id, Template};
 
 /// The outcome of driving the interview from recorded submissions.
 #[allow(clippy::large_enum_variant)]
-pub enum Replay<'a> {
+pub(crate) enum Replay<'a> {
     /// The interview completed; `submissions` are the raw values actually
     /// submitted, in batch order, for the new snapshot to record.
     Completed {
@@ -50,7 +50,7 @@ pub enum Replay<'a> {
 /// route `overrides` (already verified) applied first. `seed` carries the frozen
 /// instant and context; its defaults are set here to the recorded/override
 /// values so the route falls back to them.
-pub fn replay<'a>(
+pub(crate) fn replay<'a>(
     template: &'a Template,
     mut seed: Seed,
     recorded: &[IndexMap<Id, RawAnswer>],
@@ -170,6 +170,62 @@ pub fn replay<'a>(
             Err(AnswerError::Eval(error)) => return Err(error),
         }
     }
+}
+
+/// The outcome of driving an update interview, for a crate caller and the
+/// command driver: the three cases of the crate-private adapter, carried over
+/// already-public interview types. The adapter itself ([`Replay`], [`replay`])
+/// stays crate-private; this is the seam a driver consumes.
+#[allow(clippy::large_enum_variant)]
+pub enum UpdateDrive<'a> {
+    /// The interview completed; `submissions` are the raw values actually
+    /// submitted, in batch order, for the new snapshot to record.
+    Completed {
+        completed: Completed,
+        submissions: Vec<IndexMap<Id, RawAnswer>>,
+    },
+    /// The first batch the replay could not complete. The route takes over: the
+    /// person is prompted with the recorded values as defaults; the script route
+    /// reports `questions`; the agent route stages the interview.
+    Ask {
+        pending: Pending<'a>,
+        rejections: Rejections,
+    },
+    /// A flow `stop`/`abort` ended the interview.
+    Ended(Ended),
+}
+
+/// Drive an update interview from a base snapshot's `recorded` submissions, with
+/// the route's `overrides` applied first and `reanswer` handing every batch to
+/// the route. This is the driver-facing seam over the crate-private replay
+/// adapter: it keeps the adapter's queue mechanics internal and returns the
+/// typed outcome the person, script, and agent routes branch on.
+pub fn drive_update<'a>(
+    template: &'a Template,
+    seed: Seed,
+    recorded: &[IndexMap<Id, RawAnswer>],
+    overrides: RawAnswers,
+    reanswer: bool,
+) -> Result<UpdateDrive<'a>, EvalError> {
+    Ok(
+        match replay(template, seed, recorded, overrides, reanswer)? {
+            Replay::Completed {
+                completed,
+                submissions,
+            } => UpdateDrive::Completed {
+                completed,
+                submissions,
+            },
+            Replay::Ask {
+                pending,
+                rejections,
+            } => UpdateDrive::Ask {
+                pending: *pending,
+                rejections,
+            },
+            Replay::Ended(ended) => UpdateDrive::Ended(ended),
+        },
+    )
 }
 
 #[cfg(test)]

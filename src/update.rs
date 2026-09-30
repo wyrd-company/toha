@@ -21,8 +21,8 @@ use toha::RawAnswer;
 use toha::hook::ProcessRunner;
 use toha::interview::Seed;
 use toha::snapshot::{
-    Action, Base, Change, CommitId, ConflictKind, FrozenNow, MergeOptions, Merged, Project, Replay,
-    Revision, Snapshot, SnapshotInputs, merge_apply, replay,
+    Action, Base, Change, CommitId, ConflictKind, FrozenNow, MergeOptions, Merged, Project,
+    Revision, Snapshot, SnapshotInputs, UpdateDrive, drive_update, merge_apply,
 };
 use toha::template::Id;
 
@@ -167,16 +167,16 @@ pub fn run_update(
         defaults: IndexMap::new(),
         context,
     };
-    let driven = match replay(&template, seed, &recorded, overrides, reanswer) {
+    let driven = match drive_update(&template, seed, &recorded, overrides, reanswer) {
         Ok(value) => value,
         Err(error) => return Outcome::Error(error.to_string()),
     };
     let (completed, submissions) = match driven {
-        Replay::Completed {
+        UpdateDrive::Completed {
             completed,
             submissions,
         } => (completed, submissions),
-        Replay::Ask { rejections, .. } => {
+        UpdateDrive::Ask { rejections, .. } => {
             // The script and agent route cannot prompt: a recorded answer the new
             // version rejects, with no override, leaves a required question
             // unanswered. Name the rejections; the person route (later) prompts.
@@ -185,7 +185,7 @@ pub fn run_update(
             lines.extend(rejections.iter().map(|rejection| rejection.to_string()));
             return Outcome::Error(lines.join("\n"));
         }
-        Replay::Ended(ended) => {
+        UpdateDrive::Ended(ended) => {
             eprintln!("{}", crate::guidance::flow_ended(&ended));
             return Outcome::Error(format!(
                 "the template ended the interview: {:?}",
