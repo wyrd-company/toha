@@ -168,6 +168,9 @@ fn merge_inner(
     let merged_entries = flat_entries(project, merged_sub)?;
     let theirs_entries = flat_entries(project, theirs_sub)?;
 
+    let base_sub = subtree(project, base_full, target)?;
+    let base_entries = flat_entries(project, base_sub)?;
+
     // Classify each unresolved conflict by kind, keyed by repository-relative path.
     let mut conflict_kinds: std::collections::BTreeMap<String, ConflictKind> =
         std::collections::BTreeMap::new();
@@ -175,6 +178,23 @@ fn merge_inner(
         let location = c.ours.location().to_str_lossy().into_owned();
         conflict_kinds.insert(location, classify_conflict(repo, c));
     }
+
+    // A path whose attributes name a merge or filter driver is never merged: keep
+    // the operator's content, force a `driver` conflict, and stage 1/2/3 manually.
+    let mut driver_stages: DriverStages = std::collections::BTreeMap::new();
+    for path in driver_attributed_paths(repo, target, &base_entries, &theirs_entries)? {
+        let repo_rel = repo_path_for(target, &path).as_str().to_owned();
+        conflict_kinds.insert(repo_rel.clone(), ConflictKind::Driver);
+        driver_stages.insert(
+            repo_rel,
+            [
+                base_entries.get(&path).copied(),
+                ours_entries.get(&path).copied(),
+                theirs_entries.get(&path).copied(),
+            ],
+        );
+    }
+
     let conflicted: Vec<RepoPath> = conflict_kinds
         .keys()
         .filter_map(|p| RepoPath::parse(p).ok())
@@ -256,6 +276,7 @@ fn merge_inner(
         &merged_entries,
         target,
         &keep_operator,
+        &driver_stages,
         &mut outcome,
         merged_full,
         how,
@@ -302,6 +323,7 @@ fn commit_transaction(
     merged: &Entries,
     target: &RepoPath,
     keep_operator: &std::collections::BTreeSet<String>,
+    driver_stages: &DriverStages,
     outcome: &mut gix::merge::tree::Outcome<'_>,
     merged_full: gix::ObjectId,
     how: gix::merge::tree::TreatAsUnresolved,
@@ -356,7 +378,15 @@ fn commit_transaction(
 
     // The index is written last, through the held lock, so a write failure above
     // leaves the index untouched and staged work outside the target intact.
-    if let Err(err) = write_index(project, outcome, merged_full, target, how, lock) {
+    if let Err(err) = write_index(
+        project,
+        outcome,
+        merged_full,
+        target,
+        driver_stages,
+        how,
+        lock,
+    ) {
         rollback(repo, &mut pipeline, state, &workdir, &done)?;
         return Err(err);
     }
@@ -537,11 +567,13 @@ fn rollback(
 
 /// Build the merged index with conflict stages and write it through the held
 /// lock, committing atomically.
+#[allow(clippy::too_many_arguments)]
 fn write_index(
     project: &Project,
     outcome: &mut gix::merge::tree::Outcome<'_>,
     merged_full: gix::ObjectId,
     target: &RepoPath,
+    driver_stages: &DriverStages,
     how: gix::merge::tree::TreatAsUnresolved,
     mut lock: gix::lock::File,
 ) -> Result<(), MergeError> {
@@ -586,6 +618,31 @@ fn write_index(
         how,
         gix::merge::tree::apply_index_entries::RemovalMode::Prune,
     );
+
+    // Stage driver-attributed paths manually as unmerged (1/2/3), since gitoxide
+    // merged them with its built-in driver after the driver was stripped.
+    for (repo_rel, stages) in driver_stages {
+        let full: BString = repo_rel.as_str().into();
+        index.remove_entries(|_, path, _| path == full.as_slice());
+        for (i, entry) in stages.iter().enumerate() {
+            if let Some((oid, mode)) = entry {
+                let stage = match i {
+                    0 => gix::index::entry::Stage::Base,
+                    1 => gix::index::entry::Stage::Ours,
+                    _ => gix::index::entry::Stage::Theirs,
+                };
+                index.dangerously_push_entry(
+                    Default::default(),
+                    *oid,
+                    gix::index::entry::Flags::from_stage(stage),
+                    *mode,
+                    full.as_bstr(),
+                );
+            }
+        }
+    }
+    index.sort_entries();
+
     lock.with_mut(|file| {
         index
             .write_to(file, Default::default())
@@ -602,6 +659,65 @@ fn write_index(
 // ---------------------------------------------------------------------------
 
 type Entries = std::collections::BTreeMap<BString, (gix::ObjectId, gix::index::entry::Mode)>;
+
+/// For each driver-attributed path (repository-relative), its `[base, ours,
+/// theirs]` stage entries to write into the index as an unmerged conflict.
+type DriverStages =
+    std::collections::BTreeMap<String, [Option<(gix::ObjectId, gix::index::entry::Mode)>; 3]>;
+
+/// The target-relative paths the template changed whose attributes name a merge
+/// or filter driver, which Toha never runs.
+fn driver_attributed_paths(
+    repo: &gix::Repository,
+    target: &RepoPath,
+    base_entries: &Entries,
+    theirs_entries: &Entries,
+) -> Result<Vec<BString>, MergeError> {
+    let index = repo.index_or_empty().map_err(git)?;
+    let mut stack = repo
+        .attributes_only(
+            &index,
+            gix::worktree::stack::state::attributes::Source::WorktreeThenIdMapping,
+        )
+        .map_err(git)?;
+    let mut out = gix::attrs::search::Outcome::default();
+    out.initialize_with_selection(&Default::default(), ["merge", "filter"]);
+
+    let mut paths = Vec::new();
+    for (path, theirs) in theirs_entries {
+        if base_entries.get(path) == Some(theirs) {
+            continue; // the template did not change this path
+        }
+        let repo_rel = repo_path_for(target, path);
+        out.reset();
+        let platform = stack
+            .at_entry(repo_rel.as_str(), Some(gix::index::entry::Mode::FILE))
+            .map_err(|e| MergeError::Io(e.to_string()))?;
+        platform.matching_attributes(&mut out);
+        if is_driver_attributed(&out) {
+            paths.push(path.clone());
+        }
+    }
+    Ok(paths)
+}
+
+/// Whether the resolved `merge`/`filter` attributes name a driver program.
+fn is_driver_attributed(out: &gix::attrs::search::Outcome) -> bool {
+    use gix::attrs::StateRef;
+    let mut selected = out.iter_selected();
+    let merge = selected.next();
+    let filter = selected.next();
+    let merge_driver = merge.is_some_and(|m| match m.assignment.state {
+        StateRef::Value(v) => !matches!(
+            v.as_bstr().to_str_lossy().as_ref(),
+            "text" | "binary" | "union"
+        ),
+        _ => false,
+    });
+    let filter_driver =
+        filter.is_some_and(|m| matches!(m.assignment.state, StateRef::Value(_) | StateRef::Set));
+    merge_driver || filter_driver
+}
 
 /// The `files/` tree oid of a snapshot.
 fn snapshot_files_tree(project: &Project, id: &SnapshotId) -> Result<gix::ObjectId, MergeError> {

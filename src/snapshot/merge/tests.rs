@@ -523,3 +523,40 @@ fn a_file_replaced_by_a_directory_is_a_file_directory_conflict() {
         "operator file kept"
     );
 }
+
+#[test]
+fn a_driver_attributed_path_is_a_driver_conflict_keeping_operator_bytes() {
+    // Behavior 29 (merge side): a path whose attributes name a merge driver is
+    // never merged; the operator's bytes stay and it becomes a driver conflict
+    // with stages 1/2/3 — no driver program runs (drivers are stripped on open).
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q", "-b", "main"]);
+    git(root, &["config", "merge.secret.driver", "false %O %A %B"]);
+    write(&root.join(".gitattributes"), b"*.cf merge=secret\n");
+    write(&root.join("app/conf.cf"), b"operator\n");
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "operator"]);
+
+    make_snapshot(root, BASE_ID, "app", &[("conf.cf", b"base\n")]);
+    make_snapshot(root, NEW_ID, "app", &[("conf.cf", b"template\n")]);
+
+    let result = run_merge(root);
+    assert_eq!(
+        action_of(&result, "app/conf.cf"),
+        Some(Action::Conflicted(ConflictKind::Driver)),
+        "attributed path is a driver conflict"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("app/conf.cf")).unwrap(),
+        "operator\n",
+        "operator bytes kept"
+    );
+    let unmerged = git(root, &["ls-files", "-u"]);
+    assert!(
+        unmerged.contains(" 1\tapp/conf.cf")
+            && unmerged.contains(" 2\tapp/conf.cf")
+            && unmerged.contains(" 3\tapp/conf.cf"),
+        "stages 1/2/3 present: {unmerged}"
+    );
+}
