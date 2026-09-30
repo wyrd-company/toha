@@ -552,6 +552,56 @@ fn a_failure_after_a_write_but_before_commit_rolls_the_transaction_back() {
     );
 }
 
+#[test]
+fn the_write_index_drops_the_stale_cache_tree_extension() {
+    // remove_tree() is required: gix-index writes the TREE (cache-tree) extension
+    // as-is, so once the transaction replaces index entries the stale cache-tree
+    // must be dropped — otherwise a later git operation trusts it and computes a
+    // tree that disagrees with the working tree. Seed a populated cache-tree, run
+    // the merge, and assert the on-disk TREE extension is gone, read via gix
+    // BEFORE any git command could rebuild it.
+    use gix::hash::Kind;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q", "-b", "main"]);
+    write(&root.join("app/a.txt"), b"one\n");
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "operator"]);
+    // Seed a populated cache-tree into the on-disk index.
+    git(root, &["write-tree"]);
+    let idx = root.join(".git/index");
+    let seeded = gix::index::File::at(&idx, Kind::Sha1, false, Default::default()).unwrap();
+    assert!(
+        seeded.tree().is_some(),
+        "the seeded index carries a populated cache-tree"
+    );
+
+    make_snapshot(root, BASE_ID, "app", &[("a.txt", b"one\n")]);
+    make_snapshot(root, NEW_ID, "app", &[("a.txt", b"two\n")]);
+    let project = open(root, "app");
+    let base = read_snapshot(&project, BASE_ID);
+    let new = read_snapshot(&project, NEW_ID);
+    let result = merge_into_worktree(
+        &project,
+        &Base::Snapshot(base),
+        &new,
+        &MergeOptions {
+            trusted: true,
+            dry_run: false,
+        },
+    )
+    .unwrap();
+    assert!(matches!(result, Merged::Written { .. }), "the merge writes");
+
+    // Read the DISK index via gix, before any git command could rebuild the
+    // cache-tree. The write transaction must have dropped the stale extension.
+    let after = gix::index::File::at(&idx, Kind::Sha1, false, Default::default()).unwrap();
+    assert!(
+        after.tree().is_none(),
+        "the write transaction dropped the stale cache-tree extension (remove_tree)"
+    );
+}
+
 fn action_of(result: &Merged, path: &str) -> Option<Action> {
     if let Merged::Written { changes, .. } = result {
         changes
