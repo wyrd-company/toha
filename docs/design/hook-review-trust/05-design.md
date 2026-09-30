@@ -327,7 +327,7 @@ never in this design package.
 
 ## Permissions / access and related disclosures
 
-Called out separately because deck or design inclusion alone does not grant
+Called out separately because design inclusion alone does not grant
 approval:
 
 - **Supported-capability change (requires approval):** Decision 1 narrows the

@@ -428,7 +428,7 @@ messages:
   form of a result-reading hook; Toha does not print a stream a template reads.
 - **Interview protocol:** no change.
 
-## 7. Decisions for Bob (Phase C — see the deck)
+## 7. Decisions for Bob (Phase C)
 
 All five are open; Bob's JSON request approves none of the first three.
 

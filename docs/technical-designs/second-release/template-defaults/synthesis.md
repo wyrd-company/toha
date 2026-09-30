@@ -11,7 +11,7 @@ preserved in git history at commit `37e2215`.
 
 Bob approved this design at revision `24b6301` with **one authorized naming
 revision** and all D1–D5 recommendations accepted. The delta, applied faithfully
-across the authoritative contract (`design.md`, the deck, schema/guide/error/example
+across the authoritative contract (`design.md` and schema/guide/error/example
 text) without re-running the arena:
 
 - The store property `values` → **`presets`**.

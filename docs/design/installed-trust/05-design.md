@@ -388,7 +388,7 @@ surface digest, independent of commit — and is not reopened.*
 
 ## Permissions / access and related disclosures
 
-Called out separately because deck or design inclusion alone does not grant
+Called out separately because design inclusion alone does not grant
 approval:
 
 - **Permissions / access change (requires approval).** These commands grant and

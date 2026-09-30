@@ -21,7 +21,7 @@ File:line citations resolve against `a62061f` unless noted.
 - Ground: complete at the evidence level recorded here.
 - Sketch: candidate arena consumes this artifact; candidates receive it and the
   common task, not the rubric.
-- Agree: Phase C explicit Bob checkpoint follows synthesis and deck.
+- Agree: Phase C explicit Bob checkpoint follows synthesis.
 
 ## Scope and the shape of the change
 
@@ -59,7 +59,7 @@ load-bearing grounding fact for this design.
 
 Approved revision consumed: design SHA-256
 `72a564799b95ab1c187c913ac14ef14938f880bf2ab24ec337c03f887991457b`, checkpoint
-commit `067c8d2e7c95cf2b16ab3a4103f8b1a8fda331af`, Postplan `a2q5sdtr0ctw` v1;
+commit `067c8d2e7c95cf2b16ab3a4103f8b1a8fda331af`;
 Bob accepted all five recommendations. The five fixed policies confirm-flow
 composes with:
 

@@ -72,7 +72,7 @@ and read-only source. Nothing else.
 
 This erratum narrows two claims above; the original text and its verified facts
 are preserved unchanged. Scope exception: correcting `arena-setup.md` is outside
-this correction's original findings (the deck, the final synthesis, and the
+this correction's original findings (the final synthesis and the
 round-2 audit), and is authorized only for this narrow reachability correction —
 no other change to the round-1 evidence.
 

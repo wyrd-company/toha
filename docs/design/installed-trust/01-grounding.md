@@ -14,7 +14,7 @@ approval, and the refusal that points at them.
 ## Prerequisite: the approved 1069 contract (consumed, not reopened)
 
 Exact approved revision: `docs/design/hook-review-trust/05-design.md` at commit
-`132b2f449633ee0db89b29b80c63bdc2eca92e8a` (1069 Postplan brief). Bob approved all
+`132b2f449633ee0db89b29b80c63bdc2eca92e8a`. Bob approved all
 four of its decisions. The parts 1071 builds on:
 
 - **Approval is a content fingerprint, not a name or commit.** The registry entry

@@ -168,7 +168,7 @@ Rejected:
 
 ## Approved closure correction
 
-The exact prior deck approval already covered bounded plaintext fixed-five
+The exact prior design approval already covered bounded plaintext fixed-five
 storage and immutable replay. The stage-only amendment fixes how that snapshot
 is selected:
 

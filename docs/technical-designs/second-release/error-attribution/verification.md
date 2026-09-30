@@ -28,8 +28,8 @@ relationships:
 
 The implementation contract is bound to commit
 `067c8d2e7c95cf2b16ab3a4103f8b1a8fda331af`, design SHA-256
-`72a564799b95ab1c187c913ac14ef14938f880bf2ab24ec337c03f887991457b`,
-and Postplan draft `a2q5sdtr0ctw` version 1. The approved selections are:
+`72a564799b95ab1c187c913ac14ef14938f880bf2ab24ec337c03f887991457b`.
+The approved selections are:
 
 1. Reject a known-invalid early answer when its skip is unresolved.
 2. Omit a proven-skipped early error beside a current failure and emit no

@@ -181,7 +181,7 @@ not a new content-identity refusal.
 - Direct/new-apply effective trust, explicit stage-only trust, and the producer
   target carrier are approved inputs.
 - The bounded plaintext fixed-five snapshot and mutable-folder outcomes are
-  approved by the exact prior deck approval plus the stage-only carried-grant
+  approved by the exact prior design approval plus the stage-only carried-grant
   amendment. This closure adds no broader environment, permission, or storage
   policy.
 - The design adds no access recheck, later trust flag, source-change refusal,
@@ -234,12 +234,8 @@ The exact revision checkpoint records:
 - Markdown and YAML validation;
 - repository `task ci`;
 - working-tree and diff cleanliness;
-- design, machine-readable design, verification, source, committed deck, and
-  publication-evidence SHA-256 values;
-- same-draft Postplan publication and local/published byte equality;
-- one `Reveal.initialize` call; and
-- every horizontal and vertical slide rendered at 1280×720, checked for
-  viewport/body overflow, and visually inspected.
+- design, machine-readable design, verification, and publication-evidence
+  SHA-256 values.
 
 Those exact values live in [publication.md](publication.md) and the canonical
 checkpoint record so that this clean design verification does not narrate old

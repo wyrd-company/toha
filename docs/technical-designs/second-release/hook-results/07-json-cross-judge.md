@@ -72,7 +72,7 @@ A misses the most likely migration mistake silently: add `parse: json` to a v1 h
 
 - B leaves v1 invariant 4 ("capture equals reads"; `capture` is the only place that controls piping) without an exception. A adds "except stdout under `parse`" to that invariant and a new load error for the redundant form.
 - A saves one YAML line. B keeps one source of truth for "stdout is not shown on the terminal" and keeps the 1069 guard classification simpler.
-- This is a two-way door and a low-weight choice. It is worth a line in the Bob deck.
+- This is a two-way door and a low-weight choice. It is worth a line in the decisions put to Bob.
 
 ## 4. Verdict
 

@@ -1,16 +1,14 @@
 # Base refresh and approval record — opt-in Jinja hook results
 
 Evidence record. The approved package (`design.md`, `design.yml`,
-`verification.md`, `brief.source.html`, `brief.deck.html`, and the arena
-artifacts) is byte-identical to the approved revision; this file adds
+`verification.md`, and the arena artifacts) is byte-identical to the approved revision; this file adds
 provenance only and changes no design semantics.
 
 ## Approval
 
 - Bob, verbatim: "hook-results: all recommendatons accepted. approved" and
   "hook results v2: approved".
-- Binds Postplan draft `yzh93iexvlil` version 2
-  (<https://yzh93iexvlil.postplan.dev>), approval anchor
+- Binds approval anchor
   `999ab89f1d186a08af01dbe681350dbe97643c0d`, design SHA-256
   `a64850ff7711a9a2b6e1868d9c1866e41260aceb1bd6679565e5ec9c9a35dd69`.
 - All five recommendations accepted:
@@ -38,16 +36,11 @@ provenance only and changes no design semantics.
 | `design.md` | `a64850ff7711a9a2b6e1868d9c1866e41260aceb1bd6679565e5ec9c9a35dd69` |
 | `design.yml` | `d90af16a7daa8f520c59d71dff989aa92f821f02e9c702d2fdae2fa8173ce6d1` |
 | `verification.md` | `df947e0bae3dcd120d83a25a30445e441560d9850d7dc047ac31756afd6ce3f6` |
-| `brief.source.html` | `6795a7c91d261b7726c20818186a75bd9cf8e8318ac99bc8e4a35993d2da46a6` |
-| `brief.deck.html` | `b1575c046d4c6752df056c670d16d53168ab5ce3cabd8ac8577178719a8771d6` |
 | `01-grounding.md` | `c0e6d7affb24059c6db1b953416c977939ba782944357abcfa5ee802ca70f6c9` |
 | `05-synthesis.md` | `26a4c4980aaecbd3ead634291d964eb637c91ab19579c1c77527efe8c829a951` |
 | `06-json-revision-grounding.md` | `a0642010ef5d820db6d9a072014440b02b27beedc562deb510f4d38c90a29900` |
 | `07-json-cross-judge.md` | `53ee3bccaf6f9308ac983acd2642353e262a2a9199aa90694960e6570a278c28` |
 | `08-json-synthesis.md` | `f1749102b96972e0c9ef18f2503e481bcc3fbf999e95452126bb584a7a16aeab` |
-
-The published Postplan v2 raw HTML is byte-identical to the committed
-`brief.deck.html` (318262 bytes) and contains one `Reveal.initialize`.
 
 ## Composition with the landed runtime
 

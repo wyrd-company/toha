@@ -73,7 +73,7 @@ the exact `NotFound("toha-demo")` that fails today).
 
 ## Decisions surfaced to Bob (Phase C)
 
-Recorded in full in `design.md` §Decisions and carried to the deck:
+Recorded in full in `design.md` §Decisions:
 
 - **D1 — Collision precedence:** fallback-only (recommended) vs
   reserved-name-wins (narrows resolution → needs approval).
