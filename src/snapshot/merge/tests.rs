@@ -560,3 +560,136 @@ fn a_driver_attributed_path_is_a_driver_conflict_keeping_operator_bytes() {
         "stages 1/2/3 present: {unmerged}"
     );
 }
+
+/// Set up an occupied-path failure scenario with a base and new snapshot plus a
+/// foreign third snapshot, returning the project ready to merge.
+fn occupied_scenario(root: &Path) {
+    git(root, &["init", "-q", "-b", "main"]);
+    write(&root.join("app/keep.txt"), b"k\n");
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "operator"]);
+    write(&root.join("app/added.txt"), b"operator's own\n"); // occupies the add path
+    make_snapshot(root, BASE_ID, "app", &[("keep.txt", b"k\n")]);
+    make_snapshot(
+        root,
+        NEW_ID,
+        "app",
+        &[("keep.txt", b"k\n"), ("added.txt", b"template\n")],
+    );
+}
+
+const FOREIGN_ID: &str = "01JA2B8M4R0C7W1Y5F3H9K2S71";
+
+#[test]
+fn behavior_31_ref_map_unchanged_except_candidate_on_unsuccessful_exit() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    occupied_scenario(root);
+    // A foreign snapshot of another source must survive the failed merge.
+    make_snapshot(root, FOREIGN_ID, "app", &[("keep.txt", b"k\n")]);
+
+    let before = git(root, &["for-each-ref", "refs/toha/snapshots/"]);
+    let project = open(root, "app");
+    let base = read_snapshot(&project, BASE_ID);
+    let new = read_snapshot(&project, NEW_ID);
+    let result = merge_into_worktree(
+        &project,
+        &Base::Snapshot(base),
+        &new,
+        &MergeOptions {
+            trusted: true,
+            dry_run: false,
+        },
+    );
+    assert!(matches!(result, Err(MergeError::Occupied(_))));
+
+    let after = git(root, &["for-each-ref", "refs/toha/snapshots/"]);
+    // The candidate ref is gone; base and the foreign ref remain unchanged.
+    assert!(
+        before.contains(NEW_ID) && !after.contains(NEW_ID),
+        "candidate removed"
+    );
+    assert!(after.contains(BASE_ID), "base preserved");
+    assert!(after.contains(FOREIGN_ID), "foreign snapshot preserved");
+    // Only the candidate line differs.
+    let before_no_cand: Vec<&str> = before.lines().filter(|l| !l.contains(NEW_ID)).collect();
+    assert_eq!(
+        before_no_cand,
+        after.lines().collect::<Vec<_>>(),
+        "ref map unchanged except the candidate"
+    );
+}
+
+#[test]
+fn behavior_31_cleanup_preserves_a_ref_replaced_since_publication() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q", "-b", "main"]);
+    write(&root.join("app/keep.txt"), b"k\n");
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "operator"]);
+    make_snapshot(root, NEW_ID, "app", &[("keep.txt", b"k\n")]);
+
+    let project = open(root, "app");
+    let id: SnapshotId = NEW_ID.parse().unwrap();
+    let current = super::published_commit(&project, &id).unwrap();
+    let unrelated = gix::ObjectId::from_hex(git(root, &["rev-parse", "HEAD"]).as_bytes()).unwrap();
+    assert_ne!(current, unrelated, "the commits differ");
+
+    // Cleanup with a stale "published" commit (a concurrent replacement) preserves the ref.
+    super::remove_candidate(&project, &id, unrelated).unwrap();
+    assert!(
+        git(root, &["for-each-ref", "refs/toha/snapshots/"]).contains(NEW_ID),
+        "a ref replaced since publication is preserved"
+    );
+
+    // Cleanup with the real published commit removes it.
+    super::remove_candidate(&project, &id, current).unwrap();
+    assert!(
+        !git(root, &["for-each-ref", "refs/toha/snapshots/"]).contains(NEW_ID),
+        "the exact candidate is removed"
+    );
+}
+
+#[test]
+fn behavior_31_a_held_index_lock_refuses_and_removes_the_candidate() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q", "-b", "main"]);
+    write(&root.join("app/both.txt"), b"base\n");
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "operator"]);
+    make_snapshot(root, BASE_ID, "app", &[("both.txt", b"base\n")]);
+    make_snapshot(root, NEW_ID, "app", &[("both.txt", b"template\n")]);
+
+    // Another program holds the index lock.
+    std::fs::write(root.join(".git/index.lock"), b"").unwrap();
+
+    let project = open(root, "app");
+    let base = read_snapshot(&project, BASE_ID);
+    let new = read_snapshot(&project, NEW_ID);
+    let result = merge_into_worktree(
+        &project,
+        &Base::Snapshot(base),
+        &new,
+        &MergeOptions {
+            trusted: true,
+            dry_run: false,
+        },
+    );
+    assert!(result.is_err(), "a held index lock refuses: {result:?}");
+    // Nothing written, candidate removed, base preserved, foreign lock untouched.
+    assert_eq!(
+        std::fs::read_to_string(root.join("app/both.txt")).unwrap(),
+        "base\n"
+    );
+    let refs = git(root, &["for-each-ref", "refs/toha/snapshots/"]);
+    assert!(
+        !refs.contains(NEW_ID) && refs.contains(BASE_ID),
+        "candidate removed, base preserved"
+    );
+    assert!(
+        root.join(".git/index.lock").exists(),
+        "the foreign lock is left in place"
+    );
+}

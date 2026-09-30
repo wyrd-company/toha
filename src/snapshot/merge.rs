@@ -107,12 +107,36 @@ pub(crate) fn merge_into_worktree(
     new: &Snapshot,
     options: &MergeOptions,
 ) -> Result<Merged, MergeError> {
+    // The commit this invocation published, so cleanup only removes the ref while
+    // it still points there (a concurrent replacement is preserved).
+    let published = published_commit(project, new.id());
     let result = merge_inner(project, base, new, options);
     if !options.dry_run && !matches!(result, Ok(Merged::Written { .. })) {
-        // Any unsuccessful post-capture exit removes this candidate ref.
-        remove_candidate(project, new.id());
+        // Any unsuccessful post-capture exit removes this candidate ref. A cleanup
+        // failure keeps the original error and names the ref that remains.
+        if let (Err(original), Some(published)) = (&result, published) {
+            if let Err(cleanup) = remove_candidate(project, new.id(), published) {
+                return Err(MergeError::Io(format!(
+                    "{original}; additionally, cleanup of {}{} failed: {cleanup}",
+                    SNAPSHOT_REF_PREFIX,
+                    new.id()
+                )));
+            }
+        }
     }
     result
+}
+
+/// The commit a snapshot's ref currently points at, if it exists.
+fn published_commit(project: &Project, id: &SnapshotId) -> Option<gix::ObjectId> {
+    let name = format!("{SNAPSHOT_REF_PREFIX}{id}");
+    project
+        .repo()
+        .find_reference(name.as_str())
+        .ok()?
+        .peel_to_commit()
+        .ok()
+        .map(|commit| commit.id().detach())
 }
 
 fn merge_inner(
@@ -857,13 +881,24 @@ fn is_binary(repo: &gix::Repository, id: gix::ObjectId) -> bool {
 }
 
 /// Remove this invocation's candidate ref, only if it still points at the commit
-/// the capture published.
-fn remove_candidate(project: &Project, id: &SnapshotId) {
+/// the capture published. A ref that another program replaced or already removed
+/// is preserved; a genuine deletion failure is reported.
+fn remove_candidate(
+    project: &Project,
+    id: &SnapshotId,
+    published: gix::ObjectId,
+) -> Result<(), MergeError> {
     let repo = project.repo();
     let name = format!("{SNAPSHOT_REF_PREFIX}{id}");
-    if let Ok(reference) = repo.find_reference(name.as_str()) {
-        let _ = reference.delete();
+    let mut reference = match repo.find_reference(name.as_str()) {
+        Ok(reference) => reference,
+        Err(_) => return Ok(()), // already gone
+    };
+    let current = reference.peel_to_commit().map_err(git)?.id().detach();
+    if current != published {
+        return Ok(()); // replaced by another program; preserve it
     }
+    reference.delete().map_err(git)
 }
 
 #[cfg(test)]
