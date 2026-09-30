@@ -786,6 +786,28 @@ fn project_reject(error: toha::snapshot::ProjectError) -> LikeReject {
         usage: false,
     }
 }
+/// Open the project for repository-wide `--like` selection, discovering the
+/// repository from the nearest existing ancestor of `target`. `candidates`,
+/// `latest`, and `find_required` read the whole repository, so the opened
+/// project's own relative target does not matter; discovering from an existing
+/// ancestor lets selection run before `apply` has created a fresh target
+/// subpath. For a target that already exists this is `Project::open(target)`.
+fn open_project_for_selection(
+    target: &CanonicalTarget,
+) -> Result<Option<toha::snapshot::Project>, toha::snapshot::ProjectError> {
+    let mut path = target.as_path();
+    while !path.exists() {
+        match path.parent() {
+            Some(parent) => path = parent,
+            None => return toha::snapshot::Project::open(target),
+        }
+    }
+    match staging::canonical_target(path) {
+        Ok(existing) => toha::snapshot::Project::open(&existing),
+        // A path that will not canonicalize is treated as outside any project.
+        Err(_) => Ok(None),
+    }
+}
 /// Resolve a `--like` request against the target repository into a seed, or
 /// `None` when there is nothing to seed from and the request does not require a
 /// snapshot (flag absent, or a person-route picker with no candidates or a
@@ -807,7 +829,7 @@ fn resolve_like_seed(
         LikeFlag::Bare => None, // the person picker
         LikeFlag::Select(selector) => Some(selector),
     };
-    let project = toha::snapshot::Project::open(target).map_err(project_reject)?;
+    let project = open_project_for_selection(target).map_err(project_reject)?;
     match selector {
         Some(cli::like::LikeSelector::Reference(reference)) => {
             let snapshot = cli::like::find_required(project.as_ref(), source, &reference)?;
@@ -856,7 +878,7 @@ fn resolve_pinned_seed(
     let Some(pin) = pin else {
         return Ok(None);
     };
-    let project = toha::snapshot::Project::open(target).map_err(|error| error.to_string())?;
+    let project = open_project_for_selection(target).map_err(|error| error.to_string())?;
     let snapshot = cli::like::find_required(project.as_ref(), source, pin)
         .map_err(|error| error.to_string())?;
     Ok(Some(cli::like::seed(&snapshot).engine))
