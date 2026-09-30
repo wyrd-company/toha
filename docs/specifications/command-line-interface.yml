@@ -268,7 +268,11 @@ description: >-
   target is inside a repository with a commit, was clean before the apply, and
   the apply changed a captured path; otherwise it applies as before and the
   `applied` document's `snapshot` member names why it saved none (`not-git`,
-  `no-commit`, `dirty`, `nothing-changed`, or `dry-run`). `snapshots list` shows
+  `no-commit`, `dirty`, `nothing-changed`, or `dry-run`). A genuine failure to
+  open the repository — as opposed to the target simply not being inside one — is
+  named as a warning on standard error before the apply proceeds and saves no
+  snapshot; the apply, its exit code, and its result document are otherwise
+  unchanged. `snapshots list` shows
   a target's snapshots, newest first, and marks the one most likely to be a base.
   `snapshots clean` removes snapshots named in a `{ "remove": [...] }` document
   and reports the `git push --delete` commands to remove them from a remote; it

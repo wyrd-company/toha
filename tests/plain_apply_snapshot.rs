@@ -292,3 +292,49 @@ fn a_re_apply_that_changes_nothing_skips() {
     let second = support::first_document(&output.stdout);
     assert_eq!(second["snapshot"]["skipped"], "nothing-changed", "{second}");
 }
+
+#[test]
+fn a_genuine_open_fault_warns_and_still_applies() {
+    // A bare repository has no working tree, so opening it to save a snapshot
+    // fails with a genuine fault (ProjectError::Bare) — distinct from "not a git
+    // repo". The apply still applies and names the fault on standard error,
+    // instead of silently degrading to "not-git".
+    let iso = tempfile::tempdir().unwrap();
+    let template_dir = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    write_template(template_dir.path());
+    git(target.path(), &["init", "--quiet", "--bare"]);
+
+    let formal = support::formal_name(template_dir.path());
+    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let env = envelope(
+        iso.path(),
+        "a.json",
+        &formal,
+        serde_json::json!({ "name": "sample-value" }),
+    );
+
+    let mut command = support::isolated_command(iso.path());
+    command
+        .arg("apply")
+        .arg(&address)
+        .arg(target.path())
+        .arg("--answers")
+        .arg(&env);
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "the apply still applies: {output:?}"
+    );
+    let document = support::first_document(&output.stdout);
+    assert_eq!(document["status"], "applied", "{document}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("warning") && stderr.contains("working tree"),
+        "the genuine open fault is named on stderr: {stderr}"
+    );
+    assert!(
+        target.path().join("greeting.txt").exists(),
+        "the file was written"
+    );
+}

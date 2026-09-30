@@ -1633,7 +1633,10 @@ fn scripted_completed(
         .map(|entry| (entry.path.clone(), entry.action.clone()))
         .collect();
     // The snapshot save rule reads cleanliness before the apply writes.
-    let project = toha::snapshot::Project::open(target).unwrap_or_default();
+    let project = open_project_for_snapshot(
+        toha::snapshot::Project::open(target),
+        &mut std::io::stderr(),
+    );
     let was_clean = project
         .as_ref()
         .is_some_and(|p| matches!(p.cleanliness(), Ok(toha::snapshot::Cleanliness::Clean)));
@@ -1703,6 +1706,29 @@ fn scripted_completed(
         Err(error) => scripted_apply_error(error, ctx),
     }
 }
+/// Open the repository to decide the snapshot save, distinguishing a genuine
+/// open fault from a target that is simply not inside a git repository. A
+/// `ProjectError` (a canonicalize IO error, a bare repository, a config/strip
+/// failure) is named on `warn` before the apply degrades to saving no snapshot;
+/// "not a git repo" (`Ok(None)`) degrades silently, as before. This adds a
+/// diagnostic only: it does not change the apply, its exit code, or its result
+/// document, and it does not narrow the not-git path.
+fn open_project_for_snapshot(
+    opened: Result<Option<toha::snapshot::Project>, toha::snapshot::ProjectError>,
+    warn: &mut dyn std::io::Write,
+) -> Option<toha::snapshot::Project> {
+    match opened {
+        Ok(project) => project,
+        Err(err) => {
+            let _ = writeln!(
+                warn,
+                "warning: cannot open the repository to save a snapshot: {err}"
+            );
+            None
+        }
+    }
+}
+
 /// The `snapshot` member of a plain apply's `applied` document: `{ "id": ... }`
 /// when the apply saved a snapshot, or `{ "skipped": "<reason>" }` when the save
 /// rule declined. The plan is rebuilt for the capture because `apply` consumes
@@ -2118,7 +2144,10 @@ fn run(
     // before the apply writes. `completed` is not yet moved here.
     let capture_plan = Plan::build(&template, &completed, &target).ok();
     let capture_now = completed.now.clone();
-    let capture_project = toha::snapshot::Project::open(&target).unwrap_or_default();
+    let capture_project = open_project_for_snapshot(
+        toha::snapshot::Project::open(&target),
+        &mut std::io::stderr(),
+    );
     let capture_was_clean = capture_project
         .as_ref()
         .is_some_and(|p| matches!(p.cleanliness(), Ok(toha::snapshot::Cleanliness::Clean)));
@@ -2726,5 +2755,41 @@ mod report_tests {
             "document written: {text}"
         );
         assert!(err.is_empty(), "nothing on stderr for a success");
+    }
+}
+
+#[cfg(test)]
+mod snapshot_open_tests {
+    use super::open_project_for_snapshot;
+    use toha::snapshot::ProjectError;
+
+    #[test]
+    fn a_genuine_open_fault_is_warned_and_degrades_to_no_snapshot() {
+        // Err(ProjectError) — a real open fault, not "not a git repo" — is named
+        // on the warn writer before degrading to None (the apply saves no
+        // snapshot). This is the distinction finding 5 restores.
+        let mut warn = Vec::new();
+        let project = open_project_for_snapshot(Err(ProjectError::Open("boom".into())), &mut warn);
+        assert!(project.is_none(), "a fault degrades to no snapshot");
+        let text = String::from_utf8(warn).unwrap();
+        assert!(
+            text.contains("warning"),
+            "the fault is named as a warning: {text}"
+        );
+        assert!(text.contains("boom"), "the warning names the fault: {text}");
+    }
+
+    #[test]
+    fn not_a_git_repository_degrades_silently() {
+        // Ok(None) — the target is simply not inside a repository — degrades to
+        // None with no diagnostic, as before.
+        let mut warn = Vec::new();
+        let project = open_project_for_snapshot(Ok(None), &mut warn);
+        assert!(project.is_none());
+        assert!(
+            warn.is_empty(),
+            "not-a-repo stays silent: {}",
+            String::from_utf8_lossy(&warn)
+        );
     }
 }
