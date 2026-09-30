@@ -320,6 +320,56 @@ fn a_hook_file_unchanged_by_the_new_version_is_carried_forward() {
 }
 
 #[test]
+fn a_json_value_the_new_plan_re_owns_is_not_retracted() {
+    // Behavior 12: retraction must respect coverage. A base edit value the new
+    // plan re-owns (covers) is NOT uncovered, so it is not retracted — retracting
+    // a covered value would drop the child the new version still owns (the
+    // parent-object transition). Covering an ancestor covers the descendant too.
+    let base_regions: Vec<String> = vec![];
+    let base_values = vec!["a.b".to_owned()];
+
+    // The new plan owns exactly a.b: it covers the base's a.b, so nothing is left
+    // uncovered.
+    let exact = super::PlanOwnership {
+        whole: false,
+        regions: vec![],
+        values: vec!["a.b".to_owned()],
+    };
+    let uncovered = super::uncovered_ownership(&base_regions, &base_values, Some(&&exact));
+    assert!(
+        uncovered.values.is_empty(),
+        "a value the new plan re-owns is not retracted: {:?}",
+        uncovered.values
+    );
+
+    // The new plan owns the ancestor a: it covers a.b as well.
+    let ancestor = super::PlanOwnership {
+        whole: false,
+        regions: vec![],
+        values: vec!["a".to_owned()],
+    };
+    let uncovered = super::uncovered_ownership(&base_regions, &base_values, Some(&&ancestor));
+    assert!(
+        uncovered.values.is_empty(),
+        "an ancestor the new plan owns covers the descendant: {:?}",
+        uncovered.values
+    );
+
+    // A value no new owner covers IS uncovered (and would be retracted).
+    let other = super::PlanOwnership {
+        whole: false,
+        regions: vec![],
+        values: vec!["x.y".to_owned()],
+    };
+    let uncovered = super::uncovered_ownership(&base_regions, &base_values, Some(&&other));
+    assert_eq!(
+        uncovered.values,
+        vec!["a.b".to_owned()],
+        "an uncovered value is retracted"
+    );
+}
+
+#[test]
 fn a_whole_file_the_new_plan_drops_is_released_so_the_merge_removes_it() {
     // Behavior 12: a base whole-file (origin toha) the new plan no longer produces
     // is NOT captured, so the merge sees the template remove it (the A->B->C case).

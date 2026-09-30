@@ -1056,14 +1056,19 @@ fn a_dry_run_previews_the_change_and_saves_nothing() {
 
     let project = open(root, "app");
     let src = tempfile::tempdir().unwrap();
-    // Dry run builds the candidate with no hooks.
+    // Behavior 20: a dry run runs NO hooks. The plan carries a hook that always
+    // fails, and the runner would error if it were invoked — so building the
+    // candidate with `run_hooks = false` must skip it and succeed. (If a dry run
+    // ran the hook, build_candidate would return the hook's failure here.)
+    let mut plan = plan_of(vec![plan_file(src.path(), "app.txt", "v2\n")]);
+    plan.hooks.push(failing_hook());
     let new = super::build_candidate(
         &project,
         &Base::Snapshot(read_snapshot(&project, BASE_ID)),
-        plan_of(vec![plan_file(src.path(), "app.txt", "v2\n")]),
+        plan,
         capture_inputs_id(&head, 7),
         false,
-        &crate::hook::ProcessRunner,
+        &FailingRunner,
     )
     .unwrap();
 
