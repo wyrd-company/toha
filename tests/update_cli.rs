@@ -69,11 +69,11 @@ fn baseline_records_then_from_updates_and_detects_current() {
 
     // 1. `apply --baseline` renders the whole template and records the first
     //    snapshot. The greeting file appears with the answered name.
-    let env_alice = envelope(
+    let env_first = envelope(
         iso.path(),
-        "alice.json",
+        "first.json",
         &formal,
-        serde_json::json!({ "name": "Alice" }),
+        serde_json::json!({ "name": "sample-value" }),
     );
     let mut command = support::isolated_command(iso.path());
     command
@@ -82,7 +82,7 @@ fn baseline_records_then_from_updates_and_detects_current() {
         .arg(target.path())
         .arg("--baseline")
         .arg("--answers")
-        .arg(&env_alice);
+        .arg(&env_first);
     let output = command.output().unwrap();
     assert!(output.status.success(), "baseline failed: {output:?}");
     let document = support::first_document(&output.stdout);
@@ -90,7 +90,7 @@ fn baseline_records_then_from_updates_and_detects_current() {
     let snapshot = document["snapshot"].as_str().unwrap().to_owned();
     assert_eq!(
         std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
-        "Hello Alice\n"
+        "Hello sample-value\n"
     );
 
     // Commit the applied file so the next update merges from a clean tree.
@@ -105,7 +105,7 @@ fn baseline_records_then_from_updates_and_detects_current() {
         .arg("--from")
         .arg(&snapshot)
         .arg("--answers")
-        .arg(&env_alice);
+        .arg(&env_first);
     let output = same.output().unwrap();
     assert!(
         output.status.success(),
@@ -120,11 +120,11 @@ fn baseline_records_then_from_updates_and_detects_current() {
     std::fs::write(target.path().join("notes.txt"), "local\n").unwrap();
     git(target.path(), &["add", "."]);
     git(target.path(), &["commit", "--quiet", "-m", "local notes"]);
-    let env_bob = envelope(
+    let env_revised = envelope(
         iso.path(),
-        "bob.json",
+        "revised.json",
         &formal,
-        serde_json::json!({ "name": "Bob" }),
+        serde_json::json!({ "name": "revised-value" }),
     );
     let mut update = support::isolated_command(iso.path());
     update
@@ -133,14 +133,14 @@ fn baseline_records_then_from_updates_and_detects_current() {
         .arg("--from")
         .arg(&snapshot)
         .arg("--answers")
-        .arg(&env_bob);
+        .arg(&env_revised);
     let output = update.output().unwrap();
     assert!(output.status.success(), "update failed: {output:?}");
     let document = support::first_document(&output.stdout);
     assert_eq!(document["update"], "applied", "{document}");
     assert_eq!(
         std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
-        "Hello Bob\n"
+        "Hello revised-value\n"
     );
     assert_eq!(
         std::fs::read_to_string(target.path().join("notes.txt")).unwrap(),
@@ -170,11 +170,11 @@ fn dry_run_from_reports_planned_and_persists_nothing() {
 
     let formal = support::formal_name(template_dir.path());
     let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
-    let env_alice = envelope(
+    let env_first = envelope(
         iso.path(),
-        "alice.json",
+        "first.json",
         &formal,
-        serde_json::json!({ "name": "Alice" }),
+        serde_json::json!({ "name": "sample-value" }),
     );
 
     // Record the first snapshot, then commit it clean.
@@ -185,7 +185,7 @@ fn dry_run_from_reports_planned_and_persists_nothing() {
         .arg(target.path())
         .arg("--baseline")
         .arg("--answers")
-        .arg(&env_alice);
+        .arg(&env_first);
     let document = support::first_document(&baseline.output().unwrap().stdout);
     let snapshot = document["snapshot"].as_str().unwrap().to_owned();
     git(target.path(), &["add", "."]);
@@ -193,11 +193,11 @@ fn dry_run_from_reports_planned_and_persists_nothing() {
 
     // A dry-run update reports the plan and changes nothing: the greeting still
     // holds the base answer and no second snapshot is recorded.
-    let env_bob = envelope(
+    let env_revised = envelope(
         iso.path(),
-        "bob.json",
+        "revised.json",
         &formal,
-        serde_json::json!({ "name": "Bob" }),
+        serde_json::json!({ "name": "revised-value" }),
     );
     let mut dry = support::isolated_command(iso.path());
     dry.arg("apply")
@@ -205,7 +205,7 @@ fn dry_run_from_reports_planned_and_persists_nothing() {
         .arg("--from")
         .arg(&snapshot)
         .arg("--answers")
-        .arg(&env_bob)
+        .arg(&env_revised)
         .arg("--dry-run");
     let output = dry.output().unwrap();
     assert!(output.status.success(), "dry-run failed: {output:?}");
@@ -213,7 +213,7 @@ fn dry_run_from_reports_planned_and_persists_nothing() {
     assert_eq!(document["update"], "planned", "{document}");
     assert_eq!(
         std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
-        "Hello Alice\n",
+        "Hello sample-value\n",
         "a dry run must not rewrite the target"
     );
 
@@ -240,11 +240,11 @@ fn a_new_required_question_is_reported_as_questions() {
 
     let formal = support::formal_name(template_dir.path());
     let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
-    let env_alice = envelope(
+    let env_first = envelope(
         iso.path(),
-        "alice.json",
+        "first.json",
         &formal,
-        serde_json::json!({ "name": "Alice" }),
+        serde_json::json!({ "name": "sample-value" }),
     );
 
     // Record a baseline with the one-question template, then commit clean.
@@ -255,7 +255,7 @@ fn a_new_required_question_is_reported_as_questions() {
         .arg(target.path())
         .arg("--baseline")
         .arg("--answers")
-        .arg(&env_alice);
+        .arg(&env_first);
     let document = support::first_document(&baseline.output().unwrap().stdout);
     let snapshot = document["snapshot"].as_str().unwrap().to_owned();
     git(target.path(), &["add", "."]);
@@ -277,7 +277,7 @@ fn a_new_required_question_is_reported_as_questions() {
         .arg("--from")
         .arg(&snapshot)
         .arg("--answers")
-        .arg(&env_alice);
+        .arg(&env_first);
     let output = update.output().unwrap();
     assert_eq!(
         output.status.code(),
@@ -292,7 +292,7 @@ fn a_new_required_question_is_reported_as_questions() {
         "expected color: {document}"
     );
     // The recorded answer becomes the default the route falls back to.
-    assert_eq!(properties["name"]["default"], "Alice", "{document}");
+    assert_eq!(properties["name"]["default"], "sample-value", "{document}");
 }
 
 #[test]
@@ -305,11 +305,11 @@ fn a_configured_preset_answers_a_new_question() {
 
     let formal = support::formal_name(template_dir.path());
     let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
-    let env_alice = envelope(
+    let env_first = envelope(
         iso.path(),
-        "alice.json",
+        "first.json",
         &formal,
-        serde_json::json!({ "name": "Alice" }),
+        serde_json::json!({ "name": "sample-value" }),
     );
 
     // Record a baseline with the one-question template, then commit clean.
@@ -320,7 +320,7 @@ fn a_configured_preset_answers_a_new_question() {
         .arg(target.path())
         .arg("--baseline")
         .arg("--answers")
-        .arg(&env_alice);
+        .arg(&env_first);
     let document = support::first_document(&baseline.output().unwrap().stdout);
     let snapshot = document["snapshot"].as_str().unwrap().to_owned();
     git(target.path(), &["add", "."]);
@@ -356,7 +356,7 @@ fn a_configured_preset_answers_a_new_question() {
         .arg("--from")
         .arg(&snapshot)
         .arg("--answers")
-        .arg(&env_alice);
+        .arg(&env_first);
     let output = update.output().unwrap();
     assert!(output.status.success(), "update failed: {output:?}");
     let document = support::first_document(&output.stdout);
@@ -368,14 +368,14 @@ fn a_configured_preset_answers_a_new_question() {
     );
 }
 
-/// Baseline-apply `address` (answering name=Alice) into a clean committed
+/// Baseline-apply `address` (answering name=sample-value) into a clean committed
 /// target and return the recorded snapshot id, leaving the target committed.
 fn baseline_snapshot(iso: &Path, address: &str, formal: &str, target: &Path) -> String {
     let env = envelope(
         iso,
-        "alice.json",
+        "first.json",
         formal,
-        serde_json::json!({ "name": "Alice" }),
+        serde_json::json!({ "name": "sample-value" }),
     );
     let mut command = support::isolated_command(iso);
     command
@@ -521,11 +521,11 @@ fn a_rendered_date_is_byte_stable_across_an_update() {
 
     let formal = support::formal_name(template_dir.path());
     let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
-    let env_alice = envelope(
+    let env_first = envelope(
         iso.path(),
-        "alice.json",
+        "first.json",
         &formal,
-        serde_json::json!({ "name": "Alice" }),
+        serde_json::json!({ "name": "sample-value" }),
     );
 
     // Baseline at a fixed instant. The stamp records that date.
@@ -536,24 +536,24 @@ fn a_rendered_date_is_byte_stable_across_an_update() {
         .arg(target.path())
         .arg("--baseline")
         .arg("--answers")
-        .arg(&env_alice)
+        .arg(&env_first)
         .env("TOHA_NOW", "2020-06-15T12:00:00+00:00[UTC]");
     let document = support::first_document(&baseline.output().unwrap().stdout);
     let snapshot = document["snapshot"].as_str().unwrap().to_owned();
     assert_eq!(
         std::fs::read_to_string(target.path().join("stamp.txt")).unwrap(),
-        "Alice 2020-06-15\n"
+        "sample-value 2020-06-15\n"
     );
     git(target.path(), &["add", "."]);
     git(target.path(), &["commit", "--quiet", "-m", "baseline"]);
 
     // Update the answer at a different wall clock. The date bytes must not move:
     // the update renders from the carried frozen instant, not the runtime clock.
-    let env_bob = envelope(
+    let env_revised = envelope(
         iso.path(),
-        "bob.json",
+        "revised.json",
         &formal,
-        serde_json::json!({ "name": "Bob" }),
+        serde_json::json!({ "name": "revised-value" }),
     );
     let mut update = support::isolated_command(iso.path());
     update
@@ -562,13 +562,13 @@ fn a_rendered_date_is_byte_stable_across_an_update() {
         .arg("--from")
         .arg(&snapshot)
         .arg("--answers")
-        .arg(&env_bob)
+        .arg(&env_revised)
         .env("TOHA_NOW", "2026-09-30T00:00:00+00:00[UTC]");
     let output = update.output().unwrap();
     assert!(output.status.success(), "update failed: {output:?}");
     assert_eq!(
         std::fs::read_to_string(target.path().join("stamp.txt")).unwrap(),
-        "Bob 2020-06-15\n",
+        "revised-value 2020-06-15\n",
         "the date bytes must be carried from the base snapshot, not re-read"
     );
 }
@@ -595,11 +595,11 @@ fn an_update_with_untrusted_hooks_refuses_and_changes_nothing() {
 
     let formal = support::formal_name(template_dir.path());
     let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
-    let env_alice = envelope(
+    let env_first = envelope(
         iso.path(),
-        "alice.json",
+        "first.json",
         &formal,
-        serde_json::json!({ "name": "Alice" }),
+        serde_json::json!({ "name": "sample-value" }),
     );
 
     let mut command = support::isolated_command(iso.path());
@@ -609,7 +609,7 @@ fn an_update_with_untrusted_hooks_refuses_and_changes_nothing() {
         .arg(target.path())
         .arg("--baseline")
         .arg("--answers")
-        .arg(&env_alice);
+        .arg(&env_first);
     let output = command.output().unwrap();
     assert!(
         !output.status.success(),

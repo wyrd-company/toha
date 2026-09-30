@@ -62,14 +62,14 @@ fn envelope(dir: &Path, name: &str, formal: &str, answers: Value) -> std::path::
     path
 }
 
-/// Baseline-apply `address` (name=Alice) into `target`, commit clean, and return
+/// Baseline-apply `address` (name=sample-value) into `target`, commit clean, and return
 /// the snapshot id.
 fn baseline(iso: &Path, address: &str, formal: &str, target: &Path, trust: bool) -> String {
     let env = envelope(
         iso,
-        "alice.json",
+        "first.json",
         formal,
-        serde_json::json!({ "name": "Alice" }),
+        serde_json::json!({ "name": "sample-value" }),
     );
     let mut command = support::isolated_command(iso);
     command
@@ -117,7 +117,7 @@ fn a_person_apply_from_prompts_a_new_question_then_merges() {
     // `color`. Accepting the default keeps the name; the new answer settles it.
     let mut session = Session::spawn(command).unwrap();
     session.expect("Name").unwrap();
-    session.send_line("Alice").unwrap();
+    session.send_line("sample-value").unwrap();
     session.expect("Colour").unwrap();
     session.send_line("blue").unwrap();
     session.expect(expectrl::Eof).unwrap();
@@ -128,7 +128,129 @@ fn a_person_apply_from_prompts_a_new_question_then_merges() {
     );
     assert_eq!(
         std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
-        "Hello Alice\n"
+        "Hello sample-value\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_person_stage_prompts_saves_each_batch_then_applies() {
+    use expectrl::{Expect, Session};
+    let iso = tempfile::tempdir().unwrap();
+    let template_dir = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    write_one_question(template_dir.path());
+    target_repo(target.path());
+    let formal = support::formal_name(template_dir.path());
+    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let snapshot = baseline(iso.path(), &address, &formal, target.path(), false);
+    add_second_question(template_dir.path());
+
+    // `stage ADDRESS TARGET --from ID` at a terminal (no --async) is the person
+    // route: it prompts the unsettled questions and saves the staged update.
+    let mut command = support::isolated_command(iso.path());
+    command
+        .arg("stage")
+        .arg(&address)
+        .arg(target.path())
+        .arg("--from")
+        .arg(&snapshot);
+    let mut session = Session::spawn(command).unwrap();
+    session.expect("Name").unwrap();
+    session.send_line("sample-value").unwrap();
+    session.expect("Colour").unwrap();
+    session.send_line("blue").unwrap();
+    session.expect(expectrl::Eof).unwrap();
+
+    // The person staged the update; apply merges it from the base.
+    let mut apply = support::isolated_command(iso.path());
+    apply.arg("apply").arg(target.path());
+    let output = apply.output().unwrap();
+    assert_eq!(output.status.code(), Some(0), "apply: {output:?}");
+    let document = support::first_document(&output.stdout);
+    assert_eq!(document["update"], "applied", "{document}");
+    assert_eq!(
+        std::fs::read_to_string(target.path().join("color.txt")).unwrap(),
+        "blue\n"
+    );
+}
+
+#[test]
+fn stage_trust_environment_is_carried_through_continue_and_apply() {
+    // An update whose new version references a captured environment value stages
+    // with --trust, capturing the value once. The continue and apply that follow
+    // run with a different USER, yet the merged output carries the value captured
+    // at stage, proving the grant and its captured decision carry, not a re-read.
+    let iso = tempfile::tempdir().unwrap();
+    let template_dir = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    write_one_question(template_dir.path());
+    target_repo(target.path());
+    let formal = support::formal_name(template_dir.path());
+    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let snapshot = baseline(iso.path(), &address, &formal, target.path(), false);
+
+    // The new version adds a question and a file that renders the captured user.
+    std::fs::write(
+        template_dir.path().join("template.yml"),
+        "name: greeter\ndescription: A greeting\ninterview:\n  - id: name\n    type: text\n    prompt: Name\n    required: true\n  - id: color\n    type: text\n    prompt: Colour\n    required: true\n",
+    )
+    .unwrap();
+    std::fs::write(
+        template_dir.path().join("template/color.txt"),
+        "{{ color }}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        template_dir.path().join("template/who.txt"),
+        "{{ toha_env_user }}\n",
+    )
+    .unwrap();
+
+    // Stage with --trust, capturing the environment user as `staged-user`.
+    let mut stage = support::isolated_command(iso.path());
+    stage
+        .arg("stage")
+        .arg(&address)
+        .arg(target.path())
+        .arg("--from")
+        .arg(&snapshot)
+        .arg("--trust")
+        .arg("--async")
+        .env("USER", "staged-user");
+    assert_eq!(
+        stage.output().unwrap().status.code(),
+        Some(4),
+        "stage should ask"
+    );
+
+    // Continue and apply under a different USER; neither re-captures.
+    let env_color = envelope(
+        iso.path(),
+        "c.json",
+        &formal,
+        serde_json::json!({ "color": "blue" }),
+    );
+    let mut cont = support::isolated_command(iso.path());
+    cont.arg("continue")
+        .arg(target.path())
+        .arg(&env_color)
+        .env("USER", "continue-user");
+    assert_eq!(cont.output().unwrap().status.code(), Some(0));
+
+    let mut apply = support::isolated_command(iso.path());
+    apply
+        .arg("apply")
+        .arg(target.path())
+        .env("USER", "apply-user");
+    let output = apply.output().unwrap();
+    assert_eq!(output.status.code(), Some(0), "apply: {output:?}");
+
+    // The rendered file carries the value captured at stage, not a later USER.
+    assert_eq!(
+        std::fs::read_to_string(target.path().join("who.txt")).unwrap(),
+        "staged-user\n",
+        "the captured stage environment must carry through continue and apply"
     );
 }
 
@@ -163,7 +285,7 @@ fn stage_baseline_then_continue_and_apply_records_a_snapshot() {
         iso.path(),
         "n.json",
         &formal,
-        serde_json::json!({ "name": "Zoe" }),
+        serde_json::json!({ "name": "other-value" }),
     );
     let mut cont = support::isolated_command(iso.path());
     cont.arg("continue").arg(target.path()).arg(&env);
@@ -175,7 +297,7 @@ fn stage_baseline_then_continue_and_apply_records_a_snapshot() {
     assert_eq!(document["update"], "applied", "{document}");
     assert_eq!(
         std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
-        "Hello Zoe\n"
+        "Hello other-value\n"
     );
 }
 
@@ -204,7 +326,7 @@ fn stage_reanswer_re_asks_a_recorded_answer() {
     assert_eq!(staged.status.code(), Some(4), "reanswer stage: {staged:?}");
     let document = support::first_document(&staged.stdout);
     assert_eq!(
-        document["schema"]["properties"]["name"]["default"], "Alice",
+        document["schema"]["properties"]["name"]["default"], "sample-value",
         "{document}"
     );
 
@@ -213,7 +335,7 @@ fn stage_reanswer_re_asks_a_recorded_answer() {
         iso.path(),
         "b.json",
         &formal,
-        serde_json::json!({ "name": "Bob" }),
+        serde_json::json!({ "name": "revised-value" }),
     );
     let mut cont = support::isolated_command(iso.path());
     cont.arg("continue").arg(target.path()).arg(&env);
@@ -224,7 +346,7 @@ fn stage_reanswer_re_asks_a_recorded_answer() {
     assert_eq!(document["update"], "applied", "{document}");
     assert_eq!(
         std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
-        "Hello Bob\n"
+        "Hello revised-value\n"
     );
 }
 
@@ -345,11 +467,11 @@ fn agent_stages_continues_and_applies_a_staged_update() {
     let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
 
     // Baseline the first version and commit it clean.
-    let env_alice = envelope(
+    let env_first = envelope(
         iso.path(),
-        "alice.json",
+        "first.json",
         &formal,
-        serde_json::json!({ "name": "Alice" }),
+        serde_json::json!({ "name": "sample-value" }),
     );
     let mut baseline = support::isolated_command(iso.path());
     baseline
@@ -358,7 +480,7 @@ fn agent_stages_continues_and_applies_a_staged_update() {
         .arg(target.path())
         .arg("--baseline")
         .arg("--answers")
-        .arg(&env_alice);
+        .arg(&env_first);
     let document = support::first_document(&baseline.output().unwrap().stdout);
     let snapshot = document["snapshot"].as_str().unwrap().to_owned();
     git(target.path(), &["add", "."]);
@@ -387,7 +509,7 @@ fn agent_stages_continues_and_applies_a_staged_update() {
     // The recorded answer is the default, not re-asked.
     assert!(
         document["schema"]["properties"]["name"].is_null()
-            || document["schema"]["properties"]["name"]["default"] == "Alice",
+            || document["schema"]["properties"]["name"]["default"] == "sample-value",
         "{document}"
     );
 
@@ -416,7 +538,7 @@ fn agent_stages_continues_and_applies_a_staged_update() {
     );
     assert_eq!(
         std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
-        "Hello Alice\n"
+        "Hello sample-value\n"
     );
 
     // The staged record is consumed; a second apply finds nothing staged.

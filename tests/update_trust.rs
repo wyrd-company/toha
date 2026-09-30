@@ -96,7 +96,7 @@ fn an_approved_template_updates_and_runs_hooks_without_trust() {
         &root,
         "alice.json",
         &formal,
-        serde_json::json!({ "name": "Alice" }),
+        serde_json::json!({ "name": "sample-value" }),
     );
     let baseline = toha(
         &root,
@@ -127,7 +127,7 @@ fn an_approved_template_updates_and_runs_hooks_without_trust() {
         &root,
         "bob.json",
         &formal,
-        serde_json::json!({ "name": "Bob" }),
+        serde_json::json!({ "name": "revised-value" }),
     );
     let update = toha(
         &root,
@@ -149,7 +149,7 @@ fn an_approved_template_updates_and_runs_hooks_without_trust() {
     );
     assert_eq!(
         fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
-        "Hello Bob\n"
+        "Hello revised-value\n"
     );
 }
 
@@ -173,7 +173,7 @@ fn an_unapproved_template_update_refuses_hooks() {
         &root,
         "alice.json",
         &formal,
-        serde_json::json!({ "name": "Alice" }),
+        serde_json::json!({ "name": "sample-value" }),
     );
     let output = toha(
         &root,

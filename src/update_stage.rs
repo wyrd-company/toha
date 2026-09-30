@@ -6,13 +6,14 @@
 //! then `continue PATH` and `apply PATH`.
 //!
 //! Staging an update drives the update replay adapter from the base snapshot's
-//! recorded answers, saves a [`StagedRecord`] that holds the base, the
-//! `reanswer` flag, and the batches submitted so far, and reports the first
-//! unsettled batch (the agent route) or prompts it (the person route). A
-//! `continue` resumes through the adapter, replaying the staged submissions and
-//! answering the next batch. `apply PATH` resumes a completed staged update and
-//! merges it from the base. The record is identity-bearing and keyed by the
-//! canonical target, so recovery is unchanged.
+//! recorded answers and saves a [`StagedRecord`] that holds the base, the
+//! `reanswer` flag, and the batches submitted so far. Without `--async` the
+//! person route prompts the unsettled questions, saving each batch; with it the
+//! agent route reports the first unsettled batch. A `continue` resumes through
+//! the adapter, replaying the staged submissions and answering the next batch.
+//! `apply PATH` resumes a completed staged update and merges it from the base.
+//! The record is identity-bearing and keyed by the canonical target, so recovery
+//! is unchanged.
 
 use std::io::{self, IsTerminal};
 use std::path::Path;
@@ -101,7 +102,9 @@ fn record(
     record
 }
 
-/// `stage --from ID`/`--baseline` `[--reanswer]` `PATH` `[--async FILE]`.
+/// `stage --from ID`/`--baseline` `[--reanswer]` `PATH` `[--async FILE]`. The
+/// person route (no `--async`) prompts and saves each batch; the agent route
+/// reports the batch.
 #[allow(clippy::too_many_arguments)]
 pub fn stage(
     base: UpdateBase,
@@ -126,14 +129,13 @@ pub fn stage(
         Ok(None) => {}
         Err(error) => return Outcome::Error(error.to_string()),
     }
-    // Staging an update is the agent route: it saves the interview for a later
-    // `continue`. A person applies an update in one shot with `apply ... --from`,
-    // which prompts the questions the recorded answers do not settle.
-    if async_out.is_none() {
-        return Outcome::Error(format!(
-            "staging an update is the agent route; run it with --async, or apply it \
-             interactively with `apply ... --from` at {}",
-            path.display()
+    // Without `--async` this is the person route, which prompts; with it, the
+    // agent route, which reports the batch. The person route needs a terminal.
+    let interactive = async_out.is_none();
+    if interactive && !io::stdin().is_terminal() {
+        return Outcome::Error(guidance::no_terminal(
+            template_arg.as_deref().unwrap_or("the template"),
+            path,
         ));
     }
     let prep = match update::prepare(
@@ -143,7 +145,7 @@ pub fn stage(
         dirs,
         trust,
         PrepareMode::Stage,
-        false,
+        interactive,
     ) {
         Ok(value) => value,
         Err(outcome) => return outcome,
@@ -172,10 +174,14 @@ pub fn stage(
                 return Outcome::Error(error.to_string());
             }
             // The update needs no questions; point the caller to `apply PATH`.
-            Outcome::Agent {
-                document: None,
-                instructions: instructions(&AgentOutcome::Complete, path),
-                code: 0,
+            if interactive {
+                Outcome::Written(vec![guidance::continue_complete(path)])
+            } else {
+                Outcome::Agent {
+                    document: None,
+                    instructions: instructions(&AgentOutcome::Complete, path),
+                    code: 0,
+                }
             }
         }
         UpdateDrive::Ask {
@@ -183,9 +189,14 @@ pub fn stage(
             rejections,
             submissions,
         } => {
-            let saved = record(&prep, &base_value, reanswer, submissions);
+            let saved = record(&prep, &base_value, reanswer, submissions.clone());
             if let Err(error) = store.save(&target, &saved) {
                 return Outcome::Error(error.to_string());
+            }
+            if interactive {
+                // The person route prompts the remaining questions, saving each
+                // batch, then points to apply.
+                return continue_person(saved, prep, submissions, &target, &store, path);
             }
             let ctx = context(&target, &saved);
             let document = toha::protocol::batch_document(pending.batch(), &ctx, Some(&rejections));

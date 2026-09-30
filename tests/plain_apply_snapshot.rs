@@ -79,7 +79,7 @@ fn a_clean_apply_saves_a_snapshot() {
         iso.path(),
         "a.json",
         &formal,
-        serde_json::json!({ "name": "Alice" }),
+        serde_json::json!({ "name": "sample-value" }),
     );
 
     let document = apply(iso.path(), &address, target.path(), &env);
@@ -112,7 +112,7 @@ fn an_apply_outside_git_skips_with_not_git() {
         iso.path(),
         "a.json",
         &formal,
-        serde_json::json!({ "name": "Alice" }),
+        serde_json::json!({ "name": "sample-value" }),
     );
 
     let document = apply(iso.path(), &address, target.path(), &env);
@@ -137,7 +137,7 @@ fn a_dirty_apply_skips_with_dirty() {
         iso.path(),
         "a.json",
         &formal,
-        serde_json::json!({ "name": "Alice" }),
+        serde_json::json!({ "name": "sample-value" }),
     );
 
     let document = apply(iso.path(), &address, target.path(), &env);
@@ -173,7 +173,7 @@ fn the_agent_apply_path_route_saves_a_snapshot() {
         iso.path(),
         "a.json",
         &formal,
-        serde_json::json!({ "name": "Alice" }),
+        serde_json::json!({ "name": "sample-value" }),
     );
     let mut cont = support::isolated_command(iso.path());
     cont.arg("continue").arg(target.path()).arg(&env);
@@ -221,7 +221,7 @@ fn an_exec_bit_only_change_still_saves() {
         iso.path(),
         "a.json",
         &formal,
-        serde_json::json!({ "name": "Alice" }),
+        serde_json::json!({ "name": "sample-value" }),
     );
 
     // First apply saves greeting.txt (non-executable); commit it clean.
@@ -268,7 +268,7 @@ fn a_re_apply_that_changes_nothing_skips() {
         iso.path(),
         "a.json",
         &formal,
-        serde_json::json!({ "name": "Alice" }),
+        serde_json::json!({ "name": "sample-value" }),
     );
 
     // First apply saves; commit it clean.

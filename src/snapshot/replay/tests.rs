@@ -50,16 +50,22 @@ interview:
 #[test]
 fn raw_recorded_submissions_replay_to_completion() {
     let (_f, template) = inline(TWO_QUESTIONS);
-    let recorded = vec![sub(&[("name", json!("Alice")), ("color", json!("blue"))])];
+    let recorded = vec![sub(&[
+        ("name", json!("sample-value")),
+        ("color", json!("blue")),
+    ])];
     let result = replay(&template, seed(), &recorded, IndexMap::new(), false).unwrap();
     match result {
         Replay::Completed {
             completed,
             submissions,
         } => {
-            assert_eq!(completed.answers[&id("name")].to_json(), json!("Alice"));
+            assert_eq!(
+                completed.answers[&id("name")].to_json(),
+                json!("sample-value")
+            );
             assert_eq!(submissions.len(), 1, "one batch submitted");
-            assert_eq!(submissions[0][&id("name")].0, json!("Alice"));
+            assert_eq!(submissions[0][&id("name")].0, json!("sample-value"));
         }
         _ => panic!("expected completion"),
     }
@@ -68,11 +74,14 @@ fn raw_recorded_submissions_replay_to_completion() {
 #[test]
 fn resume_with_no_staged_submissions_matches_replay() {
     let (_f, template) = inline(TWO_QUESTIONS);
-    let recorded = vec![sub(&[("name", json!("Alice")), ("color", json!("blue"))])];
+    let recorded = vec![sub(&[
+        ("name", json!("sample-value")),
+        ("color", json!("blue")),
+    ])];
     let result = replay_resume(&template, seed(), &recorded, &[], false).unwrap();
     match result {
         Replay::Completed { submissions, .. } => {
-            assert_eq!(submissions[0][&id("name")].0, json!("Alice"));
+            assert_eq!(submissions[0][&id("name")].0, json!("sample-value"));
         }
         _ => panic!("expected completion"),
     }
@@ -81,9 +90,15 @@ fn resume_with_no_staged_submissions_matches_replay() {
 #[test]
 fn resume_replays_the_staged_submissions_and_does_not_reuse_recorded() {
     let (_f, template) = inline(TWO_QUESTIONS);
-    // The base recorded Alice/blue; the staged session already answered Zoe/red.
-    let recorded = vec![sub(&[("name", json!("Alice")), ("color", json!("blue"))])];
-    let staged = vec![sub(&[("name", json!("Zoe")), ("color", json!("red"))])];
+    // The base recorded sample-value/blue; the staged session already answered other-value/red.
+    let recorded = vec![sub(&[
+        ("name", json!("sample-value")),
+        ("color", json!("blue")),
+    ])];
+    let staged = vec![sub(&[
+        ("name", json!("other-value")),
+        ("color", json!("red")),
+    ])];
     let result = replay_resume(&template, seed(), &recorded, &staged, false).unwrap();
     match result {
         Replay::Completed {
@@ -91,7 +106,7 @@ fn resume_replays_the_staged_submissions_and_does_not_reuse_recorded() {
             submissions,
         } => {
             assert_eq!(submissions.len(), 1, "only the staged batch was submitted");
-            assert_eq!(submissions[0][&id("name")].0, json!("Zoe"));
+            assert_eq!(submissions[0][&id("name")].0, json!("other-value"));
             assert_eq!(completed.answers[&id("color")].to_json(), json!("red"));
         }
         _ => panic!("expected completion from the staged submissions"),
@@ -103,7 +118,7 @@ fn an_answer_for_a_removed_question_is_dropped() {
     let (_f, template) = inline(TWO_QUESTIONS);
     // `old` is not a question in this template; it is never consumed.
     let recorded = vec![sub(&[
-        ("name", json!("Alice")),
+        ("name", json!("sample-value")),
         ("old", json!("x")),
         ("color", json!("blue")),
     ])];
@@ -134,14 +149,17 @@ fn a_recorded_value_the_new_version_rejects_asks_with_the_rejection() {
 #[test]
 fn an_answers_override_replaces_the_recorded_value() {
     let (_f, template) = inline(TWO_QUESTIONS);
-    let recorded = vec![sub(&[("name", json!("Alice")), ("color", json!("blue"))])];
-    let overrides: RawAnswers = sub(&[("name", json!("Robert"))]);
+    let recorded = vec![sub(&[
+        ("name", json!("sample-value")),
+        ("color", json!("blue")),
+    ])];
+    let overrides: RawAnswers = sub(&[("name", json!("revised-value"))]);
     let result = replay(&template, seed(), &recorded, overrides, false).unwrap();
     match result {
         Replay::Completed { submissions, .. } => {
             assert_eq!(
                 submissions[0][&id("name")].0,
-                json!("Robert"),
+                json!("revised-value"),
                 "override wins"
             );
         }
@@ -152,7 +170,10 @@ fn an_answers_override_replaces_the_recorded_value() {
 #[test]
 fn reanswer_offers_every_batch_to_the_route() {
     let (_f, template) = inline(TWO_QUESTIONS);
-    let recorded = vec![sub(&[("name", json!("Alice")), ("color", json!("blue"))])];
+    let recorded = vec![sub(&[
+        ("name", json!("sample-value")),
+        ("color", json!("blue")),
+    ])];
     let result = replay(&template, seed(), &recorded, IndexMap::new(), true).unwrap();
     match result {
         Replay::Ask {
@@ -194,7 +215,7 @@ fn recorded_submissions_replay_across_batches_in_order() {
     let (_f, template) = inline(TWO_BATCHES);
     // First batch answers name + more; the second (gated by `more`) answers extra.
     let recorded = vec![
-        sub(&[("name", json!("Alice")), ("more", json!(true))]),
+        sub(&[("name", json!("sample-value")), ("more", json!(true))]),
         sub(&[("extra", json!("gravy"))]),
     ];
     let result = replay(&template, seed(), &recorded, IndexMap::new(), false).unwrap();
