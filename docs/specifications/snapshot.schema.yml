@@ -1,0 +1,160 @@
+# ---
+# relationships:
+#   realizes: snapshot
+# ---
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://wyrd.foo/toha/schemas/snapshot
+title: Toha Snapshot
+description: >-
+  The stored `snapshot.json` a snapshot commit holds, and the JSON documents the
+  `snapshots list` and `snapshots clean` routes emit. A snapshot is the output of
+  one apply, kept as a parentless git commit under `refs/toha/snapshots/<id>`.
+$defs:
+  snapshot_id:
+    description: A snapshot id — a 26-character Crockford base32 ULID.
+    type: string
+    pattern: "^[0-9A-HJKMNP-TV-Z]{26}$"
+  path_ownership:
+    description: >-
+      One captured path and what Toha owns in it: a whole file (`toha`), a file a
+      hook created or changed (`hook`), or a file Toha edits inside (`edit`),
+      owning the listed region keys and JSON value paths.
+    type: object
+    additionalProperties: false
+    required: [ origin ]
+    properties:
+      origin:
+        enum: [ toha, edit, hook ]
+      regions:
+        type: array
+        items:
+          type: string
+      values:
+        type: array
+        items:
+          type: string
+  record:
+    description: >-
+      A snapshot's `snapshot.json`. `snapshot` is the format version. `commit` is
+      the template's resolved commit, or null for a folder template. `generated`
+      is the frozen instant the render used, carried forward so a date-rendering
+      template stays byte-stable. `submissions` are the raw answers that produced
+      it; `paths` maps each captured path to its ownership.
+    type: object
+    additionalProperties: false
+    required:
+      [ snapshot, id, template, source, target, created, generated, project,
+        submissions, paths ]
+    properties:
+      snapshot:
+        type: integer
+      id:
+        $ref: "#/$defs/snapshot_id"
+      template:
+        description: The formal name the apply used, with any @reference.
+        type: string
+      source:
+        description: The formal name without its @reference.
+        type: string
+      commit:
+        type: [ string, "null" ]
+      target:
+        description: The applied path relative to the repository root.
+        type: string
+      created:
+        type: string
+      generated:
+        type: string
+      project:
+        type: object
+        additionalProperties: false
+        required: [ commit ]
+        properties:
+          commit:
+            type: string
+          branch:
+            type: [ string, "null" ]
+      built_from:
+        oneOf:
+          - type: "null"
+          - $ref: "#/$defs/snapshot_id"
+      submissions:
+        type: array
+        items:
+          type: object
+          additionalProperties: true
+      paths:
+        type: object
+        additionalProperties:
+          $ref: "#/$defs/path_ownership"
+  list:
+    description: >-
+      The `snapshots list --json` document: the target's snapshots, newest first,
+      each valid entry with its identity and a `mark` when it is a likely base,
+      each unreadable ref reported as invalid with its reason.
+    type: object
+    additionalProperties: false
+    required: [ snapshots ]
+    properties:
+      snapshots:
+        type: array
+        items:
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [ id, template, source, commit, target, created, project ]
+              properties:
+                id:
+                  $ref: "#/$defs/snapshot_id"
+                template:
+                  type: string
+                source:
+                  type: string
+                commit:
+                  type: [ string, "null" ]
+                target:
+                  type: string
+                created:
+                  type: string
+                project:
+                  type: object
+                  required: [ commit ]
+                  properties:
+                    commit:
+                      type: string
+                    branch:
+                      type: [ string, "null" ]
+                built_from:
+                  type: [ string, "null" ]
+                mark:
+                  type: [ string, "null" ]
+            - type: object
+              additionalProperties: false
+              required: [ ref, invalid ]
+              properties:
+                ref:
+                  type: string
+                invalid:
+                  type: string
+  clean:
+    description: >-
+      The `snapshots clean --remove` document (the script and agent route): the
+      ids removed, the ids named but not found, and the exact `git push --delete`
+      commands the caller runs to remove the refs from a remote. Toha never
+      pushes.
+    type: object
+    additionalProperties: false
+    required: [ removed, not_found, push_commands ]
+    properties:
+      removed:
+        type: array
+        items:
+          $ref: "#/$defs/snapshot_id"
+      not_found:
+        type: array
+        items:
+          type: string
+      push_commands:
+        type: array
+        items:
+          type: string
