@@ -144,6 +144,63 @@ fn a_dirty_apply_skips_with_dirty() {
     assert_eq!(document["snapshot"]["skipped"], "dirty", "{document}");
 }
 
+#[test]
+fn the_agent_apply_path_route_saves_a_snapshot() {
+    // stage -> continue (complete) -> apply PATH: the agent resume route applies
+    // the completed staged interview and saves a snapshot, reported as a line.
+    let iso = tempfile::tempdir().unwrap();
+    let template_dir = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    write_template(template_dir.path());
+    target_repo(target.path());
+
+    let formal = support::formal_name(template_dir.path());
+    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+
+    // Stage the interview (the required question is left pending).
+    let mut stage = support::isolated_command(iso.path());
+    stage
+        .arg("stage")
+        .arg(&address)
+        .arg(target.path())
+        .arg("--async")
+        .env("TOHA_NOW", "2020-06-15T12:00:00+00:00[UTC]");
+    let staged = stage.output().unwrap();
+    assert_eq!(staged.status.code(), Some(4), "stage: {staged:?}");
+
+    // Answer it through the agent continue route, completing the interview.
+    let env = envelope(
+        iso.path(),
+        "a.json",
+        &formal,
+        serde_json::json!({ "name": "Alice" }),
+    );
+    let mut cont = support::isolated_command(iso.path());
+    cont.arg("continue").arg(target.path()).arg(&env);
+    let continued = cont.output().unwrap();
+    assert!(continued.status.success(), "continue: {continued:?}");
+
+    // Apply the completed staged interview: it writes and saves a snapshot.
+    let mut apply = support::isolated_command(iso.path());
+    apply.arg("apply").arg(target.path());
+    let applied = apply.output().unwrap();
+    assert!(applied.status.success(), "apply: {applied:?}");
+    let stdout = String::from_utf8_lossy(&applied.stdout);
+    assert!(
+        stdout.contains("saved snapshot"),
+        "expected a saved-snapshot line: {stdout}"
+    );
+
+    // The snapshot is listed against the target.
+    let mut list = support::isolated_command(iso.path());
+    list.arg("snapshots")
+        .arg("list")
+        .arg(target.path())
+        .arg("--json");
+    let listed = support::first_document(&list.output().unwrap().stdout);
+    assert_eq!(listed["snapshots"].as_array().unwrap().len(), 1, "{listed}");
+}
+
 #[cfg(unix)]
 #[test]
 fn an_exec_bit_only_change_still_saves() {

@@ -1706,6 +1706,41 @@ fn plain_apply_snapshot(
         Err(error) => serde_json::json!({ "error": error.to_string() }),
     }
 }
+/// The plain apply's snapshot result as one human line for the person and agent
+/// routes, which report text: the id it saved, or the reason it saved none. The
+/// staged record carries the template identity, commit, and submissions.
+fn plain_apply_snapshot_line(
+    project: Option<&toha::snapshot::Project>,
+    was_clean: bool,
+    target: &CanonicalTarget,
+    saved: &StagedRecord,
+    generated_now: &jiff::Zoned,
+    plan: &Plan,
+) -> Option<String> {
+    use toha::snapshot::{FrozenNow, Revision, SnapshotOutcome};
+
+    let project = project?;
+    let revision = if saved.commit.is_empty() {
+        Revision::Unversioned
+    } else {
+        Revision::Commit(toha::snapshot::CommitId::parse(&saved.commit).ok()?)
+    };
+    match project.save_after_apply(
+        target.as_path(),
+        plan,
+        saved.template.clone(),
+        revision,
+        FrozenNow::new(generated_now.clone()),
+        saved.submissions.clone(),
+        was_clean,
+    ) {
+        Ok(SnapshotOutcome::Saved(id)) => Some(format!("saved snapshot {id}")),
+        Ok(SnapshotOutcome::Skipped(reason)) => {
+            Some(format!("no snapshot saved: {}", reason.as_str()))
+        }
+        Err(error) => Some(format!("snapshot not saved: {error}")),
+    }
+}
 /// Maps a resolve failure on the scripted route to a `source` or `ambiguous`
 /// error document. The ambiguous document lists the scripted command with each
 /// match's formal name.
@@ -2025,6 +2060,15 @@ fn run(
         );
         return Outcome::Saved(0);
     }
+    // The snapshot save of a plain apply (person and agent routes). The apply
+    // consumes its plan, so build a second for the capture, and read cleanliness
+    // before the apply writes. `completed` is not yet moved here.
+    let capture_plan = Plan::build(&template, &completed, &target).ok();
+    let capture_now = completed.now.clone();
+    let capture_project = toha::snapshot::Project::open(&target).unwrap_or_default();
+    let capture_was_clean = capture_project
+        .as_ref()
+        .is_some_and(|p| matches!(p.cleanliness(), Ok(toha::snapshot::Cleanliness::Clean)));
     let before = plan.before_apply.clone();
     let preview = plan_lines(&plan, force, &[]);
     if !terminal_run {
@@ -2047,7 +2091,19 @@ fn run(
         &mut |file| println!("{file}"),
     ) {
         Ok(Applied::Written { after_apply, .. }) => {
-            let lines = Vec::from_iter(after_apply);
+            let mut lines = Vec::from_iter(after_apply);
+            if let (Some(sv), Some(cplan)) = (saved.as_ref(), capture_plan.as_ref()) {
+                if let Some(line) = plain_apply_snapshot_line(
+                    capture_project.as_ref(),
+                    capture_was_clean,
+                    &target,
+                    sv,
+                    &capture_now,
+                    cplan,
+                ) {
+                    lines.push(line);
+                }
+            }
             if saved.is_some() {
                 if let Err(e) = store.remove(&target) {
                     return Outcome::Error(e.to_string());
