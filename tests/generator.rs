@@ -556,6 +556,67 @@ fn no_like_path_carries_no_seed_member() {
     assert_eq!(doc["status"].as_str(), Some("applied"));
 }
 
+#[test]
+fn resume_honors_the_pin_not_the_newest_snapshot() {
+    // Behavior 19 (the pin does not drift): stage pins the root snapshot; a newer
+    // same-source snapshot recorded before resume must not change the seed.
+    let s = scene();
+    let gamma = s.project.join("feature/gamma");
+
+    // Stage seeded from the current newest (the root snapshot), pinning it.
+    let mut stage = support::isolated_command(s.iso.path());
+    stage
+        .arg("stage")
+        .arg(&s.address)
+        .arg(&gamma)
+        .arg("--like")
+        .arg("latest")
+        .arg("--async");
+    let out = stage.output().unwrap();
+    assert_eq!(out.status.code(), Some(4));
+    let staged = support::first_document(&out.stdout);
+    assert_eq!(
+        staged["seed"]["from"].as_str(),
+        Some(s.root_snapshot.as_str())
+    );
+
+    // Record a NEWER snapshot of the same source at the root, with a different
+    // style, so "latest" now differs from the pinned snapshot.
+    let newer = answers_file(
+        s.iso.path(),
+        "newer.json",
+        &s.formal,
+        json!({ "label": "Newer", "style": "card", "with_tests": true }),
+    );
+    let (code, newer_doc) =
+        apply_scripted(s.iso.path(), &s.address, &s.project, None, &newer, true);
+    assert_eq!(code, 0, "{newer_doc}");
+    let newer_snapshot = newer_doc["snapshot"]["id"].as_str().unwrap();
+    assert_ne!(newer_snapshot, s.root_snapshot, "a newer snapshot exists");
+    git_ok(&s.project, &["add", "-A"]);
+    git_ok(&s.project, &["commit", "-q", "-m", "newer"]);
+
+    // Resume: override only label; the seed must still be the pinned snapshot
+    // (style=panel), not the newer one (style=card).
+    let cont = answers_file(
+        s.iso.path(),
+        "c.json",
+        &s.formal,
+        json!({ "label": "Gamma" }),
+    );
+    let mut cont_cmd = support::isolated_command(s.iso.path());
+    cont_cmd.arg("continue").arg(&gamma).arg(&cont);
+    assert_eq!(cont_cmd.output().unwrap().status.code(), Some(0));
+    let mut apply = support::isolated_command(s.iso.path());
+    apply.arg("apply").arg(&gamma);
+    assert!(apply.output().unwrap().status.success());
+    assert_eq!(
+        read(&gamma.join("mod.txt")),
+        "label=Gamma\nstyle=panel\ntests=False\n",
+        "resume seeded from the pinned snapshot, not the newer one"
+    );
+}
+
 // --------------------------------------------------------------------------
 // Blocked on producer subpath snapshot capture (task 1111 / root).
 // --------------------------------------------------------------------------
