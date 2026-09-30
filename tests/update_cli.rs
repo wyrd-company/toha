@@ -247,6 +247,80 @@ fn from_an_unknown_snapshot_is_an_error() {
 }
 
 #[test]
+fn a_rendered_date_is_byte_stable_across_an_update() {
+    let iso = tempfile::tempdir().unwrap();
+    let template_dir = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    // The render carries both the answer and a date drawn from the frozen
+    // instant, so the date bytes prove the instant is carried, not re-read.
+    std::fs::create_dir_all(template_dir.path().join("template")).unwrap();
+    std::fs::write(
+        template_dir.path().join("template.yml"),
+        "name: dated\ndescription: A dated greeting\ninterview:\n  - id: name\n    type: text\n    prompt: Name\n    required: true\n",
+    )
+    .unwrap();
+    std::fs::write(
+        template_dir.path().join("template/stamp.txt"),
+        "{{ name }} {{ now() | dateformat('%Y-%m-%d') }}\n",
+    )
+    .unwrap();
+    target_repo(target.path());
+
+    let formal = support::formal_name(template_dir.path());
+    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let env_alice = envelope(
+        iso.path(),
+        "alice.json",
+        &formal,
+        serde_json::json!({ "name": "Alice" }),
+    );
+
+    // Baseline at a fixed instant. The stamp records that date.
+    let mut baseline = support::isolated_command(iso.path());
+    baseline
+        .arg("apply")
+        .arg(&address)
+        .arg(target.path())
+        .arg("--baseline")
+        .arg("--answers")
+        .arg(&env_alice)
+        .env("TOHA_NOW", "2020-06-15T12:00:00+00:00[UTC]");
+    let document = support::first_document(&baseline.output().unwrap().stdout);
+    let snapshot = document["snapshot"].as_str().unwrap().to_owned();
+    assert_eq!(
+        std::fs::read_to_string(target.path().join("stamp.txt")).unwrap(),
+        "Alice 2020-06-15\n"
+    );
+    git(target.path(), &["add", "."]);
+    git(target.path(), &["commit", "--quiet", "-m", "baseline"]);
+
+    // Update the answer at a different wall clock. The date bytes must not move:
+    // the update renders from the carried frozen instant, not the runtime clock.
+    let env_bob = envelope(
+        iso.path(),
+        "bob.json",
+        &formal,
+        serde_json::json!({ "name": "Bob" }),
+    );
+    let mut update = support::isolated_command(iso.path());
+    update
+        .arg("apply")
+        .arg(target.path())
+        .arg("--from")
+        .arg(&snapshot)
+        .arg("--answers")
+        .arg(&env_bob)
+        .env("TOHA_NOW", "2026-09-30T00:00:00+00:00[UTC]");
+    let output = update.output().unwrap();
+    assert!(output.status.success(), "update failed: {output:?}");
+    assert_eq!(
+        std::fs::read_to_string(target.path().join("stamp.txt")).unwrap(),
+        "Bob 2020-06-15\n",
+        "the date bytes must be carried from the base snapshot, not re-read"
+    );
+}
+
+#[test]
 fn an_update_with_untrusted_hooks_refuses_and_changes_nothing() {
     let iso = tempfile::tempdir().unwrap();
     let template_dir = tempfile::tempdir().unwrap();
