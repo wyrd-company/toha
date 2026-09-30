@@ -473,7 +473,17 @@ fn read_blob(
         let oid = match outcome {
             ToGitOutcome::Unchanged(mut read) => repo.write_blob_stream(&mut read),
             ToGitOutcome::Buffer(buf) => repo.write_blob(buf),
-            ToGitOutcome::Process(mut read) => repo.write_blob_stream(&mut read),
+            // Symmetric with the write side (merge.rs `worktree_bytes`): a process
+            // filter cannot appear after the driver strip, so reject it rather
+            // than stream its output. Unreachable today on a driver-stripped repo
+            // — this keeps the no-subprocess invariant from resting on the strip
+            // alone on the read path, so a future strip regression cannot silently
+            // spawn a long-running filter during capture.
+            ToGitOutcome::Process(_) => {
+                return Err(SnapshotError::Git(
+                    "unexpected process filter after driver strip".into(),
+                ));
+            }
         }
         .map_err(|e| SnapshotError::Git(e.to_string()))?
         .detach();

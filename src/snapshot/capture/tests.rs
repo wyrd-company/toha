@@ -504,3 +504,50 @@ fn a_dropped_region_injection_is_retracted_from_the_captured_file() {
         "captured as an edit that now owns nothing"
     );
 }
+
+#[test]
+fn read_blob_rejects_a_process_filter_rather_than_streaming_it() {
+    // The read side rejects a `ToGitOutcome::Process` filter symmetrically with
+    // the write side (merge.rs `worktree_bytes`). A stripped repo never produces
+    // this outcome, so the guard is proved on a repo whose process filter is left
+    // configured (unstripped): reaching read_blob with a process driver must
+    // error with the write-side message, not stream the filter's output.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q", "-b", "main"]);
+
+    // A long-running process filter that completes the v2 handshake and answers
+    // one clean request with the file's bytes, so the conversion resolves a
+    // `ToGitOutcome::Process` outcome. The whole response is written upfront and
+    // git's requests are drained, so no pkt-line parsing is needed. The guard
+    // rejects the `Process` outcome; a stripped repo never reaches this path.
+    let filter = root.join("proc-filter.sh");
+    write(
+        &filter,
+        b"#!/bin/sh\nprintf '0016git-filter-server\\n000eversion=2\\n00000015capability=clean\\n0016capability=smudge\\n00000013status=success\\n0000000ccontent\\n00000000'\ncat >/dev/null\n",
+    );
+    let mut perms = std::fs::metadata(&filter).unwrap().permissions();
+    use std::os::unix::fs::PermissionsExt;
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&filter, perms).unwrap();
+    git(
+        root,
+        &["config", "filter.proc.process", filter.to_str().unwrap()],
+    );
+    write(&root.join(".gitattributes"), b"file.txt filter=proc\n");
+    write(&root.join("file.txt"), b"content\n");
+    git(root, &["add", "file.txt", ".gitattributes"]);
+    git(root, &["commit", "-q", "-m", "seed"]);
+
+    // Open WITHOUT the driver strip, so the process filter survives in config.
+    let repo = gix::open(root).unwrap();
+    let (mut pipeline, index) = repo.filter_pipeline(None).unwrap();
+    let state: &gix::index::State = &index;
+
+    let result = super::read_blob(&repo, &mut pipeline, root, "file.txt", state);
+    let err = result.expect_err("a process filter must be rejected, not streamed");
+    assert!(
+        matches!(&err, SnapshotError::Git(m) if m.contains("unexpected process filter after driver strip")),
+        "the read side mirrors the write-side refusal: {err:?}"
+    );
+}
