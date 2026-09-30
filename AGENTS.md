@@ -30,6 +30,9 @@ Toha generates files from reusable templates and lets people, scripts, and agent
 - **Alias:** A user-chosen template name.
 - **Trust:** Permission to run template hooks.
 - **Plan:** The files and conflicts computed before writing.
+- **Snapshot:** The stored output of one apply, kept as a parentless git commit under a Toha-owned ref (`refs/toha/snapshots/<id>`), holding the rendered files and the answers that produced them.
+- **Base snapshot:** The snapshot an update merges from, three-way, to carry a template's changes into a project while the operator's edits survive.
+- **Baseline:** An apply that adopts an existing project against an empty base, recording the first snapshot without a prior one.
 
 ## Thar be dragons
 

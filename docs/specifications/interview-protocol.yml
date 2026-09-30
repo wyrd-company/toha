@@ -207,6 +207,27 @@ description: >-
   `apply <TEMPLATE> <PATH>` resumes the staged interview when `<TEMPLATE>`
   resolves to the formal name the record holds, and refuses otherwise. A
   staged record without the name-resolution field treats it as false.
+
+
+  Staged updates. A staged update carries two more members: `base`, the id of
+  the snapshot the update merges from, or the reserved marker `@baseline` for an
+  update from an empty base; and `reanswer`, whether the update re-asks every
+  recorded answer. The marker begins with `@`, which a snapshot id never
+  contains, so it is unambiguous. A record without a `base` is a plain interview.
+  A staged update replays the base snapshot's recorded answers through the
+  update replay adapter and asks only what the new version needs; resuming
+  replays the staged submissions the same way, so its position is derived, not
+  stored. `continue` answers the next batch; `apply <PATH>` resumes a completed
+  staged update and merges it from the base.
+
+
+  Update results. An update reports an `applied` or `planned` document with a
+  `merge` member — each changed path with its action (`added`, `updated`,
+  `merged`, `deleted`, `conflicted`, `not-previewed`), the kind of any conflict,
+  and the paths left conflicted — and, when it saved one, a `snapshot` member
+  naming the id. A re-render equal to the base reports an `already-current`
+  document and writes nothing. An untrusted update reports `planned` with
+  `trusted: false` and writes nothing, as a dry run does.
 format: json-schema
 validation-criteria: >-
   Every batch and result document that toha emits validates against
