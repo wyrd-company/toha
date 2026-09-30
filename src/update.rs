@@ -301,7 +301,7 @@ pub(crate) fn prepare(
                     Ok(value) => value,
                     Err(error) => return Err(crate::resolve_error(error)),
                 };
-            if source_of(&resolved.formal_name) != snapshot.source() {
+            if !source_identity_matches(&resolved.formal_name, snapshot.source()) {
                 return Err(Outcome::Error(format!(
                     "the template's source {:?} is not the snapshot's source {:?}",
                     source_of(&resolved.formal_name),
@@ -588,6 +588,15 @@ fn source_of(formal: &str) -> &str {
     formal.split_once('@').map_or(formal, |(source, _)| source)
 }
 
+/// Whether a resolved template's source identity matches the snapshot's recorded
+/// source. The match is on the source identity — the formal name without its
+/// `@reference` — so the same source updates across template versions while a
+/// foreign source is refused. Comparing the full formal name (with its
+/// reference) instead would wrongly refuse a legitimate version bump.
+fn source_identity_matches(resolved_formal: &str, snapshot_source: &str) -> bool {
+    source_of(resolved_formal) == snapshot_source
+}
+
 /// The base snapshot's recorded submissions, as the interview's raw answers.
 fn recorded_submissions(snapshot: &Snapshot) -> Result<Vec<IndexMap<Id, RawAnswer>>, String> {
     snapshot
@@ -697,5 +706,40 @@ fn conflict_name(kind: ConflictKind) -> &'static str {
         ConflictKind::FileDirectory => "file-directory",
         ConflictKind::Binary => "binary",
         ConflictKind::Driver => "driver",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{source_identity_matches, source_of};
+
+    #[test]
+    fn source_identity_matches_on_source_across_versions_and_refuses_a_foreign_source() {
+        // Behavior 17 (source side), at the identity boundary: the match is on the
+        // source identity, so the SAME source at a DIFFERENT version is accepted —
+        // comparing the full formal name (with its reference) would wrongly refuse
+        // this legitimate version bump. Generic versioned names, no hosted infra.
+        assert!(
+            source_identity_matches("forge:catalog/receipt@v2", "forge:catalog/receipt"),
+            "a new version of the same source is accepted"
+        );
+        assert!(
+            source_identity_matches("forge:catalog/receipt@a1b2c3d", "forge:catalog/receipt"),
+            "a commit-pinned reference of the same source is accepted"
+        );
+        // A bare (unversioned) name of the same source still matches.
+        assert!(source_identity_matches(
+            "forge:catalog/receipt",
+            "forge:catalog/receipt"
+        ));
+        // A foreign source is refused even at a plausible version.
+        assert!(
+            !source_identity_matches("forge:catalog/invoice@v2", "forge:catalog/receipt"),
+            "a different source is refused"
+        );
+        assert_eq!(
+            source_of("forge:catalog/receipt@v2"),
+            "forge:catalog/receipt"
+        );
     }
 }
