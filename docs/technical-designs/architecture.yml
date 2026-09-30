@@ -156,6 +156,32 @@ proposed-design:
     options, and constraints. `Completed` holds the flat `Answers`, the
     rendered interview hooks in order, and the messages shown.
 
+  generate-axis: >-
+    The generate axis (`--like`) seeds a new application's answer defaults from a
+    snapshot of a prior application of the same source. A crate-private CLI-side
+    boundary `src/cli/like.rs` is the only code outside `snapshot` that names a
+    `Snapshot` or `Project` on this axis; it is pure and reader-only and never
+    prompts. `candidates(project, source)` reads the repository-wide snapshot set
+    through the producer reader and keeps the valid ones of the source;
+    `latest(&[Snapshot])` returns the newest; `find_required(project, source,
+    reference)` resolves an id or prefix and verifies the source;
+    `fold_submissions(...)` folds a snapshot's recorded submissions to one raw
+    default per id. Snapshot types stop at this boundary: the fold yields an
+    `IndexMap<Id, RawAnswer>` that the engine consumes as defaults. The engine
+    seam is `Resolution::start_with_seed(template, now, context, Option<seed>) ->
+    Result<(Interview, Vec<warning>), EvalError>`, a sibling of
+    `start_with_context`; with `None` it is byte-for-byte `start_with_context`, so
+    the no-`--like` path is unchanged. The seam is the single place generator
+    precedence is realized and the single-occupant default bank is built: it adds
+    a private `DefaultBankEntry::Snapshot { raw, from }` (mirrored by
+    `PreparedDefaultSource::Snapshot { from }`) that shadows a configured entry
+    for an id when the snapshot value matches the question's kind, drops a
+    wrong-kind value as a warning, and leaves the public `Seed` type unchanged.
+    The `snapshot` reader gains one additive repository-wide listing,
+    `Project::snapshots_all()`, the sibling of the target-scoped
+    `Project::snapshots()`; the target-scoped listing is unchanged. The staged
+    record gains an optional pinned snapshot id, re-read from git on resume.
+
   answers: >-
     `Answer` is `Text(String)`, `Bool(bool)`, `List(Vec<String>)`, `None`, or
     `Value(serde_json::Value)`. `Answers` is an ordered map from `Id` to `Answer`. `RawAnswer` is the

@@ -87,6 +87,17 @@ $defs:
       - required: [ id ]
       - required: [ skipped ]
       - required: [ error ]
+  seed:
+    description: >-
+      Present only when `--like` seeded this interview's answer defaults from a
+      snapshot of a prior application of the same source. `from` is that
+      snapshot's id; the member carries no answer values.
+    type: object
+    additionalProperties: false
+    required: [ from ]
+    properties:
+      from:
+        type: string
   merge_action:
     description: >-
       How an update's merge changed a path: it `added` a new file, `updated` or
@@ -173,6 +184,8 @@ $defs:
           type: array
           items:
             type: string
+      seed:
+        $ref: "#/$defs/seed"
   applied:
     description: >-
       The scripted route wrote the files and ran the hooks. Each written path
@@ -218,6 +231,8 @@ $defs:
         $ref: "#/$defs/snapshot_outcome"
       merge:
         $ref: "#/$defs/merge"
+      seed:
+        $ref: "#/$defs/seed"
   planned:
     description: >-
       The scripted route planned the files and hooks and wrote nothing (a CLI or
@@ -268,6 +283,8 @@ $defs:
         type: boolean
       merge:
         $ref: "#/$defs/merge"
+      seed:
+        $ref: "#/$defs/seed"
   error:
     description: >-
       The scripted route refused the request or a step failed. `kind` names the
@@ -294,6 +311,7 @@ $defs:
           - render
           - hook
           - ambiguous
+          - snapshot
       message:
         type: string
       commands:

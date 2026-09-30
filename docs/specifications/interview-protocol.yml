@@ -228,6 +228,19 @@ description: >-
   naming the id. A re-render equal to the base reports an `already-current`
   document and writes nothing. An untrusted update reports `planned` with
   `trusted: false` and writes nothing, as a dry run does.
+
+  Generator seed. When an application is seeded from a snapshot with `--like`
+  (the generate axis), its `questions`, `applied`, and `planned` documents carry
+  an optional `seed` member, `{ "from": "<snapshot id>" }`, naming the snapshot
+  whose recorded answers pre-filled the defaults; the member holds no answer
+  values and is absent when `--like` did not seed. The staged record carries the
+  same pinned snapshot id in an optional `seed` field (distinct from the update
+  axis's `base` and never set together with it), re-read from git on resume so a
+  newer same-source snapshot does not change the seed. A seeded default enters
+  the interview as an ordinary default: a route answer overrides it, and a
+  seeded value the new template version rejects on a constraint is re-asked or
+  returned as a remaining question, never written. A `--like` selector that
+  cannot be honoured reports an `error` document of the `snapshot` kind.
 format: json-schema
 validation-criteria: >-
   Every batch and result document that toha emits validates against

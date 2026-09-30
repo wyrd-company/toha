@@ -295,6 +295,38 @@ description: >-
   `planned` with a `merge` member and, when it saved one, a `snapshot` member,
   or `already-current` when the re-render equals the base; an untrusted update
   reports `planned` with `trusted: false` and writes nothing.
+
+  In-project generators. `apply <TEMPLATE> <PATH> --like <SELECTOR>` and `stage
+  <TEMPLATE> <PATH> --like <SELECTOR>` apply the template into a fresh subpath
+  and pre-fill that new application's answer defaults from a snapshot of an
+  earlier application of the same source. `--like` is the generate axis, a
+  sibling of the update axis's `--from`/`--baseline`, never an overload: it
+  writes a fresh application and only seeds defaults, never merges, and is
+  mutually exclusive with `--from` and `--baseline` (combining them is a usage
+  error, exit code 2). The selector is `latest` (the newest snapshot of the
+  template's source), a snapshot id or a prefix of at least six characters that
+  matches exactly one snapshot of that source, or, on the person route only, an
+  omitted value that lists the source's applications to pick from. The snapshot
+  is selected repository-wide and filtered by source identity — the formal name
+  without its `@reference` — so an earlier application at a different subpath
+  seeds the new one and a foreign source is refused. Each seeded default is a
+  default, not a submitted answer: a person accepts or overrides it, `--answers`
+  overrides it, and a seeded value the new template version rejects on a
+  constraint is re-asked (person) or returned as a remaining question (exit code
+  4), never written. Per answer id the precedence is a route answer, then a
+  kind-matching snapshot value, then a configured preset or template default,
+  then the template's own default, then the question is asked; a snapshot value
+  whose kind no longer matches is dropped with a warning. A `--like` apply into
+  a clean git subpath still saves its own snapshot, so a third application can
+  seed from the second. An agent stages with `stage --like` and drives
+  `continue`/`apply PATH`, which re-read the exact pinned snapshot so a newer
+  same-source snapshot added meanwhile does not change the seed. A seeded
+  `applied` or `questions` document carries an optional `seed` member naming the
+  snapshot it seeded from; it holds no answer values. `--like` with no snapshot
+  of the source (for `latest` or an explicit reference), an unknown, ambiguous,
+  or wrong-source selector, or a target not in git with an explicit selector
+  fails with an `error` document of kind `snapshot` at exit code 1; a bare
+  `--like` on the script or agent route is a usage error at exit code 2.
 format: cli
 validation-criteria: >-
   A conforming command line matches

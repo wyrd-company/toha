@@ -73,6 +73,21 @@ commands:
         kind: flag
         requires: [ from ]
         description: Re-ask every recorded answer instead of replaying it.
+      - name: like
+        flags: [ --like ]
+        kind: option
+        conflicts-with: [ from, baseline ]
+        description: >-
+          Seed this application's answer defaults from a snapshot of a prior
+          application of the same source (the generate axis). The optional value
+          is `latest`, a snapshot id or a prefix of at least six characters, or
+          omitted to pick from a list (the person route only; a bare --like is a
+          usage error on the agent route). The snapshot is selected
+          repository-wide and filtered by source identity; the staged record
+          pins the chosen snapshot id and re-reads it on resume.
+        value:
+          type: string
+          required: false
     output:
       modes:
         - name: human-readable
@@ -231,6 +246,22 @@ commands:
         kind: flag
         requires: [ from ]
         description: Re-ask every recorded answer instead of replaying it.
+      - name: like
+        flags: [ --like ]
+        kind: option
+        conflicts-with: [ from, baseline ]
+        description: >-
+          Seed this application's answer defaults from a snapshot of a prior
+          application of the same source (the generate axis), pre-filling the new
+          application's defaults without merging. The optional value is `latest`,
+          a snapshot id or a prefix of at least six characters, or omitted to
+          pick from a list (the person route only; a bare --like is a usage error
+          on the script and agent routes). The snapshot is selected
+          repository-wide and filtered by source identity. A seeded `applied` or
+          `questions` document carries a `seed` member naming the snapshot.
+        value:
+          type: string
+          required: false
     output:
       modes:
         - name: human-readable
@@ -273,10 +304,14 @@ commands:
             staged at the path; an interview for another template is staged at
             the path; the scripted route found an interview already staged (an
             `error` document of kind `staged`); a flow abort could not remove the
-            staged record; or the staged record does not replay against its
-            template, and the message names `abort` followed by `stage`. The
-            scripted route reports every failure as an `error` result document;
-            the person and agent routes report on standard error.
+            staged record; the staged record does not replay against its
+            template, and the message names `abort` followed by `stage`; or a
+            `--like` selector could not be honoured — unknown, ambiguous,
+            wrong-source, no snapshot of the source, or a target not in git with
+            an explicit selector — reported as an `error` document of kind
+            `snapshot`. The scripted route reports every failure as an `error`
+            result document; the person and agent routes report on standard
+            error.
         - code: 3
           meaning: >-
             The template has hooks and is not trusted. The scripted route emits a

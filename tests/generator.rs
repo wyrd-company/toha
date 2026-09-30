@@ -130,6 +130,19 @@ fn read(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap()
 }
 
+/// Assert a result document validates against the published interview-protocol
+/// schema. This binds the `seed` member the CLI emits to the schema that must
+/// accept it: drop `seed` from the schema and a seeded document fails here.
+fn assert_valid(document: &Value) {
+    let validator = jsonschema::options()
+        .with_draft(jsonschema::Draft::Draft202012)
+        .build(toha::protocol::protocol_schema())
+        .expect("protocol schema builds");
+    if let Err(error) = validator.validate(document) {
+        panic!("document does not match the protocol schema: {error}\n{document}");
+    }
+}
+
 /// A scene: a repository whose root holds one applied widget (`label=Root`,
 /// `style=panel`, `with_tests=False`) with a committed snapshot, plus the widget
 /// address, its source formal name, and that snapshot's id.
@@ -202,6 +215,8 @@ fn seed_is_a_default_the_document_overrides_not_a_replayed_answer() {
     );
     assert_eq!(code, 0, "{doc}");
     assert_eq!(doc["seed"]["from"].as_str(), Some(s.root_snapshot.as_str()));
+    // The seeded `applied` document matches the published protocol schema.
+    assert_valid(&doc);
     // label overridden by the document; style/with_tests inherited from the seed.
     assert_eq!(
         read(&s.project.join("feature/beta/mod.txt")),
@@ -480,6 +495,8 @@ fn the_agent_route_shows_the_seeded_defaults_and_pins_the_snapshot() {
         Some(s.root_snapshot.as_str()),
         "the questions document pins the snapshot"
     );
+    // The seeded `questions` document matches the published protocol schema.
+    assert_valid(&staged);
     let props = &staged["schema"]["properties"];
     assert_eq!(props["style"]["default"].as_str(), Some("panel"));
     assert_eq!(props["with_tests"]["default"].as_bool(), Some(false));
