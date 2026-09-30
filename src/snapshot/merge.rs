@@ -147,20 +147,23 @@ pub fn merge_apply(
         runner,
     )?;
 
+    let published = published_commit(project, new.id())
+        .unwrap_or_else(|| gix::ObjectId::null(project.repo().object_hash()));
+
     // Already current: the new snapshot equals the base — discard it and stop.
     if let Base::Snapshot(base_snapshot) = &base {
         if is_already_current(project, base_snapshot, &new, &inputs)? {
-            remove_candidate(
-                project,
-                new.id(),
-                published_commit(project, new.id())
-                    .unwrap_or_else(|| gix::ObjectId::null(project.repo().object_hash())),
-            )?;
+            remove_candidate(project, new.id(), published)?;
             return Ok(Merged::AlreadyCurrent);
         }
     }
 
-    merge_into_worktree(project, &base, &new, &options)
+    let result = merge_into_worktree(project, &base, &new, &options);
+    if options.dry_run {
+        // A dry run saves nothing: remove the candidate ref the builder created.
+        remove_candidate(project, new.id(), published)?;
+    }
+    result
 }
 
 /// The candidate target: a `CanonicalTarget` for the project's real target.

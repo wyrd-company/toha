@@ -698,10 +698,10 @@ fn behavior_31_a_held_index_lock_refuses_and_removes_the_candidate() {
 // The shared candidate-tree builder end to end (checkout -> apply -> capture -> merge).
 // --------------------------------------------------------------------------
 
-fn capture_inputs(head: &str) -> crate::snapshot::capture::CaptureInputs {
+fn capture_inputs_id(head: &str, seed: u8) -> crate::snapshot::capture::CaptureInputs {
     use crate::snapshot::record::{CommitId, FrozenNow, ProjectPoint, Revision, Timestamp};
     crate::snapshot::capture::CaptureInputs {
-        id: SnapshotId::from_parts(9, [9; 10]),
+        id: SnapshotId::from_parts(seed as u64, [seed; 10]),
         template: "forge:catalog/receipt@stable".to_owned(),
         revision: Revision::Commit(
             CommitId::parse("8be0d41c2f0000000000000000000000000000a1").unwrap(),
@@ -709,6 +709,22 @@ fn capture_inputs(head: &str) -> crate::snapshot::capture::CaptureInputs {
         generated: FrozenNow::parse("2026-03-14T09:26:53+00:00[UTC]").unwrap(),
         created: Timestamp::parse("2026-09-30T04:12:00Z").unwrap(),
         project: ProjectPoint::new(CommitId::parse(head).unwrap(), Some("main".to_owned())),
+        submissions: vec![],
+    }
+}
+
+fn capture_inputs(head: &str) -> crate::snapshot::capture::CaptureInputs {
+    capture_inputs_id(head, 9)
+}
+
+fn snapshot_inputs() -> crate::snapshot::SnapshotInputs {
+    use crate::snapshot::record::{CommitId, FrozenNow, Revision};
+    crate::snapshot::SnapshotInputs {
+        template: "forge:catalog/receipt@stable".to_owned(),
+        revision: Revision::Commit(
+            CommitId::parse("8be0d41c2f0000000000000000000000000000a1").unwrap(),
+        ),
+        generated: FrozenNow::parse("2026-03-14T09:26:53+00:00[UTC]").unwrap(),
         submissions: vec![],
     }
 }
@@ -810,4 +826,187 @@ fn the_candidate_builder_and_merge_apply_a_from_update_end_to_end() {
         "ONE\ntwo\nthree\nfour\nFIVE\n",
         "operator's line 1 and template's line 5 both merged",
     );
+}
+
+#[test]
+fn an_already_current_update_reports_no_change_and_carries_the_frozen_instant() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q", "-b", "main"]);
+    write(&root.join("app/app.txt"), b"v1\n");
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "operator"]);
+    let head = git(root, &["rev-parse", "HEAD"]);
+    make_snapshot(root, BASE_ID, "app", &[("app.txt", b"v1\n")]);
+
+    let project = open(root, "app");
+    let src = tempfile::tempdir().unwrap();
+
+    // A plan that reproduces the same content builds a snapshot equal to the base.
+    let new = super::build_candidate(
+        &project,
+        &Base::Snapshot(read_snapshot(&project, BASE_ID)),
+        plan_of(vec![plan_file(src.path(), "app.txt", "v1\n")]),
+        capture_inputs_id(&head, 5),
+        true,
+        &crate::hook::ProcessRunner,
+    )
+    .unwrap();
+
+    // Behavior 16: the new snapshot carries the frozen `generated` instant.
+    assert_eq!(
+        new.generated().to_string(),
+        snapshot_inputs().generated.to_string()
+    );
+    // Behavior 15: it is already current.
+    assert!(
+        super::is_already_current(
+            &project,
+            &read_snapshot(&project, BASE_ID),
+            &new,
+            &snapshot_inputs()
+        )
+        .unwrap()
+    );
+
+    // A different (edited) template output is NOT already current.
+    let src2 = tempfile::tempdir().unwrap();
+    let new2 = super::build_candidate(
+        &project,
+        &Base::Snapshot(read_snapshot(&project, BASE_ID)),
+        plan_of(vec![plan_file(src2.path(), "app.txt", "v2\n")]),
+        capture_inputs_id(&head, 6),
+        true,
+        &crate::hook::ProcessRunner,
+    )
+    .unwrap();
+    assert!(
+        !super::is_already_current(
+            &project,
+            &read_snapshot(&project, BASE_ID),
+            &new2,
+            &snapshot_inputs()
+        )
+        .unwrap()
+    );
+}
+
+#[test]
+fn a_dry_run_previews_the_change_and_saves_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q", "-b", "main"]);
+    write(&root.join("app/app.txt"), b"v1\n");
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "operator"]);
+    let head = git(root, &["rev-parse", "HEAD"]);
+    make_snapshot(root, BASE_ID, "app", &[("app.txt", b"v1\n")]);
+
+    let project = open(root, "app");
+    let src = tempfile::tempdir().unwrap();
+    // Dry run builds the candidate with no hooks.
+    let new = super::build_candidate(
+        &project,
+        &Base::Snapshot(read_snapshot(&project, BASE_ID)),
+        plan_of(vec![plan_file(src.path(), "app.txt", "v2\n")]),
+        capture_inputs_id(&head, 7),
+        false,
+        &crate::hook::ProcessRunner,
+    )
+    .unwrap();
+
+    let result = merge_into_worktree(
+        &project,
+        &Base::Snapshot(read_snapshot(&project, BASE_ID)),
+        &new,
+        &MergeOptions {
+            trusted: true,
+            dry_run: true,
+        },
+    )
+    .unwrap();
+    assert!(
+        matches!(result, Merged::Planned { .. }),
+        "a dry run previews"
+    );
+    // The operator's working tree is untouched.
+    assert_eq!(
+        std::fs::read_to_string(root.join("app/app.txt")).unwrap(),
+        "v1\n"
+    );
+    // A dry run saves nothing: removing the candidate (as merge_apply does) leaves no ref.
+    let published = super::published_commit(&project, new.id()).unwrap();
+    super::remove_candidate(&project, new.id(), published).unwrap();
+    assert!(!git(root, &["for-each-ref", "refs/toha/snapshots/"]).contains(&new.id().to_string()));
+}
+
+struct FailingRunner;
+impl crate::hook::HookRunner for FailingRunner {
+    fn run(
+        &self,
+        _hook: &crate::plan::PlannedHook,
+        _target: &Path,
+    ) -> Result<crate::hook::HookOutcome, crate::hook::HookError> {
+        Ok(crate::hook::HookOutcome {
+            success: false,
+            code: Some(1),
+            stdout: None,
+            stderr: None,
+        })
+    }
+}
+
+fn failing_hook() -> crate::plan::Planned<crate::plan::PlannedHook> {
+    crate::plan::Planned::Ready(crate::plan::PlannedHook {
+        program: crate::plan::PlannedProgram::Run(vec!["true".to_owned()]),
+        cwd: None,
+        template_root: std::path::PathBuf::new(),
+        id: None,
+        capture: crate::template::Capture::default(),
+        allow_failure: false,
+        parse_json: false,
+        status_id: None,
+    })
+}
+
+#[test]
+fn a_hook_failure_leaves_the_project_unchanged_and_saves_no_ref() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q", "-b", "main"]);
+    write(&root.join("app/app.txt"), b"v1\n");
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "operator"]);
+    let head = git(root, &["rev-parse", "HEAD"]);
+    make_snapshot(root, BASE_ID, "app", &[("app.txt", b"v1\n")]);
+
+    let project = open(root, "app");
+    let src = tempfile::tempdir().unwrap();
+    let mut plan = plan_of(vec![plan_file(src.path(), "app.txt", "v2\n")]);
+    plan.hooks.push(failing_hook());
+
+    // The hook fails in the throwaway checkout.
+    let result = super::build_candidate(
+        &project,
+        &Base::Snapshot(read_snapshot(&project, BASE_ID)),
+        plan,
+        capture_inputs_id(&head, 8),
+        true,
+        &FailingRunner,
+    );
+    assert!(
+        result.is_err(),
+        "a hook failure aborts the build: {result:?}"
+    );
+
+    // The operator's project is unchanged (only the throwaway checkout was touched),
+    // and no new candidate ref was saved.
+    assert_eq!(
+        std::fs::read_to_string(root.join("app/app.txt")).unwrap(),
+        "v1\n"
+    );
+    let refs = git(root, &["for-each-ref", "refs/toha/snapshots/"]);
+    assert!(refs.contains(BASE_ID), "base preserved");
+    // Only the base ref exists (the candidate was never published).
+    assert_eq!(refs.lines().count(), 1, "no candidate ref saved: {refs}");
 }
