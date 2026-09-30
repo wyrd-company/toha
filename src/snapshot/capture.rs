@@ -57,6 +57,8 @@ pub(crate) type PlanPaths = Vec<(String, PlanOwnership)>;
 /// `base` snapshot it also carries hook files forward, retracts an injection the
 /// new version dropped, releases an edit that owns nothing, and lets the merge
 /// see a removed whole-file. Returns the saved id.
+/// Capture the snapshot and save it under its ref. Used by an update, which
+/// always saves (already-current is decided earlier, by the merge).
 pub(crate) fn capture(
     repo: &gix::Repository,
     source_dir: &Path,
@@ -65,6 +67,39 @@ pub(crate) fn capture(
     base: Option<&Snapshot>,
     inputs: CaptureInputs,
 ) -> Result<SnapshotId, SnapshotError> {
+    let (doc, blobs, _changed) = collect(repo, source_dir, target, plan_paths, base, inputs)?;
+    record::save(repo, &doc, &blobs)
+}
+
+/// Capture the snapshot of a plain apply, saving it only when at least one
+/// captured path differs from `HEAD` in content or entry kind. Returns `None`
+/// when nothing the apply owns changed, so the apply saves no snapshot. The test
+/// is path-scoped to the captured set, so an unrelated working-tree edit never
+/// creates a snapshot and an ignored output never suppresses one.
+pub(crate) fn capture_if_changed(
+    repo: &gix::Repository,
+    source_dir: &Path,
+    target: &RepoPath,
+    plan_paths: &PlanPaths,
+    inputs: CaptureInputs,
+) -> Result<Option<SnapshotId>, SnapshotError> {
+    let (doc, blobs, changed) = collect(repo, source_dir, target, plan_paths, None, inputs)?;
+    if !changed {
+        return Ok(None);
+    }
+    Ok(Some(record::save(repo, &doc, &blobs)?))
+}
+
+/// Build the snapshot document and its captured blobs, and report whether any
+/// captured path differs from `HEAD` in content or entry kind.
+fn collect(
+    repo: &gix::Repository,
+    source_dir: &Path,
+    target: &RepoPath,
+    plan_paths: &PlanPaths,
+    base: Option<&Snapshot>,
+    inputs: CaptureInputs,
+) -> Result<(SnapshotDoc, Vec<CapturedBlob>, bool), SnapshotError> {
     let plan_index: BTreeMap<&str, &PlanOwnership> =
         plan_paths.iter().map(|(p, o)| (p.as_str(), o)).collect();
 
@@ -119,7 +154,7 @@ pub(crate) fn capture(
                 Origin::Hook => {
                     let changed = on_disk
                         .as_ref()
-                        .map(|(oid, _)| head.get(&rel) != Some(oid))
+                        .map(|(oid, _)| head.get(&rel).map(|(head_oid, _)| head_oid) != Some(oid))
                         .unwrap_or(false);
                     if !changed {
                         if let Some((oid, kind)) = base_file_blob(repo, base.id(), &rel)? {
@@ -177,8 +212,8 @@ pub(crate) fn capture(
             continue;
         };
         match head.get(&rel) {
-            Some(head_oid) if *head_oid == oid => continue, // unchanged tracked file
-            Some(_) => {}                                   // changed tracked file -> hook
+            Some((head_oid, _)) if *head_oid == oid => continue, // unchanged tracked file
+            Some(_) => {}                                        // changed tracked file -> hook
             None => {
                 if is_ignored(repo, state, &repo_rel)? {
                     continue;
@@ -196,6 +231,13 @@ pub(crate) fn capture(
         )?;
     }
 
+    // A captured path changed when its content (oid) or entry kind (exec bit,
+    // file vs link) differs from HEAD, or it is not in HEAD at all. Scoped to the
+    // captured set, so an unrelated edit or an ignored output never counts.
+    let changed = blobs
+        .iter()
+        .any(|blob| head.get(&blob.path.to_string()) != Some(&(blob.oid, blob.kind)));
+
     let doc = SnapshotDoc::new(
         inputs.id,
         inputs.template,
@@ -208,7 +250,7 @@ pub(crate) fn capture(
         inputs.submissions,
         paths,
     );
-    record::save(repo, &doc, &blobs)
+    Ok((doc, blobs, changed))
 }
 
 /// Retract, in the source tree, every base injection the new plan does not
@@ -287,11 +329,13 @@ pub(crate) fn group_plan(plan: &Plan) -> PlanPaths {
         .collect()
 }
 
-/// The `HEAD` tree's blob ids under the target, keyed by target-relative path.
+/// The `HEAD` tree's blobs under the target, keyed by target-relative path, each
+/// with its object id and entry kind so a capture can tell an exec-bit or
+/// file/link change from an unchanged path, not only a content change.
 fn head_target_oids(
     repo: &gix::Repository,
     target: &RepoPath,
-) -> Result<BTreeMap<String, gix::ObjectId>, SnapshotError> {
+) -> Result<BTreeMap<String, (gix::ObjectId, gix::objs::tree::EntryKind)>, SnapshotError> {
     let head_tree = match repo.head_tree() {
         Ok(tree) => tree,
         Err(_) => return Ok(BTreeMap::new()), // unborn HEAD
@@ -316,7 +360,7 @@ fn collect_tree(
     repo: &gix::Repository,
     tree_oid: gix::ObjectId,
     prefix: &str,
-    oids: &mut BTreeMap<String, gix::ObjectId>,
+    oids: &mut BTreeMap<String, (gix::ObjectId, gix::objs::tree::EntryKind)>,
 ) -> Result<(), SnapshotError> {
     use gix::objs::tree::EntryKind;
     let tree = repo
@@ -330,10 +374,11 @@ fn collect_tree(
         } else {
             format!("{prefix}/{name}")
         };
-        match entry.mode().kind() {
+        let kind = entry.mode().kind();
+        match kind {
             EntryKind::Tree => collect_tree(repo, entry.oid().to_owned(), &path, oids)?,
             EntryKind::Blob | EntryKind::BlobExecutable | EntryKind::Link => {
-                oids.insert(path, entry.oid().to_owned());
+                oids.insert(path, (entry.oid().to_owned(), kind));
             }
             EntryKind::Commit => {}
         }

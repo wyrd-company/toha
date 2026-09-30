@@ -144,6 +144,59 @@ fn a_dirty_apply_skips_with_dirty() {
     assert_eq!(document["snapshot"]["skipped"], "dirty", "{document}");
 }
 
+#[cfg(unix)]
+#[test]
+fn an_exec_bit_only_change_still_saves() {
+    // A re-apply that changes only a captured path's executable bit — its content
+    // byte-identical to HEAD — is a change: the save test compares entry kind,
+    // not only content, so this is not mistaken for nothing changed.
+    use std::os::unix::fs::PermissionsExt;
+
+    let iso = tempfile::tempdir().unwrap();
+    let template_dir = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    write_template(template_dir.path());
+    target_repo(target.path());
+
+    let formal = support::formal_name(template_dir.path());
+    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let env = envelope(
+        iso.path(),
+        "a.json",
+        &formal,
+        serde_json::json!({ "name": "Alice" }),
+    );
+
+    // First apply saves greeting.txt (non-executable); commit it clean.
+    let first = apply(iso.path(), &address, target.path(), &env);
+    assert!(first["snapshot"]["id"].is_string(), "{first}");
+    git(target.path(), &["add", "."]);
+    git(target.path(), &["commit", "--quiet", "-m", "applied"]);
+
+    // The source file gains the executable bit; its content is unchanged.
+    let source = template_dir.path().join("template/greeting.txt");
+    let mut mode = std::fs::metadata(&source).unwrap().permissions();
+    mode.set_mode(0o755);
+    std::fs::set_permissions(&source, mode).unwrap();
+
+    // The forced re-apply writes identical bytes but a new mode: a change.
+    let mut command = support::isolated_command(iso.path());
+    command
+        .arg("apply")
+        .arg(&address)
+        .arg(target.path())
+        .arg("--answers")
+        .arg(&env)
+        .arg("--force");
+    let output = command.output().unwrap();
+    assert!(output.status.success(), "re-apply failed: {output:?}");
+    let second = support::first_document(&output.stdout);
+    assert!(
+        second["snapshot"]["id"].is_string(),
+        "an exec-bit change must save: {second}"
+    );
+}
+
 #[test]
 fn a_re_apply_that_changes_nothing_skips() {
     let iso = tempfile::tempdir().unwrap();

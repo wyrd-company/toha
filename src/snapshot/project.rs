@@ -612,10 +612,6 @@ impl Project {
         if !was_clean {
             return Ok(SnapshotOutcome::Skipped(SkipReason::Dirty));
         }
-        // Nothing changed: the apply left a clean target and wrote no new file.
-        if matches!(self.cleanliness(), Ok(Cleanliness::Clean)) {
-            return Ok(SnapshotOutcome::Skipped(SkipReason::NothingChanged));
-        }
 
         let commit = CommitId::parse(&head.to_hex().to_string())
             .map_err(|err| SnapshotError::Git(err.to_string()))?;
@@ -633,8 +629,21 @@ impl Project {
             project: ProjectPoint::new(commit, branch),
             submissions,
         };
-        let id = self.capture(source_dir, plan, None, inputs)?;
-        Ok(SnapshotOutcome::Saved(id))
+        // Nothing changed: no captured path differs from HEAD, so save nothing.
+        // The test is scoped to the paths the apply owns, not whole-target
+        // cleanliness, so an unrelated edit never makes a snapshot and an ignored
+        // output never hides a real one.
+        let plan_paths = crate::snapshot::capture::group_plan(plan);
+        match crate::snapshot::capture::capture_if_changed(
+            &self.repo,
+            source_dir,
+            &self.rel,
+            &plan_paths,
+            inputs,
+        )? {
+            Some(id) => Ok(SnapshotOutcome::Saved(id)),
+            None => Ok(SnapshotOutcome::Skipped(SkipReason::NothingChanged)),
+        }
     }
 }
 
