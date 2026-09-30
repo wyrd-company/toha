@@ -69,11 +69,12 @@ A  src/health.txt
 
 `README.md` holds diff3 conflict markers and git records it as conflicted, so
 `git commit` refuses until the operator resolves it (as after `git merge`,
-`git commit -a` does not check). `git reset --hard` returns
-the target to where it was, because the target had to be clean.
+`git commit -a` does not check). Because the target had to be clean,
+`git restore --source=HEAD --staged --worktree -- .` and `git clean -d --force
+-- .` return it to where it was.
 
-The same command again reports `already at receipt 8be0d41` and changes
-nothing.
+After the operator commits, the same command with `--from 01JA2B8M4R` reports
+`already at receipt 8be0d41` and changes nothing.
 
 ### Person route without `--from`
 
@@ -130,11 +131,11 @@ $ toha apply forge:catalog/receipt@stable . --from 01JA2B8M4R --answers answers.
 
 ### Snapshot housekeeping
 
-```console
-$ toha snapshots list . --json
-$ toha snapshots clean .                # select in a list
-$ toha snapshots clean . --keep 1       # preselect all but the newest per template
-$ toha snapshots clean . --remove remove.json   # remove exactly these, no prompt
+```sh
+toha snapshots list . --json
+toha snapshots clean .                         # select in a list
+toha snapshots clean . --keep 1                # preselect all but the newest
+toha snapshots clean . --remove remove.json    # remove exactly these
 ```
 
 After a removal Toha prints one `git push origin --delete <ref>` line per
@@ -165,6 +166,7 @@ prefix of at least 6 characters.
   "snapshot": 1,
   "id": "01JA2B8M4R0C7W1Y5F3H9K2S6E",
   "template": "forge:catalog/receipt@stable",
+  "source": "forge:catalog/receipt",
   "commit": "8be0d41c2f…",
   "target": "services/sample-service",
   "created": "2026-09-30T04:12:00Z",
@@ -172,7 +174,12 @@ prefix of at least 6 characters.
   "project": { "commit": "a41c0de…", "branch": "main" },
   "built_from": "01J9Z4K7QX6M2V8R0T5B3N1P9D",
   "submissions": [ { "label": "Sample", "quantity": 4 }, { "use_vcs": true } ],
-  "paths": { "src/app.txt": "toha", "README.md": "toha", "package-lock.json": "hook" }
+  "paths": {
+    "src/app.txt":       { "origin": "toha" },
+    "package.json":      { "origin": "edit", "regions": [], "values": ["scripts.build"] },
+    "config/app.toml":   { "origin": "edit", "regions": ["features"], "values": [] },
+    "package-lock.json": { "origin": "hook" }
+  }
 }
 ```
 
@@ -180,7 +187,8 @@ prefix of at least 6 characters.
 |---|---|
 | `snapshot` | Format version of this document. |
 | `id` | The ULID. Equal to the ref's last segment. |
-| `template` | Formal name. Compared by exact string equality. |
+| `template` | The formal name as applied, including any `@reference`. |
+| `source` | The source identity: the formal name without its `@reference`. Two snapshots belong to the same template when their `source` values are equal. |
 | `commit` | The template's resolved 40-hex commit, or `null` for a folder template. |
 | `target` | The target directory relative to the repository root, `.` for the root. |
 | `created` | When the snapshot was saved. |
@@ -188,41 +196,72 @@ prefix of at least 6 characters.
 | `project` | `HEAD` commit and branch name when the snapshot was saved. `branch` is `null` on a detached `HEAD`. |
 | `built_from` | The base snapshot's id for `--from`, `null` otherwise. |
 | `submissions` | The accepted raw submissions in order, before `format`, as the staged record holds them. |
-| `paths` | Every output path and its origin: `toha` for a file Toha wrote or edited, `hook` for a file a hook created or changed. |
+| `paths` | Every path under `files/` and its origin: `toha` for a file Toha owns whole; `edit` for a file Toha edits inside, with the region keys and JSON paths it owns there; `hook` for a file a hook created or changed. |
 
 The schema is `docs/specifications/snapshot.schema.yml`. It denies unknown
-members. Toha parses `snapshot.json` at one boundary into domain types and
-validates each member: ULID syntax equal to the ref, identifier and commit
-syntax, instant syntax, target and path rules (relative, no `..`, not inside
-`.git`), and that `paths` equals the set of paths under `files/`.
+members. Toha reads a snapshot at one boundary and refuses the whole snapshot
+when any check fails:
+
+- the ref is `refs/toha/snapshots/<id>` and points at a commit with no parent;
+- the commit's tree has exactly `snapshot.json` (a regular blob) and, unless
+  the snapshot is empty, `files/` (a tree);
+- every entry under `files/` is a regular file, an executable file, or a
+  symbolic link; no gitlink and no path outside `files/`;
+- `snapshot.json` is valid against the schema; `id` equals the ref; identifier,
+  commit, instant, region-key, and JSON-path syntax are valid; `target` and
+  every path are relative, contain no `..`, and are not inside `.git`;
+- the keys of `paths` equal the set of files under `files/`.
+
+A snapshot fetched from a teammate is therefore data that can be refused, never
+instructions.
 
 ### When a snapshot is saved
 
-An apply saves a snapshot when all of these hold:
+A plain apply saves a snapshot when all of these hold:
 
 1. The target is inside a git repository with at least one commit.
 2. Before the apply, the target directory has no tracked modification, no
    staged change, and no untracked file that git does not ignore.
-3. The apply wrote at least one file.
+3. The apply changed at least one path.
 
 Otherwise the apply behaves exactly as it does without this feature and reports
-the reason. A dry run saves nothing.
+the reason. `--from` and `--baseline` always save the new snapshot unless the
+result is already current. A dry run saves nothing.
 
 ### What goes into `files/`
 
-- **First apply and `--baseline`:** every path Toha wrote or edited according
-  to the plan (origin `toha`), plus every other path under the target that the
-  apply changed, measured against `HEAD` after hooks ran (origin `hook`). A path
-  git ignores is left out. Content is the bytes on disk after the hooks.
-- **`--from`:** the same rule applied in the throwaway checkout (below), with
-  one addition. A path with origin `hook` in the base snapshot that the new
-  apply neither wrote nor changed is carried into the new snapshot with the base
-  snapshot's content and origin, because a hook that rewrites a file unchanged
-  is indistinguishable from a hook that no longer produces it. A path with
-  origin `toha` that the new plan does not write is left out, so the merge sees
-  it as removed by the template.
-- Changes a hook makes outside the target directory are not saved and are
-  reported as a warning.
+A path is captured when it is under the target and one of these holds:
+
+- **Plan target:** it is a target of any mutation in the plan
+  (`Plan::mutations()`): origin `toha` for a whole file, `edit` for a region or
+  JSON value, with the keys and paths the plan owns there. This includes a
+  mutation whose bytes did not change.
+- **Hook change:** it differs from `HEAD` after the hooks ran and is not a plan
+  target: origin `hook`.
+- **Carry-forward (`--from` only):** it has origin `hook` in the base snapshot,
+  and the new apply neither made it a plan target nor changed it. It keeps the
+  base snapshot's content and origin, because a hook that rewrites a file
+  unchanged cannot be told apart from a hook that no longer produces it.
+- **Retraction (`--from` only):** it has origin `edit` in the base snapshot and
+  owns a region or JSON value the new plan does not produce. Toha retracts
+  that ownership in the throwaway checkout (a region loses its marker lines
+  and span, a JSON value loses its key, with the same strict `.json` check the
+  JSON resolver applies) and captures the file with origin `edit` and the
+  ownership that remains. A file with origin `edit` is never removed by an
+  update.
+
+A path with origin `toha` in the base snapshot that the new plan does not
+produce is not captured, so the merge sees the template removing it.
+
+A path is not captured when it is untracked in `HEAD` and git ignores it, when
+it is a gitlink or lies inside a submodule, or when it is outside the target
+(a hook change outside the target is reported as a warning). A tracked file
+stays capturable even if an ignore rule now matches it.
+
+Capture reads symbolic links without following them and records them as links.
+It records the executable bit. It converts file content to its stored form with
+git's built-in conversions only (line endings, `working-tree-encoding`), as
+`git add` would, and never runs a filter driver.
 
 ## Applying from a snapshot
 
@@ -232,43 +271,78 @@ the reason. A dry run saves nothing.
 
 - PATH is not inside a git repository;
 - the target directory has uncommitted changes;
-- the snapshot id is unknown or ambiguous;
-- the snapshot's `template` differs from TEMPLATE's formal name;
+- the snapshot id is unknown or ambiguous, or the snapshot is invalid;
+- the snapshot's `source` differs from TEMPLATE's source identity;
 - the snapshot's `target` differs from PATH relative to the repository root;
 - an interview is staged at PATH for another operation (as today).
 
 `--from` with `--baseline`, and either of them with `--force`, is a usage
-error (exit 2). `--dry-run` runs every step up to the merge in memory, reports
-the changes, and writes nothing to the project; it saves no snapshot.
+error (exit 2).
 
 ### Answers
 
-For the render, Toha filters each recorded submission to the question ids of the
-new version, replays them in order through the staged-replay walk, then applies
-the route's answers: prompts on the person route, `--answers FILE` on the script
-route, batches on the agent route. A question the new version adds without a
-default, or a recorded answer it rejects, is asked or reported as `questions`.
-`--reanswer` asks every question with the recorded answers as defaults.
+An update does not reuse the staged-replay walk as it is, because that walk
+treats a rejected recorded answer as fatal, submits recorded batches whole, and
+has no way to override an answer. A crate-private update replay adapter drives
+the unchanged interview engine instead:
 
-If the resolved commit and the completed raw answers equal the snapshot's, the
-apply reports `already at <short name> <commit>`, writes nothing, and saves no
-snapshot.
+1. It turns the recorded submissions into a queue of values per question id,
+   in recorded order, so a question asked more than once (in a loop) gets its
+   values in order.
+2. It applies the route's overrides first: `--answers FILE` values (verified
+   against the template being applied through `parse_and_verify`) replace the
+   queued value for their id. Values for ids the new version does not ask are
+   dropped.
+3. For each pending batch, it takes the next queued value for every question
+   in the batch. It submits the batch when every question that needs an answer
+   has one. A recorded value the new version rejects is removed and the
+   question is treated as unanswered, with the rejection kept for the message.
+4. At the first batch it cannot complete, it hands the batch to the route:
+   the person is prompted with the recorded values as defaults; the script
+   route returns `questions` (exit 4); the agent route stages the interview
+   with the base and returns the batch.
+
+`--reanswer` skips step 3: every batch goes to the route, with the recorded
+raw values as defaults.
+
+The new snapshot records the raw values actually submitted.
+
+### Already current
+
+After the render, when the new snapshot would have the same `commit`, the same
+submissions, and the same `files/` tree as the base snapshot, the apply reports
+`already at <short name> <commit>`, discards the new snapshot, and writes
+nothing. For a folder template, whose `commit` is `null`, the `files/` tree
+decides, so an edited folder template is never mistaken for an unchanged one.
+
+### Dry run
+
+`--dry-run` builds the plan and the merge in memory from the base snapshot and
+the rendered files, with no throwaway checkout and no hooks, and reports the
+changes. Output a hook would produce is reported as `not previewed: hook
+output`. It writes nothing to the project and saves no snapshot.
 
 ### The throwaway checkout
 
 1. Check out the whole tree of `HEAD` into a new temporary directory outside the
-   repository. The checkout runs no filter driver, so a file stored through a
-   filter such as git-lfs appears in its stored form.
-2. Build the plan against the target inside that checkout, with the snapshot's
-   `generated` instant.
-3. Apply it there with overwrite semantics: whole files replace what the
-   checkout holds and regions and JSON values are written as the template
-   intends. The checkout is a copy, so nothing the operator owns is at risk.
+   repository, with no filter driver, so a file stored through a filter such as
+   git-lfs appears in its stored form.
+2. Build the plan for the project's real target and with the snapshot's
+   `generated` instant, so everything the template renders (paths, the
+   invocation context, dates) is what an apply in the project would render.
+3. Apply the plan with the throwaway checkout as the destination, through a
+   crate-private destination seam in `apply.rs`: whole files replace what the
+   checkout holds, and regions and JSON values are written as the template
+   intends, as with `--force`. The checkout is a copy, so nothing the operator
+   owns is at risk.
 4. Run the new version's hooks there, in the existing hook loop, under the
-   existing trust gate. Hook failure ends the apply with nothing written to the
-   project.
-5. Save the new snapshot from the checkout by the rules above.
+   existing trust gate.
+5. Apply the retractions, then capture the new snapshot by the rules above and
+   save it under its ref.
 6. Delete the checkout.
+
+A failure in steps 1–5 ends the apply. The project is untouched, and no ref is
+saved.
 
 ### The merge
 
@@ -282,21 +356,35 @@ outside the target cannot change:
 - theirs = the `HEAD` tree with the target directory replaced by `files/` of the
   new snapshot (the template side).
 
+When the target is the repository root, the whole tree is replaced; paths that
+no snapshot names are then present only on the operator side, as below.
+
 The operator is "ours" and the template is "theirs", as in `git merge` when the
 operator merges the template in: index stage 2 is the operator's version and
 `git checkout --ours` keeps it.
 
 Each path merges by git's rules: changed on one side takes that side; changed on
-both sides merges by line; removed by the template and unedited is deleted;
-removed by the template and edited is a modify/delete conflict; added by the
-template is added; binary content changed on both sides is a conflict. Rename
-detection is off. Operator files under the target that no snapshot names are
-present only on the operator side, so the merge keeps them unchanged.
+both sides merges by line, and only overlapping changes conflict; removed by the
+template and unedited is deleted; removed by the template and edited is a
+modify/delete conflict; added by the template where the operator has nothing is
+added; added by both with different content is an add/add conflict; a file on
+one side where the other side has a directory is a file/directory conflict;
+binary content changed on both sides is a conflict. Rename detection is off.
+Operator files under the target that no snapshot names are present only on the
+operator side, so the merge keeps them unchanged.
 
-Toha calls the built-in text merge only. It runs no merge driver and no filter
-driver: a path whose git attributes name a merge driver or a `filter` (for
-example git-lfs) is not merged, keeps the operator's content, and is reported as
-a conflict of kind `driver` with its index stages.
+Owned regions and JSON values follow the same line rules. The new snapshot holds
+the operator's file with Toha's new region body or value, so the merge applies
+Toha's change and keeps operator edits around it. When the operator and the
+template both changed lines inside an owned region or value, overlapping lines
+conflict and separate lines both apply.
+
+Toha never runs a merge driver or a filter driver (see Repository access). A
+path whose git attributes name a merge driver or a `filter` is not merged; it
+keeps the operator's content and is reported as a conflict of kind `driver`
+with its index stages.
+
+### Writing the result
 
 Toha writes the result into the target directory and the index, as `git merge`
 does:
@@ -304,38 +392,47 @@ does:
 - clean paths get their merged content and are staged;
 - a text conflict gets diff3 markers labelled `operator`, `toha <old short
   commit>`, and `toha <new short commit>`, and index stages 1, 2, and 3;
-- a modify/delete, add/add, binary, or driver conflict keeps the operator's file
-  on disk and gets the matching index stages;
+- a modify/delete, add/add, file/directory, binary, or driver conflict keeps
+  the operator's file on disk and gets the matching index stages;
 - index entries outside the target are kept, including anything the operator
-  had staged elsewhere.
+  had staged elsewhere; the index's cached tree is dropped so git recomputes
+  it.
 
-Git then lists every conflict as unmerged: `git status` shows it and `git
-commit` refuses until it is resolved. As after any `git merge`, `git commit -a`
-records the files as they are. Toha does not create `MERGE_HEAD` or any merge
-state, and it never commits.
+Git then lists every conflict as unmerged: `git status` shows it and plain
+`git commit` refuses until it is resolved. As after any `git merge`, `git
+commit -a` records the files as they are. Toha does not create `MERGE_HEAD` or
+any merge state, and it never commits.
 
-Content injection's region and JSON-value ownership is expressed through the
-snapshot content: the new snapshot holds the operator's file with Toha's new
-region or value, so the merge applies Toha's change and keeps every operator
-edit around it. When the operator and the template both changed an owned region
-body or JSON value, the result is a text conflict.
+Toha refuses, writing nothing, when a path the merge would add or replace is
+occupied on disk by an untracked file or directory, ignored or not, as `git
+merge` does; the message names the paths.
 
 ### Order of effects
 
 ```text
-0  refuse: preconditions above
+0  refuse: preconditions above; record HEAD and the index checksum
 1  resolve the template, answers, and plan (questions -> ask or report, exit 4)
 2  trust gate for the new version's hooks (untrusted -> planned, exit 3)
-3  throwaway checkout, apply, hooks, save the new snapshot and its ref
-4  merge in memory
-5  write merged files, then the index
-6  print the change list, the snapshot, and the share command
+3  throwaway checkout, apply, hooks, retractions, capture; save the new ref
+4  already current -> report, delete the new ref, stop
+5  merge in memory; refuse on occupied paths
+6  take the index lock; re-check HEAD, the index checksum, and that the target
+   is still clean; any drift -> release the lock, delete the new ref, refuse
+7  write merged files (each by temporary file and rename), then the index
+   through the lock
+8  print the change list, the snapshot, and the share command
 ```
 
-A failure before step 5 leaves the project untouched; a new snapshot saved at
-step 3 remains and appears in `snapshots list`. A failure during step 5 leaves
-some files written; the target was clean, so `git reset --hard` restores it,
-and the error says so.
+If step 7 fails, Toha restores every path it wrote or deleted from `HEAD` (the
+target was clean, so `HEAD` holds the operator's content), removes files it
+created, releases the index lock without writing, and deletes the new ref. If
+that rollback also fails, the error names the paths and the target-scoped
+recovery: `git restore --source=HEAD --staged --worktree -- <target>` and
+`git clean -d --force -- <target>`, which touch nothing outside the target and
+no ignored file.
+
+After a successful merge, the operator can abandon it with the same two
+commands.
 
 ## Baseline
 
@@ -349,6 +446,18 @@ unchanged; paths only the render has are added. The new snapshot has
 Plain `apply` into existing files keeps its behaviour: refuse, or overwrite with
 `--force`, and save a snapshot under the usual rule.
 
+## Repository access
+
+Toha opens the target's repository once per command through gitoxide. Before
+any status, checkout, conversion, or merge, it removes from the in-memory
+configuration every `filter.<name>.clean`, `filter.<name>.smudge`,
+`filter.<name>.process`, and `merge.<name>.driver` value, so no configured
+driver program can start. It changes nothing on disk. Built-in conversions
+(line endings, `working-tree-encoding`) still apply. A path whose attributes
+name a filter is therefore compared and written in its stored form; the clean
+check reports it as changed when its working-tree bytes differ from that form,
+which refuses rather than guesses.
+
 ## Routes
 
 | Caller | Command | Base |
@@ -358,8 +467,8 @@ Plain `apply` into existing files keeps its behaviour: refuse, or overwrite with
 | Agent | `stage TEMPLATE PATH (--from ID \| --baseline) [--reanswer] --async`, `continue`, `apply PATH` | Recorded in the staged interview |
 
 The staged interview gains one member, `base`: absent, `{"snapshot": "<id>"}`,
-or `"empty"`. The clean-target check runs at `stage` and again at the final
-`apply PATH`, which is authoritative.
+or `"empty"`, plus `reanswer: true` when given. The clean-target check runs at
+`stage` and again at the final `apply PATH`, which is authoritative.
 
 ## Snapshot commands
 
@@ -367,21 +476,22 @@ or `"empty"`. The clean-target check runs at `stage` and again at the final
 
 Lists the snapshots whose `target` is PATH (default: the current directory),
 newest first, with id, template short name, template version, created, project
-commit, branch, and built-from. It marks one **likely base** per template: the
+commit, branch, and built-from. It marks one **likely base** per source: the
 newest snapshot whose project commit is an ancestor of `HEAD`. When none is an
 ancestor, it marks the snapshot whose `files/` match the most paths in the
-target at `HEAD`, labelled `likely base (by content)`. `--json` writes one
-document with the same fields and marks.
+target at `HEAD`, labelled `likely base (by content)`. A mark never selects a
+base. `--json` writes one document with the same fields and marks. An invalid
+snapshot is listed as invalid with the reason.
 
 ### `toha snapshots clean [PATH] [--keep N] [--remove FILE] [--force]`
 
 - Person route: a multi-select list of the target's snapshots. `--keep N`
-  preselects all but the newest N per template. Nothing is removed until the
+  preselects all but the newest N per source. Nothing is removed until the
   person confirms.
 - Script and agent route: `--remove FILE` (`-` reads standard input) names the
   exact snapshots: `{ "remove": ["<id>", ...] }`. It acts immediately and writes
   one JSON result: `{ "removed": [...], "not_found": [...] }`. A request that
-  would remove every snapshot of a template is refused as a whole, and removes
+  would remove every snapshot of a source is refused as a whole, and removes
   nothing, unless `--force` is given.
 - Removal deletes the refs. Toha prints one `git push origin --delete <ref>`
   per removed snapshot. It never uses `--prune`.
@@ -398,10 +508,11 @@ nothing else, writes no push setting, and never fetches.
 ```rust
 // toha::snapshot — new public module
 pub struct SnapshotId(Ulid);                       // 26 chars; Display, FromStr (full id)
-pub struct Snapshot { /* private: parsed snapshot.json + ref */ }
+pub struct Snapshot { /* private: validated snapshot.json + ref */ }
 impl Snapshot {
     pub fn id(&self) -> &SnapshotId;
-    pub fn template(&self) -> &str;
+    pub fn template(&self) -> &str;                // formal name as applied
+    pub fn source(&self) -> &str;                  // formal name without @reference
     pub fn revision(&self) -> &Revision;           // Commit(CommitId) | Unversioned
     pub fn target(&self) -> &RepoPath;
     pub fn created(&self) -> Timestamp;
@@ -411,25 +522,26 @@ impl Snapshot {
     pub fn submissions(&self) -> &[IndexMap<Id, serde_json::Value>];
 }
 
-pub struct Project { /* private: gix repository, canonical target, repo-relative path */ }
+pub struct Project { /* private: repository, canonical target, repo-relative path */ }
 impl Project {
     pub fn open(target: &CanonicalTarget) -> Result<Option<Project>, ProjectError>; // None: not in git
-    pub fn is_clean(&self) -> Result<Cleanliness, ProjectError>;
-    pub fn snapshots(&self) -> Result<Vec<Snapshot>, SnapshotError>;
+    pub fn cleanliness(&self) -> Result<Cleanliness, ProjectError>;
+    pub fn snapshots(&self) -> Result<Vec<Listed>, ProjectError>;   // Valid(Snapshot) | Invalid{ref, reason}
     pub fn find(&self, prefix: &str) -> Result<Snapshot, SnapshotError>;
     pub fn likely_bases(&self, snapshots: &[Snapshot]) -> Result<Vec<LikelyBase>, ProjectError>;
     pub fn remove(&self, ids: &[SnapshotId], force: bool) -> Result<Removed, SnapshotError>;
+    pub fn add_fetch(&self, remote: &str) -> Result<FetchSetting, ProjectError>; // toha init
 }
 pub enum Cleanliness { Clean, Dirty { paths: Vec<RepoPath> } }
 
-// First apply and --baseline without a base: wraps Plan::apply.
-pub fn apply(plan: Plan, record: SnapshotInputs, project: Option<&Project>,
+// Plain apply: Plan::apply, then capture when the project allows it.
+pub fn apply(plan: Plan, inputs: SnapshotInputs, project: Option<&Project>,
              options: ApplyOptions, runner: &dyn HookRunner)
     -> Result<Applied, ApplyError>;               // Applied gains `snapshot: SnapshotOutcome`
 
-// --from and --baseline.
+// --from and --baseline, after the interview completed through `UpdateReplay`.
 pub fn merge_apply(project: &Project, base: Base, template: &Template,
-                   completed: &Completed, record: SnapshotInputs,
+                   completed: &Completed, inputs: SnapshotInputs,
                    options: MergeOptions, runner: &dyn HookRunner)
     -> Result<Merged, MergeError>;
 pub enum Base { Snapshot(Snapshot), Empty }
@@ -441,20 +553,37 @@ pub enum Merged {
     Written { snapshot: SnapshotId, changes: Vec<Change>, conflicted: Vec<RepoPath> },
 }
 pub struct Change { pub path: RepoPath, pub action: Action }
-pub enum Action { Added, Updated, Merged, Deleted, Conflicted(ConflictKind) }
-pub enum ConflictKind { Content, AddAdd, ModifyDelete, Binary, Driver }
+pub enum Action { Added, Updated, Merged, Deleted, Conflicted(ConflictKind), NotPreviewed }
+pub enum ConflictKind { Content, AddAdd, ModifyDelete, FileDirectory, Binary, Driver }
+
+// Answers for --from.
+pub struct UpdateReplay<'t> { /* private: queues per id, overrides, rejections */ }
+impl<'t> UpdateReplay<'t> {
+    pub fn new(base: &Snapshot, template: &'t Template, reanswer: bool) -> Self;
+    pub fn with_document(self, text: &str) -> Result<Self, SubmitDocumentError>; // parse_and_verify
+    pub fn advance(self, interview: Interview<'t>) -> Replayed<'t>;
+}
+pub enum Replayed<'t> {
+    Completed(Completed),
+    Ask { pending: Pending<'t>, defaults: RawAnswers, rejected: Vec<Rejection>, replay: UpdateReplay<'t> },
+    Ended(Ended),
+}
 
 pub struct SnapshotInputs {                        // what the snapshot records
     pub template: String, pub revision: Revision, pub generated: FrozenNow,
     pub submissions: Vec<IndexMap<Id, serde_json::Value>>,
 }
 pub enum SnapshotOutcome { Saved(SnapshotId), Skipped(SkipReason) }
-pub enum SkipReason { NotGit, NoCommit, Dirty, NothingWritten, DryRun }
+pub enum SkipReason { NotGit, NoCommit, Dirty, NothingChanged, DryRun }
 ```
 
 `Plan::build`, `Plan::apply`, `Plan::mutations`, the injection resolvers, the
-interview engine, and the answers-document operations keep their signatures.
-`StagedRecord` gains the optional `base` member.
+interview engine, and the answers-document operations keep their public
+signatures. Crate-private additions: a destination seam in `apply.rs` that
+applies a plan built for the real target into another directory, and
+retraction helpers in the injection module that reuse its resolvers.
+`StagedRecord` gains the optional `base` and `reanswer` members. No gitoxide
+type appears in a public signature.
 
 ## Module and seam
 
@@ -463,14 +592,16 @@ CLI  apply (--from, --baseline, --reanswer) · stage · snapshots list|clean · 
   │  canonical_target · resolve · staged record (base)
   ▼
 snapshot/            new public module
-  project.rs   open repo (gix) · clean check · list/find/remove refs · likely base
-  record.rs    snapshot.json boundary parse and write · ULID
-  capture.rs   paths written/changed → tree → parentless commit → ref
-  merge.rs     throwaway checkout · tree merge (gix) · write worktree + index
+  project.rs   open repo (drivers removed) · clean check · refs · likely base · init
+  record.rs    snapshot boundary (commit, tree, snapshot.json) · ULID
+  replay.rs    UpdateReplay over the interview engine
+  capture.rs   plan targets, hook changes, carry-forward, retraction → tree → commit → ref
+  merge.rs     throwaway checkout · tree merge · occupied-path check · locked write · rollback
   │ consumes, unchanged                     │ reuses crate-internally
   ▼                                         ▼
-plan.rs  Plan::build · Plan::mutations       apply.rs  Plan::apply, hook loop
-interview.rs · staging.rs replay walk        hook.rs, review.rs trust
+plan.rs  Plan::build · Plan::mutations       apply.rs  destination seam, hook loop
+interview.rs · protocol.rs parse_and_verify  inject    retraction helpers
+                                             hook.rs, review.rs trust
 ```
 
 Only `snapshot/` names gitoxide's repository, status, merge, and index APIs.
@@ -486,16 +617,17 @@ values or file contents.
 |---|---|---|
 | Not in a git repository, for `--from` or `--baseline` | `error` `git` | 1 |
 | Target has uncommitted changes | `error` `dirty` with the paths | 1 |
-| Unknown or ambiguous snapshot | `error` `snapshot` | 1 |
-| Snapshot for another template or target | `error` `snapshot` naming both | 1 |
-| Invalid `snapshot.json` | `error` `snapshot` naming the ref | 1 |
+| Unknown, ambiguous, or invalid snapshot | `error` `snapshot` | 1 |
+| Snapshot for another source or target | `error` `snapshot` naming both | 1 |
 | Questions remain | `questions` | 4 |
 | Untrusted hooks | `planned`, `trusted: false` | 3 |
-| Render, hook, or checkout failure | `error` of that kind; project unchanged | 1 |
+| Render, hook, retraction, or checkout failure | `error` of that kind; project unchanged | 1 |
+| Occupied path | `error` `occupied` with the paths; project unchanged | 1 |
+| HEAD, index, or target changed during the run | `error` `changed`; project unchanged | 1 |
 | Already current | `applied` with empty `merge.changes` | 0 |
 | Merged cleanly | `applied` with `merge` | 0 |
 | Merged with conflicts | `applied` with non-empty `merge.conflicted` | 1 |
-| Failure while writing the project | `error` `write`, naming `git reset --hard` | 1 |
+| Write failure | `error` `write`; rolled back, or the target-scoped recovery | 1 |
 
 Every refusal names the command that does what the caller meant: a dirty target
 names committing or stashing and the same command again; an unknown snapshot
@@ -512,77 +644,120 @@ A plain apply's `applied` result gains `snapshot`: `{ "id": ... }` or
    `README.md` on lines B changes; in a second clone with `toha init` and a
    fetch, `snapshots list` marks the snapshot as likely base; `apply …@B --from`
    updates `src/app.txt`, adds `src/health.txt`, leaves `README.md` with diff3
-   markers and index stages 1–3 (`git status` shows `UU`, plain `git commit`
-   fails),
-   reports the conflict and a new snapshot; after resolving, the same command
-   with the new snapshot reports already current and changes no byte.
+   markers and index stages 1–3 where stage 2 holds the operator's bytes
+   (`git status` shows `UU`, plain `git commit` fails), and reports the
+   conflict and a new snapshot. After resolving and committing, the commit's
+   tree equals the working tree, and the same command with the new snapshot
+   reports already current and changes no byte.
 2. A clean three-way merge keeps the operator's lines and the template's lines.
 3. A file the template removed is deleted when unedited and is a modify/delete
-   conflict when edited.
-4. Operator files no snapshot names are unchanged by `--from` and `--baseline`.
+   conflict, with the operator's bytes on disk, when edited.
+4. Operator files no snapshot names are unchanged by `--from` and `--baseline`,
+   including with the target at the repository root.
 5. An apply in a dirty target writes files as today, saves no snapshot, and
    reports `dirty`; `--from` in a dirty target refuses with nothing written.
-6. A plain apply outside git and a dry run save no snapshot.
-7. The snapshot holds hook output (a file a hook creates) with origin `hook`
-   and leaves out git-ignored files.
+6. A plain apply outside git, one that changes nothing, and a dry run save no
+   snapshot.
+7. The snapshot holds a file a hook creates, with origin `hook`, and leaves out
+   an untracked ignored file.
 8. A hook file rewritten unchanged by the new version is carried forward and
    not deleted from the project.
-9. A region edit: the new region body reaches the project and operator lines
-   around it are kept; a region body both sides changed is a conflict.
-10. A JSON value both sides changed is a conflict; one changed only by the
-    template is updated; unrelated keys are unchanged.
-11. Replay uses raw submissions (non-idempotent `format` fixture), drops
-    answers for removed questions, and asks or reports added ones (exit 4).
-12. `--reanswer` offers every question with the recorded default, and a
-    changed answer at the same version merges the difference.
-13. Same version and same answers report already current and save no snapshot.
-14. A date-rendering template is byte-stable across `--from` because of
+9. A template file rendered identical to `HEAD` stays in the snapshot, and the
+   next update neither deletes nor reports it.
+10. A region: the new body reaches the project with operator lines around it
+    kept; separate-line edits inside the region from both sides both apply;
+    overlapping edits conflict.
+11. A JSON value changed only by the template is updated; a value both sides
+    changed on the same line conflicts; unrelated keys are unchanged; an
+    unchanged injection stays captured across an update that changes another
+    file.
+12. An injection the new version drops is retracted: the region's markers and
+    span, or the JSON key, are removed; the rest of the operator's file stays;
+    the file is never deleted; a relaxed `.json` target refuses the update.
+13. Replay: raw submissions (non-idempotent `format` fixture) replay; answers
+    for removed questions are dropped; an added required question in an early
+    batch is asked with the other batch values as defaults (person) or
+    reported (exit 4); a recorded value the new version rejects is asked with
+    its rejection; a looped question replays its values in order.
+14. `--answers FILE` replaces the named recorded answers and fails identity for
+    another template before any evaluation; `--reanswer` offers every question
+    with the recorded raw default; a changed answer at the same version merges
+    the difference.
+15. Same commit, answers, and files report already current and leave no new
+    ref; an edited folder template with the same answers is not already
+    current.
+16. A date-rendering template is byte-stable across `--from` because of
     `generated`.
-15. `--from` with a snapshot for another template or another target refuses;
-    `--from` with `--baseline` is a usage error.
-16. `--baseline` produces add/add conflicts for differing files, keeps
+17. `--from …@B` with a snapshot of `…@A` of the same source proceeds; a
+    snapshot of another source or another target refuses; `--from` with
+    `--baseline` is a usage error.
+18. `--baseline` produces add/add conflicts for differing files, keeps
     identical ones, adds the rest, and records `built_from: null`.
-17. The agent route: `stage --from` records the base, `continue` answers the
+19. The agent route: `stage --from` records the base, `continue` answers the
     added questions, and `apply PATH` merges; a target made dirty after
     `stage` refuses at `apply PATH`.
-18. Untrusted hooks return `planned` with `trusted: false`, exit 3, and write
-    nothing to the project.
-19. A hook failure in the throwaway checkout leaves the project unchanged.
-20. `snapshots list --json` marks the likely base by ancestry, and by content
-    after the operator's history was squashed.
-21. `snapshots clean --remove` removes exactly the named snapshots, reports
-    unknown ids, refuses a request that removes every snapshot of a template
-    unless `--force`, and prints one delete command per ref.
-22. A removed snapshot's objects are unreachable (no other snapshot has it as a
-    parent).
-23. `toha init` adds the fetch setting once, is idempotent, and writes no push
+20. Untrusted hooks return `planned` with `trusted: false`, exit 3, and write
+    nothing to the project; a dry run calls the hook runner zero times.
+21. A hook failure in the throwaway checkout leaves the project unchanged and
+    no new ref.
+22. An untracked or ignored file occupying a path the merge adds, and a
+    directory where the template adds a file, refuse with nothing written.
+23. A change to a target file, to `HEAD`, or to the index between the start and
+    the write refuses with nothing written and no new ref.
+24. A write failure injected after each file write rolls back to `HEAD`,
+    removes created files, leaves the index unwritten, and leaves staged work
+    outside the target intact.
+25. Capture records a symbolic link as a link (a link to a file outside the
+    repository copies nothing) and keeps the executable bit; a CRLF
+    (`text=auto`) fixture captures the stored form.
+26. `snapshots list --json` marks the likely base by ancestry, and by content
+    after the operator's history was squashed; an invalid snapshot is listed
+    as invalid.
+27. `snapshots clean --remove` removes exactly the named snapshots, reports
+    unknown ids, refuses a request that removes every snapshot of a source
+    unless `--force`, and prints one delete command per ref; afterwards no ref
+    reaches the removed snapshot commit.
+28. `toha init` adds the fetch setting once, is idempotent, and writes no push
     setting.
-24. No process starts during apply, `--from`, list, clean, or init except the
-    template's trusted hooks, including in a repository whose attributes name a
-    merge driver and a `filter` driver on a snapshot path; that path is
-    reported as a `driver` conflict with the operator's content kept.
-25. A forged `snapshot.json` (unknown member, path with `..`, `paths` not equal
-    to `files/`, id not equal to the ref) is refused before any render.
+29. No process starts during apply, `--from`, list, clean, or init except the
+    template's trusted hooks, in a repository whose config defines a merge
+    driver, a filter `process`, and `clean`/`smudge` commands, with matching
+    attributes on paths inside and outside the target; the attributed snapshot
+    path is reported as a `driver` conflict with the operator's content kept.
+30. A forged snapshot (unknown member, path with `..`, `paths` not equal to
+    `files/`, id not equal to the ref, a parent, a gitlink or extra tree entry)
+    is refused before any render.
 
 ## Sole-kill guards
 
-- Merge against the operator's tree as base instead of the snapshot: fails 2.
-- Keep `hook` paths that the new version dropped without carry-forward: fails 8.
-- Use `HEAD`-relative "changed" instead of plan-written for `toha` paths: a
-  template file rendered identical to `HEAD` is missing from the snapshot and
-  deleted next update; fails 1's rerun and 3.
-- Write only markers without index stages: `git commit` succeeds; fails 1.
-- Keep the cached index tree after replacing entries: git commits a stale tree;
-  fails 1 (the resolved commit's tree must equal the worktree).
-- Let a `merge=` or `filter=` attribute reach gitoxide's driver platform: the
-  process guard of 24 fails on the driver fixture.
-- Skip the clean check at the final agent `apply PATH`: fails 17.
-- Use the current instant instead of `generated`: fails 14.
-- Store formatted answers: fails 11.
-- Give snapshots a parent: fails 22.
-- Treat a whole-template removal request as partial: fails 21.
-- Route the merge through gitoxide's external driver platform: the process
-  guard of 24 fails.
+- Merge with the operator's tree as base instead of the snapshot: fails 2.
+- Capture only paths whose bytes changed instead of every plan target: fails 9
+  and 11.
+- Drop hook paths the new version did not touch instead of carrying them
+  forward: fails 8.
+- Let a dropped injection omit its file instead of retracting inside it: fails
+  12.
+- Compare the formal name with its reference instead of the source identity:
+  fails 17.
+- Decide already current by commit and answers without the `files/` tree: fails
+  15.
+- Treat a rejected recorded value as fatal, or submit recorded batches whole:
+  fails 13.
+- Apply overrides after replay: fails 14.
+- Write only markers without index stages: plain `git commit` succeeds; fails 1.
+- Swap ours and theirs: stage 2 holds the template's bytes; fails 1 and 3.
+- Keep the index's cached tree after replacing entries: the committed tree
+  differs from the working tree; fails 1.
+- Skip the re-check before writing: fails 23.
+- Skip rollback: fails 24.
+- Follow symbolic links during capture: fails 25.
+- Leave configured drivers in the in-memory config: the process guard of 29
+  fails.
+- Skip the clean check at the final agent `apply PATH`: fails 19.
+- Use the current instant instead of `generated`: fails 16.
+- Run hooks during a dry run: fails 20.
+- Give snapshots a parent: fails 30 (and 27's reachability check).
+- Treat a whole-source removal request as partial: fails 27.
 
 ## Out of scope
 
@@ -596,6 +771,7 @@ A plain apply's `applied` result gains `snapshot`: `{ "id": ... }` or
 - Side effects of hooks that are not committed files.
 - Changes to injection's apply-time ownership semantics, the answers-document
   contract, the hook-result lifetime, or trust.
+- Honouring git merge drivers and filter drivers (see Repository access).
 - New permissions, timeouts, pinned-version checks, or application
   subprocesses.
 

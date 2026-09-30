@@ -55,12 +55,14 @@ proposed-design:
     output relative to the target). Saved by every apply in a git repository
     whose target directory was clean before the apply.
   update: >-
-    apply TEMPLATE PATH --from SNAPSHOT replays the recorded raw answers, asks
-    only what the new version needs, renders and runs hooks in a throwaway
-    checkout of HEAD, saves the new snapshot, and merges the base snapshot's
-    files/ to the new snapshot's files/ onto the target's tree at HEAD in
-    process, writing merged files and git index conflict stages. Toha never
-    commits.
+    apply TEMPLATE PATH --from SNAPSHOT replays the recorded raw answers through
+    an update replay adapter, asks only what the new version needs, renders and
+    runs hooks in a throwaway checkout of HEAD, retracts dropped injections,
+    saves the new snapshot, and merges the base snapshot's files/ to the new
+    snapshot's files/ onto the target's tree at HEAD in process (operator is
+    ours, template is theirs). It re-checks HEAD, the index, and the target
+    under the index lock, writes merged files and git index conflict stages,
+    and rolls back on a write failure. Toha never commits.
   adoption: >-
     apply TEMPLATE PATH --baseline merges the render against an empty base.
   commands: >-
@@ -90,31 +92,37 @@ approved-decisions:
   onboarding-deferred: Onboarding in toha init is backlog task 1108.
   adoption: apply --baseline merges against an empty base at whatever version is applied; --baseline with --from is an error.
   answers: Raw answers are replayed; only new or rejected questions are asked; --answers FILE overrides; --reanswer walks every question with recorded defaults.
-  version-checks: Another template is refused; same version and answers is already current; same version with different answers is allowed.
+  version-checks: A snapshot of another template source is refused (the source is the formal name without its @reference, so @A to @B is the same template); same version, answers, and output is already current; same version with different answers is allowed.
   conflicts: Diff3 markers plus git index conflict stages, as git merge leaves them (operator is ours, template is theirs, clean changes staged); the output lists conflicted files.
   parentless-snapshots: Snapshots have no git parent; lineage is in snapshot.json; clean deletes refs.
   snapshot-identity: A ULID, stable and unique across clones; prefixes accepted.
   routes: All three caller routes support --from and --baseline.
   monorepo-scope: The clean check, snapshot, and merge cover the target directory only; the throwaway checkout is the whole HEAD; a snapshot for another target path is refused.
 decisions-for-approval:
-  owned-value-conflicts: >-
-    Recommend that an update treats a region body or JSON value changed by both
-    the operator and the template as a text conflict. Alternative: keep apply's
-    convergence for JSON values during update, so Toha's value wins silently,
-    which needs value-aware post-processing of the merge and discards the
-    operator's change without consent.
+  owned-content-merge: >-
+    Recommend that an update merges owned regions and JSON values by line like
+    the rest of the file: a change only the template made applies, separate-line
+    changes from both sides both apply, and overlapping changes conflict.
+    Alternative: keep apply's convergence for JSON values during update, so
+    Toha's value wins silently, which needs value-aware post-processing of the
+    merge and discards the operator's change without consent.
   generated-instant: >-
     Recommend that every render of a project uses the frozen now() of its first
     snapshot, carried forward, so a date the template renders does not change on
     every update. Alternative: the current instant, which turns every rendered
     date into a template change at each update.
   drivers: >-
-    Recommend that Toha never runs a git merge driver or filter driver: a
-    snapshot path whose attributes name one is not merged, keeps the operator's
-    content, and is reported as a conflict of kind driver; the throwaway
-    checkout shows filtered files in their stored form. Alternative: honour
-    configured drivers as git does, which starts external programs (for example
-    git-lfs) and needs separate approval as an application subprocess.
+    Recommend that Toha never runs a git merge driver or filter driver: it
+    removes every filter.<name>.clean, smudge, and process value and every
+    merge.<name>.driver value from the in-memory configuration of the target's
+    repository before any status, checkout, or merge; a snapshot path whose
+    attributes name a driver is not merged, keeps the operator's content, and is
+    reported as a conflict of kind driver; filtered files are compared and
+    written in their stored form. This excludes git-lfs-managed and
+    custom-merge-driver paths from automatic merging, a limit of the new
+    feature only. Alternative: honour configured drivers as git does, which
+    starts external programs (for example git-lfs) and needs separate approval
+    as an application subprocess.
   hook-path-carry-forward: >-
     Recommend carrying a hook-origin path forward with the base snapshot's
     content when the new apply neither wrote nor changed it, so a hook that
@@ -158,4 +166,7 @@ validation:
   - Answer replay, --reanswer, and already-current detection.
   - Routes, staged base, clean checks at stage and apply, trust, and hook failure isolation.
   - snapshots list, clean, init, and the no-process guard.
-  - The snapshot.json boundary rejects forged metadata.
+  - The snapshot boundary rejects forged metadata, parents, gitlinks, and extra tree entries.
+  - Injection retraction, unchanged-injection capture, ignore and symlink capture rules, and CRLF.
+  - Concurrency re-check, occupied paths, and write-failure rollback.
+  - Replay adapter cases (rejected values, added required questions, loops, overrides) and source identity across references.
