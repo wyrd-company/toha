@@ -28,4 +28,4 @@ pub use record::{
     CommitId, FrozenNow, Origin, PathOwnership, ProjectPoint, RepoPath, Revision, Snapshot,
     SnapshotDoc, SnapshotError, SnapshotId, Timestamp,
 };
-pub use replay::{UpdateDrive, drive_update};
+pub use replay::{UpdateDrive, drive_update, drive_update_resume};

@@ -95,8 +95,85 @@ pub(crate) fn replay<'a>(
         seed.defaults.insert(id, raw);
     }
 
+    let interview = Interview::start(template, seed)?;
+    drive_from_queue(interview, queue, reanswer, Vec::new())
+}
+
+/// Resume a staged update: rebuild the adapter from the base's `recorded`
+/// submissions, replay the `staged` submissions this template already accepted
+/// (popping each answered id from the queue), then continue at the pending batch.
+/// The seed carries the frozen instant, context, and configured presets.
+pub(crate) fn replay_resume<'a>(
+    template: &'a Template,
+    mut seed: Seed,
+    recorded: &[IndexMap<Id, RawAnswer>],
+    staged: &[IndexMap<Id, RawAnswer>],
+    reanswer: bool,
+) -> Result<Replay<'a>, EvalError> {
+    let presets = seed.defaults.clone();
+    let mut queue: HashMap<Id, VecDeque<RawAnswer>> = HashMap::new();
+    for submission in recorded {
+        for (id, raw) in submission {
+            queue.entry(id.clone()).or_default().push_back(raw.clone());
+        }
+    }
+    for (id, raw) in &presets {
+        queue
+            .entry(id.clone())
+            .or_insert_with(|| VecDeque::from([raw.clone()]));
+    }
+    // The route falls back to the recorded values, then the presets, as defaults.
+    for submission in recorded {
+        for (id, raw) in submission {
+            seed.defaults.insert(id.clone(), raw.clone());
+        }
+    }
+
     let mut interview = Interview::start(template, seed)?;
     let mut submissions = Vec::new();
+    // Replay the staged submissions already accepted, popping the queue.
+    for staged_sub in staged {
+        let pending = match interview {
+            Interview::Asking(pending) => pending,
+            // A staged submission past completion cannot occur; stop if it does.
+            other => {
+                interview = other;
+                break;
+            }
+        };
+        for id in staged_sub.keys() {
+            if let Some(values) = queue.get_mut(id) {
+                values.pop_front();
+            }
+        }
+        submissions.push(staged_sub.clone());
+        interview = match pending.answer(staged_sub.clone()) {
+            Ok(next) => next,
+            Err(AnswerError::Rejected {
+                pending,
+                rejections,
+            }) => {
+                return Ok(Replay::Ask {
+                    pending: Box::new(pending),
+                    rejections,
+                });
+            }
+            Err(AnswerError::Eval(error)) => return Err(error),
+        };
+    }
+    drive_from_queue(interview, queue, reanswer, submissions)
+}
+
+/// Drive `interview` from the value `queue`, auto-submitting each batch when every
+/// required question has a queued value and handing the first batch it cannot
+/// complete (or, under `reanswer`, every batch) to the route. `submissions`
+/// accumulates the batches submitted, in order.
+fn drive_from_queue<'a>(
+    mut interview: Interview<'a>,
+    mut queue: HashMap<Id, VecDeque<RawAnswer>>,
+    reanswer: bool,
+    mut submissions: Vec<IndexMap<Id, RawAnswer>>,
+) -> Result<Replay<'a>, EvalError> {
     loop {
         let pending = match interview {
             Interview::Complete(completed) => {
@@ -222,6 +299,38 @@ pub fn drive_update<'a>(
 ) -> Result<UpdateDrive<'a>, EvalError> {
     Ok(
         match replay(template, seed, recorded, overrides, reanswer)? {
+            Replay::Completed {
+                completed,
+                submissions,
+            } => UpdateDrive::Completed {
+                completed,
+                submissions,
+            },
+            Replay::Ask {
+                pending,
+                rejections,
+            } => UpdateDrive::Ask {
+                pending: *pending,
+                rejections,
+            },
+            Replay::Ended(ended) => UpdateDrive::Ended(ended),
+        },
+    )
+}
+
+/// Resume a staged update interview: rebuild the adapter from the base's
+/// `recorded` submissions, replay the `staged` submissions already accepted, and
+/// continue at the pending batch. The driver-facing seam for `continue PATH` and
+/// `apply PATH` on an update record.
+pub fn drive_update_resume<'a>(
+    template: &'a Template,
+    seed: Seed,
+    recorded: &[IndexMap<Id, RawAnswer>],
+    staged: &[IndexMap<Id, RawAnswer>],
+    reanswer: bool,
+) -> Result<UpdateDrive<'a>, EvalError> {
+    Ok(
+        match replay_resume(template, seed, recorded, staged, reanswer)? {
             Replay::Completed {
                 completed,
                 submissions,

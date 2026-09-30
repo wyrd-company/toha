@@ -66,6 +66,39 @@ fn raw_recorded_submissions_replay_to_completion() {
 }
 
 #[test]
+fn resume_with_no_staged_submissions_matches_replay() {
+    let (_f, template) = inline(TWO_QUESTIONS);
+    let recorded = vec![sub(&[("name", json!("Alice")), ("color", json!("blue"))])];
+    let result = replay_resume(&template, seed(), &recorded, &[], false).unwrap();
+    match result {
+        Replay::Completed { submissions, .. } => {
+            assert_eq!(submissions[0][&id("name")].0, json!("Alice"));
+        }
+        _ => panic!("expected completion"),
+    }
+}
+
+#[test]
+fn resume_replays_the_staged_submissions_and_does_not_reuse_recorded() {
+    let (_f, template) = inline(TWO_QUESTIONS);
+    // The base recorded Alice/blue; the staged session already answered Zoe/red.
+    let recorded = vec![sub(&[("name", json!("Alice")), ("color", json!("blue"))])];
+    let staged = vec![sub(&[("name", json!("Zoe")), ("color", json!("red"))])];
+    let result = replay_resume(&template, seed(), &recorded, &staged, false).unwrap();
+    match result {
+        Replay::Completed {
+            completed,
+            submissions,
+        } => {
+            assert_eq!(submissions.len(), 1, "only the staged batch was submitted");
+            assert_eq!(submissions[0][&id("name")].0, json!("Zoe"));
+            assert_eq!(completed.answers[&id("color")].to_json(), json!("red"));
+        }
+        _ => panic!("expected completion from the staged submissions"),
+    }
+}
+
+#[test]
 fn an_answer_for_a_removed_question_is_dropped() {
     let (_f, template) = inline(TWO_QUESTIONS);
     // `old` is not a question in this template; it is never consumed.

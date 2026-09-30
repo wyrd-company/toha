@@ -29,6 +29,14 @@ pub struct StagedRecord {
     pub named: bool,
     pub now: String,
     pub submissions: Vec<IndexMap<String, Value>>,
+    /// The base snapshot id an update stages from, absent for a plain apply. When
+    /// present, the record resumes through the update replay adapter and applies
+    /// by merging from the base, not a fresh apply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    /// Whether the staged update re-asks every recorded answer.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reanswer: bool,
     /// The versioned invocation context. A record written by [`StagedRecord::new`]
     /// carries the legacy projection; [`StagedRecord::new_with_context`] carries
     /// the current context. A pre-context record on disk has no field and
@@ -333,6 +341,8 @@ impl StagedRecord {
             named,
             now,
             submissions,
+            base: None,
+            reanswer: false,
             context: InvocationContextWire::Legacy,
         }
     }
@@ -355,6 +365,8 @@ impl StagedRecord {
             named,
             now,
             submissions,
+            base: None,
+            reanswer: false,
             context: wire,
         }
     }
