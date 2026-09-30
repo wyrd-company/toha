@@ -100,8 +100,9 @@ fn every_command_argument_and_option_has_a_description() {
         "no description:\n{}",
         missing.join("\n")
     );
-    // toha, 6 commands, templates with 7 subcommands, skills with 2 subcommands.
-    assert_eq!(seen, 1 + 6 + 7 + 2);
+    // toha; 8 commands; templates with 7 subcommands; skills with 2; snapshots
+    // with 2.
+    assert_eq!(seen, 1 + 8 + 7 + 2 + 2);
 }
 
 #[test]

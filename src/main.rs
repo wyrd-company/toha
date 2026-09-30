@@ -2,6 +2,7 @@ mod cli {
     pub mod bundled;
     pub mod guidance;
     pub mod resolve;
+    pub mod snapshots;
     pub mod templates;
 }
 // ---
@@ -283,6 +284,49 @@ enum Command {
         /// Run the hooks of this template for this run.
         #[arg(long)]
         trust: bool,
+    },
+    /// Manage the project's update snapshots.
+    Snapshots {
+        #[command(subcommand)]
+        command: SnapshotsCommand,
+    },
+    /// Configure the repository to fetch update snapshots from a remote.
+    Init {
+        /// Target directory (default: the current directory).
+        path: Option<PathBuf>,
+        /// The remote to add the snapshot fetch refspec to.
+        #[arg(long, default_value = "origin")]
+        remote: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum SnapshotsCommand {
+    /// List the target's snapshots, newest first, marking a likely base.
+    List {
+        /// Target directory (default: the current directory).
+        path: Option<PathBuf>,
+        /// Write one JSON document instead of a human-readable list.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove snapshots named in a JSON document (the script and agent route).
+    ///
+    /// `--remove FILE` (or `-`) reads `{ "remove": ["<id>", ...] }` and acts
+    /// immediately, writing one JSON result. A request that would remove every
+    /// snapshot of a source is refused unless `--force`.
+    Clean {
+        /// Target directory (default: the current directory).
+        path: Option<PathBuf>,
+        /// Preselect all but the newest N per source (the person route).
+        #[arg(long, value_name = "N")]
+        keep: Option<usize>,
+        /// A JSON document naming the exact snapshots to remove; - reads stdin.
+        #[arg(long, value_name = "FILE")]
+        remove: Option<String>,
+        /// Allow removing every snapshot of a source.
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -2034,6 +2078,34 @@ fn main() -> ExitCode {
             })
             .finish()
         }
+        Command::Init { path, remote } => {
+            snapshot_outcome(cli::snapshots::init(path, &remote)).finish()
+        }
+        Command::Snapshots { command } => {
+            let output = match command {
+                SnapshotsCommand::List { path, json } => cli::snapshots::list(path, json),
+                SnapshotsCommand::Clean {
+                    path,
+                    keep: _,
+                    remove: Some(file),
+                    force,
+                } => cli::snapshots::clean_remove(path, &file, force),
+                SnapshotsCommand::Clean { remove: None, .. } => cli::snapshots::SnapshotOutput::Error(
+                    "snapshots clean needs --remove FILE for the script route; the interactive person route is not yet available"
+                        .to_owned(),
+                ),
+            };
+            snapshot_outcome(output).finish()
+        }
+    }
+}
+
+/// Map a snapshot command's output to the shared `Outcome`.
+fn snapshot_outcome(output: cli::snapshots::SnapshotOutput) -> Outcome {
+    match output {
+        cli::snapshots::SnapshotOutput::Lines(lines) => Outcome::Written(lines),
+        cli::snapshots::SnapshotOutput::Document(value) => Outcome::Document(value, 0),
+        cli::snapshots::SnapshotOutput::Error(message) => Outcome::Error(message),
     }
 }
 
