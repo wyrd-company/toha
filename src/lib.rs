@@ -25,7 +25,7 @@ pub use inject::{
     Anchor, EditReport, EditResolution, JsonEditError, JsonFormat, JsonPath, JsonPathSegment,
     MarkerStyle, Occurrence, PlannedEdit, PlannedJsonEdit, PlannedRegionEdit, RegionError,
     RegionKey, json_value_to_cst_input, report_json_edit, report_region_edit, resolve_json_edit,
-    resolve_region_edit, retract_json_value, retract_region,
+    resolve_region_edit,
 };
 pub use interview::{
     Answer, AnswerError, Answers, Batch, CheckError, Completed, Disposition, EndKind, Ended,

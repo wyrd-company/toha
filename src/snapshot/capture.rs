@@ -13,8 +13,10 @@
 //! links as links and the executable bit, and leaves out an untracked file git
 //! ignores.
 //!
-//! Carry-forward, retraction, and release apply only with a base snapshot
-//! (`--from`); this base-less path is what a plain apply and a baseline use.
+//! With a base snapshot (`--from`) it also carries hook files forward, retracts
+//! an injection the new version dropped, and releases an edit that owns nothing;
+//! without one (a plain apply or a baseline) only the plan targets and hook
+//! changes are captured.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;

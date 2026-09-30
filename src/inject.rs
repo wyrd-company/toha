@@ -958,7 +958,7 @@ fn replace_node(node: CstNode, input: CstInputValue) {
 /// Remove the managed region `region` from `current`, leaving the operator's
 /// surrounding content. Returns the bytes unchanged when the region is absent,
 /// so retraction is idempotent.
-pub fn retract_region(
+pub(crate) fn retract_region(
     current: &[u8],
     region: &RegionKey,
     marker: &MarkerStyle,
@@ -979,7 +979,7 @@ pub fn retract_region(
 /// the same strict `.json` check the resolver applies. Returns the bytes
 /// unchanged when the value is absent. Removing several array elements requires
 /// calling this from the highest index down so earlier indexes stay valid.
-pub fn retract_json_value(
+pub(crate) fn retract_json_value(
     current: &[u8],
     json_path: &JsonPath,
     format: JsonFormat,
