@@ -15,9 +15,10 @@
 //! reported as a `driver` conflict.
 
 use std::num::NonZeroU8;
-use std::sync::atomic::AtomicBool;
+use std::path::Path;
 
 use gix::bstr::{BString, ByteSlice};
+use gix::filter::plumbing::pipeline::convert::ToWorktreeOutcome;
 use gix::objs::tree::EntryKind;
 
 use crate::snapshot::project::Project;
@@ -123,6 +124,11 @@ fn merge_inner(
     let repo = project.repo();
     let target = project.target();
 
+    // Step 0: record HEAD and the index checksum, so the locked re-check before
+    // the write can refuse if either drifted.
+    let head_start = repo.head_id().map_err(git)?.detach();
+    let index_digest_start = index_digest(repo);
+
     let head_tree = repo.head_tree().map_err(git)?.id().detach();
     let base_files = match base {
         Base::Snapshot(snapshot) => snapshot_files_tree(project, snapshot.id())?,
@@ -224,13 +230,19 @@ fn merge_inner(
         return Err(MergeError::Occupied(occupied));
     }
 
-    // Write the merged target files that differ from the operator, and delete
-    // those the template removed, each only after checking the path still holds
-    // its HEAD content (or is absent).
-    write_result(project, &ours_entries, &merged_entries, target)?;
-
-    // Apply the merged index with conflict stages.
-    apply_index(project, &mut outcome, merged_full, target, how)?;
+    // Steps 6-7: take the index lock, re-check for drift, then write the merged
+    // files and index in one transaction that rolls back on any write failure.
+    commit_transaction(
+        project,
+        &ours_entries,
+        &merged_entries,
+        target,
+        &mut outcome,
+        merged_full,
+        how,
+        head_start,
+        index_digest_start,
+    )?;
 
     Ok(Merged::Written {
         snapshot: *new.id(),
@@ -239,84 +251,269 @@ fn merge_inner(
     })
 }
 
-/// Write adds and modifications through gix checkout (stored form, exec bit) and
-/// delete files the template removed.
-fn write_result(
+/// The digest of the on-disk index, or `None` when it cannot be read (an unborn
+/// repository has no index yet).
+fn index_digest(repo: &gix::Repository) -> Option<Vec<u8>> {
+    let path = repo.git_dir().join("index");
+    std::fs::read(path).ok().map(|bytes| {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(&bytes).to_vec()
+    })
+}
+
+/// One path written or deleted during the transaction, with what it needs to be
+/// restored to `HEAD` if the transaction rolls back.
+struct Restorable {
+    repo_rel: String,
+    /// The `HEAD` blob to restore (a modify or a delete), or `None` for an add
+    /// (which is removed on rollback).
+    head: Option<(gix::ObjectId, gix::index::entry::Mode)>,
+    /// The git blob id Toha wrote, so rollback only touches a path still holding
+    /// Toha's bytes.
+    wrote: Option<gix::ObjectId>,
+}
+
+/// Take the index lock, re-check HEAD/index/cleanliness, write the merged target
+/// files (each only after checking the path still holds its HEAD content or is
+/// absent) and the index, and roll back on any failure.
+#[allow(clippy::too_many_arguments)]
+fn commit_transaction(
     project: &Project,
     ours: &Entries,
     merged: &Entries,
     target: &RepoPath,
+    outcome: &mut gix::merge::tree::Outcome<'_>,
+    merged_full: gix::ObjectId,
+    how: gix::merge::tree::TreatAsUnresolved,
+    head_start: gix::ObjectId,
+    index_digest_start: Option<Vec<u8>>,
 ) -> Result<(), MergeError> {
     let repo = project.repo();
     let workdir = repo
         .workdir()
         .ok_or_else(|| MergeError::Io("bare".into()))?
         .to_owned();
+    let index_path = repo.git_dir().join("index");
 
-    // Deletions first.
-    for path in ours.keys() {
-        if !merged.contains_key(path) {
-            let repo_path = repo_path_for(target, path);
-            let full = workdir.join(repo_path.as_str());
-            if full.exists() {
-                std::fs::remove_file(&full).map_err(|e| MergeError::Io(e.to_string()))?;
-            }
-        }
-    }
-
-    // Writes via a tiny in-memory index and gix checkout.
-    let mut write_state = gix::index::State::new(repo.object_hash());
-    let mut any = false;
-    for (path, (id, mode)) in merged {
-        if ours.get(path) != Some(&(*id, *mode)) {
-            let repo_path = repo_path_for(target, path);
-            let full: BString = repo_path.as_str().into();
-            write_state.dangerously_push_entry(
-                Default::default(),
-                *id,
-                gix::index::entry::Flags::empty(),
-                *mode,
-                full.as_bstr(),
-            );
-            any = true;
-        }
-    }
-    if !any {
-        return Ok(());
-    }
-    write_state.sort_entries();
-    let mut copts = repo
-        .checkout_options(gix::worktree::stack::state::attributes::Source::WorktreeThenIdMapping)
-        .map_err(git)?;
-    copts.overwrite_existing = true;
-    copts.destination_is_initially_empty = false;
-    let out = gix::worktree::state::checkout(
-        &mut write_state,
-        &workdir,
-        repo.objects.clone().into_arc().map_err(git)?,
-        &gix::progress::Discard,
-        &gix::progress::Discard,
-        &AtomicBool::new(false),
-        copts,
+    // Step 6: take the index lock, then re-check for drift under it.
+    let lock = gix::lock::File::acquire_to_update_resource(
+        &index_path,
+        gix::lock::acquire::Fail::Immediately,
+        None,
     )
-    .map_err(git)?;
-    if !out.errors.is_empty() || !out.collisions.is_empty() {
-        return Err(MergeError::Io(format!(
-            "checkout errors {:?} collisions {:?}",
-            out.errors, out.collisions
-        )));
+    .map_err(|err| MergeError::Io(err.to_string()))?;
+
+    if repo.head_id().map_err(git)?.detach() != head_start
+        || index_digest(repo) != index_digest_start
+        || !matches!(
+            project.cleanliness(),
+            Ok(crate::snapshot::Cleanliness::Clean)
+        )
+    {
+        return Err(MergeError::Changed);
+    }
+
+    let (mut pipeline, index) = repo.filter_pipeline(None).map_err(git)?;
+    let state: &gix::index::State = &index;
+
+    // Step 7: write, tracking each path for rollback.
+    let mut done: Vec<Restorable> = Vec::new();
+    let result = write_all(
+        repo,
+        &mut pipeline,
+        state,
+        &workdir,
+        ours,
+        merged,
+        target,
+        &mut done,
+    );
+    if let Err(err) = result {
+        rollback(repo, &mut pipeline, state, &workdir, &done)?;
+        return Err(err);
+    }
+
+    // The index is written last, through the held lock, so a write failure above
+    // leaves the index untouched and staged work outside the target intact.
+    if let Err(err) = write_index(project, outcome, merged_full, target, how, lock) {
+        rollback(repo, &mut pipeline, state, &workdir, &done)?;
+        return Err(err);
     }
     Ok(())
 }
 
-/// Replace the target's index entries with the merged tree's, keeping everything
-/// outside the target, dropping the cached tree, and adding conflict stages.
-fn apply_index(
+/// Write every merged target file that differs from the operator and delete the
+/// files the template removed, each only after checking the path still holds its
+/// HEAD content (or is absent).
+#[allow(clippy::too_many_arguments)]
+fn write_all(
+    repo: &gix::Repository,
+    pipeline: &mut gix::filter::Pipeline<'_>,
+    state: &gix::index::State,
+    workdir: &Path,
+    ours: &Entries,
+    merged: &Entries,
+    target: &RepoPath,
+    done: &mut Vec<Restorable>,
+) -> Result<(), MergeError> {
+    // Writes and modifications.
+    for (path, (id, mode)) in merged {
+        let expected = ours.get(path);
+        if expected == Some(&(*id, *mode)) {
+            continue; // unchanged for the operator
+        }
+        let repo_rel = repo_path_for(target, path).as_str().to_owned();
+        drift_check(pipeline, state, &repo_rel, expected.map(|(o, _)| *o))?;
+        let bytes = worktree_bytes(repo, pipeline, *id, &repo_rel)?;
+        write_atomically(workdir, &repo_rel, &bytes, *mode)?;
+        done.push(Restorable {
+            repo_rel,
+            head: expected.copied(),
+            wrote: Some(*id),
+        });
+    }
+    // Deletions the template made.
+    for (path, (id, _)) in ours {
+        if merged.contains_key(path) {
+            continue;
+        }
+        let repo_rel = repo_path_for(target, path).as_str().to_owned();
+        drift_check(pipeline, state, &repo_rel, Some(*id))?;
+        let full = workdir.join(&repo_rel);
+        if full.exists() {
+            std::fs::remove_file(&full).map_err(|e| MergeError::Io(e.to_string()))?;
+        }
+        done.push(Restorable {
+            repo_rel,
+            head: ours.get(path).copied(),
+            wrote: None,
+        });
+    }
+    Ok(())
+}
+
+/// Refuse when the path on disk no longer holds its HEAD content (or is not
+/// absent for an add), narrowing the window in which another program writes it.
+fn drift_check(
+    pipeline: &mut gix::filter::Pipeline<'_>,
+    state: &gix::index::State,
+    repo_rel: &str,
+    expected: Option<gix::ObjectId>,
+) -> Result<(), MergeError> {
+    let current = pipeline
+        .worktree_file_to_object(gix::bstr::BStr::new(repo_rel.as_bytes()), state)
+        .map_err(git)?
+        .map(|(oid, _, _)| oid);
+    if current != expected {
+        return Err(MergeError::Changed);
+    }
+    Ok(())
+}
+
+/// The worktree (smudged) bytes for a git blob, applying built-in conversions
+/// only.
+fn worktree_bytes(
+    repo: &gix::Repository,
+    pipeline: &mut gix::filter::Pipeline<'_>,
+    id: gix::ObjectId,
+    repo_rel: &str,
+) -> Result<Vec<u8>, MergeError> {
+    let data = repo.find_object(id).map_err(git)?.data.clone();
+    let outcome = pipeline
+        .convert_to_worktree(
+            &data,
+            gix::bstr::BStr::new(repo_rel.as_bytes()),
+            Default::default(),
+        )
+        .map_err(git)?;
+    Ok(match outcome {
+        ToWorktreeOutcome::Unchanged(bytes) => bytes.to_vec(),
+        ToWorktreeOutcome::Buffer(bytes) => bytes.to_vec(),
+        ToWorktreeOutcome::Process(_) => {
+            return Err(MergeError::Git(
+                "unexpected process filter after driver strip".into(),
+            ));
+        }
+    })
+}
+
+/// Write `bytes` to `workdir/repo_rel` by a temporary file and rename, setting
+/// the executable bit from `mode`.
+fn write_atomically(
+    workdir: &Path,
+    repo_rel: &str,
+    bytes: &[u8],
+    mode: gix::index::entry::Mode,
+) -> Result<(), MergeError> {
+    let full = workdir.join(repo_rel);
+    if let Some(parent) = full.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| MergeError::Io(e.to_string()))?;
+    }
+    let tmp = full.with_extension("toha-tmp");
+    std::fs::write(&tmp, bytes).map_err(|e| MergeError::Io(e.to_string()))?;
+    #[cfg(unix)]
+    if mode == gix::index::entry::Mode::FILE_EXECUTABLE {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| MergeError::Io(e.to_string()))?;
+    }
+    std::fs::rename(&tmp, &full).map_err(|e| MergeError::Io(e.to_string()))?;
+    Ok(())
+}
+
+/// Restore every path the transaction wrote or deleted, only when it still holds
+/// what Toha wrote; a path changed by another program is left alone and named.
+fn rollback(
+    repo: &gix::Repository,
+    pipeline: &mut gix::filter::Pipeline<'_>,
+    state: &gix::index::State,
+    workdir: &Path,
+    done: &[Restorable],
+) -> Result<(), MergeError> {
+    let mut stuck = Vec::new();
+    for entry in done.iter().rev() {
+        // Only touch a path that still holds Toha's bytes.
+        let current = pipeline
+            .worktree_file_to_object(gix::bstr::BStr::new(entry.repo_rel.as_bytes()), state)
+            .map_err(git)?
+            .map(|(oid, _, _)| oid);
+        if current != entry.wrote {
+            stuck.push(entry.repo_rel.clone());
+            continue;
+        }
+        match entry.head {
+            Some((oid, mode)) => {
+                // Restore the HEAD content (a modify or a delete).
+                let bytes = worktree_bytes(repo, pipeline, oid, &entry.repo_rel)?;
+                write_atomically(workdir, &entry.repo_rel, &bytes, mode)?;
+            }
+            None => {
+                // An add: remove the created file.
+                let full = workdir.join(&entry.repo_rel);
+                if full.exists() {
+                    std::fs::remove_file(&full).map_err(|e| MergeError::Io(e.to_string()))?;
+                }
+            }
+        }
+    }
+    if stuck.is_empty() {
+        Ok(())
+    } else {
+        Err(MergeError::Io(format!(
+            "rollback left paths changed by another program: {stuck:?}; recover with `git restore --source=HEAD --staged --worktree -- <target>` and `git clean -d --force -- <target>`"
+        )))
+    }
+}
+
+/// Build the merged index with conflict stages and write it through the held
+/// lock, committing atomically.
+fn write_index(
     project: &Project,
     outcome: &mut gix::merge::tree::Outcome<'_>,
     merged_full: gix::ObjectId,
     target: &RepoPath,
     how: gix::merge::tree::TreatAsUnresolved,
+    mut lock: gix::lock::File,
 ) -> Result<(), MergeError> {
     let repo = project.repo();
     let mut index = repo.open_index().map_err(git)?;
@@ -325,10 +522,10 @@ fn apply_index(
     } else {
         format!("{}/", target.as_str())
     };
-    if !prefix.is_empty() {
-        index.remove_entries(|_, path, _| path.starts_with(prefix.as_bytes()));
-    } else {
+    if prefix.is_empty() {
         index.remove_entries(|_, _, _| true);
+    } else {
+        index.remove_entries(|_, path, _| path.starts_with(prefix.as_bytes()));
     }
     let merged_sub = subtree(project, merged_full, target)?;
     let merged_entries = flat_entries(project, merged_sub)?;
@@ -359,7 +556,14 @@ fn apply_index(
         how,
         gix::merge::tree::apply_index_entries::RemovalMode::Prune,
     );
-    index.write(Default::default()).map_err(git)?;
+    lock.with_mut(|file| {
+        index
+            .write_to(file, Default::default())
+            .map(|_| ())
+            .map_err(std::io::Error::other)
+    })
+    .map_err(|e| MergeError::Io(e.to_string()))?;
+    lock.commit().map_err(|e| MergeError::Io(e.to_string()))?;
     Ok(())
 }
 

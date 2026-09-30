@@ -279,3 +279,111 @@ fn read_snapshot(project: &Project, id: &str) -> Snapshot {
     let sid: SnapshotId = id.parse().unwrap();
     project.find(&sid.to_string()).unwrap()
 }
+
+#[test]
+fn a_target_changed_since_the_start_refuses_with_nothing_written() {
+    // Behavior 23: a drifted target fails the locked re-check; nothing is written
+    // and the candidate ref is removed.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q", "-b", "main"]);
+    write(&root.join("app/both.txt"), b"base\n");
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "operator"]);
+
+    make_snapshot(root, BASE_ID, "app", &[("both.txt", b"base\n")]);
+    make_snapshot(root, NEW_ID, "app", &[("both.txt", b"new-template\n")]);
+
+    // The operator dirties the target after HEAD was recorded.
+    write(&root.join("app/both.txt"), b"operator is editing\n");
+
+    let project = open(root, "app");
+    let base = read_snapshot(&project, BASE_ID);
+    let new = read_snapshot(&project, NEW_ID);
+    let result = merge_into_worktree(
+        &project,
+        &Base::Snapshot(base),
+        &new,
+        &MergeOptions {
+            trusted: true,
+            dry_run: false,
+        },
+    );
+    assert!(
+        matches!(result, Err(MergeError::Changed)),
+        "refuses a changed target: {result:?}"
+    );
+
+    // Nothing was written and the candidate ref is gone.
+    assert_eq!(
+        std::fs::read_to_string(root.join("app/both.txt")).unwrap(),
+        "operator is editing\n"
+    );
+    let refs = git(root, &["for-each-ref", "refs/toha/snapshots/"]);
+    assert!(!refs.contains(NEW_ID), "candidate ref removed on refusal");
+}
+
+#[test]
+fn a_write_failure_rolls_back_and_leaves_the_index_unwritten() {
+    // Behavior 24: a failure part-way through writing rolls back the files
+    // already written, removes created files, and never writes the index.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q", "-b", "main"]);
+    write(&root.join("app/keep.txt"), b"k\n");
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "operator"]);
+
+    // The template adds two files; the second cannot be written because the
+    // operator has an untracked *file* where its parent directory must go.
+    make_snapshot(root, BASE_ID, "app", &[("keep.txt", b"k\n")]);
+    make_snapshot(
+        root,
+        NEW_ID,
+        "app",
+        &[
+            ("keep.txt", b"k\n"),
+            ("a.txt", b"added first\n"),
+            ("sub/b.txt", b"needs a directory\n"),
+        ],
+    );
+    // `app/sub` is a file, so creating `app/sub/` for `sub/b.txt` fails.
+    write(&root.join("app/sub"), b"operator's file, not a directory\n");
+
+    let project = open(root, "app");
+    let base = read_snapshot(&project, BASE_ID);
+    let new = read_snapshot(&project, NEW_ID);
+    let result = merge_into_worktree(
+        &project,
+        &Base::Snapshot(base),
+        &new,
+        &MergeOptions {
+            trusted: true,
+            dry_run: false,
+        },
+    );
+    assert!(result.is_err(), "the write fails: {result:?}");
+
+    // a.txt was written first, then rolled back (removed as a created file).
+    assert!(
+        !root.join("app/a.txt").exists(),
+        "the first add was rolled back"
+    );
+    // The operator's file at app/sub is untouched.
+    assert_eq!(
+        std::fs::read_to_string(root.join("app/sub")).unwrap(),
+        "operator's file, not a directory\n"
+    );
+    // The index was never written: keep.txt is the only tracked file, unstaged of a.txt.
+    let staged = git(root, &["diff", "--cached", "--name-only"]);
+    assert!(
+        !staged.contains("a.txt"),
+        "index unwritten, a.txt not staged: {staged}"
+    );
+    // The candidate ref is removed.
+    let refs = git(root, &["for-each-ref", "refs/toha/snapshots/"]);
+    assert!(
+        !refs.contains(NEW_ID),
+        "candidate ref removed after rollback"
+    );
+}
