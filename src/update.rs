@@ -9,9 +9,10 @@
 //! replays its recorded answers through the unchanged interview engine; the
 //! `--answers` envelope supplies overrides and `--reanswer` re-asks every answer.
 //! `--baseline` merges the whole render against an empty base, so unrelated local
-//! edits survive. This slice drives the headless script and agent route, where
-//! `--answers` names the answers document; the interactive person route and the
-//! staged agent continuation land in later slices.
+//! edits survive. An update refuses a dirty target, a snapshot taken for another
+//! target, and a template whose source is not the snapshot's (identity 17). The
+//! interactive person route and the staged agent continuation land in later
+//! slices.
 
 use std::path::Path;
 
@@ -21,8 +22,8 @@ use toha::RawAnswer;
 use toha::hook::ProcessRunner;
 use toha::interview::Seed;
 use toha::snapshot::{
-    Action, Base, Change, CommitId, ConflictKind, FrozenNow, MergeOptions, Merged, Project,
-    Revision, Snapshot, SnapshotInputs, UpdateDrive, drive_update, merge_apply,
+    Action, Base, Change, Cleanliness, CommitId, ConflictKind, FrozenNow, MergeOptions, Merged,
+    Project, Revision, Snapshot, SnapshotInputs, UpdateDrive, drive_update, merge_apply,
 };
 use toha::template::Id;
 
@@ -76,6 +77,28 @@ pub fn run_update(
         UpdateBase::Baseline => (Base::Empty, None),
     };
 
+    // Preconditions: the target must be clean, and a base snapshot must have been
+    // taken for this same target (identity 17, target side).
+    if let Some(snapshot) = &base_snapshot {
+        if snapshot.target() != project.target() {
+            return Outcome::Error(format!(
+                "the snapshot was taken for target {:?}, not {:?}",
+                snapshot.target().as_str(),
+                project.target().as_str()
+            ));
+        }
+    }
+    match project.cleanliness() {
+        Ok(Cleanliness::Clean) => {}
+        Ok(Cleanliness::Dirty { .. }) => {
+            return Outcome::Error(
+                "the target has uncommitted changes; commit or discard them before an update"
+                    .to_owned(),
+            );
+        }
+        Err(error) => return Outcome::Error(error.to_string()),
+    }
+
     let cwd = match std::env::current_dir() {
         Ok(value) => value,
         Err(error) => return Outcome::Error(error.to_string()),
@@ -85,10 +108,13 @@ pub fn run_update(
         Err(outcome) => return outcome,
     };
 
-    // The template comes from the base snapshot for `--from`, and from the
-    // command operand for `--baseline`.
-    let resolved = match &base_snapshot {
-        Some(snapshot) => {
+    // The template to render. `--from` without a TEMPLATE operand re-resolves the
+    // base snapshot's own template at its recorded revision; with a TEMPLATE
+    // operand it resolves that template (which may be a newer version) after
+    // checking its source identity matches the snapshot's (identity 17, source
+    // side). `--baseline` always takes the command operand.
+    let resolved = match (&base_snapshot, &template_arg) {
+        (Some(snapshot), None) => {
             let formal = snapshot.template().to_owned();
             let commit = match snapshot.revision() {
                 Revision::Commit(commit) => commit.as_str().to_owned(),
@@ -101,17 +127,32 @@ pub fn run_update(
                 Err(error) => return crate::resolve_error(error),
             }
         }
-        None => {
-            let Some(arg) = template_arg else {
-                return Outcome::Error(
-                    "apply --baseline needs a template operand: apply TEMPLATE PATH --baseline"
-                        .to_owned(),
-                );
-            };
-            match crate::cli::resolve::resolve_template(&arg, &config, &registry, dirs, &cwd) {
+        (Some(snapshot), Some(arg)) => {
+            let resolved =
+                match crate::cli::resolve::resolve_template(arg, &config, &registry, dirs, &cwd) {
+                    Ok(value) => value,
+                    Err(error) => return crate::resolve_error(error),
+                };
+            if source_of(&resolved.formal_name) != snapshot.source() {
+                return Outcome::Error(format!(
+                    "the template's source {:?} is not the snapshot's source {:?}",
+                    source_of(&resolved.formal_name),
+                    snapshot.source()
+                ));
+            }
+            resolved
+        }
+        (None, Some(arg)) => {
+            match crate::cli::resolve::resolve_template(arg, &config, &registry, dirs, &cwd) {
                 Ok(value) => value,
                 Err(error) => return crate::resolve_error(error),
             }
+        }
+        (None, None) => {
+            return Outcome::Error(
+                "apply --baseline needs a template operand: apply TEMPLATE PATH --baseline"
+                    .to_owned(),
+            );
         }
     };
     let template = match load_template(&resolved) {
@@ -271,6 +312,12 @@ fn cli_context(
     cwd: &Path,
 ) -> Result<(toha::config::Config, toha::registry::Registry), Outcome> {
     crate::cli::resolve::load_context(dirs, cwd).map_err(crate::resolve_error)
+}
+
+/// A formal name's source identity: the name without its `@reference`, the same
+/// value a snapshot records as its `source`.
+fn source_of(formal: &str) -> &str {
+    formal.split_once('@').map_or(formal, |(source, _)| source)
 }
 
 /// The base snapshot's recorded submissions, as the interview's raw answers.

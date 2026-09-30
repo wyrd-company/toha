@@ -368,6 +368,121 @@ fn a_configured_preset_answers_a_new_question() {
     );
 }
 
+/// Baseline-apply `address` (answering name=Alice) into a clean committed
+/// target and return the recorded snapshot id, leaving the target committed.
+fn baseline_snapshot(iso: &Path, address: &str, formal: &str, target: &Path) -> String {
+    let env = envelope(
+        iso,
+        "alice.json",
+        formal,
+        serde_json::json!({ "name": "Alice" }),
+    );
+    let mut command = support::isolated_command(iso);
+    command
+        .arg("apply")
+        .arg(address)
+        .arg(target)
+        .arg("--baseline")
+        .arg("--answers")
+        .arg(&env);
+    let document = support::first_document(&command.output().unwrap().stdout);
+    let id = document["snapshot"].as_str().unwrap().to_owned();
+    git(target, &["add", "."]);
+    git(target, &["commit", "--quiet", "-m", "baseline"]);
+    id
+}
+
+#[test]
+fn an_update_refuses_a_dirty_target() {
+    let iso = tempfile::tempdir().unwrap();
+    let template_dir = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    write_template(template_dir.path());
+    target_repo(target.path());
+    let formal = support::formal_name(template_dir.path());
+    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let snapshot = baseline_snapshot(iso.path(), &address, &formal, target.path());
+
+    // An uncommitted change makes the target dirty; the update refuses.
+    std::fs::write(target.path().join("dirty.txt"), "uncommitted\n").unwrap();
+    let mut update = support::isolated_command(iso.path());
+    update
+        .arg("apply")
+        .arg(target.path())
+        .arg("--from")
+        .arg(&snapshot);
+    let output = update.output().unwrap();
+    assert!(!output.status.success(), "dirty update should refuse");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("uncommitted"),
+        "expected an uncommitted-changes refusal: {stderr}"
+    );
+}
+
+#[test]
+fn an_update_refuses_a_foreign_template_source() {
+    let iso = tempfile::tempdir().unwrap();
+    let template_dir = tempfile::tempdir().unwrap();
+    let other_dir = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    write_template(template_dir.path());
+    write_template(other_dir.path()); // a different folder: a different source
+    target_repo(target.path());
+    let formal = support::formal_name(template_dir.path());
+    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let snapshot = baseline_snapshot(iso.path(), &address, &formal, target.path());
+
+    // Naming a different template as the update's source is refused (identity 17).
+    let other = support::folder_address(&other_dir.path().canonicalize().unwrap());
+    let mut update = support::isolated_command(iso.path());
+    update
+        .arg("apply")
+        .arg(&other)
+        .arg(target.path())
+        .arg("--from")
+        .arg(&snapshot);
+    let output = update.output().unwrap();
+    assert!(!output.status.success(), "foreign source should refuse");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("source"),
+        "expected a source refusal: {stderr}"
+    );
+}
+
+#[test]
+fn an_update_refuses_a_snapshot_from_another_target() {
+    let iso = tempfile::tempdir().unwrap();
+    let template_dir = tempfile::tempdir().unwrap();
+    let repo = tempfile::tempdir().unwrap();
+    write_template(template_dir.path());
+    // A repository with a committed subdirectory.
+    std::fs::create_dir(repo.path().join("sub")).unwrap();
+    std::fs::write(repo.path().join("sub/keep.txt"), "seed\n").unwrap();
+    target_repo(repo.path());
+
+    let formal = support::formal_name(template_dir.path());
+    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    // Baseline into the subdirectory: the snapshot's target is `sub`.
+    let snapshot = baseline_snapshot(iso.path(), &address, &formal, &repo.path().join("sub"));
+
+    // Applying that snapshot at the repository root is a target mismatch.
+    let mut update = support::isolated_command(iso.path());
+    update
+        .arg("apply")
+        .arg(repo.path())
+        .arg("--from")
+        .arg(&snapshot);
+    let output = update.output().unwrap();
+    assert!(!output.status.success(), "foreign target should refuse");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("target"),
+        "expected a target refusal: {stderr}"
+    );
+}
+
 #[test]
 fn from_an_unknown_snapshot_is_an_error() {
     let iso = tempfile::tempdir().unwrap();
