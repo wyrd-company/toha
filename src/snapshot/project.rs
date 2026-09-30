@@ -67,6 +67,16 @@ impl Project {
         &self.rel
     }
 
+    /// Capture a snapshot of the applied target after a plain apply or a
+    /// baseline adoption, with no base snapshot. Returns the saved id.
+    pub fn capture(
+        &self,
+        plan: &crate::plan::Plan,
+        inputs: crate::snapshot::capture::CaptureInputs,
+    ) -> Result<SnapshotId, SnapshotError> {
+        crate::snapshot::capture::capture_baseless(&self.repo, &self.rel, plan, inputs)
+    }
+
     /// Whether the target directory has no tracked modification, no staged
     /// change, and no untracked file git does not ignore. Dirt outside the
     /// target does not count.

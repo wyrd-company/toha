@@ -9,9 +9,11 @@
 //! boundary and refuses a malformed or forged one before any render (see
 //! [`record`]). Later slices add the repository access, capture, merge, and
 //! replay seams named in the design.
+mod capture;
 mod project;
 mod record;
 
+pub use capture::CaptureInputs;
 pub use project::{
     Cleanliness, FetchSetting, LikelyBase, LikelyBaseBy, Listed, Project, ProjectError, Removed,
 };

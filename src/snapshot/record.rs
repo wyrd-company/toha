@@ -16,6 +16,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::str::FromStr;
 
+use gix::objs::tree::EntryKind;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
@@ -275,7 +276,7 @@ impl FrozenNow {
         Self(instant)
     }
 
-    fn parse(text: &str) -> Result<Self, SnapshotError> {
+    pub fn parse(text: &str) -> Result<Self, SnapshotError> {
         text.parse::<jiff::Zoned>()
             .map(Self)
             .map_err(|_| SnapshotError::Instant(text.to_owned()))
@@ -297,7 +298,7 @@ impl fmt::Display for FrozenNow {
 pub struct Timestamp(jiff::Timestamp);
 
 impl Timestamp {
-    fn parse(text: &str) -> Result<Self, SnapshotError> {
+    pub fn parse(text: &str) -> Result<Self, SnapshotError> {
         text.parse::<jiff::Timestamp>()
             .map(Self)
             .map_err(|_| SnapshotError::Instant(text.to_owned()))
@@ -651,6 +652,78 @@ impl Snapshot {
     pub fn paths(&self) -> &[PathOwnership] {
         &self.doc.paths
     }
+}
+
+// ---------------------------------------------------------------------------
+// Saving to git — the commit, tree, and ref boundary
+// ---------------------------------------------------------------------------
+
+/// One captured file bound for `files/`: its target-relative path, its git entry
+/// kind (regular, executable, or symlink), and the blob id already written.
+pub(crate) struct CapturedBlob {
+    pub path: TargetPath,
+    pub kind: EntryKind,
+    pub oid: gix::ObjectId,
+}
+
+/// Build the snapshot's tree (`snapshot.json` plus, unless empty, `files/`),
+/// write it, and create the parentless commit under
+/// `refs/toha/snapshots/<id>`. The ref is created only if it does not already
+/// exist, so a snapshot is immutable once saved.
+pub(crate) fn save(
+    repo: &gix::Repository,
+    doc: &SnapshotDoc,
+    blobs: &[CapturedBlob],
+) -> Result<SnapshotId, SnapshotError> {
+    let empty = gix::ObjectId::empty_tree(repo.object_hash());
+
+    let files_tree = if blobs.is_empty() {
+        None
+    } else {
+        let mut editor = repo.edit_tree(empty).map_err(git_error)?;
+        for blob in blobs {
+            editor
+                .upsert(blob.path.to_string().as_str(), blob.kind, blob.oid)
+                .map_err(git_error)?;
+        }
+        Some(editor.write().map_err(git_error)?.detach())
+    };
+
+    let json_oid = repo
+        .write_blob(doc.to_json_bytes())
+        .map_err(git_error)?
+        .detach();
+    let mut top = repo.edit_tree(empty).map_err(git_error)?;
+    top.upsert("snapshot.json", EntryKind::Blob, json_oid)
+        .map_err(git_error)?;
+    if let Some(files_tree) = files_tree {
+        top.upsert("files", EntryKind::Tree, files_tree)
+            .map_err(git_error)?;
+    }
+    let top_tree = top.write().map_err(git_error)?.detach();
+
+    let signature = gix::actor::Signature {
+        name: "Toha".into(),
+        email: "toha@example.invalid".into(),
+        time: gix::date::Time::now_utc(),
+    };
+    let mut author_buf = gix::date::parse::TimeBuf::default();
+    let mut committer_buf = gix::date::parse::TimeBuf::default();
+    let refname = format!("{SNAPSHOT_REF_PREFIX}{}", doc.id);
+    repo.commit_as(
+        signature.to_ref(&mut committer_buf),
+        signature.to_ref(&mut author_buf),
+        refname.as_str(),
+        format!("toha snapshot {}\n", doc.id),
+        top_tree,
+        Vec::<gix::ObjectId>::new(),
+    )
+    .map_err(git_error)?;
+    Ok(doc.id)
+}
+
+fn git_error(err: impl std::fmt::Display) -> SnapshotError {
+    SnapshotError::Git(err.to_string())
 }
 
 /// The source identity of a formal name: everything before its first `@`.
