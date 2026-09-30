@@ -166,6 +166,96 @@ fn the_staged_consumption_pops_the_queue_front_in_order() {
 }
 
 #[test]
+fn a_resume_continues_through_a_later_recorded_batch_after_a_new_question() {
+    // Dependent batches: the base asked `a`, then `b` (b's prompt references a, so
+    // b is a later batch). The update adds a new early-required `x`, so the first
+    // batch {x, a} cannot auto-complete and the engine pauses at the new question.
+    // A staged answer completes that batch; resuming through drive_update_resume
+    // continues through the LATER recorded batch {b} to completion. Assert the
+    // submission order and count, the final answers, and that the staged batch is
+    // submitted exactly once (not replayed twice on resume).
+    let yaml = "name: t\n\
+                interview:\n\
+                \x20 - id: x\n\
+                \x20   type: text\n\
+                \x20   prompt: X\n\
+                \x20   required: true\n\
+                \x20 - id: a\n\
+                \x20   type: text\n\
+                \x20   prompt: A\n\
+                \x20   required: true\n\
+                \x20 - id: b\n\
+                \x20   type: text\n\
+                \x20   prompt: \"B for {{ a }}\"\n\
+                \x20   required: true\n";
+    let (_f, template) = inline(yaml);
+    // The base recorded `a`, then `b`, across two batches (b depended on a).
+    let recorded = vec![sub(&[("a", json!("a-val"))]), sub(&[("b", json!("b-val"))])];
+
+    // With no staged answers the first batch {x, a} cannot auto-complete (x is new
+    // and unrecorded), so the engine pauses there and does not reach `b`.
+    match drive_update_resume(&template, seed(), &recorded, &[], false).unwrap() {
+        UpdateDrive::Ask { pending, .. } => {
+            let asks: Vec<String> = pending
+                .batch()
+                .items
+                .iter()
+                .filter_map(|i| match i {
+                    crate::interview::Item::Prompt(p) => Some(p.id.as_str().to_owned()),
+                    _ => None,
+                })
+                .collect();
+            assert!(
+                asks.contains(&"x".to_owned()),
+                "pauses at the new early question: {asks:?}"
+            );
+            assert!(
+                !asks.contains(&"b".to_owned()),
+                "b is a later batch (depends on a), not asked yet: {asks:?}"
+            );
+        }
+        _ => panic!("expected an Ask at the new question"),
+    }
+
+    // The agent stages the first batch, then resumes through the later batch.
+    let staged = vec![sub(&[("x", json!("x-val")), ("a", json!("a-val"))])];
+    match drive_update_resume(&template, seed(), &recorded, &staged, false).unwrap() {
+        UpdateDrive::Completed {
+            completed,
+            submissions,
+        } => {
+            // Order and count: the staged batch, then the later recorded batch.
+            assert_eq!(
+                submissions.len(),
+                2,
+                "the staged batch then the later recorded batch: {submissions:?}"
+            );
+            assert_eq!(submissions[0][&id("x")].0, json!("x-val"));
+            assert_eq!(submissions[0][&id("a")].0, json!("a-val"));
+            assert_eq!(
+                submissions[1][&id("b")].0,
+                json!("b-val"),
+                "the later recorded batch replayed on resume"
+            );
+            // The staged batch is submitted exactly once, not duplicated on resume.
+            assert_eq!(
+                submissions
+                    .iter()
+                    .filter(|s| s.contains_key(&id("x")))
+                    .count(),
+                1,
+                "the staged batch is submitted exactly once"
+            );
+            // Final answers reflect all three, once each.
+            assert_eq!(completed.answers[&id("x")].to_json(), json!("x-val"));
+            assert_eq!(completed.answers[&id("a")].to_json(), json!("a-val"));
+            assert_eq!(completed.answers[&id("b")].to_json(), json!("b-val"));
+        }
+        _ => panic!("expected completion through the later batch"),
+    }
+}
+
+#[test]
 fn an_answer_for_a_removed_question_is_dropped() {
     let (_f, template) = inline(TWO_QUESTIONS);
     // `old` is not a question in this template; it is never consumed.
