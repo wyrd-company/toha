@@ -18,21 +18,24 @@ use std::path::Path;
 
 use indexmap::IndexMap;
 use serde_json::{Value, json};
-use toha::RawAnswer;
+use toha::context::InvocationContext;
 use toha::hook::ProcessRunner;
 use toha::interview::Seed;
 use toha::snapshot::{
     Action, Base, Change, Cleanliness, CommitId, ConflictKind, FrozenNow, MergeOptions, Merged,
     Project, Revision, Snapshot, SnapshotInputs, UpdateDrive, drive_update, merge_apply,
 };
-use toha::template::Id;
+use toha::template::{Id, Template};
+use toha::{RawAnswer, RawAnswers};
 
+use crate::cli::resolve::ResolvedTemplate;
 use crate::{
     Dirs, EnvironmentDecision, Outcome, apply_environment_grant, build_context, load_template,
     read_answers_text, resolution, setup,
 };
 
 /// The base an update merges from.
+#[derive(Clone)]
 pub enum UpdateBase {
     /// A stored snapshot, named by id or id prefix.
     From(String),
@@ -53,154 +56,24 @@ pub fn run_update(
     trust: bool,
     dirs: &Dirs,
 ) -> Outcome {
-    // 1. Open the target's repository (which strips drivers in memory).
     let (target, _store) = match setup(path, dirs) {
         Ok(value) => value,
         Err(error) => return Outcome::Error(error),
     };
-    let project = match Project::open(&target) {
-        Ok(Some(project)) => project,
-        Ok(None) => {
-            return Outcome::Error(
-                "the target is not inside a git repository; an update needs git".to_owned(),
-            );
-        }
-        Err(error) => return Outcome::Error(error.to_string()),
-    };
-
-    // 2. Resolve the base snapshot and the template it named.
-    let (merge_base, base_snapshot) = match &base {
-        UpdateBase::From(prefix) => match project.find(prefix) {
-            Ok(snapshot) => (Base::Snapshot(snapshot.clone()), Some(snapshot)),
-            Err(error) => return Outcome::Error(error.to_string()),
-        },
-        UpdateBase::Baseline => (Base::Empty, None),
-    };
-
-    // Preconditions: the target must be clean, and a base snapshot must have been
-    // taken for this same target (identity 17, target side).
-    if let Some(snapshot) = &base_snapshot {
-        if snapshot.target() != project.target() {
-            return Outcome::Error(format!(
-                "the snapshot was taken for target {:?}, not {:?}",
-                snapshot.target().as_str(),
-                project.target().as_str()
-            ));
-        }
-    }
-    match project.cleanliness() {
-        Ok(Cleanliness::Clean) => {}
-        Ok(Cleanliness::Dirty { .. }) => {
-            return Outcome::Error(
-                "the target has uncommitted changes; commit or discard them before an update"
-                    .to_owned(),
-            );
-        }
-        Err(error) => return Outcome::Error(error.to_string()),
-    }
-
-    let cwd = match std::env::current_dir() {
-        Ok(value) => value,
-        Err(error) => return Outcome::Error(error.to_string()),
-    };
-    let (config, registry) = match cli_context(dirs, &cwd) {
+    let prep = match prepare(&base, template_arg, &target, dirs, trust) {
         Ok(value) => value,
         Err(outcome) => return outcome,
     };
 
-    // The template to render. `--from` without a TEMPLATE operand re-resolves the
-    // base snapshot's own template at its recorded revision; with a TEMPLATE
-    // operand it resolves that template (which may be a newer version) after
-    // checking its source identity matches the snapshot's (identity 17, source
-    // side). `--baseline` always takes the command operand.
-    let resolved = match (&base_snapshot, &template_arg) {
-        (Some(snapshot), None) => {
-            let formal = snapshot.template().to_owned();
-            let commit = match snapshot.revision() {
-                Revision::Commit(commit) => commit.as_str().to_owned(),
-                Revision::Unversioned => String::new(),
-            };
-            match crate::cli::resolve::resume_template(
-                &formal, &commit, false, &config, &registry, dirs, &cwd,
-            ) {
-                Ok(value) => value,
-                Err(error) => return crate::resolve_error(error),
-            }
-        }
-        (Some(snapshot), Some(arg)) => {
-            let resolved =
-                match crate::cli::resolve::resolve_template(arg, &config, &registry, dirs, &cwd) {
-                    Ok(value) => value,
-                    Err(error) => return crate::resolve_error(error),
-                };
-            if source_of(&resolved.formal_name) != snapshot.source() {
-                return Outcome::Error(format!(
-                    "the template's source {:?} is not the snapshot's source {:?}",
-                    source_of(&resolved.formal_name),
-                    snapshot.source()
-                ));
-            }
-            resolved
-        }
-        (None, Some(arg)) => {
-            match crate::cli::resolve::resolve_template(arg, &config, &registry, dirs, &cwd) {
-                Ok(value) => value,
-                Err(error) => return crate::resolve_error(error),
-            }
-        }
-        (None, None) => {
-            return Outcome::Error(
-                "apply --baseline needs a template operand: apply TEMPLATE PATH --baseline"
-                    .to_owned(),
-            );
-        }
-    };
-    let template = match load_template(&resolved) {
-        Ok(value) => value,
-        Err(error) => return Outcome::Error(error),
-    };
-
-    // 3. The frozen instant: carried from the base for `--from` so a
-    //    date-rendering template stays byte-stable; the runtime instant for a
-    //    baseline. The configured defaults seed the interview so a question the
-    //    new version adds, which the base never answered, still takes its
-    //    preset; a recorded answer or an override overrides the preset below.
-    let (resolution, runtime_now) = match resolution(&resolved.formal_name, &template, &config) {
-        Ok(value) => value,
-        Err(error) => return Outcome::Error(error),
-    };
-    let (configured_defaults, _) = resolution.into_flat_defaults();
-    let now = match &base_snapshot {
-        Some(snapshot) => snapshot.generated().get().clone(),
-        None => runtime_now,
-    };
-
-    // 4. The interview context, the same a fresh apply builds. Trust is the
-    //    preflight a fresh apply runs: an explicit `--trust`, or a current
-    //    registry approval that matches the template's live hook surface, so an
-    //    established approval runs the update's hooks without `--trust`.
-    let trusted = apply_environment_grant(trust, &resolved, &template);
-    let decision = EnvironmentDecision::grant_if_needed(trusted);
-    let context = match build_context(&target, &resolved, &template, decision, false) {
-        Ok(value) => value,
-        Err(error) => return Outcome::Error(error),
-    };
-
-    // 5. The recorded submissions to replay, and the override answers.
-    let recorded = match &base_snapshot {
-        Some(snapshot) => match recorded_submissions(snapshot) {
-            Ok(value) => value,
-            Err(error) => return Outcome::Error(error),
-        },
-        None => Vec::new(),
-    };
+    // The override answers from `--answers`, identity-checked against the
+    // resolved template.
     let overrides = match &answers {
         Some(file) => {
             let text = match read_answers_text(file) {
                 Ok(value) => value,
                 Err(error) => return Outcome::Error(error),
             };
-            match toha::protocol::verify_answers(&resolved.formal_name, &text) {
+            match toha::protocol::verify_answers(&prep.resolved.formal_name, &text) {
                 Ok(value) => value,
                 Err(error) => return Outcome::Error(error.to_string()),
             }
@@ -208,14 +81,12 @@ pub fn run_update(
         None => IndexMap::new(),
     };
 
-    // 6. Drive the interview from the recorded answers. The context is cloned
-    //    into the seed so an unfinished batch can still report through a record.
     let seed = Seed {
-        now: now.clone(),
-        defaults: configured_defaults,
-        context: context.clone(),
+        now: prep.now.clone(),
+        defaults: prep.configured_defaults.clone(),
+        context: prep.context.clone(),
     };
-    let driven = match drive_update(&template, seed, &recorded, overrides, reanswer) {
+    let driven = match drive_update(&prep.template, seed, &prep.recorded, overrides, reanswer) {
         Ok(value) => value,
         Err(error) => return Outcome::Error(error.to_string()),
     };
@@ -230,23 +101,22 @@ pub fn run_update(
             ..
         } => {
             // The script route cannot prompt. A batch the replay could not
-            // complete — a new required question the base did not answer, a
-            // recorded value the new version rejects, or `--reanswer` — is
-            // reported as `questions` (exit 4), the same document the scripted
-            // apply returns. Without `--answers` this is the person route, which
-            // prompts; that continuation is not yet wired.
+            // complete is reported as `questions` (exit 4), the same document the
+            // scripted apply returns. Without `--answers` this is the person
+            // route; its `stage`/`continue` continuation is the update staging
+            // flow, so a one-shot person update with unsettled questions refuses.
             if answers.is_none() {
                 return Outcome::Error(
                     "the update has questions the recorded answers do not settle; \
-                     the interactive person route is not yet available"
+                     stage it with `stage --from` to answer them"
                         .to_owned(),
                 );
             }
             let saved = crate::StagedRecord::new_with_context(
-                context,
-                resolved.commit.clone(),
-                resolved.named,
-                now.to_string(),
+                prep.context.clone(),
+                prep.resolved.commit.clone(),
+                prep.resolved.named,
+                prep.now.to_string(),
                 vec![],
             );
             let ctx = crate::context(&target, &saved);
@@ -264,39 +134,205 @@ pub fn run_update(
         }
     };
 
-    // 7. Build the snapshot inputs and merge.
-    let revision = match &base {
-        UpdateBase::From(_) => base_snapshot
+    finish_merge(prep, &base, completed, submissions, dry_run)
+}
+
+/// The shared pieces an update route needs after resolving its base and
+/// template: the opened project, the merge base, the resolved template and its
+/// render context, the base's recorded submissions, and the trust grant.
+pub(crate) struct Prepared {
+    pub project: Project,
+    pub merge_base: Base,
+    pub base_snapshot: Option<Snapshot>,
+    pub resolved: ResolvedTemplate,
+    pub template: Template,
+    pub now: jiff::Zoned,
+    pub context: InvocationContext,
+    pub configured_defaults: RawAnswers,
+    pub recorded: Vec<IndexMap<Id, RawAnswer>>,
+    pub trusted: bool,
+}
+
+/// Open the project, resolve the base snapshot and template, enforce the update
+/// preconditions and identity (17), and build the render context and trust
+/// grant. Shared by the one-shot update route and the staged update flow.
+pub(crate) fn prepare(
+    base: &UpdateBase,
+    template_arg: Option<String>,
+    target: &toha::staging::CanonicalTarget,
+    dirs: &Dirs,
+    trust: bool,
+) -> Result<Prepared, Outcome> {
+    let project = match Project::open(target) {
+        Ok(Some(project)) => project,
+        Ok(None) => {
+            return Err(Outcome::Error(
+                "the target is not inside a git repository; an update needs git".to_owned(),
+            ));
+        }
+        Err(error) => return Err(Outcome::Error(error.to_string())),
+    };
+
+    let (merge_base, base_snapshot) = match base {
+        UpdateBase::From(prefix) => match project.find(prefix) {
+            Ok(snapshot) => (Base::Snapshot(snapshot.clone()), Some(snapshot)),
+            Err(error) => return Err(Outcome::Error(error.to_string())),
+        },
+        UpdateBase::Baseline => (Base::Empty, None),
+    };
+
+    // Preconditions: the target must be clean, and a base snapshot must have been
+    // taken for this same target (identity 17, target side).
+    if let Some(snapshot) = &base_snapshot {
+        if snapshot.target() != project.target() {
+            return Err(Outcome::Error(format!(
+                "the snapshot was taken for target {:?}, not {:?}",
+                snapshot.target().as_str(),
+                project.target().as_str()
+            )));
+        }
+    }
+    match project.cleanliness() {
+        Ok(Cleanliness::Clean) => {}
+        Ok(Cleanliness::Dirty { .. }) => {
+            return Err(Outcome::Error(
+                "the target has uncommitted changes; commit or discard them before an update"
+                    .to_owned(),
+            ));
+        }
+        Err(error) => return Err(Outcome::Error(error.to_string())),
+    }
+
+    let cwd = std::env::current_dir().map_err(|e| Outcome::Error(e.to_string()))?;
+    let (config, registry) = cli_context(dirs, &cwd)?;
+
+    let resolved = match (&base_snapshot, &template_arg) {
+        (Some(snapshot), None) => {
+            let formal = snapshot.template().to_owned();
+            let commit = match snapshot.revision() {
+                Revision::Commit(commit) => commit.as_str().to_owned(),
+                Revision::Unversioned => String::new(),
+            };
+            match crate::cli::resolve::resume_template(
+                &formal, &commit, false, &config, &registry, dirs, &cwd,
+            ) {
+                Ok(value) => value,
+                Err(error) => return Err(crate::resolve_error(error)),
+            }
+        }
+        (Some(snapshot), Some(arg)) => {
+            let resolved =
+                match crate::cli::resolve::resolve_template(arg, &config, &registry, dirs, &cwd) {
+                    Ok(value) => value,
+                    Err(error) => return Err(crate::resolve_error(error)),
+                };
+            if source_of(&resolved.formal_name) != snapshot.source() {
+                return Err(Outcome::Error(format!(
+                    "the template's source {:?} is not the snapshot's source {:?}",
+                    source_of(&resolved.formal_name),
+                    snapshot.source()
+                )));
+            }
+            resolved
+        }
+        (None, Some(arg)) => {
+            match crate::cli::resolve::resolve_template(arg, &config, &registry, dirs, &cwd) {
+                Ok(value) => value,
+                Err(error) => return Err(crate::resolve_error(error)),
+            }
+        }
+        (None, None) => {
+            return Err(Outcome::Error(
+                "apply --baseline needs a template operand: apply TEMPLATE PATH --baseline"
+                    .to_owned(),
+            ));
+        }
+    };
+    let template = match load_template(&resolved) {
+        Ok(value) => value,
+        Err(error) => return Err(Outcome::Error(error)),
+    };
+
+    let (resolution, runtime_now) = match resolution(&resolved.formal_name, &template, &config) {
+        Ok(value) => value,
+        Err(error) => return Err(Outcome::Error(error)),
+    };
+    let (configured_defaults, _) = resolution.into_flat_defaults();
+    let now = match &base_snapshot {
+        Some(snapshot) => snapshot.generated().get().clone(),
+        None => runtime_now,
+    };
+
+    let trusted = apply_environment_grant(trust, &resolved, &template);
+    let decision = EnvironmentDecision::grant_if_needed(trusted);
+    let context = match build_context(target, &resolved, &template, decision, false) {
+        Ok(value) => value,
+        Err(error) => return Err(Outcome::Error(error)),
+    };
+
+    let recorded = match &base_snapshot {
+        Some(snapshot) => recorded_submissions(snapshot).map_err(Outcome::Error)?,
+        None => Vec::new(),
+    };
+
+    Ok(Prepared {
+        project,
+        merge_base,
+        base_snapshot,
+        resolved,
+        template,
+        now,
+        context,
+        configured_defaults,
+        recorded,
+        trusted,
+    })
+}
+
+/// Build the snapshot inputs from a completed update interview and merge them
+/// into the project, mapping the merge result to an `Outcome`.
+pub(crate) fn finish_merge(
+    prep: Prepared,
+    base: &UpdateBase,
+    completed: toha::Completed,
+    submissions: Vec<IndexMap<Id, RawAnswer>>,
+    dry_run: bool,
+) -> Outcome {
+    let revision = match base {
+        UpdateBase::From(_) => prep
+            .base_snapshot
             .as_ref()
             .map(|snapshot| snapshot.revision().clone())
             .unwrap_or(Revision::Unversioned),
         UpdateBase::Baseline => {
-            if resolved.commit.is_empty() {
+            if prep.resolved.commit.is_empty() {
                 Revision::Unversioned
             } else {
-                match CommitId::parse(&resolved.commit) {
+                match CommitId::parse(&prep.resolved.commit) {
                     Ok(commit) => Revision::Commit(commit),
                     Err(error) => return Outcome::Error(error.to_string()),
                 }
             }
         }
     };
-    let generated = match &base_snapshot {
+    let generated = match &prep.base_snapshot {
         Some(snapshot) => snapshot.generated().clone(),
-        None => FrozenNow::new(seed_now(&completed)),
+        None => FrozenNow::new(completed.now.clone()),
     };
     let inputs = SnapshotInputs {
-        template: resolved.formal_name.clone(),
+        template: prep.resolved.formal_name.clone(),
         revision,
         generated,
         submissions: submissions.into_iter().map(raw_to_values).collect(),
     };
-    let options = MergeOptions { trusted, dry_run };
-
+    let options = MergeOptions {
+        trusted: prep.trusted,
+        dry_run,
+    };
     match merge_apply(
-        &project,
-        merge_base,
-        &template,
+        &prep.project,
+        prep.merge_base,
+        &prep.template,
         &completed,
         inputs,
         options,
@@ -345,11 +381,6 @@ fn raw_to_values(submission: IndexMap<Id, RawAnswer>) -> IndexMap<Id, Value> {
         .into_iter()
         .map(|(id, raw)| (id, raw.0))
         .collect()
-}
-
-/// The frozen instant a completed interview projected for `now`.
-fn seed_now(completed: &toha::Completed) -> jiff::Zoned {
-    completed.now.clone()
 }
 
 /// Map a merge result to the caller's outcome document.
