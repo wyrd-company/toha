@@ -386,9 +386,12 @@ fn an_unrelated_dirty_file_in_the_target_fails_the_locked_re_check() {
 }
 
 #[test]
-fn a_write_failure_rolls_back_and_leaves_the_index_unwritten() {
-    // Behavior 24: a failure part-way through writing rolls back the files
-    // already written, removes created files, and never writes the index.
+fn a_dirty_target_refuses_at_the_prewrite_recheck_and_writes_nothing() {
+    // Behavior 23: an untracked path git does not ignore makes the target dirty,
+    // so the locked re-check refuses with `Changed` before `write_all` runs —
+    // nothing is written and no rollback is exercised. (Genuine rollback after a
+    // real write is proved by the sibling
+    // `a_failure_after_a_write_but_before_commit_rolls_the_transaction_back`.)
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     git(root, &["init", "-q", "-b", "main"]);
@@ -396,8 +399,8 @@ fn a_write_failure_rolls_back_and_leaves_the_index_unwritten() {
     git(root, &["add", "-A"]);
     git(root, &["commit", "-q", "-m", "operator"]);
 
-    // The template adds two files; the second cannot be written because the
-    // operator has an untracked *file* where its parent directory must go.
+    // The template would add two files, but the operator has an untracked file at
+    // `app/sub`, so the target is dirty before the update even plans a write.
     make_snapshot(root, BASE_ID, "app", &[("keep.txt", b"k\n")]);
     make_snapshot(
         root,
@@ -409,7 +412,7 @@ fn a_write_failure_rolls_back_and_leaves_the_index_unwritten() {
             ("sub/b.txt", b"needs a directory\n"),
         ],
     );
-    // `app/sub` is a file, so creating `app/sub/` for `sub/b.txt` fails.
+    // `app/sub` is an untracked file: the locked re-check sees the dirty target.
     write(&root.join("app/sub"), b"operator's file, not a directory\n");
 
     let project = open(root, "app");
@@ -424,12 +427,16 @@ fn a_write_failure_rolls_back_and_leaves_the_index_unwritten() {
             dry_run: false,
         },
     );
-    assert!(result.is_err(), "the write fails: {result:?}");
+    assert!(
+        matches!(result, Err(MergeError::Changed)),
+        "the dirty target refuses at the locked re-check before any write: {result:?}"
+    );
 
-    // a.txt was written first, then rolled back (removed as a created file).
+    // Nothing was written: the re-check refused before `write_all`, so the
+    // template's first add never reached disk (not written, not rolled back).
     assert!(
         !root.join("app/a.txt").exists(),
-        "the first add was rolled back"
+        "nothing was written: a.txt never reached disk"
     );
     // The operator's file at app/sub is untouched.
     assert_eq!(
@@ -446,7 +453,7 @@ fn a_write_failure_rolls_back_and_leaves_the_index_unwritten() {
     let refs = git(root, &["for-each-ref", "refs/toha/snapshots/"]);
     assert!(
         !refs.contains(NEW_ID),
-        "candidate ref removed after rollback"
+        "candidate ref removed on the re-check refusal"
     );
 }
 
