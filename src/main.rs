@@ -533,25 +533,48 @@ impl Outcome {
             other => other,
         }
     }
+    /// Write the outcome to standard output/error and return the exit code. A
+    /// broken pipe or other output error at this reporting boundary is surfaced
+    /// as a failure exit code — it never panics, so a report failure after a
+    /// merge has committed leaves the committed result, index, worktree, and ref
+    /// intact (this boundary holds no repository handle and mutates nothing).
     fn finish(self) -> ExitCode {
+        let mut out = std::io::stdout().lock();
+        let mut err = std::io::stderr().lock();
+        match self.render(&mut out, &mut err) {
+            Ok(code) => code,
+            // The committed work already stands; report the output failure.
+            Err(_) => ExitCode::from(1),
+        }
+    }
+
+    /// Render the outcome to the given writers, propagating any output error
+    /// instead of panicking. Separated from [`finish`] so the reporting boundary
+    /// is exercisable with a failing writer.
+    fn render(
+        self,
+        out: &mut dyn std::io::Write,
+        err: &mut dyn std::io::Write,
+    ) -> std::io::Result<ExitCode> {
         match self {
             Self::Written(lines) => {
                 for line in lines {
-                    println!("{line}");
+                    writeln!(out, "{line}")?;
                 }
-                ExitCode::SUCCESS
+                Ok(ExitCode::SUCCESS)
             }
             Self::Error(message) => {
-                eprintln!("{message}");
-                ExitCode::from(1)
+                writeln!(err, "{message}")?;
+                Ok(ExitCode::from(1))
             }
-            Self::Saved(code) => ExitCode::from(code),
+            Self::Saved(code) => Ok(ExitCode::from(code)),
             Self::Document(value, code) => {
-                println!(
+                writeln!(
+                    out,
                     "{}",
                     serde_json::to_string_pretty(&value).expect("JSON value")
-                );
-                ExitCode::from(code)
+                )?;
+                Ok(ExitCode::from(code))
             }
             Self::Agent {
                 document,
@@ -559,26 +582,27 @@ impl Outcome {
                 code,
             } => {
                 if let Some(value) = document {
-                    println!(
+                    writeln!(
+                        out,
                         "{}",
                         serde_json::to_string_pretty(&value).expect("JSON value")
-                    );
-                    println!();
+                    )?;
+                    writeln!(out)?;
                 }
-                println!("{instructions}");
-                ExitCode::from(code)
+                writeln!(out, "{instructions}")?;
+                Ok(ExitCode::from(code))
             }
             Self::Ambiguous {
                 name,
                 matches,
                 retry,
             } => {
-                eprintln!("{}", guidance::ambiguous(&name, &matches, &retry));
-                ExitCode::from(5)
+                writeln!(err, "{}", guidance::ambiguous(&name, &matches, &retry))?;
+                Ok(ExitCode::from(5))
             }
             Self::NeedsTrust(message) => {
-                eprintln!("{message}");
-                ExitCode::from(3)
+                writeln!(err, "{message}")?;
+                Ok(ExitCode::from(3))
             }
         }
     }
@@ -2575,5 +2599,132 @@ mod dirs_tests {
             absolute("program").join("toha/config.yml")
         );
         assert_eq!(actual.system_data, absolute("program").join("toha"));
+    }
+}
+
+#[cfg(test)]
+mod report_tests {
+    use super::Outcome;
+    use std::io::Write;
+    use std::path::Path;
+    use std::process::Command;
+
+    /// A writer that fails every write, standing in for a broken pipe at the
+    /// reporting output boundary.
+    struct FailingWriter;
+    impl Write for FailingWriter {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "broken pipe",
+            ))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "broken pipe",
+            ))
+        }
+    }
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "T")
+            .env("GIT_AUTHOR_EMAIL", "t@x.invalid")
+            .env("GIT_COMMITTER_NAME", "T")
+            .env("GIT_COMMITTER_EMAIL", "t@x.invalid")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    }
+
+    #[test]
+    fn a_report_write_failure_preserves_the_committed_result_and_does_not_panic() {
+        // A merge has committed (files, index, and the snapshot ref are written)
+        // and its result document is about to be reported. A broken pipe at the
+        // reporting output boundary must surface as an error — never a panic —
+        // and must leave the committed result, index, worktree, and ref intact:
+        // the reporting boundary holds no repository handle and mutates nothing.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git(root, &["init", "-q", "-b", "main"]);
+        std::fs::write(root.join("greeting.txt"), b"Hello sample-value\n").unwrap();
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-q", "-m", "apply update"]);
+        let head = git(root, &["rev-parse", "HEAD"]);
+        // A committed snapshot ref, as a successful update saves.
+        git(
+            root,
+            &["update-ref", "refs/toha/snapshots/01J9Z8XR7Q", &head],
+        );
+
+        // The committed result/index/worktree/ref, captured before reporting.
+        let file_before = std::fs::read(root.join("greeting.txt")).unwrap();
+        let index_before = std::fs::read(root.join(".git/index")).unwrap();
+        let head_before = git(root, &["rev-parse", "HEAD"]);
+
+        // The result document of a successful update.
+        let outcome = Outcome::Document(
+            serde_json::json!({
+                "protocol": 1,
+                "status": "applied",
+                "snapshot": { "id": "01J9Z8XR7Q" },
+                "merge": { "changes": [], "conflicted": [] }
+            }),
+            0,
+        );
+
+        // Rendering to a failing writer surfaces the io error (no panic, no swallow).
+        let mut err = Vec::new();
+        let result = outcome.render(&mut FailingWriter, &mut err);
+        assert!(
+            result.is_err(),
+            "a broken pipe at the report boundary surfaces as an error"
+        );
+
+        // The committed result/index/worktree/ref are untouched by the report path.
+        assert_eq!(
+            std::fs::read(root.join("greeting.txt")).unwrap(),
+            file_before,
+            "the committed worktree file is preserved"
+        );
+        assert_eq!(
+            std::fs::read(root.join(".git/index")).unwrap(),
+            index_before,
+            "the committed index is preserved"
+        );
+        assert_eq!(
+            git(root, &["rev-parse", "HEAD"]),
+            head_before,
+            "HEAD preserved"
+        );
+        let refs = git(root, &["for-each-ref", "refs/toha/snapshots/"]);
+        assert!(
+            refs.contains("01J9Z8XR7Q"),
+            "the committed snapshot ref is preserved: {refs}"
+        );
+    }
+
+    #[test]
+    fn a_successful_report_renders_the_document_and_exit_code() {
+        // The refactor preserves the success path: the document is written to the
+        // out writer and the exit code is the document's.
+        let outcome = Outcome::Document(serde_json::json!({ "status": "applied" }), 0);
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        // ExitCode is not comparable; a successful render returning Ok is the check.
+        outcome.render(&mut out, &mut err).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            text.contains("\"status\": \"applied\""),
+            "document written: {text}"
+        );
+        assert!(err.is_empty(), "nothing on stderr for a success");
     }
 }
