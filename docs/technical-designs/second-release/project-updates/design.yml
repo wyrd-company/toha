@@ -48,6 +48,14 @@ design-challenges:
     so it cannot be committed by accident, and the pre-update state is
     recoverable with git alone.
 proposed-design:
+  high-level-overview: >-
+    Save exact generated output as parentless git snapshots and use a selected
+    snapshot as the base for an in-process three-way merge of newly generated
+    output with the operator's project. Render and run trusted hooks in a
+    throwaway checkout, then apply the merge through a checked working-tree and
+    index transaction. Keep successful snapshots; remove this invocation's
+    candidate ref on every unsuccessful post-capture exit before transaction
+    commit, preserving operator state and reporting cleanup failures.
   snapshot: >-
     A parentless git commit under refs/toha/snapshots/<ULID>, whose tree holds
     snapshot.json (template, commit, target, instants, project commit and
@@ -170,3 +178,7 @@ validation:
   - Injection retraction, unchanged-injection capture, ignore and symlink capture rules, and CRLF.
   - Concurrency re-check, occupied paths, and write-failure rollback.
   - Replay adapter cases (rejected values, added required questions, loops, overrides) and source identity across references.
+  - >-
+    Every unsuccessful post-capture exit removes its candidate ref; omitted
+    cleanup fails a complete before/after snapshot-ref witness, with separate
+    cleanup-failure and concurrent-replacement cases.

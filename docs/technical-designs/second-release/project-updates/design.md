@@ -468,6 +468,30 @@ recovery: `git restore --source=HEAD --staged --worktree -- <target>` and
 `git clean -d --force -- <target>`, which touch nothing outside the target and
 no ignored file.
 
+Every unsuccessful exit after candidate capture removes this invocation's new
+candidate ref. This includes already-current detection, merge failure,
+occupied-path refusal, index-lock acquisition failure, re-check failure, and
+all other fallible operations before the working-tree and index transaction
+commits. Capture removes a ref it published before reporting a later capture
+failure. A merge with reported conflicts is a successful transaction and keeps
+its snapshot.
+
+Cleanup deletes only the exact candidate ref created by this invocation,
+only if it still points to the commit this invocation published. It preserves
+the selected base, pre-existing snapshots, refs replaced by another program,
+and unreachable git objects. It removes only temporary resources and index
+locks owned by this invocation. Failure to acquire the index lock never removes
+another program's lock. Before project writes, cleanup preserves HEAD, the
+index, operator files, and work outside the target; after writes, the rollback
+rules above preserve concurrent operator edits.
+
+Cleanup failure remains an error. The report retains the original failure,
+names the cleanup failure and exact remaining candidate ref with its expected
+commit, so the operator can inspect it before removal. It never reports
+successful rollback when cleanup failed. After the working-tree and index
+transaction commits, a reporting failure retains the committed result and its
+snapshot and is reported as a reporting failure.
+
 After a successful merge, the operator can abandon it with the same two
 commands.
 
@@ -762,6 +786,17 @@ A plain apply's `applied` result gains `snapshot`: `{ "id": ... }` or
 30. A forged snapshot (unknown member, path with `..`, `paths` not equal to
     `files/`, id not equal to the ref, a parent, a gitlink or extra tree entry)
     is refused before any render.
+31. For every unsuccessful post-capture exit, compare the complete snapshot-ref
+    name-to-object map before and after the invocation. Inject failure after
+    ref publication during capture, in merge, occupied-path checks, lock
+    acquisition, each locked re-check, each file write, index commit, and every
+    remaining fallible pre-commit step. The map is unchanged: no new candidate
+    remains and all pre-existing refs remain. Assert operator-state preservation
+    and rollback as above. Include already-current and baseline cases.
+    Separately inject ref-deletion failure and concurrent candidate replacement:
+    the error names the remaining ref and original failure; cleanup preserves
+    the replacement and foreign locks. A reporting failure after transaction
+    commit keeps the successful result and snapshot.
 
 ## Sole-kill guards
 
@@ -792,6 +827,8 @@ A plain apply's `applied` result gains `snapshot`: `{ "id": ... }` or
   differs from the working tree; fails 1.
 - Skip the re-check before writing: fails 23.
 - Skip rollback: fails 24.
+- Omit candidate-ref cleanup at each unsuccessful post-capture exit: its
+  corresponding complete before/after ref-map witness in 31 fails.
 - Follow symbolic links during capture: fails 25.
 - Leave configured drivers in the in-memory config: the process guard of 29
   fails.

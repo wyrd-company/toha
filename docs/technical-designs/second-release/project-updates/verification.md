@@ -137,3 +137,35 @@ in one temporary repository.
   check; if gitoxide cannot do it, the design returns for review.
 - `likely base (by content)` is a heuristic. It only marks a list entry and
   never selects a base.
+
+## Candidate lifecycle and structured validation
+
+The transaction's unsuccessful post-capture exits remove only their own
+candidate ref, with compare-before-delete ownership. Behavior 31 compares the
+complete ref map and preserves operator state; its omission mutation must
+fail at each exit. Cleanup failure is a separately tested error, not a promise
+that ref removal cannot fail. Successful conflicts and reporting errors after
+transaction commit retain the snapshot.
+
+The governing artifact type is
+`/workspaces/context/refinery-ontology/realization/design/technical-design.yml`.
+The complete structured instance validates against its objective, background,
+design-challenges and proposed-design constraints, including the required
+`high-level-overview`. No external schema references occur in that type.
+Reproduce the validation from the repository root:
+
+```sh
+python3 - <<'PY'
+from pathlib import Path
+import jsonschema
+import yaml
+schema = yaml.safe_load(Path('/workspaces/context/refinery-ontology/realization/design/technical-design.yml').read_text())
+instance = yaml.safe_load(Path('docs/technical-designs/second-release/project-updates/design.yml').read_text())
+jsonschema.Draft202012Validator(schema).validate(instance)
+print('PASS complete governing technical-design validation')
+PY
+```
+
+The command passes. Runtime cleanup witnesses and omission mutations belong
+to the paired implementation; this documentation change does not claim they
+have run.
