@@ -231,6 +231,71 @@ fn dry_run_from_reports_planned_and_persists_nothing() {
 }
 
 #[test]
+fn a_new_required_question_is_reported_as_questions() {
+    let iso = tempfile::tempdir().unwrap();
+    let template_dir = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    write_template(template_dir.path());
+    target_repo(target.path());
+
+    let formal = support::formal_name(template_dir.path());
+    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let env_alice = envelope(
+        iso.path(),
+        "alice.json",
+        &formal,
+        serde_json::json!({ "name": "Alice" }),
+    );
+
+    // Record a baseline with the one-question template, then commit clean.
+    let mut baseline = support::isolated_command(iso.path());
+    baseline
+        .arg("apply")
+        .arg(&address)
+        .arg(target.path())
+        .arg("--baseline")
+        .arg("--answers")
+        .arg(&env_alice);
+    let document = support::first_document(&baseline.output().unwrap().stdout);
+    let snapshot = document["snapshot"].as_str().unwrap().to_owned();
+    git(target.path(), &["add", "."]);
+    git(target.path(), &["commit", "--quiet", "-m", "baseline"]);
+
+    // The template grows a new required question the base never answered.
+    std::fs::write(
+        template_dir.path().join("template.yml"),
+        "name: greeter\ndescription: A greeting\ninterview:\n  - id: name\n    type: text\n    prompt: Name\n    required: true\n  - id: color\n    type: text\n    prompt: Colour\n    required: true\n",
+    )
+    .unwrap();
+
+    // The update replays `name` but cannot settle `color`; the script route
+    // reports it as a questions document (exit 4), never applies.
+    let mut update = support::isolated_command(iso.path());
+    update
+        .arg("apply")
+        .arg(target.path())
+        .arg("--from")
+        .arg(&snapshot)
+        .arg("--answers")
+        .arg(&env_alice);
+    let output = update.output().unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(4),
+        "expected questions: {output:?}"
+    );
+    let document = support::first_document(&output.stdout);
+    assert_eq!(document["status"], "questions", "{document}");
+    let properties = &document["schema"]["properties"];
+    assert!(
+        properties["color"].is_object(),
+        "expected color: {document}"
+    );
+    // The recorded answer becomes the default the route falls back to.
+    assert_eq!(properties["name"]["default"], "Alice", "{document}");
+}
+
+#[test]
 fn from_an_unknown_snapshot_is_an_error() {
     let iso = tempfile::tempdir().unwrap();
     let target = tempfile::tempdir().unwrap();

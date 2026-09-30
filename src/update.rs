@@ -161,11 +161,12 @@ pub fn run_update(
         None => IndexMap::new(),
     };
 
-    // 6. Drive the interview from the recorded answers.
+    // 6. Drive the interview from the recorded answers. The context is cloned
+    //    into the seed so an unfinished batch can still report through a record.
     let seed = Seed {
-        now,
+        now: now.clone(),
         defaults: IndexMap::new(),
-        context,
+        context: context.clone(),
     };
     let driven = match drive_update(&template, seed, &recorded, overrides, reanswer) {
         Ok(value) => value,
@@ -176,14 +177,35 @@ pub fn run_update(
             completed,
             submissions,
         } => (completed, submissions),
-        UpdateDrive::Ask { rejections, .. } => {
-            // The script and agent route cannot prompt: a recorded answer the new
-            // version rejects, with no override, leaves a required question
-            // unanswered. Name the rejections; the person route (later) prompts.
-            let mut lines =
-                vec!["the update needs answers the recorded submission does not supply".to_owned()];
-            lines.extend(rejections.iter().map(|rejection| rejection.to_string()));
-            return Outcome::Error(lines.join("\n"));
+        UpdateDrive::Ask {
+            pending,
+            rejections,
+        } => {
+            // The script route cannot prompt. A batch the replay could not
+            // complete — a new required question the base did not answer, a
+            // recorded value the new version rejects, or `--reanswer` — is
+            // reported as `questions` (exit 4), the same document the scripted
+            // apply returns. Without `--answers` this is the person route, which
+            // prompts; that continuation is not yet wired.
+            if answers.is_none() {
+                return Outcome::Error(
+                    "the update has questions the recorded answers do not settle; \
+                     the interactive person route is not yet available"
+                        .to_owned(),
+                );
+            }
+            let saved = crate::StagedRecord::new_with_context(
+                context,
+                resolved.commit.clone(),
+                resolved.named,
+                now.to_string(),
+                vec![],
+            );
+            let ctx = crate::context(&target, &saved);
+            return Outcome::Document(
+                toha::protocol::batch_document(pending.batch(), &ctx, Some(&rejections)),
+                4,
+            );
         }
         UpdateDrive::Ended(ended) => {
             eprintln!("{}", crate::guidance::flow_ended(&ended));
