@@ -11,645 +11,618 @@ relationships:
 
 ## Purpose
 
-A project generated from a template can follow that template's later changes.
-Every apply writes an **applied record** into the project. `toha update PATH`
-renders the template again at a newer commit with the recorded answers, and
-merges the result with the operator's edits. The base of the merge is what Toha
-wrote last, "theirs" is the operator's file on disk, and "ours" is what Toha
-would write now. A project without a record is adopted once with `toha adopt`,
-which asks the interview again and writes only the record.
+A project generated from a template can take that template's later changes
+without losing the operator's edits. Every apply in a git repository saves a
+**snapshot**: the exact output of that apply, stored as a git commit under a ref
+that Toha owns. `toha apply TEMPLATE PATH --from SNAPSHOT` renders the template
+again, saves the new output as a new snapshot, and merges old snapshot → new
+snapshot into the operator's working tree the way `git merge` would. The
+operator resolves any conflict and commits with their own git tools.
 
-The merge is git's three-way text merge, run in process by gitoxide. Toha starts
-no subprocess.
+Toha does the git work in process through gitoxide. It starts no subprocess
+except a trusted template's hooks. It never commits to the operator's branches,
+never runs `git init`, and never pushes or fetches.
 
 ## Caller usage
 
-### Generate, then update
+### First apply saves a snapshot
 
 ```console
 $ toha apply forge:catalog/receipt@stable ./sample-service
 src/app.txt
 README.md
-$ ls ./sample-service/.toha/applied
-receipt-5e1d0c7a.json
+snapshot 01J9Z4K7QX (receipt 3f9a1c2)
+share it: git push origin refs/toha/snapshots/01J9Z4K7QX6M2V8R0T5B3N1P9D
 ```
 
-The operator commits `.toha/` with the project. Later the template changes:
+The target must be inside a git repository, and the target directory must have
+no uncommitted change before the apply. Otherwise the apply writes the files as
+it always has and reports why it saved no snapshot:
 
 ```console
-$ toha update ./sample-service --dry-run
-receipt: 3f9a1c2 -> 8be0d41
-update   src/app.txt        (whole)
-merge    README.md          (whole)
-update   config/app.toml    (region features)
-converge package.json       (value scripts.build)
-add      src/health.txt     (whole)
-retract  docs/legacy.md     (whole)
-release  notes/todo.md      (whole)
-conflict src/routes.txt     (whole, 2 hunks)
-$ toha update ./sample-service
-conflicting changes, nothing written:
-  src/routes.txt (whole, 2 hunks)
-to write git-style conflict markers: toha update --on-conflict markers ./sample-service
-$ toha update --on-conflict markers ./sample-service
-...
-$ toha update ./sample-service        # after the operator resolves the markers
+no snapshot: ./sample-service has uncommitted changes
 ```
 
-### Person route
+### A teammate updates the project
 
 ```console
-$ toha update ./sample-service
-receipt: 3f9a1c2 -> 8be0d41
-? Currency code for totals: EUR
-merge    README.md          (whole)
-add      src/health.txt     (whole)
+$ git clone https://git.example.test/team/sample-service && cd sample-service
+$ toha init
+fetch for Toha snapshots added: git config --add remote.origin.fetch +refs/toha/snapshots/*:refs/toha/snapshots/*
+$ git fetch
+$ toha snapshots list .
+ID          TEMPLATE  VERSION  CREATED           PROJECT  BRANCH  BUILT FROM
+01J9Z4K7QX  receipt   3f9a1c2  2026-03-14 09:26  a41c0de  main    -          likely base
+$ toha apply forge:catalog/receipt@stable . --from 01J9Z4K7QX
+receipt 3f9a1c2 -> 8be0d41
+updated    src/app.txt
+added      src/health.txt
+conflicted README.md
+snapshot 01JA2B8M4R (receipt 8be0d41, built from 01J9Z4K7QX)
+share it: git push origin refs/toha/snapshots/01JA2B8M4R0C7W1Y5F3H9K2S6E
+resolve the conflicts, then commit with git
+$ git status --short
+UU README.md
+M  src/app.txt
+A  src/health.txt
 ```
 
-Recorded answers are replayed. The person is asked only for a question that the
-new template adds without a default, or whose recorded answer the new template
-rejects. A terminal on standard input is needed only while such a question
-remains.
+`README.md` holds diff3 conflict markers and git records it as conflicted, so
+`git commit` refuses until the operator resolves it (as after `git merge`,
+`git commit -a` does not check). `git reset --hard` returns
+the target to where it was, because the target had to be clean.
 
-### Script and agent route
+The same command again reports `already at receipt 8be0d41` and changes
+nothing.
+
+### Person route without `--from`
+
+When the target has snapshots and the person does not name one, Toha shows the
+snapshot list for the target and asks which one to update from. The likely base
+is preselected.
+
+### Change answers
 
 ```console
-$ toha update --answers answers.json ./sample-service
-{ "protocol": 1, "status": "updated", "context": { ... },
-  "changes": [ { "path": "README.md", "owner": "whole", "action": "merge" } ],
-  "conflicted": [] }
+$ toha apply forge:catalog/receipt@stable . --from 01JA2B8M4R --reanswer
+? Label: (Sample) Receipts
+? Currency code for totals: (EUR)
 ```
 
-`answers.json` is the approved answers document, `{ "template": "<formal
-name>", "answers": { ... } }`. Its answers extend or replace the recorded answers
-for this run. `{ "template": "<formal name>", "answers": {} }` updates with the
-recorded answers only. The route writes one JSON result document for every
-outcome and never prompts or stages.
+`--from` alone replays the recorded answers and asks only a question the new
+version adds without a default or a recorded answer it rejects. `--reanswer`
+asks every question, with the recorded answers as defaults. On the script route,
+`--answers FILE` replaces the answers it names.
 
-### Adopt a project that has no record
+### Adopt a project that has no snapshot
 
 ```console
-$ toha adopt forge:catalog/receipt@stable ./sample-service --at 3f9a1c2
-? Label: Sample
-matches  src/app.txt
-differs  README.md
-absent   docs/legacy.md
-recorded ./sample-service/.toha/applied/receipt-5e1d0c7a.json
+$ toha apply forge:catalog/receipt@3f9a1c2 . --baseline
+conflicted README.md
+unchanged  src/app.txt
+added      docs/legacy.md
+snapshot 01JA3C1D2E (receipt 3f9a1c2)
 ```
 
-### Crate
+`--baseline` merges the render against an empty base. The version adopted is the
+version applied. Applying the version that first generated the project gives the
+fewest conflicts.
 
-```rust
-let target = canonical_target(Path::new("./sample-service"))?;
-let record = ProjectRecord::open(&target)?.ok_or(NotAdopted)?;
-let app = record.application(None)?;                 // the only application
+### Agent route
 
-let base = sources.checkout(app.template(), app.revision()); // Option<Template>
-let next = Template::load(&next_folder)?;
-
-let begun = record.begin_update(app, base.as_ref(), &next, next_revision, context)?;
-let completed = match protocol::answer_headless(
-    &next, begun.interview, begun.answers,
-)? {
-    Headless::Completed { completed, .. } => completed,
-    other => return ask_caller(other),               // the new template needs answers
-};
-let update = begun.plan(completed)?;                 // resolves every final image
-for change in update.changes() { show(change); }     // dry-run view
-let options = UpdateOptions { conflicts: ConflictPolicy::Refuse, trusted };
-match update.apply(options, &runner)? {
-    Updated::UpToDate => {}
-    Updated::Written { changes, conflicted, .. } => { /* report */ }
-    Updated::NeedsTrust(update) => { /* nothing written */ }
-}
+```console
+$ toha stage forge:catalog/receipt@stable . --from 01JA2B8M4R --async
+{ ...question batch for the questions the new version adds... }
+$ toha continue . answers.json
+$ toha apply .
 ```
 
-A crate caller that writes a record on generation calls `project::apply`. A
-crate caller that calls `Plan::apply` directly gets no record, as today.
+The staged interview records the base. The final `apply PATH` does the render,
+the snapshot, and the merge.
 
-## The applied record
+### Script route
 
-### Carrier
+```console
+$ toha apply forge:catalog/receipt@stable . --from 01JA2B8M4R --answers answers.json
+{ "protocol": 1, "status": "applied", ..., "snapshot": { "id": "01JA..." },
+  "merge": { "from": "01JA2B8M4R...", "changes": [...], "conflicted": ["README.md"] } }
+```
 
-The record is a set of ordinary files in the project:
-`.toha/applied/<short-name>-<first 8 hex of sha256(formal name)>.json`. There is
-one file for each template applied to the project. The files survive clone,
-move, copy, and checkout because they are tracked project content, and they work
-on targets that are not git repositories.
+### Snapshot housekeeping
 
-The file name locates a record and is never an identity. Toha reads every
-`*.json` in the directory and indexes the records by their content. Two files
-that name the same formal name are an error. With one file per template, two
-branches that update different templates change different files, so git merges
-them without a conflict.
+```console
+$ toha snapshots list . --json
+$ toha snapshots clean .                # select in a list
+$ toha snapshots clean . --keep 1       # preselect all but the newest per template
+$ toha snapshots clean . --remove remove.json   # remove exactly these, no prompt
+```
 
-The record directory is not `.toha.yml`, the local configuration file, and it
-is not the staged interview in the user's state directory. A staged interview
-holds an interview in progress. The applied record holds an apply that
-completed.
+After a removal Toha prints one `git push origin --delete <ref>` line per
+removed snapshot.
 
-### Content
+## Snapshots
+
+### What a snapshot holds
+
+A snapshot is a git commit with **no parent**, referenced by
+`refs/toha/snapshots/<id>`. Its tree has two entries:
+
+```text
+snapshot.json     metadata (below)
+files/            the output, with paths relative to the target directory
+```
+
+The merge reads only `files/`, so the metadata never becomes a project file.
+
+`<id>` is a ULID: 26 Crockford base32 characters, unique across clones,
+ordered by creation time, and never changed. Commands accept any unique
+prefix of at least 6 characters.
+
+`snapshot.json`:
 
 ```json
 {
+  "snapshot": 1,
+  "id": "01JA2B8M4R0C7W1Y5F3H9K2S6E",
   "template": "forge:catalog/receipt@stable",
-  "commit": "3f9a1c2e8d7b6a5f4e3d2c1b0a9f8e7d6c5b4a39",
+  "commit": "8be0d41c2f…",
+  "target": "services/sample-service",
+  "created": "2026-09-30T04:12:00Z",
   "generated": "2026-03-14T09:26:53+00:00[UTC]",
-  "submissions": [
-    { "label": "Sample", "quantity": 4 },
-    { "use_vcs": true }
-  ],
-  "owned": {
-    "files":   { "README.md": "sha256:9c1e…", "src/app.txt": "sha256:04ab…" },
-    "regions": { "config/app.toml": ["features"] },
-    "values":  { "package.json": { "scripts.build": "sha256:77f2…" } }
-  }
+  "project": { "commit": "a41c0de…", "branch": "main" },
+  "built_from": "01J9Z4K7QX6M2V8R0T5B3N1P9D",
+  "submissions": [ { "label": "Sample", "quantity": 4 }, { "use_vcs": true } ],
+  "paths": { "src/app.txt": "toha", "README.md": "toha", "package-lock.json": "hook" }
 }
 ```
 
 | Member | Meaning |
 |---|---|
-| `template` | Formal name. It identifies the application and is compared by exact string equality. |
-| `commit` | The resolved 40-hex commit, or `null` for a folder template. |
-| `generated` | The frozen `now()` instant of the first apply. Every later render of this application uses it, so a template that renders a date stays byte-stable. |
-| `submissions` | The accepted raw answer submissions in order, the same sequence a staged interview holds at completion. Values are the inputs before `format`. A value taken from a default is included. |
-| `owned` | The ownership identities of the last apply, from `Plan::mutations()`. `files` and `values` hold the SHA-256 of the bytes or canonical JSON that Toha wrote. `regions` holds keys only, because each region's end marker already carries its checksum. |
+| `snapshot` | Format version of this document. |
+| `id` | The ULID. Equal to the ref's last segment. |
+| `template` | Formal name. Compared by exact string equality. |
+| `commit` | The template's resolved 40-hex commit, or `null` for a folder template. |
+| `target` | The target directory relative to the repository root, `.` for the root. |
+| `created` | When the snapshot was saved. |
+| `generated` | The frozen `now()` every render of this project uses, so a template that renders a date stays byte-stable across updates. Set at the first snapshot and carried forward. |
+| `project` | `HEAD` commit and branch name when the snapshot was saved. `branch` is `null` on a detached `HEAD`. |
+| `built_from` | The base snapshot's id for `--from`, `null` otherwise. |
+| `submissions` | The accepted raw submissions in order, before `format`, as the staged record holds them. |
+| `paths` | Every output path and its origin: `toha` for a file Toha wrote or edited, `hook` for a file a hook created or changed. |
 
-The record holds no target path (the target is the directory that contains
-`.toha/`), no file contents, no hook output, no trust, no host or environment
-facts, and no format-version member. The schema denies unknown members.
+The schema is `docs/specifications/snapshot.schema.yml`. It denies unknown
+members. Toha parses `snapshot.json` at one boundary into domain types and
+validates each member: ULID syntax equal to the ref, identifier and commit
+syntax, instant syntax, target and path rules (relative, no `..`, not inside
+`.git`), and that `paths` equals the set of paths under `files/`.
 
-### Boundary
+### When a snapshot is saved
 
-`ProjectRecord::open` reads the directory once and parses every file into domain
-types. The wire type is private. The record is operator-editable input, so every
-member is validated: identifier syntax, commit syntax, instant syntax,
-`TargetPath` rules (no absolute path, no `..`, not inside `.git` or `.toha/`),
-region-key and JSON-path grammar, overlapping JSON paths, fingerprint syntax, and
-symbolic links in `.toha`, `.toha/applied`, or a record file.
+An apply saves a snapshot when all of these hold:
 
-A forged record cannot cause data loss. Toha retracts (deletes) an identity only
-when the identity is in the re-derived old plan **and** its rendered bytes match
-the recorded fingerprint. Any other claim can produce only `release` (ownership
-dropped, no bytes changed) or a conflict.
+1. The target is inside a git repository with at least one commit.
+2. Before the apply, the target directory has no tracked modification, no
+   staged change, and no untracked file that git does not ignore.
+3. The apply wrote at least one file.
 
-### When it is written
+Otherwise the apply behaves exactly as it does without this feature and reports
+the reason. A dry run saves nothing.
 
-Every command apply writes or replaces the record of the applied template:
-direct `apply TEMPLATE PATH`, staged `apply PATH`, and scripted
-`apply TEMPLATE PATH --answers FILE`. `update` and `adopt` write it too. The
-record file is written **last**, after all target files and hooks, through a
-temporary file and a rename. It is the commit point.
+### What goes into `files/`
 
-## Update
+- **First apply and `--baseline`:** every path Toha wrote or edited according
+  to the plan (origin `toha`), plus every other path under the target that the
+  apply changed, measured against `HEAD` after hooks ran (origin `hook`). A path
+  git ignores is left out. Content is the bytes on disk after the hooks.
+- **`--from`:** the same rule applied in the throwaway checkout (below), with
+  one addition. A path with origin `hook` in the base snapshot that the new
+  apply neither wrote nor changed is carried into the new snapshot with the base
+  snapshot's content and origin, because a hook that rewrites a file unchanged
+  is indistinguishable from a hook that no longer produces it. A path with
+  origin `toha` that the new plan does not write is left out, so the merge sees
+  it as removed by the template.
+- Changes a hook makes outside the target directory are not saved and are
+  reported as a warning.
 
-### Inputs
+## Applying from a snapshot
 
-1. **Record.** Select the application. With one application no flag is needed.
-   With several, `--template FORMAL` selects one exactly, and without it the
-   command refuses and lists them.
-2. **Next revision.** By default, the commit a fresh `apply` of that formal name
-   resolves now: the installed commit for a registry name, or the address
-   reference for an address. `--to COMMIT` selects another commit of the same
-   source.
-3. **Base template.** The template at the recorded commit, taken from the
-   source cache or fetched with gitoxide. When it cannot be obtained (offline,
-   commit no longer reachable, or a folder template), the update continues in
-   fingerprint mode. This never fails the update.
-4. **Context.** Both renders use the current invocation context and the recorded
-   `generated` instant. Environment values are read only under trust, as for a
-   direct apply: `--trust` or a current matching registry approval.
+### Preconditions
+
+`apply TEMPLATE PATH --from SNAPSHOT` refuses, writing nothing, when:
+
+- PATH is not inside a git repository;
+- the target directory has uncommitted changes;
+- the snapshot id is unknown or ambiguous;
+- the snapshot's `template` differs from TEMPLATE's formal name;
+- the snapshot's `target` differs from PATH relative to the repository root;
+- an interview is staged at PATH for another operation (as today).
+
+`--from` with `--baseline`, and either of them with `--force`, is a usage
+error (exit 2). `--dry-run` runs every step up to the merge in memory, reports
+the changes, and writes nothing to the project; it saves no snapshot.
 
 ### Answers
 
-For each render, Toha filters every recorded submission to the question ids of
-the template being rendered, then replays the submissions in order through the
-staged-replay walk. A recorded answer for a removed question is dropped. For the
-new template, the route's answers follow as one more submission. A question the
-new template adds without a default, or a recorded answer it rejects, is asked
-on the person route and reported as a `questions` result on the scripted route.
-A flow `stop` or `abort` ends the update with nothing written.
+For the render, Toha filters each recorded submission to the question ids of the
+new version, replays them in order through the staged-replay walk, then applies
+the route's answers: prompts on the person route, `--answers FILE` on the script
+route, batches on the agent route. A question the new version adds without a
+default, or a recorded answer it rejects, is asked or reported as `questions`.
+`--reanswer` asks every question with the recorded answers as defaults.
 
-### The merge base
+If the resolved commit and the completed raw answers equal the snapshot's, the
+apply reports `already at <short name> <commit>`, writes nothing, and saves no
+snapshot.
 
-The base plan is `Plan::build` of the old template with the replayed answers.
-Each identity in it is **verified** when its rendered image matches the
-record: a `files` or `values` fingerprint, or the region end-marker checksum on
-disk. An identity that cannot be verified is in **fingerprint mode**. This
-happens when the base template is unavailable, the replay does not complete, or
-the render differs, for example because it reads a host fact that differs on
-this machine. In fingerprint mode Toha knows whether the operator changed the
-file, but not what the old text was.
+### The throwaway checkout
 
-### Per-identity rules
+1. Check out the whole tree of `HEAD` into a new temporary directory outside the
+   repository. The checkout runs no filter driver, so a file stored through a
+   filter such as git-lfs appears in its stored form.
+2. Build the plan against the target inside that checkout, with the snapshot's
+   `generated` instant.
+3. Apply it there with overwrite semantics: whole files replace what the
+   checkout holds and regions and JSON values are written as the template
+   intends. The checkout is a copy, so nothing the operator owns is at risk.
+4. Run the new version's hooks there, in the existing hook loop, under the
+   existing trust gate. Hook failure ends the apply with nothing written to the
+   project.
+5. Save the new snapshot from the checkout by the rules above.
+6. Delete the checkout.
 
-B = base (old render), T = theirs (disk), O = ours (new render).
+### The merge
 
-**Whole file** (the merge unit is the file's composed image: whole-file bytes
-with that file's bounded edits folded in, exactly as apply composes them):
+Toha merges trees in process with gitoxide's tree merge. The three trees are
+whole-repository trees, so conflict paths are repository-relative and files
+outside the target cannot change:
 
-| Case | Result |
-|---|---|
-| In old and new; T = B | `update` to O, or nothing when O = B |
-| T ≠ B, O = B | Keep T. Nothing written. |
-| T ≠ B, O ≠ B, T = O | Nothing written. |
-| T ≠ B, O ≠ B, T ≠ O, all text | Three-way merge: `merge`, or `conflict` with a hunk count |
-| Any side binary (a NUL byte in the first 8000 bytes) | `conflict` (binary) |
-| T ≠ B in fingerprint mode | `conflict` |
-| Operator deleted the file | O = B: `release`. O ≠ B: `conflict` (delete/modify). |
-| Only in old (disappeared), T = B, verified | `retract`: delete the file |
-| Only in old, T ≠ B, or not verified | `release`: keep the file, drop ownership |
-| Only in new, file absent | `add` |
-| Only in new, T = O | Take ownership. Nothing written. |
-| Only in new, T ≠ O | `conflict` (add/add) |
+- base = the `HEAD` tree with the target directory replaced by `files/` of the
+  `--from` snapshot (an empty directory for `--baseline`);
+- ours = the `HEAD` tree (the operator side);
+- theirs = the `HEAD` tree with the target directory replaced by `files/` of the
+  new snapshot (the template side).
 
-**Region** (Toha owns the marker pair and the span; B is verified when
-`sha256(B)` equals the end-marker checksum on disk):
+The operator is "ours" and the template is "theirs", as in `git merge` when the
+operator merges the template in: index stage 2 is the operator's version and
+`git checkout --ours` keeps it.
 
-| Case | Result |
-|---|---|
-| Span = B | Replace the span with O and a new checksum (`update`), or nothing when O = B |
-| Span ≠ B, O = B | Keep the operator's span. Nothing written. A plain `apply` still reports drift. |
-| Span ≠ B, O ≠ B, verified | Three-way merge inside the span only. Clean: `merge`, with body = merged text and checksum = sha256(O). |
-| Span ≠ B, O ≠ B, fingerprint mode | `conflict` |
-| Markers missing on disk | O = B: `release`. O ≠ B: `conflict` (delete/modify). |
-| Only in old, span = checksum | `retract`: remove the marker lines and the span |
-| Only in old, span drifted | `release`: remove the two marker lines only, keep the body |
-| Only in new | Place at the bootstrap anchor (`add`), with the approved anchor errors |
+Each path merges by git's rules: changed on one side takes that side; changed on
+both sides merges by line; removed by the template and unedited is deleted;
+removed by the template and edited is a modify/delete conflict; added by the
+template is added; binary content changed on both sides is a conflict. Rename
+detection is off. Operator files under the target that no snapshot names are
+present only on the operator side, so the merge keeps them unchanged.
 
-A merged region keeps checksum = sha256(O), the body Toha intends. The span
-still contains operator bytes, so a plain `apply` reports drift and does not
-overwrite it, and the next update merges from base O.
+Toha calls the built-in text merge only. It runs no merge driver and no filter
+driver: a path whose git attributes name a merge driver or a `filter` (for
+example git-lfs) is not merged, keeps the operator's content, and is reported as
+a conflict of kind `driver` with its index stages.
 
-**JSON value** (Toha owns the typed value; ownership is convergent, as
-approved):
+Toha writes the result into the target directory and the index, as `git merge`
+does:
 
-| Case | Result |
-|---|---|
-| In old and new | Set to O. `converge` when T ≠ O. No three-way merge and no conflict. |
-| Only in old, T = B | `retract`: remove the key. Object parents stay. |
-| Only in old, T ≠ B | `release`: keep the value |
-| Only in new | Insert (`add`) |
+- clean paths get their merged content and are staged;
+- a text conflict gets diff3 markers labelled `operator`, `toha <old short
+  commit>`, and `toha <new short commit>`, and index stages 1, 2, and 3;
+- a modify/delete, add/add, binary, or driver conflict keeps the operator's file
+  on disk and gets the matching index stages;
+- index entries outside the target are kept, including anything the operator
+  had staged elsewhere.
 
-An identity that another application in the same record owns is an
-`OwnershipCollision` error.
+Git then lists every conflict as unmerged: `git status` shows it and `git
+commit` refuses until it is resolved. As after any `git merge`, `git commit -a`
+records the files as they are. Toha does not create `MERGE_HEAD` or any merge
+state, and it never commits.
 
-### Conflicts
-
-`--on-conflict refuse` is the default. Any conflict writes nothing, lists every
-conflict, and names the markers command. `--on-conflict markers` writes
-diff3-style markers into text conflicts (`<<<<<<< operator`,
-`||||||| toha 3f9a1c2`, `=======`, `>>>>>>> toha 8be0d41`) and writes everything
-else. Binary, delete/modify, and add/add conflicts still refuse. Before any
-update, Toha scans owned files and region spans for its own marker labels and
-refuses while any remain. No pending-conflict state is stored.
+Content injection's region and JSON-value ownership is expressed through the
+snapshot content: the new snapshot holds the operator's file with Toha's new
+region or value, so the merge applies Toha's change and keeps every operator
+edit around it. When the operator and the template both changed an owned region
+body or JSON value, the result is a text conflict.
 
 ### Order of effects
 
 ```text
-0 refuse: interview staged at the target; Toha conflict markers remain
-1 resolve every final image in memory (read owned paths once)
-2 trust gate: new hooks and not trusted -> NeedsTrust, nothing written
-3 conflicts under refuse -> error, nothing written
-4 no image and no record change -> UpToDate, nothing written, no hook
-5 replace each changed target (sibling temp file + rename) or delete it
-6 run the new template's hooks in the existing hook loop
-7 write the record (temp file + rename)  <- commit point
+0  refuse: preconditions above
+1  resolve the template, answers, and plan (questions -> ask or report, exit 4)
+2  trust gate for the new version's hooks (untrusted -> planned, exit 3)
+3  throwaway checkout, apply, hooks, save the new snapshot and its ref
+4  merge in memory
+5  write merged files, then the index
+6  print the change list, the snapshot, and the share command
 ```
 
-A crash or hook failure between steps 5 and 7 leaves the old record. The next
-update finds T = O for every written identity, writes nothing again, runs the
-hooks, and writes the record. A second update with no template or operator
-change returns `UpToDate` and changes no byte.
+A failure before step 5 leaves the project untouched; a new snapshot saved at
+step 3 remains and appears in `snapshots list`. A failure during step 5 leaves
+some files written; the target was clean, so `git reset --hard` restores it,
+and the error says so.
 
-## Merge engine
+## Baseline
 
-The engine is gitoxide's blob merge, enabled as the `merge` feature of the
-existing `gix` dependency. The feature adds the
-[`gix-merge`](https://docs.rs/gix-merge) crate from the
-[gitoxide](https://github.com/GitoxideLabs/gitoxide) project. Its diff core,
-`imara-diff`, is already in the dependency tree. Toha calls one pure function:
+`apply TEMPLATE PATH --baseline` adopts a project that has files but no
+snapshot. It follows "Applying from a snapshot" with an empty base and the
+interview run normally (no recorded answers). Paths the render and the project
+both hold with different content become add/add conflicts; identical paths are
+unchanged; paths only the render has are added. The new snapshot has
+`built_from: null` and a new `generated` instant.
 
-```rust
-gix::merge::blob::builtin_driver::text::merge(
-    out, input, labels, current /* T */, ancestor /* B */, other /* O */, options,
-) -> Resolution // Complete | CompleteWithAutoResolvedConflict | Conflict
-```
-
-`options.conflict` is `Keep { style: Diff3, marker_size: 7 }`. Toha never uses
-the configurable driver platform of `gix-merge`, which can start external merge
-drivers. One private adapter, `merge3`, is the only code that names the engine.
-
-## Adoption
-
-`toha adopt TEMPLATE PATH [--at COMMIT] [--answers FILE] [--replace] [--dry-run]`:
-
-1. Resolve TEMPLATE as a fresh apply does. `--at` selects the commit that
-   generated the project. Without it, Toha uses the commit resolved now.
-2. Run the interview on the route's modality (person prompts, or a scripted
-   answers document). Nothing is staged.
-3. Build the plan, and compute every fingerprint from the render, never from
-   the disk. A difference on disk is then an operator edit at the next update.
-4. Write the record only. Toha writes no target file and runs no hook. The
-   report classifies each identity as `matches`, `differs`, or `absent`.
-   `--dry-run` writes nothing.
-5. An existing application for the same formal name is refused unless
-   `--replace` is given. `--replace` sets a new baseline, for example after the
-   recorded commit disappears upstream.
-
-`toha update` on a project without a record refuses and names `adopt`.
-`apply TEMPLATE PATH --force` also sets a new baseline for that template.
+Plain `apply` into existing files keeps its behaviour: refuse, or overwrite with
+`--force`, and save a snapshot under the usual rule.
 
 ## Routes
 
-| Caller | Command | Output |
+| Caller | Command | Base |
 |---|---|---|
-| Person | `update PATH` | Prompts only for the questions the new template needs, then the change list |
-| Script, agent | `update --answers FILE PATH` | One JSON result document for every outcome |
-| Person | `adopt TEMPLATE PATH` | Prompts, then the adoption report |
-| Script, agent | `adopt --answers FILE TEMPLATE PATH` | One JSON result document |
+| Person | `apply TEMPLATE PATH [--from ID \| --baseline] [--reanswer]` | Prompts for the snapshot when `--from` is absent and the target has snapshots |
+| Script | `apply TEMPLATE PATH (--from ID \| --baseline) --answers FILE` | Must be named |
+| Agent | `stage TEMPLATE PATH (--from ID \| --baseline) [--reanswer] --async`, `continue`, `apply PATH` | Recorded in the staged interview |
 
-Update and adopt never stage. Each run derives everything again from the record,
-so an agent that receives a `questions` result reruns with a fuller document.
-Both refuse while an interview is staged at the path, as the scripted apply
-route does. The expected identity for an update answers document is the
-selected application's `template`, compared by exact string equality through the
-approved `parse_and_verify` gate. `--dry-run`, `--trust`, `--template`, `--to`,
-and `--on-conflict` apply to `update`.
+The staged interview gains one member, `base`: absent, `{"snapshot": "<id>"}`,
+or `"empty"`. The clean-target check runs at `stage` and again at the final
+`apply PATH`, which is authoritative.
+
+## Snapshot commands
+
+### `toha snapshots list [PATH] [--json]`
+
+Lists the snapshots whose `target` is PATH (default: the current directory),
+newest first, with id, template short name, template version, created, project
+commit, branch, and built-from. It marks one **likely base** per template: the
+newest snapshot whose project commit is an ancestor of `HEAD`. When none is an
+ancestor, it marks the snapshot whose `files/` match the most paths in the
+target at `HEAD`, labelled `likely base (by content)`. `--json` writes one
+document with the same fields and marks.
+
+### `toha snapshots clean [PATH] [--keep N] [--remove FILE] [--force]`
+
+- Person route: a multi-select list of the target's snapshots. `--keep N`
+  preselects all but the newest N per template. Nothing is removed until the
+  person confirms.
+- Script and agent route: `--remove FILE` (`-` reads standard input) names the
+  exact snapshots: `{ "remove": ["<id>", ...] }`. It acts immediately and writes
+  one JSON result: `{ "removed": [...], "not_found": [...] }`. A request that
+  would remove every snapshot of a template is refused as a whole, and removes
+  nothing, unless `--force` is given.
+- Removal deletes the refs. Toha prints one `git push origin --delete <ref>`
+  per removed snapshot. It never uses `--prune`.
+
+### `toha init [PATH]`
+
+Adds `+refs/toha/snapshots/*:refs/toha/snapshots/*` to the fetch setting of
+the remote `origin` in the repository's local git config, unless it is present,
+and prints what it added. `--remote NAME` selects another remote. It changes
+nothing else, writes no push setting, and never fetches.
 
 ## Public interfaces
 
 ```rust
-// toha::project — new public module
-pub struct ProjectRecord { /* private */ }
-impl ProjectRecord {
-    pub fn open(target: &CanonicalTarget) -> Result<Option<ProjectRecord>, RecordError>;
-    pub fn application(&self, select: Option<&str>) -> Result<&Application, UpdateError>;
-    pub fn begin_update<'t>(
-        &self,
-        app: &Application,
-        base: Option<&'t Template>,
-        next: &'t Template,
-        next_revision: Revision,
-        context: InvocationContext,
-    ) -> Result<Begun<'t>, UpdateError>;
-}
-impl Application {
+// toha::snapshot — new public module
+pub struct SnapshotId(Ulid);                       // 26 chars; Display, FromStr (full id)
+pub struct Snapshot { /* private: parsed snapshot.json + ref */ }
+impl Snapshot {
+    pub fn id(&self) -> &SnapshotId;
     pub fn template(&self) -> &str;
-    pub fn revision(&self) -> &Revision;
-}
-pub enum Revision { Commit(CommitId), Unversioned }
-
-pub struct Begun<'t> {
-    pub interview: Interview<'t>,  // next template; recorded instant; replay applied
-    pub answers: RawAnswers,       // route answers are merged here by `with_document`
-    /* private: baseline, record snapshot */
-}
-impl<'t> Begun<'t> {
-    pub fn with_document(self, text: &str) -> Result<Self, SubmitDocumentError>;
-    pub fn plan(self, completed: Completed) -> Result<UpdatePlan, UpdateError>;
+    pub fn revision(&self) -> &Revision;           // Commit(CommitId) | Unversioned
+    pub fn target(&self) -> &RepoPath;
+    pub fn created(&self) -> Timestamp;
+    pub fn generated(&self) -> &FrozenNow;
+    pub fn project(&self) -> &ProjectPoint;        // commit, Option<branch>
+    pub fn built_from(&self) -> Option<&SnapshotId>;
+    pub fn submissions(&self) -> &[IndexMap<Id, serde_json::Value>];
 }
 
-pub struct UpdatePlan { /* private: final images, next plan, next record */ }
-impl UpdatePlan {
-    pub fn changes(&self) -> &[Change];
-    pub fn apply(self, options: UpdateOptions, runner: &dyn HookRunner)
-        -> Result<Updated, UpdateError>;
+pub struct Project { /* private: gix repository, canonical target, repo-relative path */ }
+impl Project {
+    pub fn open(target: &CanonicalTarget) -> Result<Option<Project>, ProjectError>; // None: not in git
+    pub fn is_clean(&self) -> Result<Cleanliness, ProjectError>;
+    pub fn snapshots(&self) -> Result<Vec<Snapshot>, SnapshotError>;
+    pub fn find(&self, prefix: &str) -> Result<Snapshot, SnapshotError>;
+    pub fn likely_bases(&self, snapshots: &[Snapshot]) -> Result<Vec<LikelyBase>, ProjectError>;
+    pub fn remove(&self, ids: &[SnapshotId], force: bool) -> Result<Removed, SnapshotError>;
 }
-pub struct UpdateOptions { pub conflicts: ConflictPolicy, pub trusted: bool }
-pub enum ConflictPolicy { Refuse, Markers }
+pub enum Cleanliness { Clean, Dirty { paths: Vec<RepoPath> } }
 
-pub fn apply(plan: Plan, provenance: &Provenance, completed: &Completed,
-             target: &CanonicalTarget, options: ApplyOptions, runner: &dyn HookRunner)
-    -> Result<Applied, ApplyError>;
-pub fn adopt(provenance: &Provenance, template: &Template, completed: &Completed,
-             target: &CanonicalTarget, replace: bool) -> Result<Adopted, AdoptError>;
+// First apply and --baseline without a base: wraps Plan::apply.
+pub fn apply(plan: Plan, record: SnapshotInputs, project: Option<&Project>,
+             options: ApplyOptions, runner: &dyn HookRunner)
+    -> Result<Applied, ApplyError>;               // Applied gains `snapshot: SnapshotOutcome`
+
+// --from and --baseline.
+pub fn merge_apply(project: &Project, base: Base, template: &Template,
+                   completed: &Completed, record: SnapshotInputs,
+                   options: MergeOptions, runner: &dyn HookRunner)
+    -> Result<Merged, MergeError>;
+pub enum Base { Snapshot(Snapshot), Empty }
+pub struct MergeOptions { pub trusted: bool, pub dry_run: bool }
+pub enum Merged {
+    AlreadyCurrent,
+    NeedsTrust,
+    Planned { changes: Vec<Change> },              // dry run
+    Written { snapshot: SnapshotId, changes: Vec<Change>, conflicted: Vec<RepoPath> },
+}
+pub struct Change { pub path: RepoPath, pub action: Action }
+pub enum Action { Added, Updated, Merged, Deleted, Conflicted(ConflictKind) }
+pub enum ConflictKind { Content, AddAdd, ModifyDelete, Binary, Driver }
+
+pub struct SnapshotInputs {                        // what the snapshot records
+    pub template: String, pub revision: Revision, pub generated: FrozenNow,
+    pub submissions: Vec<IndexMap<Id, serde_json::Value>>,
+}
+pub enum SnapshotOutcome { Saved(SnapshotId), Skipped(SkipReason) }
+pub enum SkipReason { NotGit, NoCommit, Dirty, NothingWritten, DryRun }
 ```
 
 `Plan::build`, `Plan::apply`, `Plan::mutations`, the injection resolvers, the
-interview engine, `StagedRecord`, and the answers-document operations keep their
-signatures. The injection module gains crate-private helpers for retraction and
-for writing a merged region body under a given checksum. The approved public
-producer interface and ownership semantics do not change. A JSON value
-retraction applies the same strict RFC 8259 check to a `Json` target that the
-JSON resolver applies before any edit, so a `.json` file with a comment or other
-relaxation is refused and nothing is written. A region's rendered body is the
-same whether the template supplies it inline or from a `source` file, so update
-treats both origins identically.
-
-## Data structures
-
-```rust
-pub struct Application {
-    template: FormalName,          // non-empty; exact-equality identity
-    revision: Revision,
-    generated: FrozenNow,          // the representation StagedRecord.now uses
-    submissions: Vec<IndexMap<Id, serde_json::Value>>, // accepted, raw, in order
-    owned: Ownership,
-    file: PathBuf,                 // locator only
-}
-pub struct CommitId([u8; 20]);     // exactly 40 lowercase hex on disk
-pub struct Fingerprint([u8; 32]);  // "sha256:<64 hex>" on disk
-pub struct Ownership {
-    files: BTreeMap<TargetPath, Fingerprint>,
-    regions: BTreeMap<TargetPath, BTreeSet<RegionKey>>,  // no fingerprint by type
-    values: BTreeMap<TargetPath, BTreeMap<JsonPath, Fingerprint>>,
-}
-pub enum Identity {               // owned twin of FileMutation<'_>
-    Whole { path: TargetPath },
-    Region { path: TargetPath, region: RegionKey },
-    JsonValue { path: TargetPath, json_path: JsonPath },
-}
-pub struct Change { pub identity: Identity, pub action: Action }
-pub enum Action {
-    Add, Update, Merge, Converge, Retract, Release, Conflict(ConflictKind),
-}
-pub enum ConflictKind { Content { hunks: usize }, Binary, DeleteModify, AddAdd }
-pub enum Updated {
-    UpToDate,
-    Written { changes: Vec<Change>, conflicted: Vec<TargetPath>,
-              hooks_run: usize, after_apply: Option<String> },
-    NeedsTrust(UpdatePlan),
-}
-```
-
-Invariants held by types: a `CommitId` is always 40 hex; a region cannot carry a
-second checksum; a `ProjectRecord` has unique formal names and no public
-constructor; an `UpdatePlan` exists only when every image is resolved; a delete
-image comes only from `Retract`, which requires a verified base; `UpToDate`
-cannot report writes.
+interview engine, and the answers-document operations keep their signatures.
+`StagedRecord` gains the optional `base` member.
 
 ## Module and seam
 
 ```text
-CLI  apply (records) · update · adopt
-  │ canonical_target · cli::resolve (next) · source cache/fetch (base)
+CLI  apply (--from, --baseline, --reanswer) · stage · snapshots list|clean · init
+  │  canonical_target · resolve · staged record (base)
   ▼
-project/            new public module
-  record.rs   open · boundary parse · write (temp + rename, commit point)
-  update.rs   begin_update · baseline · reconcile (pure) · merge3 → gix-merge
-              UpdatePlan::apply → apply's commit and hook loop
-  adopt.rs    render-only fingerprints · record only
-  │ consumes, unchanged                  │ reuses crate-internally
-  ▼                                      ▼
-plan.rs  Plan::build · Plan::mutations    apply.rs  atomic replace · hook loop
-inject   resolvers + pub(crate) retract   staging.rs canonical_target · replay walk
-protocol parse_and_verify · results       interview.rs, hook.rs, registry.rs: unchanged
+snapshot/            new public module
+  project.rs   open repo (gix) · clean check · list/find/remove refs · likely base
+  record.rs    snapshot.json boundary parse and write · ULID
+  capture.rs   paths written/changed → tree → parentless commit → ref
+  merge.rs     throwaway checkout · tree merge (gix) · write worktree + index
+  │ consumes, unchanged                     │ reuses crate-internally
+  ▼                                         ▼
+plan.rs  Plan::build · Plan::mutations       apply.rs  Plan::apply, hook loop
+interview.rs · staging.rs replay walk        hook.rs, review.rs trust
 ```
 
-A trace from the command to a written byte touches three files: `main.rs`,
-`project/update.rs`, and `apply.rs`.
+Only `snapshot/` names gitoxide's repository, status, merge, and index APIs.
+`source.rs` keeps its own template fetching.
 
 ## Errors and results
 
-### `RecordError` (each names the record file)
+`ProjectError`, `SnapshotError`, and `MergeError` name the path or snapshot id
+they concern. None of them, and no `Debug` or `Display` output, contains answer
+values or file contents.
 
-`Io`, `Json`, `Shape` (missing, unknown, or mistyped member), `Template` (empty),
-`Commit`, `Generated`, `AnswerId`, `Path` (absolute, `..`, `.git`, `.toha/`,
-symbolic link, or invalid), `RegionKey`, `JsonPath`, `Overlap`, `Fingerprint`,
-`DuplicateApplication`.
-
-### `UpdateError`
-
-| Variant | Condition | Result `kind` / exit |
+| Condition | Script result | Exit |
 |---|---|---|
-| `Record(RecordError)` | invalid record | `record` / 1 |
-| `NoRecord` | no `.toha/applied/`; names `adopt` | `record` / 1 |
-| `SelectApplication`, `UnknownApplication` | several applications and no selection, or no match | `input` / 1 |
-| `Staged` | an interview is staged at the target | `staged` / 1 |
-| `Resolve` | next revision cannot be resolved | `source` / 1, `ambiguous` / 5 |
-| `Document` | answers document shape or identity | `document`, `identity` / 1 |
-| `Plan` | the next render fails | `render` / 1 |
-| `OwnershipCollision` | another application owns the identity | `conflict` / 1 |
-| `UnresolvedConflicts` | Toha markers remain in owned content | `conflict` / 1 |
-| `Conflicts` | any conflict under refuse; binary, delete/modify, add/add under markers | `conflict` / 1 |
-| `Region`, `Json` | the approved injection apply errors | `render` / 1 |
-| `Symlink`, `Io` | reading owned bytes or replacing targets | `input` / 1 |
-| `Apply` | the existing hook failures | `hook` / 1 |
-| `RecordWrite` | the commit point failed after files were written; a rerun converges | `record` / 1 |
+| Not in a git repository, for `--from` or `--baseline` | `error` `git` | 1 |
+| Target has uncommitted changes | `error` `dirty` with the paths | 1 |
+| Unknown or ambiguous snapshot | `error` `snapshot` | 1 |
+| Snapshot for another template or target | `error` `snapshot` naming both | 1 |
+| Invalid `snapshot.json` | `error` `snapshot` naming the ref | 1 |
+| Questions remain | `questions` | 4 |
+| Untrusted hooks | `planned`, `trusted: false` | 3 |
+| Render, hook, or checkout failure | `error` of that kind; project unchanged | 1 |
+| Already current | `applied` with empty `merge.changes` | 0 |
+| Merged cleanly | `applied` with `merge` | 0 |
+| Merged with conflicts | `applied` with non-empty `merge.conflicted` | 1 |
+| Failure while writing the project | `error` `write`, naming `git reset --hard` | 1 |
 
-Fingerprint mode is not an error. The change list and result document report
-`fingerprint mode: <reason>`: `unversioned`, `commit unavailable`,
-`replay incomplete`, or `N identities unverified`. For `commit unavailable`, it
-names `adopt --at --replace`.
+Every refusal names the command that does what the caller meant: a dirty target
+names committing or stashing and the same command again; an unknown snapshot
+names `toha snapshots list`; a target with files and no snapshot names
+`--baseline`; a snapshot for another template or target names `toha snapshots
+list PATH`.
 
-No error, `Debug`, or `Display` output contains answer values or file contents.
-Conflict content reaches a caller only through the explicit change report.
-
-### Results
-
-| Outcome | Crate | Scripted status | Exit |
-|---|---|---|---|
-| Nothing to do | `UpToDate` | `updated`, empty `changes` | 0 |
-| Written | `Written` | `updated` | 0 |
-| Written with markers | `Written { conflicted }` | `updated`, non-empty `conflicted` | 1 |
-| Trust required | `NeedsTrust` | `planned`, `trusted: false` | 3 |
-| Dry run | `changes()` | `planned` with actions | 0 |
-| Questions remain | `Headless::Pending` | `questions` | 4 |
-| Flow ended | `Headless::Ended` | `ended` | 0 |
-| Adopted | `Adopted` | `adopted` with `matches`/`differs`/`absent` | 0 |
+A plain apply's `applied` result gains `snapshot`: `{ "id": ... }` or
+`{ "skipped": "<reason>" }`.
 
 ## Behaviors to prove
 
-1. **Version A to B with an edited file** (`update-merge-conflict` fixture): the
-   template changes two files between A and B; the operator edits one of them on
-   the same lines. Update refuses and lists that file, and every target byte and
-   the record are unchanged. With markers, the file holds diff3 markers labeled
-   operator/A/B, the other file is updated, and the exit is 1.
+1. **Acceptance scenario.** Apply version A in a clean repo; commit; edit
+   `README.md` on lines B changes; in a second clone with `toha init` and a
+   fetch, `snapshots list` marks the snapshot as likely base; `apply …@B --from`
+   updates `src/app.txt`, adds `src/health.txt`, leaves `README.md` with diff3
+   markers and index stages 1–3 (`git status` shows `UU`, plain `git commit`
+   fails),
+   reports the conflict and a new snapshot; after resolving, the same command
+   with the new snapshot reports already current and changes no byte.
 2. A clean three-way merge keeps the operator's lines and the template's lines.
-3. A second update with no change returns `UpToDate`, writes no byte, and runs
-   no hook.
-4. A file that disappears at B is deleted when it is unedited and kept (ownership
-   dropped) when it is edited.
-5. A forged record entry for a file the old template never produced cannot
-   cause a deletion.
-6. A region merge changes only the span, and a later plain `apply` reports drift.
-7. A disappeared region is removed when intact, and only its markers are removed
-   when it drifted.
-8. An operator's change to an owned JSON value converges to B without `--force`,
-   and unrelated keys and comments are unchanged.
-9. A disappeared JSON value is removed when unedited and kept when edited, and
-   a `.json` target with a comment is refused with nothing written.
-10. When the base commit is unavailable, the update runs in fingerprint mode,
-    never deletes, and refuses edited-and-changed files.
-11. A template that renders a host fact is verified on the same host and falls
-    back to fingerprint mode for that file only on another host.
-12. Recorded submissions replay pre-`format` values: a question with a
-    non-idempotent `format` produces the same answer on replay.
-13. A recorded answer for a question removed at B is dropped, a question added
-    at B is asked (person) or reported (`questions`, exit 4), and a rejected
-    recorded answer is reported with its rejection.
-14. A date-rendering template is byte-stable across updates because of
+3. A file the template removed is deleted when unedited and is a modify/delete
+   conflict when edited.
+4. Operator files no snapshot names are unchanged by `--from` and `--baseline`.
+5. An apply in a dirty target writes files as today, saves no snapshot, and
+   reports `dirty`; `--from` in a dirty target refuses with nothing written.
+6. A plain apply outside git and a dry run save no snapshot.
+7. The snapshot holds hook output (a file a hook creates) with origin `hook`
+   and leaves out git-ignored files.
+8. A hook file rewritten unchanged by the new version is carried forward and
+   not deleted from the project.
+9. A region edit: the new region body reaches the project and operator lines
+   around it are kept; a region body both sides changed is a conflict.
+10. A JSON value both sides changed is a conflict; one changed only by the
+    template is updated; unrelated keys are unchanged.
+11. Replay uses raw submissions (non-idempotent `format` fixture), drops
+    answers for removed questions, and asks or reports added ones (exit 4).
+12. `--reanswer` offers every question with the recorded default, and a
+    changed answer at the same version merges the difference.
+13. Same version and same answers report already current and save no snapshot.
+14. A date-rendering template is byte-stable across `--from` because of
     `generated`.
-15. Every apply route (direct, staged, scripted) writes the record last. A hook
-    failure leaves the old record, and a rerun converges.
-16. An untrusted template with hooks returns `NeedsTrust` and writes nothing.
-17. Update and adopt refuse while an interview is staged at the path, and the
-    staged record is unchanged.
-18. Toha markers left in an owned file make the next update refuse.
-19. Adopt writes only the record. Each fingerprint comes from the render, and
-    the report classifies `matches`, `differs`, and `absent`.
-20. Two templates applied to one project have two record files; updating one
-    leaves the other's file and owned content unchanged, and a collision is
-    refused.
-21. A template output path under `.toha/applied/` fails at planning.
-22. An answers document naming another template fails with the identity error
-    before any answer is evaluated.
-23. Person, scripted, and crate update produce the same changes and bytes for
-    the same inputs.
-24. The update starts no process except the template's trusted hooks.
+15. `--from` with a snapshot for another template or another target refuses;
+    `--from` with `--baseline` is a usage error.
+16. `--baseline` produces add/add conflicts for differing files, keeps
+    identical ones, adds the rest, and records `built_from: null`.
+17. The agent route: `stage --from` records the base, `continue` answers the
+    added questions, and `apply PATH` merges; a target made dirty after
+    `stage` refuses at `apply PATH`.
+18. Untrusted hooks return `planned` with `trusted: false`, exit 3, and write
+    nothing to the project.
+19. A hook failure in the throwaway checkout leaves the project unchanged.
+20. `snapshots list --json` marks the likely base by ancestry, and by content
+    after the operator's history was squashed.
+21. `snapshots clean --remove` removes exactly the named snapshots, reports
+    unknown ids, refuses a request that removes every snapshot of a template
+    unless `--force`, and prints one delete command per ref.
+22. A removed snapshot's objects are unreachable (no other snapshot has it as a
+    parent).
+23. `toha init` adds the fetch setting once, is idempotent, and writes no push
+    setting.
+24. No process starts during apply, `--from`, list, clean, or init except the
+    template's trusted hooks, including in a repository whose attributes name a
+    merge driver and a `filter` driver on a snapshot path; that path is
+    reported as a `driver` conflict with the operator's content kept.
+25. A forged `snapshot.json` (unknown member, path with `..`, `paths` not equal
+    to `files/`, id not equal to the ref) is refused before any render.
 
 ## Sole-kill guards
 
-- Replace `retract` verification with `true`: fails behavior 5.
-- Record completed answers instead of raw submissions: fails behavior 12.
-- Remove the removed-question filter: fails behavior 13.
-- Use the current instant instead of `generated`: fails behavior 14.
-- Write the record before hooks: fails behavior 15.
-- Checksum a merged region as sha256(merged): fails behavior 6.
-- Three-way merge JSON values: fails behavior 8.
-- Skip the strict check in JSON value retraction: fails behavior 9.
-- Write clean identities while a conflict is refused: fails behavior 1.
-- Remove the marker preflight: fails behavior 18.
-- Fingerprint from disk in adopt: fails behavior 19.
-- Route the merge through the `gix-merge` driver platform: the process-spawn
-  guard for behavior 24 fails.
+- Merge against the operator's tree as base instead of the snapshot: fails 2.
+- Keep `hook` paths that the new version dropped without carry-forward: fails 8.
+- Use `HEAD`-relative "changed" instead of plan-written for `toha` paths: a
+  template file rendered identical to `HEAD` is missing from the snapshot and
+  deleted next update; fails 1's rerun and 3.
+- Write only markers without index stages: `git commit` succeeds; fails 1.
+- Keep the cached index tree after replacing entries: git commits a stale tree;
+  fails 1 (the resolved commit's tree must equal the worktree).
+- Let a `merge=` or `filter=` attribute reach gitoxide's driver platform: the
+  process guard of 24 fails on the driver fixture.
+- Skip the clean check at the final agent `apply PATH`: fails 17.
+- Use the current instant instead of `generated`: fails 14.
+- Store formatted answers: fails 11.
+- Give snapshots a parent: fails 22.
+- Treat a whole-template removal request as partial: fails 21.
+- Route the merge through gitoxide's external driver platform: the process
+  guard of 24 fails.
 
 ## Out of scope
 
-- Rename detection. A moved path is a retract or release plus an add.
-- Searching project history for the commit that generated an adopted project.
-- Changing the approved injection ownership semantics, the answers-document
-  contract, the hook-result lifetime, the staged record, or trust.
-- Authoring commits, refs, or notes in the operator's repository.
-- Per-question exclusion of answers from the record.
-- New permissions, timeouts, pinned-version checks, or application subprocesses.
+- Rename detection; a moved path is a delete plus an add.
+- Moving a target directory; `--from` refuses a snapshot for another path.
+- Version ordering; Toha shows versions and never labels an upgrade or a
+  downgrade.
+- Pushing, fetching, or pruning refs; committing to operator branches;
+  `git init`.
+- Onboarding in `toha init` (backlog task 1108).
+- Side effects of hooks that are not committed files.
+- Changes to injection's apply-time ownership semantics, the answers-document
+  contract, the hook-result lifetime, or trust.
+- New permissions, timeouts, pinned-version checks, or application
+  subprocesses.
 
 ## Compatibility and canonical documents
 
-Toha is before 1.0.0 and has no dependent users. Every generated project now
-contains `.toha/applied/`. Existing fixtures gain that record in their expected
-trees.
+Toha is before 1.0.0 and has no dependent users. Plain `apply` keeps its
+behaviour and gains a snapshot in a clean git target. The implementation
+updates, in the same change:
 
-The implementation updates, in the same change:
-
-- `docs/concepts/toha.yml`: the update-projects feature and the applied-record
-  property.
-- `docs/specifications/command-line-interface.yml` and `.spec.yml`: `update`,
-  `adopt`, `apply` recording, conflict policy, exit behavior.
-- A new `docs/specifications/applied-record.yml` and its schema.
-- `docs/specifications/interview-protocol.yml` and schema: the `updated`,
-  `adopted`, and update `planned` result documents.
-- `docs/specifications/template-format.yml` and schema: the reserved
-  `.toha/applied/` output path.
-- `docs/technical-designs/architecture.yml`: the `project` module and the `gix`
-  `merge` feature.
+- `docs/concepts/toha.yml`: the update-projects feature and snapshots.
+- `docs/specifications/command-line-interface.yml` and `.spec.yml`: `--from`,
+  `--baseline`, `--reanswer`, `snapshots list|clean`, `init`, results, exits.
+- A new `docs/specifications/snapshot.yml` and `snapshot.schema.yml`.
+- `docs/specifications/interview-protocol.yml` and schema: the `snapshot` and
+  `merge` members of `applied`, the clean result document, the staged `base`.
+- `docs/technical-designs/architecture.yml`: the `snapshot` module and the
+  added gitoxide features.
+- The repository glossary (`AGENTS.md`): **Snapshot** (the stored output of one
+  apply, under a Toha-owned git ref), **Base snapshot** (the snapshot an update
+  merges from), and **Baseline** (an apply that adopts an existing project
+  against an empty base).
 - A user guide page on updating projects, and a generic example.
-- Fixture harness: `tests/fixtures/update-*` with `template-a/`, `template-b/`,
-  `answers.json`, an `edits/` overlay with a removal list, `expected/`, and
-  `expect.yml`; each fixture also asserts a second update is `UpToDate`.
+- Fixture harness `tests/fixtures/update-*`: `template-a/`, `template-b/`,
+  `answers.json`, an `edits/` overlay with a removal list, `expected/`
+  (worktree and `git ls-files -s` stages), and `expect.yml`.
 
 ## Decisions
 
-The decisions that need approval, with options and recommendations, are in
-`design.yml` under `decisions-for-approval` and on the brief deck.
+The approved product decisions and the decisions still needed are in
+`design.yml`.
