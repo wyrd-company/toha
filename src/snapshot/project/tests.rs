@@ -186,6 +186,33 @@ fn make_snapshot(
     extra_top_entry: bool,
     gitlink: Option<&str>,
 ) -> String {
+    make_snapshot_pc(
+        dir,
+        id,
+        target,
+        PROJECT_COMMIT,
+        files,
+        parent,
+        extra_top_entry,
+        gitlink,
+    )
+}
+
+const PROJECT_COMMIT: &str = "a41c0de00000000000000000000000000000beef";
+
+/// As [`make_snapshot`], but with an explicit recorded project commit, for
+/// ancestry-based likely-base tests.
+#[allow(clippy::too_many_arguments)]
+fn make_snapshot_pc(
+    dir: &Path,
+    id: &str,
+    target: &str,
+    project_commit: &str,
+    files: &[SnapshotFile],
+    parent: Option<&str>,
+    extra_top_entry: bool,
+    gitlink: Option<&str>,
+) -> String {
     let index = dir.join(format!(".idx-{id}"));
     let _ = std::fs::remove_file(&index);
     // snapshot.json with paths equal to the files (all origin toha).
@@ -204,7 +231,7 @@ fn make_snapshot(
   "target": "{target}",
   "created": "2026-09-30T04:12:00Z",
   "generated": "2026-03-14T09:26:53+00:00[UTC]",
-  "project": {{ "commit": "a41c0de00000000000000000000000000000beef", "branch": "main" }},
+  "project": {{ "commit": "{project_commit}", "branch": "main" }},
   "built_from": null,
   "submissions": [],
   "paths": {{
@@ -425,4 +452,140 @@ fn a_ref_that_is_not_a_ulid_is_listed_invalid() {
             .iter()
             .any(|l| matches!(l, Listed::Invalid { .. }))
     );
+}
+
+// --------------------------------------------------------------------------
+// Slice 2b: likely bases and removal.
+// --------------------------------------------------------------------------
+
+fn valid_snapshots(project: &Project) -> Vec<crate::snapshot::Snapshot> {
+    project
+        .snapshots()
+        .unwrap()
+        .into_iter()
+        .filter_map(|l| match l {
+            Listed::Valid(s) => Some(s),
+            Listed::Invalid { .. } => None,
+        })
+        .collect()
+}
+
+#[test]
+fn likely_base_is_marked_by_ancestry_when_a_project_commit_is_an_ancestor_of_head() {
+    let dir = tempfile::tempdir().unwrap();
+    repo_with_app(dir.path());
+    let first = git_out(dir.path(), None, &["rev-parse", "HEAD"]);
+    // Advance HEAD so `first` is a strict ancestor.
+    write(&dir.path().join("app/file.txt"), b"one\ntwo\nthree\n");
+    git(dir.path(), &["commit", "-qam", "second"]);
+
+    // ID_A records an ancestor commit; ID_B records an unrelated commit.
+    make_snapshot_pc(
+        dir.path(),
+        ID_A,
+        "app",
+        &first,
+        &one_file(),
+        None,
+        false,
+        None,
+    );
+    make_snapshot_pc(
+        dir.path(),
+        ID_B,
+        "app",
+        "deadbeef00000000000000000000000000000000",
+        &one_file(),
+        None,
+        false,
+        None,
+    );
+
+    let project = open_at(&dir.path().join("app")).expect("in git");
+    let marks = project.likely_bases(&valid_snapshots(&project)).unwrap();
+    assert_eq!(marks.len(), 1, "one mark per source");
+    assert_eq!(marks[0].id.to_string(), ID_A);
+    assert_eq!(marks[0].by, LikelyBaseBy::Ancestry);
+}
+
+#[test]
+fn likely_base_falls_back_to_content_when_no_project_commit_is_an_ancestor() {
+    let dir = tempfile::tempdir().unwrap();
+    repo_with_app(dir.path());
+    // The target app/ holds app/file.txt == "one\ntwo\n" at HEAD.
+    let matching = &[SnapshotFile {
+        path: "file.txt",
+        bytes: b"one\ntwo\n",
+        mode: "100644",
+    }];
+    let other = &[SnapshotFile {
+        path: "file.txt",
+        bytes: b"different\n",
+        mode: "100644",
+    }];
+    let unrelated = "deadbeef00000000000000000000000000000000";
+    make_snapshot_pc(dir.path(), ID_A, "app", unrelated, other, None, false, None);
+    make_snapshot_pc(
+        dir.path(),
+        ID_B,
+        "app",
+        unrelated,
+        matching,
+        None,
+        false,
+        None,
+    );
+
+    let project = open_at(&dir.path().join("app")).expect("in git");
+    let marks = project.likely_bases(&valid_snapshots(&project)).unwrap();
+    assert_eq!(marks.len(), 1);
+    assert_eq!(
+        marks[0].id.to_string(),
+        ID_B,
+        "the content-matching snapshot wins"
+    );
+    assert_eq!(marks[0].by, LikelyBaseBy::Content);
+}
+
+#[test]
+fn remove_deletes_named_snapshots_and_reports_unknown_ids() {
+    let dir = tempfile::tempdir().unwrap();
+    repo_with_app(dir.path());
+    // Two snapshots of the same source so removing one does not empty it.
+    make_snapshot(dir.path(), ID_A, "app", &one_file(), None, false, None);
+    make_snapshot(dir.path(), ID_B, "app", &one_file(), None, false, None);
+
+    let project = open_at(&dir.path().join("app")).expect("in git");
+    let a: crate::snapshot::SnapshotId = ID_A.parse().unwrap();
+    let missing: crate::snapshot::SnapshotId = "01JA2B8M4R0C7W1Y5F3H9K2S70".parse().unwrap();
+    let removed = project.remove(&[a, missing], false).unwrap();
+    assert_eq!(removed.removed, vec![a]);
+    assert_eq!(removed.not_found, vec![missing]);
+    // The ref is gone; the sibling snapshot remains.
+    let remaining = valid_snapshots(&project);
+    assert!(remaining.iter().all(|s| s.id() != &a));
+    assert_eq!(remaining.len(), 1);
+}
+
+#[test]
+fn remove_refuses_to_empty_a_source_without_force() {
+    let dir = tempfile::tempdir().unwrap();
+    repo_with_app(dir.path());
+    make_snapshot(dir.path(), ID_A, "app", &one_file(), None, false, None);
+    make_snapshot(dir.path(), ID_B, "app", &one_file(), None, false, None);
+    let project = open_at(&dir.path().join("app")).expect("in git");
+    let a: crate::snapshot::SnapshotId = ID_A.parse().unwrap();
+    let b: crate::snapshot::SnapshotId = ID_B.parse().unwrap();
+
+    // Both belong to the same source; removing both empties it.
+    assert!(matches!(
+        project.remove(&[a, b], false),
+        Err(SnapshotError::WholeSource { .. })
+    ));
+    // Nothing was removed.
+    assert_eq!(valid_snapshots(&project).len(), 2);
+    // With force it proceeds.
+    let removed = project.remove(&[a, b], true).unwrap();
+    assert_eq!(removed.removed.len(), 2);
+    assert_eq!(valid_snapshots(&project).len(), 0);
 }

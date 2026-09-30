@@ -613,6 +613,8 @@ pub enum SnapshotError {
     },
     #[error("cannot read snapshot from git: {0}")]
     Git(String),
+    #[error("removing every snapshot of {name} needs --force")]
+    WholeSource { name: String },
 }
 
 #[cfg(test)]

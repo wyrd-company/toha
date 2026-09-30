@@ -152,6 +152,238 @@ impl Project {
         }
     }
 
+    /// Mark one likely base per source among `snapshots`: the newest snapshot
+    /// whose project commit is an ancestor of `HEAD`, or, when none is, the
+    /// snapshot whose `files/` match the most paths in the target at `HEAD`,
+    /// marked by content. A mark never selects a base.
+    pub fn likely_bases(&self, snapshots: &[Snapshot]) -> Result<Vec<LikelyBase>, ProjectError> {
+        let head = self.repo.head_id().ok().map(|id| id.detach());
+        let head_target = match &head {
+            Some(_) => self.head_target_oids()?,
+            None => std::collections::BTreeMap::new(),
+        };
+
+        // Group indices by source, preserving discovery order of sources.
+        let mut sources: Vec<&str> = Vec::new();
+        for snapshot in snapshots {
+            if !sources.contains(&snapshot.source()) {
+                sources.push(snapshot.source());
+            }
+        }
+
+        let mut marks = Vec::new();
+        for source in sources {
+            let group: Vec<&Snapshot> = snapshots.iter().filter(|s| s.source() == source).collect();
+
+            // Ancestry: newest snapshot whose project commit is an ancestor of HEAD.
+            let by_ancestry = head.and_then(|head| {
+                group
+                    .iter()
+                    .filter(|s| self.is_ancestor(s.project().commit(), head))
+                    .max_by(|a, b| a.id().cmp(b.id()))
+                    .map(|s| (*s, LikelyBaseBy::Ancestry))
+            });
+
+            let chosen = match by_ancestry {
+                Some(chosen) => Some(chosen),
+                None => {
+                    // By content: the snapshot matching the most paths at HEAD.
+                    let mut best: Option<(&Snapshot, usize)> = None;
+                    for snapshot in &group {
+                        let score = self.content_score(snapshot, &head_target)?;
+                        let better = match best {
+                            None => true,
+                            Some((current, best_score)) => {
+                                score > best_score
+                                    || (score == best_score && snapshot.id() > current.id())
+                            }
+                        };
+                        if better {
+                            best = Some((snapshot, score));
+                        }
+                    }
+                    best.map(|(snapshot, _)| (snapshot, LikelyBaseBy::Content))
+                }
+            };
+
+            if let Some((snapshot, by)) = chosen {
+                marks.push(LikelyBase {
+                    id: *snapshot.id(),
+                    source: source.to_owned(),
+                    by,
+                });
+            }
+        }
+        Ok(marks)
+    }
+
+    /// Remove the named snapshots, deleting their refs. Unknown ids are reported,
+    /// not fatal. A request that would remove every snapshot of a source is
+    /// refused as a whole unless `force`, and then removes nothing.
+    pub fn remove(&self, ids: &[SnapshotId], force: bool) -> Result<Removed, SnapshotError> {
+        let all: Vec<Snapshot> = self
+            .all_snapshots()
+            .map_err(|err| SnapshotError::Git(err.to_string()))?
+            .into_iter()
+            .filter_map(|entry| match entry {
+                Listed::Valid(snapshot) => Some(snapshot),
+                Listed::Invalid { .. } => None,
+            })
+            .collect();
+
+        let mut removed = Vec::new();
+        let mut not_found = Vec::new();
+        for id in ids {
+            if all.iter().any(|s| s.id() == id) {
+                removed.push(*id);
+            } else {
+                not_found.push(*id);
+            }
+        }
+
+        if !force {
+            // Refuse if the removal set empties any source.
+            for snapshot in &all {
+                let source = snapshot.source();
+                let total = all.iter().filter(|s| s.source() == source).count();
+                let removing = all
+                    .iter()
+                    .filter(|s| s.source() == source && removed.contains(s.id()))
+                    .count();
+                if total > 0 && removing == total {
+                    return Err(SnapshotError::WholeSource {
+                        name: source.to_owned(),
+                    });
+                }
+            }
+        }
+
+        for id in &removed {
+            let name = format!("{SNAPSHOT_REF_PREFIX}{id}");
+            self.repo
+                .find_reference(name.as_str())
+                .map_err(|err| SnapshotError::Git(err.to_string()))?
+                .delete()
+                .map_err(|err| SnapshotError::Git(err.to_string()))?;
+        }
+        Ok(Removed { removed, not_found })
+    }
+
+    /// The `HEAD` tree's leaf blob ids under the target, keyed by target-relative
+    /// path, for content scoring.
+    fn head_target_oids(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, gix::ObjectId>, ProjectError> {
+        let head_tree = self
+            .repo
+            .head_tree()
+            .map_err(|err| ProjectError::Snapshot(SnapshotError::Git(err.to_string())))?;
+        let target_tree = if self.rel.is_root() {
+            head_tree.id().detach()
+        } else {
+            match head_tree
+                .lookup_entry_by_path(self.rel.as_str())
+                .map_err(|err| ProjectError::Snapshot(SnapshotError::Git(err.to_string())))?
+            {
+                Some(entry) if entry.mode().is_tree() => entry.oid().to_owned(),
+                _ => return Ok(std::collections::BTreeMap::new()),
+            }
+        };
+        let mut oids = std::collections::BTreeMap::new();
+        self.tree_leaf_oids(target_tree, "", &mut oids)
+            .map_err(ProjectError::Snapshot)?;
+        Ok(oids)
+    }
+
+    /// How many of a snapshot's `files/` paths are present at `HEAD` with the
+    /// same blob id.
+    fn content_score(
+        &self,
+        snapshot: &Snapshot,
+        head_target: &std::collections::BTreeMap<String, gix::ObjectId>,
+    ) -> Result<usize, ProjectError> {
+        let files = self
+            .snapshot_files_oids(snapshot.id())
+            .map_err(ProjectError::Snapshot)?;
+        Ok(files
+            .iter()
+            .filter(|(path, oid)| head_target.get(*path) == Some(oid))
+            .count())
+    }
+
+    /// The leaf blob ids under a snapshot's `files/` tree.
+    fn snapshot_files_oids(
+        &self,
+        id: &SnapshotId,
+    ) -> Result<std::collections::BTreeMap<String, gix::ObjectId>, SnapshotError> {
+        let name = format!("{SNAPSHOT_REF_PREFIX}{id}");
+        let mut reference = self
+            .repo
+            .find_reference(name.as_str())
+            .map_err(|err| SnapshotError::Git(err.to_string()))?;
+        let commit = reference
+            .peel_to_commit()
+            .map_err(|err| SnapshotError::Git(err.to_string()))?;
+        let tree = commit
+            .tree()
+            .map_err(|err| SnapshotError::Git(err.to_string()))?;
+        let mut oids = std::collections::BTreeMap::new();
+        if let Some(entry) = tree
+            .lookup_entry_by_path("files")
+            .map_err(|err| SnapshotError::Git(err.to_string()))?
+        {
+            if entry.mode().is_tree() {
+                self.tree_leaf_oids(entry.oid().to_owned(), "", &mut oids)?;
+            }
+        }
+        Ok(oids)
+    }
+
+    /// Walk a tree, collecting leaf blob ids keyed by path.
+    fn tree_leaf_oids(
+        &self,
+        tree_oid: gix::ObjectId,
+        prefix: &str,
+        oids: &mut std::collections::BTreeMap<String, gix::ObjectId>,
+    ) -> Result<(), SnapshotError> {
+        let tree = self
+            .repo
+            .find_tree(tree_oid)
+            .map_err(|err| SnapshotError::Git(err.to_string()))?;
+        for entry in tree.iter() {
+            let entry = entry.map_err(|err| SnapshotError::Git(err.to_string()))?;
+            let name = entry.filename().to_str_lossy().into_owned();
+            let path = if prefix.is_empty() {
+                name
+            } else {
+                format!("{prefix}/{name}")
+            };
+            match entry.mode().kind() {
+                EntryKind::Tree => self.tree_leaf_oids(entry.oid().to_owned(), &path, oids)?,
+                EntryKind::Blob | EntryKind::BlobExecutable | EntryKind::Link => {
+                    oids.insert(path, entry.oid().to_owned());
+                }
+                EntryKind::Commit => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether `ancestor` is an ancestor of `head` (or equal to it).
+    fn is_ancestor(
+        &self,
+        ancestor: &crate::snapshot::record::CommitId,
+        head: gix::ObjectId,
+    ) -> bool {
+        let Ok(ancestor) = gix::ObjectId::from_hex(ancestor.as_str().as_bytes()) else {
+            return false;
+        };
+        match self.repo.merge_base(ancestor, head) {
+            Ok(base) => base.detach() == ancestor,
+            Err(_) => false,
+        }
+    }
+
     /// Read every ref under the snapshot namespace, valid or not.
     fn all_snapshots(&self) -> Result<Vec<Listed>, ProjectError> {
         let platform = self
@@ -286,6 +518,29 @@ impl Project {
 pub enum Listed {
     Valid(Snapshot),
     Invalid { r#ref: String, reason: String },
+}
+
+/// A likely-base mark for one source: which snapshot, and whether it was chosen
+/// by ancestry or by content. A mark never selects a base.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LikelyBase {
+    pub id: SnapshotId,
+    pub source: String,
+    pub by: LikelyBaseBy,
+}
+
+/// How a likely base was chosen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LikelyBaseBy {
+    Ancestry,
+    Content,
+}
+
+/// The outcome of [`Project::remove`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Removed {
+    pub removed: Vec<SnapshotId>,
+    pub not_found: Vec<SnapshotId>,
 }
 
 /// Remove every named `filter.<name>` and `merge.<name>` driver subsection from
