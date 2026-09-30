@@ -73,14 +73,17 @@ impl Project {
         &self.repo
     }
 
-    /// Capture a snapshot of the applied target after a plain apply or a
-    /// baseline adoption, with no base snapshot. Returns the saved id.
+    /// Capture a snapshot of the applied target read at `source_dir` (the project
+    /// working tree for a plain apply, the throwaway checkout for `--from`),
+    /// against an optional `base` snapshot. Returns the saved id.
     pub fn capture(
         &self,
+        source_dir: &std::path::Path,
         plan: &crate::plan::Plan,
+        base: Option<&Snapshot>,
         inputs: crate::snapshot::capture::CaptureInputs,
     ) -> Result<SnapshotId, SnapshotError> {
-        crate::snapshot::capture::capture_baseless(&self.repo, &self.rel, plan, inputs)
+        crate::snapshot::capture::capture(&self.repo, source_dir, &self.rel, plan, base, inputs)
     }
 
     /// Whether the target directory has no tracked modification, no staged
