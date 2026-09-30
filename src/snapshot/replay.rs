@@ -134,7 +134,15 @@ pub(crate) fn replay_resume<'a>(
 
     let mut interview = Interview::start(template, seed)?;
     let mut submissions = Vec::new();
-    // Replay the staged submissions already accepted, popping the queue.
+    // Replay the staged submissions already accepted, popping the queue so a
+    // recorded value a staged batch already consumed is not offered again when
+    // `drive_from_queue` continues. This keeps the per-id queue aligned for the
+    // adapter's "a looped question replays its values in order" contract. With
+    // the current interview model each id is asked in at most one batch — a
+    // `TextLoop` is answered as one list submission, and there is no section loop
+    // or flow re-ask — so no later batch re-offers a staged-answered id, and this
+    // alignment has no observable effect today; it is kept as forward-defensive
+    // coverage for a recording that carries more than one value per id.
     for staged_sub in staged {
         let pending = match interview {
             Interview::Asking(pending) => pending,
