@@ -161,6 +161,76 @@ fn baseline_records_then_from_updates_and_detects_current() {
 }
 
 #[test]
+fn dry_run_from_reports_planned_and_persists_nothing() {
+    let iso = tempfile::tempdir().unwrap();
+    let template_dir = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    write_template(template_dir.path());
+    target_repo(target.path());
+
+    let formal = support::formal_name(template_dir.path());
+    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let env_alice = envelope(
+        iso.path(),
+        "alice.json",
+        &formal,
+        serde_json::json!({ "name": "Alice" }),
+    );
+
+    // Record the first snapshot, then commit it clean.
+    let mut baseline = support::isolated_command(iso.path());
+    baseline
+        .arg("apply")
+        .arg(&address)
+        .arg(target.path())
+        .arg("--baseline")
+        .arg("--answers")
+        .arg(&env_alice);
+    let document = support::first_document(&baseline.output().unwrap().stdout);
+    let snapshot = document["snapshot"].as_str().unwrap().to_owned();
+    git(target.path(), &["add", "."]);
+    git(target.path(), &["commit", "--quiet", "-m", "baseline"]);
+
+    // A dry-run update reports the plan and changes nothing: the greeting still
+    // holds the base answer and no second snapshot is recorded.
+    let env_bob = envelope(
+        iso.path(),
+        "bob.json",
+        &formal,
+        serde_json::json!({ "name": "Bob" }),
+    );
+    let mut dry = support::isolated_command(iso.path());
+    dry.arg("apply")
+        .arg(target.path())
+        .arg("--from")
+        .arg(&snapshot)
+        .arg("--answers")
+        .arg(&env_bob)
+        .arg("--dry-run");
+    let output = dry.output().unwrap();
+    assert!(output.status.success(), "dry-run failed: {output:?}");
+    let document = support::first_document(&output.stdout);
+    assert_eq!(document["update"], "planned", "{document}");
+    assert_eq!(
+        std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
+        "Hello Alice\n",
+        "a dry run must not rewrite the target"
+    );
+
+    let mut list = support::isolated_command(iso.path());
+    list.arg("snapshots")
+        .arg("list")
+        .arg(target.path())
+        .arg("--json");
+    let document = support::first_document(&list.output().unwrap().stdout);
+    assert_eq!(
+        document["snapshots"].as_array().unwrap().len(),
+        1,
+        "a dry run must not persist a snapshot"
+    );
+}
+
+#[test]
 fn from_an_unknown_snapshot_is_an_error() {
     let iso = tempfile::tempdir().unwrap();
     let target = tempfile::tempdir().unwrap();
@@ -174,4 +244,54 @@ fn from_an_unknown_snapshot_is_an_error() {
         .arg("00000000000000000000000000");
     let output = command.output().unwrap();
     assert!(!output.status.success(), "unknown --from should refuse");
+}
+
+#[test]
+fn an_update_with_untrusted_hooks_refuses_and_changes_nothing() {
+    let iso = tempfile::tempdir().unwrap();
+    let template_dir = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    // A template whose render carries a hook. Without --trust the update never
+    // runs it and never writes.
+    std::fs::create_dir_all(template_dir.path().join("template")).unwrap();
+    std::fs::write(
+        template_dir.path().join("template.yml"),
+        "name: hooked\ndescription: A greeting with a hook\ninterview:\n  - id: name\n    type: text\n    prompt: Name\n    required: true\nhooks:\n  - run: [ tool, call ]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        template_dir.path().join("template/greeting.txt"),
+        "Hello {{ name }}\n",
+    )
+    .unwrap();
+    target_repo(target.path());
+
+    let formal = support::formal_name(template_dir.path());
+    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let env_alice = envelope(
+        iso.path(),
+        "alice.json",
+        &formal,
+        serde_json::json!({ "name": "Alice" }),
+    );
+
+    let mut command = support::isolated_command(iso.path());
+    command
+        .arg("apply")
+        .arg(&address)
+        .arg(target.path())
+        .arg("--baseline")
+        .arg("--answers")
+        .arg(&env_alice);
+    let output = command.output().unwrap();
+    assert!(
+        !output.status.success(),
+        "an untrusted hooked update must refuse"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--trust"), "unexpected: {stderr}");
+    assert!(
+        !target.path().join("greeting.txt").exists(),
+        "an untrusted update must write nothing"
+    );
 }
