@@ -1,0 +1,213 @@
+$schema: https://refinery.systems/ontology/technical-design
+relationships:
+  realizes: toha
+  implements:
+    - command-line-interface
+    - interview-protocol
+  references:
+    - architecture
+    - project-updates
+    - template-defaults
+    - template-format
+objective: >-
+  Let one template be applied repeatedly into subpaths of an existing project,
+  each application carrying its own answers and identity, and let a new
+  application seed its answer defaults from a snapshot of an earlier application.
+  Add one opt-in flag, `--like`, on `apply` and `stage` that folds a selected
+  snapshot's recorded answers into the interview's existing default boundary; the
+  generate axis stays distinct from the update axis (`apply --from`).
+background:
+  current-design: >-
+    `toha apply TEMPLATE SUBPATH` already creates an application into a subpath
+    (canonical_target anchors on the nearest existing ancestor) and, in a clean
+    git target, saves a snapshot through the producer capture (task 1029). Per-
+    application identity today is only the canonical target path: the staging
+    store keys by sha256(target) and `toha_target_name` is the target's last
+    component. The interview engine resolves a question's default from a single
+    default bank (Seed or Configured, one occupant per id) before the template's
+    own `default`. There is no way to seed a new application's answers from an
+    earlier one, and no template-level generator concept exists (the template.yml
+    schema is a closed key set).
+  problems:
+    - >-
+      "Make another one like the last" has no support: each application is
+      answered from scratch or from template/configured defaults only.
+    - >-
+      A prior application's answers exist in its snapshot's submissions but
+      cannot reach a new application's interview.
+design-challenges:
+  axis-separation: >-
+    The generate axis (create a fresh application in a new subpath, defaulting
+    from elsewhere) must stay distinct from the update axis (re-render and merge
+    in place, owned by task 1029); overloading `--from` would give one flag two
+    opposite contracts and make accidental in-place overwrite the easy typo.
+  total-precedence: >-
+    A snapshot-seeded default, a configured preset/template-default, and the
+    template's own default must resolve to exactly one value per question id,
+    identically across the terminal, headless, staged, agent, and crate paths,
+    without the pure engine learning what a snapshot is.
+  optional-and-absent: >-
+    Snapshots are optional: absent for non-git, unfetched, or no-prior-application
+    targets, and a cross-version value whose kind changed must not brick a
+    generate. An explicitly required selector that cannot be satisfied must fail
+    clearly.
+  reader-only-consumption: >-
+    Only the producer's snapshot reader contract may be consumed; snapshot
+    capture, the update merge, the replay adapter, and the snapshots commands are
+    owned by the concurrent producer task and must not be edited. The generate
+    apply must still trigger the producer's own capture so applications chain.
+proposed-design:
+  high-level-overview: >-
+    One opt-in flag `--like [SELECTOR]` on `apply` and `stage`, a sibling of
+    `--from` and mutually exclusive with it. A crate-private CLI boundary resolves
+    the selector against the repository-wide snapshot reader (filtered by source),
+    folds the selected snapshot's raw submissions into one default per id, and a
+    new `Resolution::start_with_seed` seam layers those over the configured
+    defaults into the single-occupant default bank, snapshot winning per id. The
+    pure engine gains one additive private default-bank variant for provenance and
+    is otherwise unchanged; the apply spine, Plan, capture, and every route are
+    reused.
+  invocation: >-
+    `apply|stage TEMPLATE SUBPATH --like [SELECTOR]`. SELECTOR is a full ULID or a
+    >=6-char prefix (Reference), the keyword `latest` (newest snapshot of the
+    source by ULID), or absent (a person-route picker; a usage error on the
+    script and agent routes).
+  identity: >-
+    Per-application identity is derived from the snapshot `source` (formal name
+    without @reference) plus the target subpath — the pair a snapshot is already
+    keyed by. No application id, registry, or count is introduced; no second
+    persisted-answers lifecycle. Off-git, identity is simply the target subpath
+    and no snapshot exists to seed from.
+  selection: >-
+    Pure, reader-only functions (candidates, latest, find_required) over the
+    repository-wide snapshot set filtered by source; the person picker lives in
+    the CLI adapter and calls them. Exactly one snapshot seeds; never a union.
+  precedence: >-
+    Per question id: a route-submitted answer, else a kind-matching snapshot
+    value (Snapshot bank entry, shadows configured), else a configured default
+    (Configured entry, attribution preserved), else the template's own default,
+    else asked. A wrong-kind snapshot value is dropped with a warning and falls
+    through; a kind-valid value that fails a constraint re-asks or returns exit 4.
+  staging: >-
+    The staged record gains one optional pinned snapshot id (`seed`), re-read from
+    git on resume so continue/apply reproduce the same defaults and a newer
+    snapshot cannot change the pin; orthogonal to the update axis's `base` and
+    mutually exclusive with it.
+  module: >-
+    A new crate-private src/cli/like.rs is the only code outside toha::snapshot
+    naming Snapshot/Project on the generate axis; one new Resolution seam and one
+    additive private DefaultBankEntry/PreparedDefaultSource variant in
+    interview.rs; one optional StagedRecord member. The generate apply still runs
+    producer capture, so applications chain.
+approved-decisions:
+  startup-policy-A: >-
+    Available snapshots are optional generator defaults; when absent, fall back to
+    configured presets/template-defaults then normal questions; an explicitly
+    required snapshot reference that cannot be satisfied fails clearly. (Bob, root
+    turn 2026-09-30.)
+  no-second-answers-lifecycle: >-
+    Prior-application answers come only from snapshots or configured defaults;
+    nothing new is persisted into the project. The staged record stores a snapshot
+    id pointer, never answers.
+  no-id-coupling: >-
+    Answers are never reused by matching question ids across templates or
+    applications; a snapshot seeds only within its own source identity, and a
+    snapshot of another source is refused.
+  consume-producer-reader-only: >-
+    Consume project-updates revision 3 (Bob-approved) with completeness correction
+    1110 at the epic base, reader contract only. Snapshot capture, `--from`, the
+    replay adapter, and the snapshots/init commands are owned by task 1029 and are
+    not edited; the generate apply still triggers the producer's own capture.
+decisions-for-approval:
+  invocation-surface: >-
+    Recommend a FLAG on `apply`/`stage` (`--like`), for consistency with the
+    approved project-updates decision that the update axis is a flag on apply
+    (`--from`), not a separate verb, and because `apply TEMPLATE SUBPATH` already
+    creates an application into a subpath so a generator needs only the seed delta.
+    Alternative: a dedicated `toha generate TEMPLATE SUBPATH` verb, which names the
+    generate axis explicitly and is more discoverable, at the cost of duplicating
+    the apply spine's surface and a second identity mental model. This is a
+    user-visible UX choice.
+  seeding-trigger: >-
+    Recommend OPT-IN seeding (snapshots seed only when `--like` is given), so plain
+    `apply` is never hijacked into asking about snapshots; this satisfies policy A
+    (snapshots are optional and overridable, with clear failure when a required
+    reference is absent). Alternative, only coherent with the verb option:
+    auto-seed from the newest snapshot of the source by default, overridable by an
+    explicit selector and a `--no-like`/`--no-defaults` opt-out.
+  flag-name: >-
+    Recommend `--like` (reads as natural intent, visually distinct from `--from`,
+    reducing update/generate confusion). Alternatives: `--defaults-from` (self-
+    documenting, fits the existing "defaults" vocabulary) or `--seed-from`
+    (parallel to `--from`, but that parallelism is itself the confusion risk).
+  template-declared-generators: >-
+    Recommend OUT OF SCOPE for 0.2.0. A template-declared `generators:` concept
+    was evaluated and found to add only authoring ergonomics and no snapshot
+    leverage — the frozen snapshot records no generator name, so a generator's
+    defaulting identity is (source, target) regardless of declaration. It is
+    severable and would become worthwhile only alongside a generator field on the
+    snapshot, a task-1029-owned change. Alternative: adopt the `generators:` map
+    now (a closed-schema/loader change) for author-declared scoped interviews.
+disclosures:
+  new-flag-and-members: >-
+    An opt-in `--like` flag on `apply` and `stage`; one optional `seed` member on
+    the `applied`/`questions` result documents; one optional pinned `seed` member
+    on the staged record (coordinated with task 1029's `StagedRecord.base`, with
+    which it is mutually exclusive).
+  engine-internal-change: >-
+    One additive PRIVATE default-bank variant (DefaultBankEntry::Snapshot) and its
+    PreparedDefaultSource mirror, for snapshot-default provenance in prompts and
+    rejections. The public Seed contract and the pure engine's behaviour on the
+    no-`--like` path are unchanged.
+  reader-coordination: >-
+    The generator selection consumes Project::snapshots() as the repository-wide
+    snapshot set filtered by source. If the producer scopes that reader to the
+    opened target, a read-only repository-wide enumeration must be added to the
+    reader contract; this edits no producer write path. Surfaced to task 1029.
+  none-of: >-
+    No new permission or access change, timeout, pinned-version check, or
+    application subprocess. No supported capability is removed or narrowed; plain
+    apply and stage behave exactly as today.
+out-of-scope:
+  - Snapshot capture, `--from`/`--baseline`, the update replay/merge adapter, and
+    the snapshots/init commands (task 1029); consumed read-only.
+  - Any template.yml generator/kind concept, sub-templates, or multiple
+    entrypoints.
+  - A second persisted-answers lifecycle; unioning answers across snapshots;
+    inferring answer identity by matching question ids.
+  - Multi-target fan-out in one invocation; answer-interpolated target patterns;
+    a new reserved context name beyond toha_target_name; a `--reanswer` replay.
+  - Canonical specification, schema, guide, and example edits, which the paired
+    implementation (task 1030) owns.
+validation:
+  - The mandated twice-in-one-project fixture across person, scripted, and agent
+    routes, with the second application seeded from the first and both snapshots
+    present (equal source, different target).
+  - Total precedence per id (answer > snapshot > configured > template default),
+    with snapshot-vs-configured never coexisting for one id.
+  - The three seed dispositions (wrong-kind dropped-with-warning; constraint-
+    invalid re-asked/exit 4; missing falls through) proven separately.
+  - Source identity (not formal name) selection; a cross-source snapshot refused.
+  - Generate axis vs update axis (seed from a different-target snapshot, no merge;
+    `--like` with `--from` a usage error).
+  - Producer capture preserved (the generate apply saves its own snapshot so
+    applications chain); the selection path writes no ref.
+  - Selection across zero/one/many snapshots and routes; >=6-char exact-one prefix;
+    required-absent and ambiguous failures; the repository-wide source-filtered
+    reader.
+  - Fresh instant; looped-array preservation in the fold; the no-`--like` path
+    byte-identical to today; engine purity and route parity; the pinned-seed
+    resume guard.
+size-and-complexity:
+  size: >-
+    ~M. One CLI flag and its route rules; one crate-private boundary module
+    (candidates/latest/find_required/fold_submissions); one Resolution seam; one
+    additive private bank variant plus a render_default/answer match arm; one
+    optional staged-record member; the ~21 falsifiable behaviors and the
+    twice-in-one-project fixture. Canonical doc/schema edits owned by task 1030.
+  complexity: >-
+    Low-moderate. Precedence is resolved once at the seam and is total per id; the
+    pure engine gains only a provenance variant; selection is pure and reader-only.
+    No new concurrency, capability, or engine state. Expected agent implementation
+    time: roughly a focused day to a day and a half against this design, once the
+    producer reader is available.
