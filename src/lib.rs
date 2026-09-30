@@ -15,6 +15,7 @@ pub mod plan;
 pub mod protocol;
 pub mod registry;
 pub mod review;
+pub mod snapshot;
 pub mod source;
 pub mod staging;
 pub mod template;
