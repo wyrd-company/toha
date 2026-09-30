@@ -169,6 +169,49 @@ fn hash_object(repo: &Path, bytes: &[u8]) -> String {
     String::from_utf8(out.stdout).unwrap().trim().to_owned()
 }
 
+/// Build a tree object from explicit `git mktree` entry lines
+/// (`<mode> SP <type> SP <sha> TAB <name>`), so a test can forge a malformed
+/// top-level snapshot tree the index-based `make_snapshot` cannot express (a
+/// `snapshot.json` subtree, a `files` blob). Returns the tree id.
+fn mktree(repo: &Path, spec: &str) -> String {
+    use std::io::Write;
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .arg("mktree")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("git mktree spawns");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(spec.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        out.status.success(),
+        "git mktree: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap().trim().to_owned()
+}
+
+/// Commit a forged top-level tree as a parentless snapshot commit under a ULID
+/// ref, so the read boundary meets exactly the tree shape under test.
+fn forge_snapshot_ref(repo: &Path, id: &str, top_tree: &str) {
+    let commit = git_out(repo, None, &["commit-tree", top_tree, "-m", "snapshot"]);
+    git_out(
+        repo,
+        None,
+        &["update-ref", &format!("refs/toha/snapshots/{id}"), &commit],
+    );
+}
+
 struct SnapshotFile {
     path: &'static str,
     bytes: &'static [u8],
@@ -451,6 +494,83 @@ fn a_ref_that_is_not_a_ulid_is_listed_invalid() {
             .unwrap()
             .iter()
             .any(|l| matches!(l, Listed::Invalid { .. }))
+    );
+}
+
+#[test]
+fn a_snapshot_json_that_is_a_subtree_is_listed_invalid() {
+    // Behavior 30 read boundary: `snapshot.json` must be a regular blob. A
+    // subtree at that name is rejected with `SnapshotJsonNotBlob`.
+    let dir = tempfile::tempdir().unwrap();
+    repo_with_app(dir.path());
+    let root = dir.path();
+    let app_oid = hash_object(root, b"one\n");
+    let files_tree = mktree(root, &format!("100644 blob {app_oid}\tapp.txt\n"));
+    let dummy = hash_object(root, b"x\n");
+    let sj_subtree = mktree(root, &format!("100644 blob {dummy}\tx\n"));
+    let top = mktree(
+        root,
+        &format!("040000 tree {files_tree}\tfiles\n040000 tree {sj_subtree}\tsnapshot.json\n"),
+    );
+    forge_snapshot_ref(root, ID_A, &top);
+
+    let project = open_at(root).expect("in git");
+    let listed = project.snapshots().unwrap();
+    assert!(
+        listed.iter().any(|l| matches!(
+            l,
+            Listed::Invalid { reason, .. } if reason.contains("not a regular file")
+        )),
+        "snapshot.json as a subtree is rejected: {listed:?}"
+    );
+}
+
+#[test]
+fn a_files_entry_that_is_a_blob_is_listed_invalid() {
+    // Behavior 30 read boundary: `files` must be a tree. A blob at that name is
+    // rejected with `FilesNotTree`.
+    let dir = tempfile::tempdir().unwrap();
+    repo_with_app(dir.path());
+    let root = dir.path();
+    let files_blob = hash_object(root, b"not a tree\n");
+    let sj = hash_object(root, b"{}\n");
+    let top = mktree(
+        root,
+        &format!("100644 blob {files_blob}\tfiles\n100644 blob {sj}\tsnapshot.json\n"),
+    );
+    forge_snapshot_ref(root, ID_A, &top);
+
+    let project = open_at(root).expect("in git");
+    let listed = project.snapshots().unwrap();
+    assert!(
+        listed.iter().any(|l| matches!(
+            l,
+            Listed::Invalid { reason, .. } if reason.contains("files/ is not a tree")
+        )),
+        "files/ as a blob is rejected: {listed:?}"
+    );
+}
+
+#[test]
+fn a_snapshot_tree_without_snapshot_json_is_listed_invalid() {
+    // Behavior 30 read boundary: a tree with no `snapshot.json` entry is rejected
+    // with `MissingSnapshotJson`.
+    let dir = tempfile::tempdir().unwrap();
+    repo_with_app(dir.path());
+    let root = dir.path();
+    let app_oid = hash_object(root, b"one\n");
+    let files_tree = mktree(root, &format!("100644 blob {app_oid}\tapp.txt\n"));
+    let top = mktree(root, &format!("040000 tree {files_tree}\tfiles\n"));
+    forge_snapshot_ref(root, ID_A, &top);
+
+    let project = open_at(root).expect("in git");
+    let listed = project.snapshots().unwrap();
+    assert!(
+        listed.iter().any(|l| matches!(
+            l,
+            Listed::Invalid { reason, .. } if reason.contains("missing snapshot.json")
+        )),
+        "a tree without snapshot.json is rejected: {listed:?}"
     );
 }
 
