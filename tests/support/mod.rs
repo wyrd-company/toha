@@ -77,12 +77,14 @@ pub fn fixtures() -> Vec<PathBuf> {
         .map(|entry| entry.unwrap().path().canonicalize().unwrap())
         .filter(|path| path.is_dir())
         // `update-*` fixtures drive the data-driven update harness
-        // (tests/update_fixtures.rs), not the standard single-apply runner.
+        // (tests/update_fixtures.rs); `generator-*` fixtures drive the stateful
+        // generate harness (tests/generator_fixture.rs). Neither is a standard
+        // single-apply fixture.
         .filter(|path| {
             !path
                 .file_name()
                 .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with("update-"))
+                .is_some_and(|name| name.starts_with("update-") || name.starts_with("generator-"))
         })
         .collect();
     paths.sort();

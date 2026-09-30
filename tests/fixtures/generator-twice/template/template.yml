@@ -1,0 +1,15 @@
+name: widget
+interview:
+  - id: label
+    type: text
+    prompt: Label
+    required: true
+  - id: style
+    type: select
+    prompt: Style
+    options: [card, panel]
+    default: card
+  - id: with_tests
+    type: confirm
+    prompt: With tests
+    default: true
