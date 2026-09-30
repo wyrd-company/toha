@@ -298,6 +298,11 @@ impl fmt::Display for FrozenNow {
 pub struct Timestamp(jiff::Timestamp);
 
 impl Timestamp {
+    /// The current instant, for a snapshot's `created` at the runtime edge.
+    pub fn now() -> Self {
+        Self(jiff::Timestamp::now())
+    }
+
     pub fn parse(text: &str) -> Result<Self, SnapshotError> {
         text.parse::<jiff::Timestamp>()
             .map(Self)

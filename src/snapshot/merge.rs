@@ -16,13 +16,18 @@
 
 use std::num::NonZeroU8;
 use std::path::Path;
+use std::sync::atomic::AtomicBool;
 
 use gix::bstr::{BString, ByteSlice};
 use gix::filter::plumbing::pipeline::convert::ToWorktreeOutcome;
 use gix::objs::tree::EntryKind;
 
+use crate::snapshot::capture::{self, CaptureInputs};
 use crate::snapshot::project::Project;
-use crate::snapshot::record::{RepoPath, SNAPSHOT_REF_PREFIX, Snapshot, SnapshotId};
+use crate::snapshot::record::{
+    CommitId, FrozenNow, ProjectPoint, RepoPath, Revision, SNAPSHOT_REF_PREFIX, Snapshot,
+    SnapshotId, Timestamp,
+};
 
 /// The base an update merges from.
 #[allow(clippy::large_enum_variant)]
@@ -96,6 +101,212 @@ pub enum MergeError {
 
 fn git(err: impl std::fmt::Display) -> MergeError {
     MergeError::Git(err.to_string())
+}
+
+/// What the update records besides its files. The runtime supplies the id and
+/// created instant; `generated` is carried from the base so a date-rendering
+/// template stays byte-stable across updates.
+pub struct SnapshotInputs {
+    pub template: String,
+    pub revision: Revision,
+    pub generated: FrozenNow,
+    pub submissions: Vec<indexmap::IndexMap<crate::template::Id, serde_json::Value>>,
+}
+
+/// Apply a template update to the project: build the candidate snapshot through
+/// the throwaway checkout, stop early when the result is already current, and
+/// otherwise merge it into the working tree. `--from` merges from a base
+/// snapshot; `--baseline` merges from an empty base.
+#[allow(clippy::too_many_arguments)]
+pub fn merge_apply(
+    project: &Project,
+    base: Base,
+    template: &crate::template::Template,
+    completed: &crate::interview::Completed,
+    inputs: SnapshotInputs,
+    options: MergeOptions,
+    runner: &dyn crate::hook::HookRunner,
+) -> Result<Merged, MergeError> {
+    // Build the plan for the real target with the snapshot's frozen instant.
+    let target_path = candidate_target(project)?;
+    let plan = crate::plan::Plan::build(template, completed, &target_path)
+        .map_err(|err| MergeError::Git(err.to_string()))?;
+
+    // Untrusted hooks: report the plan without running anything.
+    if !options.trusted && !plan.hooks.is_empty() {
+        return Ok(Merged::NeedsTrust);
+    }
+
+    let capture_inputs = capture_inputs(project, &inputs)?;
+    let new = build_candidate(
+        project,
+        &base,
+        plan,
+        capture_inputs,
+        !options.dry_run,
+        runner,
+    )?;
+
+    // Already current: the new snapshot equals the base — discard it and stop.
+    if let Base::Snapshot(base_snapshot) = &base {
+        if is_already_current(project, base_snapshot, &new, &inputs)? {
+            remove_candidate(
+                project,
+                new.id(),
+                published_commit(project, new.id())
+                    .unwrap_or_else(|| gix::ObjectId::null(project.repo().object_hash())),
+            )?;
+            return Ok(Merged::AlreadyCurrent);
+        }
+    }
+
+    merge_into_worktree(project, &base, &new, &options)
+}
+
+/// The candidate target: a `CanonicalTarget` for the project's real target.
+fn candidate_target(project: &Project) -> Result<crate::staging::CanonicalTarget, MergeError> {
+    let repo = project.repo();
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| MergeError::Io("bare".into()))?;
+    let path = if project.target().is_root() {
+        workdir.to_owned()
+    } else {
+        workdir.join(project.target().as_str())
+    };
+    crate::staging::canonical_target(&path).map_err(|err| MergeError::Io(err.to_string()))
+}
+
+/// Build the capture inputs, stamping the id, created instant, and HEAD point.
+fn capture_inputs(project: &Project, inputs: &SnapshotInputs) -> Result<CaptureInputs, MergeError> {
+    let repo = project.repo();
+    let head = repo.head_id().map_err(git)?.detach();
+    let commit =
+        CommitId::parse(&head.to_hex().to_string()).map_err(|e| MergeError::Git(e.to_string()))?;
+    let branch = repo
+        .head_name()
+        .map_err(git)?
+        .map(|name| name.shorten().to_string());
+    Ok(CaptureInputs {
+        id: SnapshotId::generate(),
+        template: inputs.template.clone(),
+        revision: inputs.revision.clone(),
+        generated: inputs.generated.clone(),
+        created: Timestamp::now(),
+        project: ProjectPoint::new(commit, branch),
+        submissions: inputs
+            .submissions
+            .iter()
+            .map(|m| {
+                m.iter()
+                    .map(|(k, v)| (k.as_str().to_owned(), v.clone()))
+                    .collect()
+            })
+            .collect(),
+    })
+}
+
+/// Build the candidate snapshot through the throwaway checkout: check out HEAD,
+/// retract uncovered base ownership, apply the plan (and hooks unless it is a dry
+/// run), then capture with the base. The checkout is deleted afterwards.
+fn build_candidate(
+    project: &Project,
+    base: &Base,
+    plan: crate::plan::Plan,
+    inputs: CaptureInputs,
+    run_hooks: bool,
+    runner: &dyn crate::hook::HookRunner,
+) -> Result<Snapshot, MergeError> {
+    let repo = project.repo();
+    let target = project.target().clone();
+    let checkout = tempfile::tempdir().map_err(|e| MergeError::Io(e.to_string()))?;
+
+    checkout_head(repo, checkout.path())?;
+
+    // Group the plan once, since Plan::apply consumes it.
+    let plan_paths = capture::group_plan(&plan);
+
+    // Step 3: retract uncovered base ownership on the checkout before the apply.
+    let base_snapshot = match base {
+        Base::Snapshot(snapshot) => Some(snapshot),
+        Base::Empty => None,
+    };
+    if let Some(base_snapshot) = base_snapshot {
+        capture::retract_uncovered(checkout.path(), &target, &plan_paths, base_snapshot)
+            .map_err(|e| MergeError::Git(e.to_string()))?;
+    }
+
+    // Step 4: apply the plan into the checkout, running hooks unless it is a dry run.
+    let checkout_target_path = if target.is_root() {
+        checkout.path().to_owned()
+    } else {
+        checkout.path().join(target.as_str())
+    };
+    let checkout_target = crate::staging::canonical_target(&checkout_target_path)
+        .map_err(|e| MergeError::Io(e.to_string()))?;
+    plan.apply(
+        &checkout_target,
+        crate::apply::ApplyOptions {
+            force: true,
+            trusted: run_hooks,
+        },
+        runner,
+    )
+    .map_err(|e| MergeError::Git(format!("apply: {e}")))?;
+    eprintln!("DBG after apply");
+
+    // Step 6: capture the new snapshot from the checkout, then read it back.
+    let id = capture::capture(
+        repo,
+        checkout.path(),
+        &target,
+        &plan_paths,
+        base_snapshot,
+        inputs,
+    )
+    .map_err(|e| MergeError::Git(e.to_string()))?;
+
+    // Read the captured snapshot back through the validating reader.
+    project
+        .find(&id.to_string())
+        .map_err(|e| MergeError::Git(e.to_string()))
+}
+
+/// Whether the new snapshot equals the base: same revision, submissions, and
+/// `files/` tree, so nothing would change.
+fn is_already_current(
+    project: &Project,
+    base: &Snapshot,
+    new: &Snapshot,
+    inputs: &SnapshotInputs,
+) -> Result<bool, MergeError> {
+    let same_revision = base.revision() == &inputs.revision;
+    let base_files = snapshot_files_tree(project, base.id())?;
+    let new_files = snapshot_files_tree(project, new.id())?;
+    Ok(same_revision && base.submissions() == new.submissions() && base_files == new_files)
+}
+
+/// Check out `HEAD`'s whole tree into `dest`, with no filter driver (drivers are
+/// stripped on the repository), never a linked worktree.
+fn checkout_head(repo: &gix::Repository, dest: &Path) -> Result<(), MergeError> {
+    let tree_id = repo.head_tree_id().map_err(git)?;
+    let mut index = repo.index_from_tree(&tree_id).map_err(git)?;
+    let mut opts = repo
+        .checkout_options(gix::worktree::stack::state::attributes::Source::IdMapping)
+        .map_err(git)?;
+    opts.destination_is_initially_empty = true;
+    std::fs::create_dir_all(dest).map_err(|e| MergeError::Io(e.to_string()))?;
+    gix::worktree::state::checkout(
+        &mut index,
+        dest,
+        repo.objects.clone().into_arc().map_err(git)?,
+        &gix::progress::Discard,
+        &gix::progress::Discard,
+        &AtomicBool::new(false),
+        opts,
+    )
+    .map_err(git)?;
+    Ok(())
 }
 
 /// Merge the new snapshot into the operator's working tree against `base`. The

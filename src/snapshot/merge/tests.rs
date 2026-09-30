@@ -693,3 +693,121 @@ fn behavior_31_a_held_index_lock_refuses_and_removes_the_candidate() {
         "the foreign lock is left in place"
     );
 }
+
+// --------------------------------------------------------------------------
+// The shared candidate-tree builder end to end (checkout -> apply -> capture -> merge).
+// --------------------------------------------------------------------------
+
+fn capture_inputs(head: &str) -> crate::snapshot::capture::CaptureInputs {
+    use crate::snapshot::record::{CommitId, FrozenNow, ProjectPoint, Revision, Timestamp};
+    crate::snapshot::capture::CaptureInputs {
+        id: SnapshotId::from_parts(9, [9; 10]),
+        template: "forge:catalog/receipt@stable".to_owned(),
+        revision: Revision::Commit(
+            CommitId::parse("8be0d41c2f0000000000000000000000000000a1").unwrap(),
+        ),
+        generated: FrozenNow::parse("2026-03-14T09:26:53+00:00[UTC]").unwrap(),
+        created: Timestamp::parse("2026-09-30T04:12:00Z").unwrap(),
+        project: ProjectPoint::new(CommitId::parse(head).unwrap(), Some("main".to_owned())),
+        submissions: vec![],
+    }
+}
+
+fn plan_file(src_dir: &Path, path: &str, content: &str) -> crate::plan::PlannedFile {
+    // Plan::apply reads the source file's metadata for the executable bit, so the
+    // source must exist; a plain template file suffices.
+    let source = src_dir.join(path);
+    write(&source, content.as_bytes());
+    crate::plan::PlannedFile {
+        path: crate::plan::TargetPath::parse(path).unwrap(),
+        content: crate::plan::Content::Rendered(content.to_owned()),
+        source,
+    }
+}
+
+fn plan_of(files: Vec<crate::plan::PlannedFile>) -> crate::plan::Plan {
+    crate::plan::Plan {
+        files,
+        edits: vec![],
+        conflicts: vec![],
+        hooks: vec![],
+        before_apply: None,
+        after_apply: None,
+        result_seed: vec![],
+    }
+}
+
+#[test]
+fn the_candidate_builder_and_merge_apply_a_from_update_end_to_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q", "-b", "main"]);
+    // Operator committed template v1 output, then edited line 1 of both.txt.
+    write(&root.join("app/both.txt"), b"ONE\ntwo\nthree\nfour\nfive\n");
+    write(&root.join("app/main.txt"), b"keep\n");
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "operator"]);
+    let head = git(root, &["rev-parse", "HEAD"]);
+
+    // Base snapshot = template v1 output.
+    make_snapshot(
+        root,
+        BASE_ID,
+        "app",
+        &[
+            ("both.txt", b"one\ntwo\nthree\nfour\nfive\n"),
+            ("main.txt", b"keep\n"),
+        ],
+    );
+
+    // Template v2 changes line 5 of both.txt.
+    let src = tempfile::tempdir().unwrap();
+    let plan = plan_of(vec![
+        plan_file(src.path(), "both.txt", "one\ntwo\nthree\nfour\nFIVE\n"),
+        plan_file(src.path(), "main.txt", "keep\n"),
+    ]);
+
+    let project = open(root, "app");
+    let base = read_snapshot(&project, BASE_ID);
+    let runner = crate::hook::ProcessRunner;
+    let new = super::build_candidate(
+        &project,
+        &Base::Snapshot(base),
+        plan,
+        capture_inputs(&head),
+        true,
+        &runner,
+    )
+    .unwrap();
+
+    // The new snapshot captured template v2's both.txt (built through the checkout).
+    assert_eq!(
+        git(
+            root,
+            &[
+                "show",
+                &format!("refs/toha/snapshots/{}:files/both.txt", new.id())
+            ]
+        ),
+        "one\ntwo\nthree\nfour\nFIVE",
+    );
+
+    // Merge the update into the operator: line 1 (operator) and line 5 (template) both apply.
+    let base2 = read_snapshot(&project, BASE_ID);
+    let result = merge_into_worktree(
+        &project,
+        &Base::Snapshot(base2),
+        &new,
+        &MergeOptions {
+            trusted: true,
+            dry_run: false,
+        },
+    )
+    .unwrap();
+    assert!(matches!(result, Merged::Written { .. }));
+    assert_eq!(
+        std::fs::read_to_string(root.join("app/both.txt")).unwrap(),
+        "ONE\ntwo\nthree\nfour\nFIVE\n",
+        "operator's line 1 and template's line 5 both merged",
+    );
+}

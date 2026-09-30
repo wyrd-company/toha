@@ -83,7 +83,15 @@ impl Project {
         base: Option<&Snapshot>,
         inputs: crate::snapshot::capture::CaptureInputs,
     ) -> Result<SnapshotId, SnapshotError> {
-        crate::snapshot::capture::capture(&self.repo, source_dir, &self.rel, plan, base, inputs)
+        let plan_paths = crate::snapshot::capture::group_plan(plan);
+        crate::snapshot::capture::capture(
+            &self.repo,
+            source_dir,
+            &self.rel,
+            &plan_paths,
+            base,
+            inputs,
+        )
     }
 
     /// Whether the target directory has no tracked modification, no staged

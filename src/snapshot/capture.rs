@@ -42,11 +42,15 @@ pub struct CaptureInputs {
 
 /// The ownership a plan asserts over one path.
 #[derive(Default)]
-struct PlanOwnership {
-    whole: bool,
-    regions: Vec<String>,
-    values: Vec<String>,
+pub(crate) struct PlanOwnership {
+    pub(crate) whole: bool,
+    pub(crate) regions: Vec<String>,
+    pub(crate) values: Vec<String>,
 }
+
+/// A plan grouped by target path, preserving first-seen order. Computed once by
+/// the candidate-tree builder before the plan is consumed by apply.
+pub(crate) type PlanPaths = Vec<(String, PlanOwnership)>;
 
 /// Capture a snapshot from an applied target read at `source_dir` (the project
 /// working tree for a plain apply, the throwaway checkout for `--from`). With a
@@ -57,11 +61,10 @@ pub(crate) fn capture(
     repo: &gix::Repository,
     source_dir: &Path,
     target: &RepoPath,
-    plan: &Plan,
+    plan_paths: &PlanPaths,
     base: Option<&Snapshot>,
     inputs: CaptureInputs,
 ) -> Result<SnapshotId, SnapshotError> {
-    let plan_paths = group_plan(plan);
     let plan_index: BTreeMap<&str, &PlanOwnership> =
         plan_paths.iter().map(|(p, o)| (p.as_str(), o)).collect();
 
@@ -75,20 +78,13 @@ pub(crate) fn capture(
     let mut paths: Vec<PathOwnership> = Vec::new();
     let mut seen: BTreeSet<String> = BTreeSet::new();
 
-    // 1. Retract, in the source tree, every base injection the new plan does not
-    //    cover, so the captured content (and the merge's "theirs") drops it.
-    if let Some(base) = base {
-        for owned in base.paths() {
-            let rel = owned.path().to_string();
-            if let Origin::Edit { regions, values } = owned.origin() {
-                let uncovered = uncovered_ownership(regions, values, plan_index.get(rel.as_str()));
-                apply_retraction(source_dir, target, &rel, &uncovered)?;
-            }
-        }
-    }
+    // Retraction of uncovered base ownership is applied to the source tree by the
+    // candidate-tree builder before the plan is applied (see `retract_uncovered`),
+    // so by the time capture reads the tree the dropped injections are already
+    // gone. A plain apply and a baseline have no base and no retraction.
 
     // 2. Every plan target, in plan order, captured whether or not its bytes changed.
-    for (rel, ownership) in &plan_paths {
+    for (rel, ownership) in plan_paths {
         let repo_rel = repo_relative(target, rel);
         let Some((oid, kind)) = read_blob(repo, &mut pipeline, source_dir, &repo_rel, state)?
         else {
@@ -215,6 +211,27 @@ pub(crate) fn capture(
     record::save(repo, &doc, &blobs)
 }
 
+/// Retract, in the source tree, every base injection the new plan does not
+/// cover, so the captured content — and the merge's "theirs" — drops it. Applied
+/// by the candidate-tree builder before the destination-seam plan apply.
+pub(crate) fn retract_uncovered(
+    source_dir: &Path,
+    target: &RepoPath,
+    plan_paths: &PlanPaths,
+    base: &Snapshot,
+) -> Result<(), SnapshotError> {
+    let plan_index: BTreeMap<&str, &PlanOwnership> =
+        plan_paths.iter().map(|(p, o)| (p.as_str(), o)).collect();
+    for owned in base.paths() {
+        let rel = owned.path().to_string();
+        if let Origin::Edit { regions, values } = owned.origin() {
+            let uncovered = uncovered_ownership(regions, values, plan_index.get(rel.as_str()));
+            apply_retraction(source_dir, target, &rel, &uncovered)?;
+        }
+    }
+    Ok(())
+}
+
 /// Record one captured file and its ownership.
 fn push(
     blobs: &mut Vec<CapturedBlob>,
@@ -240,7 +257,7 @@ fn push(
 }
 
 /// Group a plan's mutations by target path, preserving first-seen order.
-fn group_plan(plan: &Plan) -> Vec<(String, PlanOwnership)> {
+pub(crate) fn group_plan(plan: &Plan) -> PlanPaths {
     let mut order: Vec<String> = Vec::new();
     let mut map: BTreeMap<String, PlanOwnership> = BTreeMap::new();
     for mutation in plan.mutations() {

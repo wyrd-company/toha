@@ -366,6 +366,9 @@ fn a_dropped_region_injection_is_retracted_from_the_captured_file() {
     let project = open(root, "app");
     let base = find_base(&project);
     let plan = plan_of(vec![whole("main.txt")]); // conf.txt not produced
+    // The candidate-tree builder retracts uncovered base ownership before capture.
+    let plan_paths = super::group_plan(&plan);
+    super::retract_uncovered(root, &RepoPath::parse("app").unwrap(), &plan_paths, &base).unwrap();
     let id = project
         .capture(root, &plan, Some(&base), inputs(&head))
         .unwrap();
