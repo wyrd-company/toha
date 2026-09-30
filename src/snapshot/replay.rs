@@ -49,6 +49,35 @@ pub(crate) enum Replay<'a> {
     Ended(Ended),
 }
 
+/// Build the per-id value queue from the base's `recorded` submissions, in
+/// recorded order, so a later submission's value for an id queues behind an
+/// earlier one (a recording that carries more than one value for an id replays
+/// them front to back).
+fn build_queue(recorded: &[IndexMap<Id, RawAnswer>]) -> HashMap<Id, VecDeque<RawAnswer>> {
+    let mut queue: HashMap<Id, VecDeque<RawAnswer>> = HashMap::new();
+    for submission in recorded {
+        for (id, raw) in submission {
+            queue.entry(id.clone()).or_default().push_back(raw.clone());
+        }
+    }
+    queue
+}
+
+/// Consume the queue for a staged submission this template already accepted: pop
+/// the front recorded value of each answered id, so a value a staged batch used
+/// is not offered again when `drive_from_queue` continues at a later batch. Ids
+/// the queue does not hold (unrelated or already drained) are left untouched.
+fn consume_staged(
+    queue: &mut HashMap<Id, VecDeque<RawAnswer>>,
+    staged_sub: &IndexMap<Id, RawAnswer>,
+) {
+    for id in staged_sub.keys() {
+        if let Some(values) = queue.get_mut(id) {
+            values.pop_front();
+        }
+    }
+}
+
 /// Drive the interview for an update from the base's `recorded` submissions, with
 /// route `overrides` (already verified) applied first. `seed` carries the frozen
 /// instant and context; its defaults are set here to the recorded/override
@@ -67,12 +96,7 @@ pub(crate) fn replay<'a>(
     let presets = seed.defaults.clone();
 
     // A per-id queue of recorded values, in recorded order.
-    let mut queue: HashMap<Id, VecDeque<RawAnswer>> = HashMap::new();
-    for submission in recorded {
-        for (id, raw) in submission {
-            queue.entry(id.clone()).or_default().push_back(raw.clone());
-        }
-    }
+    let mut queue = build_queue(recorded);
     // The route's overrides replace an id's queued value; an override for an id
     // the new version does not ask is never consumed, so it is dropped.
     for (id, raw) in &overrides {
@@ -114,12 +138,7 @@ pub(crate) fn replay_resume<'a>(
     reanswer: bool,
 ) -> Result<Replay<'a>, EvalError> {
     let presets = seed.defaults.clone();
-    let mut queue: HashMap<Id, VecDeque<RawAnswer>> = HashMap::new();
-    for submission in recorded {
-        for (id, raw) in submission {
-            queue.entry(id.clone()).or_default().push_back(raw.clone());
-        }
-    }
+    let mut queue = build_queue(recorded);
     for (id, raw) in &presets {
         queue
             .entry(id.clone())
@@ -134,15 +153,9 @@ pub(crate) fn replay_resume<'a>(
 
     let mut interview = Interview::start(template, seed)?;
     let mut submissions = Vec::new();
-    // Replay the staged submissions already accepted, popping the queue so a
-    // recorded value a staged batch already consumed is not offered again when
-    // `drive_from_queue` continues. This keeps the per-id queue aligned for the
-    // adapter's "a looped question replays its values in order" contract. With
-    // the current interview model each id is asked in at most one batch — a
-    // `TextLoop` is answered as one list submission, and there is no section loop
-    // or flow re-ask — so no later batch re-offers a staged-answered id, and this
-    // alignment has no observable effect today; it is kept as forward-defensive
-    // coverage for a recording that carries more than one value per id.
+    // Replay the staged submissions already accepted, consuming the queue so a
+    // recorded value a staged batch already used is not offered again when
+    // `drive_from_queue` continues at a later pending batch.
     for staged_sub in staged {
         let pending = match interview {
             Interview::Asking(pending) => pending,
@@ -152,11 +165,7 @@ pub(crate) fn replay_resume<'a>(
                 break;
             }
         };
-        for id in staged_sub.keys() {
-            if let Some(values) = queue.get_mut(id) {
-                values.pop_front();
-            }
-        }
+        consume_staged(&mut queue, staged_sub);
         interview = match pending.answer(staged_sub.clone()) {
             Ok(next) => {
                 submissions.push(staged_sub.clone());

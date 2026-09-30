@@ -114,6 +114,58 @@ fn resume_replays_the_staged_submissions_and_does_not_reuse_recorded() {
 }
 
 #[test]
+fn the_staged_consumption_pops_the_queue_front_in_order() {
+    // The helpers `replay_resume` itself uses: a recording that carries three
+    // values for one id queues them in order, and consuming a staged answer for
+    // that id pops the front each time — so the third value is what a later batch
+    // takes. Unrelated, empty, and absent-id consumptions are no-ops (never panic).
+    let recorded = vec![
+        sub(&[("q", json!("one"))]),
+        sub(&[("q", json!("two"))]),
+        sub(&[("q", json!("three"))]),
+    ];
+    let mut queue = super::build_queue(&recorded);
+    assert_eq!(queue[&id("q")].len(), 3, "three values queued in order");
+    assert_eq!(queue[&id("q")].front().unwrap().0, json!("one"));
+
+    // Consuming two staged answers for `q` advances the front one -> two -> three.
+    super::consume_staged(&mut queue, &sub(&[("q", json!("one"))]));
+    assert_eq!(
+        queue[&id("q")].front().unwrap().0,
+        json!("two"),
+        "front advanced after the first consumption"
+    );
+    super::consume_staged(&mut queue, &sub(&[("q", json!("two"))]));
+    assert_eq!(
+        queue[&id("q")].front().unwrap().0,
+        json!("three"),
+        "the third value remains after consuming twice"
+    );
+    assert_eq!(queue[&id("q")].len(), 1);
+
+    // An unrelated staged id does not touch `q`.
+    super::consume_staged(&mut queue, &sub(&[("unrelated", json!("x"))]));
+    assert_eq!(queue[&id("q")].len(), 1, "an unrelated id is a no-op");
+
+    // An empty staged submission is a no-op.
+    super::consume_staged(&mut queue, &sub(&[]));
+    assert_eq!(
+        queue[&id("q")].len(),
+        1,
+        "an empty staged submission is a no-op"
+    );
+
+    // Draining the last value, then consuming an absent id, does not panic.
+    super::consume_staged(&mut queue, &sub(&[("q", json!("three"))]));
+    assert!(queue[&id("q")].is_empty(), "queue drained");
+    super::consume_staged(&mut queue, &sub(&[("q", json!("gone"))]));
+    assert!(
+        queue[&id("q")].is_empty(),
+        "consuming an absent id is a no-op"
+    );
+}
+
+#[test]
 fn an_answer_for_a_removed_question_is_dropped() {
     let (_f, template) = inline(TWO_QUESTIONS);
     // `old` is not a question in this template; it is never consumed.
