@@ -157,6 +157,48 @@ impl<'de> Deserialize<'de> for SnapshotId {
 // Supporting value types
 // ---------------------------------------------------------------------------
 
+/// A repository-relative path: the forward-slash form git reports, `.` for the
+/// repository root. It is always relative, never enters `.git`, and never
+/// escapes the repository with `..`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RepoPath(String);
+
+impl RepoPath {
+    /// The repository root.
+    pub fn root() -> Self {
+        Self(".".to_owned())
+    }
+
+    /// Parse a repository-relative path. `.` and the empty string both name the
+    /// root. Any other value must be a clean relative path.
+    pub fn parse(text: &str) -> Result<Self, SnapshotError> {
+        if text.is_empty() || text == "." {
+            return Ok(Self::root());
+        }
+        // A non-root repo path obeys the same rules a target path does.
+        TargetPath::parse(text).map_err(|message| SnapshotError::Path {
+            path: text.to_owned(),
+            message,
+        })?;
+        Ok(Self(text.replace('\\', "/")))
+    }
+
+    /// Whether this path names the repository root.
+    pub fn is_root(&self) -> bool {
+        self.0 == "."
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for RepoPath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// A resolved 40-hex git commit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitId(String);
@@ -342,7 +384,7 @@ pub struct SnapshotDoc {
     template: String,
     source: String,
     revision: Revision,
-    target: TargetPath,
+    target: RepoPath,
     created: Timestamp,
     generated: FrozenNow,
     project: ProjectPoint,
@@ -396,7 +438,7 @@ impl Snapshot {
             Some(text) => Revision::Commit(CommitId::parse(text)?),
         };
 
-        let target = parse_repo_path(&wire.target)?;
+        let target = RepoPath::parse(&wire.target)?;
         let created = Timestamp::parse(&wire.created)?;
         let generated = FrozenNow::parse(&wire.generated)?;
         let project = ProjectPoint {
@@ -457,7 +499,7 @@ impl Snapshot {
         &self.doc.revision
     }
 
-    pub fn target(&self) -> &TargetPath {
+    pub fn target(&self) -> &RepoPath {
         &self.doc.target
     }
 
@@ -492,16 +534,6 @@ fn strip_reference(template: &str) -> &str {
     template
         .split_once('@')
         .map_or(template, |(source, _)| source)
-}
-
-/// Parse a repository- or target-relative path that names a captured file:
-/// relative, no `..` escape, never inside `.git`. `TargetPath` already enforces
-/// these, so a single-file snapshot path reuses it.
-fn parse_repo_path(text: &str) -> Result<TargetPath, SnapshotError> {
-    TargetPath::parse(text).map_err(|message| SnapshotError::Path {
-        path: text.to_owned(),
-        message,
-    })
 }
 
 /// Turn a wire path entry into a validated [`Origin`], refusing region or value

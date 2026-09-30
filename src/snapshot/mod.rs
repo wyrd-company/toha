@@ -9,9 +9,11 @@
 //! boundary and refuses a malformed or forged one before any render (see
 //! [`record`]). Later slices add the repository access, capture, merge, and
 //! replay seams named in the design.
+mod project;
 mod record;
 
+pub use project::{Cleanliness, Project, ProjectError};
 pub use record::{
-    CommitId, FrozenNow, Origin, PathOwnership, ProjectPoint, Revision, Snapshot, SnapshotDoc,
-    SnapshotError, SnapshotId, Timestamp,
+    CommitId, FrozenNow, Origin, PathOwnership, ProjectPoint, RepoPath, Revision, Snapshot,
+    SnapshotDoc, SnapshotError, SnapshotId, Timestamp,
 };
