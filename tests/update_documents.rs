@@ -106,6 +106,24 @@ fn update_result_documents_validate_and_mutations_are_rejected() {
     let mut extra = applied.clone();
     extra["unexpected"] = serde_json::json!(true);
     assert!(!schema.is_valid(&extra), "an extra member must be rejected");
+    // Observation 7: the governing contract requires an `applied` document to
+    // report its snapshot decision, so the schema requires `snapshot`. Prove that
+    // existing requirement with a negative: dropping `snapshot` is rejected.
+    let mut no_snapshot = applied.clone();
+    no_snapshot.as_object_mut().unwrap().remove("snapshot");
+    assert!(
+        !schema.is_valid(&no_snapshot),
+        "an applied document without its snapshot decision must be rejected"
+    );
+    // Observation 7: the governing contract carries `merge` only for updates, so
+    // the schema keeps it optional. Dropping `merge` stays valid — proving the
+    // schema does not require a member the contract does not (no new policy).
+    let mut no_merge = applied.clone();
+    no_merge.as_object_mut().unwrap().remove("merge");
+    assert!(
+        schema.is_valid(&no_merge),
+        "an applied document without merge stays valid: merge is optional"
+    );
 
     // 2. A re-render with the same answers emits `already-current`.
     let mut current = support::isolated_command(iso.path());
