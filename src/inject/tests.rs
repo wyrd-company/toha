@@ -521,3 +521,69 @@ fn json_malformed_source_errors() {
         Err(JsonEditError::Parse { .. })
     ));
 }
+
+// ---- Retraction helpers (capture uses these when a template drops an edit) ----
+
+#[test]
+fn retract_region_removes_the_owned_block_and_keeps_surroundings() {
+    let marker = MarkerStyle::line("#");
+    let edit = PlannedRegionEdit {
+        path: TargetPath::parse("f.txt").unwrap(),
+        region: RegionKey::parse("blk").unwrap(),
+        body: "OWNED\n".to_owned(),
+        marker: marker.clone(),
+        anchor: None,
+        create: true,
+        source: None,
+    };
+    let injected = match resolve_region_edit(Some(b"top\nbottom\n"), &edit).unwrap() {
+        EditResolution::Write(bytes) => bytes,
+        other => panic!("expected a write, got {other:?}"),
+    };
+    assert!(
+        injected.windows(5).any(|w| w == b"OWNED"),
+        "region was injected"
+    );
+
+    let retracted = super::retract_region(&injected, &edit.region, &marker).unwrap();
+    assert_eq!(
+        retracted, b"top\nbottom\n",
+        "only the operator's lines remain"
+    );
+
+    // Idempotent: retracting again is a no-op.
+    let again = super::retract_region(&retracted, &edit.region, &marker).unwrap();
+    assert_eq!(again, retracted);
+}
+
+#[test]
+fn retract_json_value_removes_a_key_and_an_array_element() {
+    let path = JsonPath::parse("b.c").unwrap();
+    let out = super::retract_json_value(br#"{"a":1,"b":{"c":2,"d":3}}"#, &path, JsonFormat::Json)
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(
+        value,
+        serde_json::json!({"a":1,"b":{"d":3}}),
+        "b.c removed, rest kept"
+    );
+
+    // Array element removal.
+    let idx = JsonPath::parse("list[1]").unwrap();
+    let out = super::retract_json_value(br#"{"list":[10,20,30]}"#, &idx, JsonFormat::Json).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(value, serde_json::json!({"list":[10,30]}));
+
+    // Absent path is a no-op.
+    let absent = JsonPath::parse("missing").unwrap();
+    let unchanged = super::retract_json_value(br#"{"a":1}"#, &absent, JsonFormat::Json).unwrap();
+    assert_eq!(unchanged, br#"{"a":1}"#);
+}
+
+#[test]
+fn retract_json_value_refuses_a_relaxed_json_target() {
+    // A comment makes this invalid strict JSON; retraction refuses it.
+    let path = JsonPath::parse("a").unwrap();
+    let result = super::retract_json_value(b"{\n// c\n\"a\":1}", &path, JsonFormat::Json);
+    assert!(matches!(result, Err(JsonEditError::Parse { .. })));
+}

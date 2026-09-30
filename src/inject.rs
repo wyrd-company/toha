@@ -951,5 +951,103 @@ fn replace_node(node: CstNode, input: CstInputValue) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Retraction — removing an ownership a later template version dropped
+// ---------------------------------------------------------------------------
+
+/// Remove the managed region `region` from `current`, leaving the operator's
+/// surrounding content. Returns the bytes unchanged when the region is absent,
+/// so retraction is idempotent.
+pub fn retract_region(
+    current: &[u8],
+    region: &RegionKey,
+    marker: &MarkerStyle,
+) -> Result<Vec<u8>, RegionError> {
+    let text = std::str::from_utf8(current).map_err(|_| RegionError::NotUtf8(region.clone()))?;
+    match find_region(text, marker, region)? {
+        Some(located) => {
+            let mut out = String::with_capacity(text.len());
+            out.push_str(&text[..located.begin_start]);
+            out.push_str(&text[located.end_line_end..]);
+            Ok(out.into_bytes())
+        }
+        None => Ok(current.to_vec()),
+    }
+}
+
+/// Remove the value Toha owns at `json_path` from a JSON-family target, applying
+/// the same strict `.json` check the resolver applies. Returns the bytes
+/// unchanged when the value is absent. Removing several array elements requires
+/// calling this from the highest index down so earlier indexes stay valid.
+pub fn retract_json_value(
+    current: &[u8],
+    json_path: &JsonPath,
+    format: JsonFormat,
+) -> Result<Vec<u8>, JsonEditError> {
+    let text = std::str::from_utf8(current).map_err(|_| JsonEditError::NotUtf8 {
+        path: json_path.clone(),
+    })?;
+    if format == JsonFormat::Json {
+        serde_json::from_str::<Value>(text).map_err(|e| JsonEditError::Parse {
+            path: json_path.clone(),
+            format,
+            message: e.to_string(),
+        })?;
+    }
+    let root =
+        CstRootNode::parse(text, &format.parse_options()).map_err(|e| JsonEditError::Parse {
+            path: json_path.clone(),
+            format,
+            message: e.to_string(),
+        })?;
+    let Some(root_obj) = root.value().and_then(|node| node.as_object()) else {
+        return Ok(current.to_vec());
+    };
+
+    let segments = json_path.segments();
+    let (last, parents) = segments
+        .split_last()
+        .expect("a parsed path has at least one segment");
+
+    let mut container = Container::Object(root_obj);
+    for (i, seg) in parents.iter().enumerate() {
+        let need_array = matches!(segments[i + 1], JsonPathSegment::Index(_));
+        container = match navigate(container, seg, need_array) {
+            Some(next) => next,
+            None => return Ok(current.to_vec()),
+        };
+    }
+
+    match (container, last) {
+        (Container::Object(obj), JsonPathSegment::Key(k)) => {
+            if let Some(prop) = obj.get(k) {
+                prop.remove();
+            }
+        }
+        (Container::Array(arr), JsonPathSegment::Index(idx)) => {
+            if let Some(element) = arr.elements().get(*idx) {
+                element.clone().remove();
+            }
+        }
+        _ => return Ok(current.to_vec()),
+    }
+    Ok(root.to_string().into_bytes())
+}
+
+/// Descend one parent segment without creating anything, returning `None` when
+/// the path does not exist so retraction leaves the file unchanged.
+fn navigate(container: Container, seg: &JsonPathSegment, need_array: bool) -> Option<Container> {
+    let node = match (container, seg) {
+        (Container::Object(obj), JsonPathSegment::Key(k)) => obj.get(k)?.value()?,
+        (Container::Array(arr), JsonPathSegment::Index(idx)) => arr.elements().get(*idx)?.clone(),
+        _ => return None,
+    };
+    if need_array {
+        node.as_array().map(Container::Array)
+    } else {
+        node.as_object().map(Container::Object)
+    }
+}
+
 #[cfg(test)]
 mod tests;
