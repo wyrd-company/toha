@@ -92,9 +92,9 @@ fn an_approved_template_updates_and_runs_hooks_without_trust() {
     git(target.path(), &["commit", "--quiet", "-m", "seed"]);
 
     // Baseline through the approved alias, without --trust: the hook runs.
-    let env_alice = envelope(
+    let env_first = envelope(
         &root,
-        "alice.json",
+        "first.json",
         &formal,
         serde_json::json!({ "name": "sample-value" }),
     );
@@ -106,7 +106,7 @@ fn an_approved_template_updates_and_runs_hooks_without_trust() {
             target.path().to_str().unwrap(),
             "--baseline",
             "--answers",
-            env_alice.to_str().unwrap(),
+            env_first.to_str().unwrap(),
         ],
     );
     assert_eq!(baseline.status.code(), Some(0), "baseline: {baseline:?}");
@@ -123,9 +123,9 @@ fn an_approved_template_updates_and_runs_hooks_without_trust() {
     // Update through the approved alias, without --trust. An update whose hooks
     // were not trusted returns a needs-trust refusal before it builds anything;
     // reaching `applied` proves the hooks ran under the established approval.
-    let env_bob = envelope(
+    let env_revised = envelope(
         &root,
-        "bob.json",
+        "revised.json",
         &formal,
         serde_json::json!({ "name": "revised-value" }),
     );
@@ -138,7 +138,7 @@ fn an_approved_template_updates_and_runs_hooks_without_trust() {
             "--from",
             &snapshot,
             "--answers",
-            env_bob.to_str().unwrap(),
+            env_revised.to_str().unwrap(),
         ],
     );
     assert_eq!(update.status.code(), Some(0), "update: {update:?}");
@@ -169,9 +169,9 @@ fn an_unapproved_template_update_plans_without_running_hooks() {
     git(target.path(), &["commit", "--quiet", "-m", "seed"]);
 
     // No install, no approval: a baseline with hooks refuses without --trust.
-    let env_alice = envelope(
+    let env_first = envelope(
         &root,
-        "alice.json",
+        "first.json",
         &formal,
         serde_json::json!({ "name": "sample-value" }),
     );
@@ -183,7 +183,7 @@ fn an_unapproved_template_update_plans_without_running_hooks() {
             target.path().to_str().unwrap(),
             "--baseline",
             "--answers",
-            env_alice.to_str().unwrap(),
+            env_first.to_str().unwrap(),
         ],
     );
     // An unapproved hooked update previews the plan and runs nothing: `planned`
