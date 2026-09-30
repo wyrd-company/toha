@@ -227,6 +227,7 @@ pub fn run_update(
         UpdateDrive::Ask {
             pending,
             rejections,
+            ..
         } => {
             // The script route cannot prompt. A batch the replay could not
             // complete — a new required question the base did not answer, a

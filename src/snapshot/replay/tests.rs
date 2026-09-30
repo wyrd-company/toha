@@ -158,6 +158,7 @@ fn reanswer_offers_every_batch_to_the_route() {
         Replay::Ask {
             pending,
             rejections,
+            ..
         } => {
             assert!(rejections.is_empty(), "reanswer is not a rejection");
             // The recorded value is offered as the default.

@@ -37,10 +37,13 @@ pub(crate) enum Replay<'a> {
     },
     /// The first batch replay could not complete. The route takes over: the
     /// person is prompted with the recorded values as defaults; the script route
-    /// reports `questions`; the agent route stages the interview.
+    /// reports `questions`; the agent route stages the interview. `submissions`
+    /// are the batches auto-submitted before this one, in order, which a staged
+    /// update records so a resume replays them.
     Ask {
         pending: Box<Pending<'a>>,
         rejections: Rejections,
+        submissions: Vec<IndexMap<Id, RawAnswer>>,
     },
     /// A flow `stop`/`abort` ended the interview.
     Ended(Ended),
@@ -146,9 +149,11 @@ pub(crate) fn replay_resume<'a>(
                 values.pop_front();
             }
         }
-        submissions.push(staged_sub.clone());
         interview = match pending.answer(staged_sub.clone()) {
-            Ok(next) => next,
+            Ok(next) => {
+                submissions.push(staged_sub.clone());
+                next
+            }
             Err(AnswerError::Rejected {
                 pending,
                 rejections,
@@ -156,6 +161,7 @@ pub(crate) fn replay_resume<'a>(
                 return Ok(Replay::Ask {
                     pending: Box::new(pending),
                     rejections,
+                    submissions,
                 });
             }
             Err(AnswerError::Eval(error)) => return Err(error),
@@ -191,6 +197,7 @@ fn drive_from_queue<'a>(
             return Ok(Replay::Ask {
                 pending: Box::new(pending),
                 rejections: Vec::new(),
+                submissions,
             });
         }
 
@@ -236,18 +243,22 @@ fn drive_from_queue<'a>(
             return Ok(Replay::Ask {
                 pending: Box::new(pending),
                 rejections,
+                submissions,
             });
         }
 
-        // Consume the queued values this batch used, then submit it.
+        // Consume the queued values this batch used, then submit it. The batch is
+        // recorded only once the engine accepts it.
         for id in raw.keys() {
             if let Some(values) = queue.get_mut(id) {
                 values.pop_front();
             }
         }
-        submissions.push(raw.clone());
-        match pending.answer(raw) {
-            Ok(next) => interview = next,
+        match pending.answer(raw.clone()) {
+            Ok(next) => {
+                submissions.push(raw);
+                interview = next;
+            }
             Err(AnswerError::Rejected {
                 pending,
                 rejections,
@@ -255,6 +266,7 @@ fn drive_from_queue<'a>(
                 return Ok(Replay::Ask {
                     pending: Box::new(pending),
                     rejections,
+                    submissions,
                 });
             }
             Err(AnswerError::Eval(error)) => return Err(error),
@@ -276,10 +288,13 @@ pub enum UpdateDrive<'a> {
     },
     /// The first batch the replay could not complete. The route takes over: the
     /// person is prompted with the recorded values as defaults; the script route
-    /// reports `questions`; the agent route stages the interview.
+    /// reports `questions`; the agent route stages the interview. `submissions`
+    /// are the batches submitted before this one, which a staged update records.
     Ask {
         pending: Pending<'a>,
         rejections: Rejections,
+        /// The batches submitted before this one, which a staged update records.
+        submissions: Vec<IndexMap<Id, RawAnswer>>,
     },
     /// A flow `stop`/`abort` ended the interview.
     Ended(Ended),
@@ -309,9 +324,11 @@ pub fn drive_update<'a>(
             Replay::Ask {
                 pending,
                 rejections,
+                submissions,
             } => UpdateDrive::Ask {
                 pending: *pending,
                 rejections,
+                submissions,
             },
             Replay::Ended(ended) => UpdateDrive::Ended(ended),
         },
@@ -341,9 +358,11 @@ pub fn drive_update_resume<'a>(
             Replay::Ask {
                 pending,
                 rejections,
+                submissions,
             } => UpdateDrive::Ask {
                 pending: *pending,
                 rejections,
+                submissions,
             },
             Replay::Ended(ended) => UpdateDrive::Ended(ended),
         },
