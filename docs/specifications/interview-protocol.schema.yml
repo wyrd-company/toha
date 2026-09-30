@@ -15,6 +15,7 @@ oneOf:
   - $ref: "#/$defs/ended"
   - $ref: "#/$defs/applied"
   - $ref: "#/$defs/planned"
+  - $ref: "#/$defs/already_current"
   - $ref: "#/$defs/error"
 $defs:
   identifier:
@@ -86,6 +87,58 @@ $defs:
       - required: [ id ]
       - required: [ skipped ]
       - required: [ error ]
+  merge_action:
+    description: >-
+      How an update's merge changed a path: it `added` a new file, `updated` or
+      `merged` an owned file, `deleted` one the template no longer produces,
+      left a `conflicted` path for the operator, or `not-previewed` a hook path
+      in a dry run.
+    enum: [ added, updated, merged, deleted, conflicted, not-previewed ]
+  conflict_kind:
+    description: The kind of a merge conflict a `conflicted` change carries.
+    enum: [ content, add-add, modify-delete, file-directory, binary, driver ]
+  merge:
+    description: >-
+      The result of an update's three-way merge from the base: each changed path
+      with its action (and, for a conflict, its kind), and the paths left
+      conflicted for the operator to resolve.
+    type: object
+    additionalProperties: false
+    required: [ changes, conflicted ]
+    properties:
+      changes:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          required: [ path, action ]
+          properties:
+            path:
+              type: string
+            action:
+              $ref: "#/$defs/merge_action"
+            conflict:
+              $ref: "#/$defs/conflict_kind"
+      conflicted:
+        type: array
+        items:
+          type: string
+  already_current:
+    description: >-
+      An update whose re-render equals the base snapshot: nothing is written and
+      no new snapshot is saved. `snapshot` names the base it is already at.
+    type: object
+    additionalProperties: false
+    required: [ protocol, status, context ]
+    properties:
+      protocol:
+        const: 1
+      status:
+        const: already-current
+      context:
+        $ref: "#/$defs/context"
+      snapshot:
+        $ref: "#/$defs/snapshot_outcome"
   batch:
     type: object
     additionalProperties: false
@@ -163,6 +216,8 @@ $defs:
               type: boolean
       snapshot:
         $ref: "#/$defs/snapshot_outcome"
+      merge:
+        $ref: "#/$defs/merge"
   planned:
     description: >-
       The scripted route planned the files and hooks and wrote nothing (a CLI or
@@ -211,6 +266,8 @@ $defs:
               type: string
       trusted:
         type: boolean
+      merge:
+        $ref: "#/$defs/merge"
   error:
     description: >-
       The scripted route refused the request or a step failed. `kind` names the

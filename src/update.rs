@@ -23,10 +23,11 @@ use toha::context::InvocationContext;
 use toha::hook::ProcessRunner;
 use toha::interview::Seed;
 
+use toha::protocol::Context;
 use toha::snapshot::{
     Action, Base, Change, Cleanliness, CommitId, ConflictKind, FrozenNow, MergeOptions, Merged,
-    Project, Revision, Snapshot, SnapshotInputs, UpdateDrive, drive_update, drive_update_resume,
-    merge_apply,
+    Project, RepoPath, Revision, Snapshot, SnapshotInputs, UpdateDrive, drive_update,
+    drive_update_resume, merge_apply,
 };
 use toha::template::{Id, Template};
 use toha::{RawAnswer, RawAnswers};
@@ -96,7 +97,7 @@ pub fn run_update(
     // recorded answers do not settle, then merges; the script and agent route
     // reports them.
     if answers.is_none() && std::io::stdin().is_terminal() {
-        return person_update(prep, &base, reanswer, dry_run);
+        return person_update(prep, &base, &target, reanswer, dry_run);
     }
 
     let seed = Seed {
@@ -152,13 +153,19 @@ pub fn run_update(
         }
     };
 
-    finish_merge(prep, &base, completed, submissions, dry_run)
+    finish_merge(prep, &base, &target, completed, submissions, dry_run)
 }
 
 /// The person route for a one-shot update: prompt the questions the recorded
 /// answers do not settle — re-driving through the adapter each round so a batch
 /// the recorded answers cover is never prompted — then merge.
-fn person_update(prep: Prepared, base: &UpdateBase, reanswer: bool, dry_run: bool) -> Outcome {
+fn person_update(
+    prep: Prepared,
+    base: &UpdateBase,
+    target: &toha::staging::CanonicalTarget,
+    reanswer: bool,
+    dry_run: bool,
+) -> Outcome {
     let mut staged: Vec<IndexMap<Id, RawAnswer>> = Vec::new();
     loop {
         let seed = Seed {
@@ -175,7 +182,7 @@ fn person_update(prep: Prepared, base: &UpdateBase, reanswer: bool, dry_run: boo
             UpdateDrive::Completed {
                 completed,
                 submissions,
-            } => return finish_merge(prep, base, completed, submissions, dry_run),
+            } => return finish_merge(prep, base, target, completed, submissions, dry_run),
             UpdateDrive::Ask { pending, .. } => {
                 let submission =
                     match crate::terminal::prompt_batch(&pending, &mut crate::terminal::InquireAsk)
@@ -502,10 +509,26 @@ fn to_raw_staged(
 pub(crate) fn finish_merge(
     prep: Prepared,
     base: &UpdateBase,
+    target: &toha::staging::CanonicalTarget,
     completed: toha::Completed,
     submissions: Vec<IndexMap<Id, RawAnswer>>,
     dry_run: bool,
 ) -> Outcome {
+    // The result documents carry the invocation context; build it from `prep`
+    // before the merge consumes the base.
+    let saved = crate::StagedRecord::new_with_context(
+        prep.context.clone(),
+        prep.resolved.commit.clone(),
+        prep.resolved.named,
+        prep.now.to_string(),
+        vec![],
+    );
+    let ctx = crate::context(target, &saved);
+    let base_id = prep
+        .base_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.id().to_string());
+
     let revision = match base {
         UpdateBase::From(_) => prep
             .base_snapshot
@@ -546,7 +569,7 @@ pub(crate) fn finish_merge(
         options,
         &ProcessRunner,
     ) {
-        Ok(merged) => merged_outcome(merged, dry_run),
+        Ok(merged) => merged_outcome(merged, &ctx, base_id.as_deref()),
         Err(error) => Outcome::Error(error.to_string()),
     }
 }
@@ -591,64 +614,78 @@ fn raw_to_values(submission: IndexMap<Id, RawAnswer>) -> IndexMap<Id, Value> {
         .collect()
 }
 
-/// Map a merge result to the caller's outcome document.
-fn merged_outcome(merged: Merged, dry_run: bool) -> Outcome {
+/// Map a merge result to the caller's result document. An update reports the
+/// canonical `applied`/`planned`/`already-current` document with its `merge`
+/// member (the changed paths and any conflicts) and, when it saved one, a
+/// `snapshot` member.
+fn merged_outcome(merged: Merged, ctx: &Context, base_id: Option<&str>) -> Outcome {
     match merged {
         Merged::AlreadyCurrent => {
-            Outcome::Document(json!({ "update": "already-current", "changes": [] }), 0)
+            let mut document = toha::protocol::shell("already-current", ctx);
+            if let Some(id) = base_id {
+                document["snapshot"] = json!({ "id": id });
+            }
+            Outcome::Document(document, 0)
         }
-        Merged::NeedsTrust => Outcome::Error(
-            "the update's template has hooks; re-run with --trust to run them".to_owned(),
-        ),
-        Merged::Planned { changes } => Outcome::Document(
-            json!({ "update": "planned", "changes": changes_json(&changes) }),
-            0,
-        ),
+        // An untrusted update previews the plan and writes nothing, like a dry run.
+        Merged::NeedsTrust => {
+            let mut document = toha::protocol::shell("planned", ctx);
+            document["files"] = json!([]);
+            document["messages"] = json!([]);
+            document["hooks"] = json!([]);
+            document["trusted"] = json!(false);
+            document["merge"] = json!({ "changes": [], "conflicted": [] });
+            Outcome::Document(document, 0)
+        }
+        Merged::Planned { changes } => {
+            let mut document = toha::protocol::shell("planned", ctx);
+            document["files"] = json!([]);
+            document["messages"] = json!([]);
+            document["hooks"] = json!([]);
+            document["trusted"] = json!(true);
+            document["merge"] = merge_member(&changes, &[]);
+            Outcome::Document(document, 0)
+        }
         Merged::Written {
             snapshot,
             changes,
             conflicted,
         } => {
-            let _ = dry_run;
-            Outcome::Document(
-                json!({
-                    "update": "applied",
-                    "snapshot": snapshot.to_string(),
-                    "changes": changes_json(&changes),
-                    "conflicted": conflicted
-                        .iter()
-                        .map(|path| path.to_string())
-                        .collect::<Vec<_>>(),
-                }),
-                0,
-            )
+            let mut document = toha::protocol::shell("applied", ctx);
+            document["files"] = json!([]);
+            document["messages"] = json!([]);
+            document["hooks"] = json!([]);
+            document["snapshot"] = json!({ "id": snapshot.to_string() });
+            document["merge"] = merge_member(&changes, &conflicted);
+            Outcome::Document(document, 0)
         }
     }
 }
 
-/// The changes of a merge as a JSON array, each naming its path and action.
-fn changes_json(changes: &[Change]) -> Vec<Value> {
-    changes
-        .iter()
-        .map(|change| {
-            json!({
-                "path": change.path.to_string(),
-                "action": action_name(change.action),
-            })
-        })
-        .collect()
+/// The `merge` member: the changed paths with their actions, and the conflicted
+/// paths the operator must resolve.
+fn merge_member(changes: &[Change], conflicted: &[RepoPath]) -> Value {
+    json!({
+        "changes": changes.iter().map(change_json).collect::<Vec<_>>(),
+        "conflicted": conflicted.iter().map(|path| path.to_string()).collect::<Vec<_>>(),
+    })
 }
 
-/// The stable name of a merge action for the result document.
-fn action_name(action: Action) -> Value {
-    match action {
-        Action::Added => json!("added"),
-        Action::Updated => json!("updated"),
-        Action::Merged => json!("merged"),
-        Action::Deleted => json!("deleted"),
-        Action::NotPreviewed => json!("not-previewed"),
-        Action::Conflicted(kind) => json!({ "conflicted": conflict_name(kind) }),
+/// One merge change as `{ path, action, conflict? }`.
+fn change_json(change: &Change) -> Value {
+    let (action, conflict) = match change.action {
+        Action::Added => ("added", None),
+        Action::Updated => ("updated", None),
+        Action::Merged => ("merged", None),
+        Action::Deleted => ("deleted", None),
+        Action::NotPreviewed => ("not-previewed", None),
+        Action::Conflicted(kind) => ("conflicted", Some(conflict_name(kind))),
+    };
+    let mut object = json!({ "path": change.path.to_string(), "action": action });
+    if let Some(conflict) = conflict {
+        object["conflict"] = json!(conflict);
     }
+    object
 }
 
 /// The stable name of a conflict kind.

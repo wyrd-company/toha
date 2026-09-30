@@ -3,7 +3,7 @@
 //   implements: architecture
 // ---
 //! An update runs its template's hooks under an established registry approval,
-//! without a fresh `--trust`, and an unapproved one still refuses. This exercises
+//! without a fresh `--trust`, and an unapproved one previews the plan. This exercises
 //! the trust preflight through the real installed-template routes.
 
 #![cfg(unix)]
@@ -111,8 +111,8 @@ fn an_approved_template_updates_and_runs_hooks_without_trust() {
     );
     assert_eq!(baseline.status.code(), Some(0), "baseline: {baseline:?}");
     let document = support::first_document(&baseline.stdout);
-    assert_eq!(document["update"], "applied", "{document}");
-    let snapshot = document["snapshot"].as_str().unwrap().to_owned();
+    assert_eq!(document["status"], "applied", "{document}");
+    let snapshot = document["snapshot"]["id"].as_str().unwrap().to_owned();
     assert!(
         target.path().join("ran.txt").exists(),
         "the hook must run under the approval"
@@ -144,7 +144,7 @@ fn an_approved_template_updates_and_runs_hooks_without_trust() {
     assert_eq!(update.status.code(), Some(0), "update: {update:?}");
     let document = support::first_document(&update.stdout);
     assert_eq!(
-        document["update"], "applied",
+        document["status"], "applied",
         "the update must apply under the established approval, not refuse: {document}"
     );
     assert_eq!(
@@ -154,7 +154,7 @@ fn an_approved_template_updates_and_runs_hooks_without_trust() {
 }
 
 #[test]
-fn an_unapproved_template_update_refuses_hooks() {
+fn an_unapproved_template_update_plans_without_running_hooks() {
     let root = tempfile::tempdir().unwrap();
     let template_dir = tempfile::tempdir().unwrap();
     let target = tempfile::tempdir().unwrap();
@@ -186,15 +186,15 @@ fn an_unapproved_template_update_refuses_hooks() {
             env_alice.to_str().unwrap(),
         ],
     );
-    assert_ne!(
+    // An unapproved hooked update previews the plan and runs nothing: `planned`
+    // with `trusted: false`, and the hook marker is never created.
+    assert_eq!(
         output.status.code(),
         Some(0),
-        "unapproved hooks should refuse"
+        "planned is exit 0: {output:?}"
     );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("--trust"),
-        "expected a trust refusal: {stderr}"
-    );
+    let document = support::first_document(&output.stdout);
+    assert_eq!(document["status"], "planned", "{document}");
+    assert_eq!(document["trusted"], false, "{document}");
     assert!(!target.path().join("ran.txt").exists());
 }

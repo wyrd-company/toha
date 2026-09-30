@@ -54,6 +54,13 @@ impl Context {
 fn context_value(context: &Context) -> Value {
     json!({"target": context.target, "template": context.template, "commit": context.commit})
 }
+/// The shared shell of a result document — `protocol`, `status`, and `context` —
+/// that a caller extends with the members of a specific status. The update route
+/// uses it to build the `applied`, `planned`, and `already-current` documents
+/// with their `snapshot` and `merge` members.
+pub fn shell(status: &str, context: &Context) -> Value {
+    json!({ "protocol": 1, "status": status, "context": context_value(context) })
+}
 fn text_rules(prompt: &Prompt) -> Map<String, Value> {
     let mut rules = Map::new();
     if let Some(v) = prompt.constraints.min {

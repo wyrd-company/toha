@@ -520,7 +520,7 @@ pub fn apply_staged(saved: StagedRecord, path: &Path, trust: bool, dirs: &Dirs) 
             completed,
             submissions,
         } => {
-            let outcome = update::finish_merge(prep, &base, completed, submissions, false);
+            let outcome = update::finish_merge(prep, &base, &target, completed, submissions, false);
             // A successful merge consumes the staged interview.
             if outcome.is_success() {
                 if let Err(error) = store.remove(&target) {

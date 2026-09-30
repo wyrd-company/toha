@@ -83,7 +83,7 @@ fn baseline(iso: &Path, address: &str, formal: &str, target: &Path, trust: bool)
         command.arg("--trust");
     }
     let document = support::first_document(&command.output().unwrap().stdout);
-    let id = document["snapshot"].as_str().unwrap().to_owned();
+    let id = document["snapshot"]["id"].as_str().unwrap().to_owned();
     git(target, &["add", "."]);
     git(target, &["commit", "--quiet", "-m", "baseline"]);
     id
@@ -168,7 +168,7 @@ fn a_person_stage_prompts_saves_each_batch_then_applies() {
     let output = apply.output().unwrap();
     assert_eq!(output.status.code(), Some(0), "apply: {output:?}");
     let document = support::first_document(&output.stdout);
-    assert_eq!(document["update"], "applied", "{document}");
+    assert_eq!(document["status"], "applied", "{document}");
     assert_eq!(
         std::fs::read_to_string(target.path().join("color.txt")).unwrap(),
         "blue\n"
@@ -294,7 +294,7 @@ fn stage_baseline_then_continue_and_apply_records_a_snapshot() {
     let mut apply = support::isolated_command(iso.path());
     apply.arg("apply").arg(target.path());
     let document = support::first_document(&apply.output().unwrap().stdout);
-    assert_eq!(document["update"], "applied", "{document}");
+    assert_eq!(document["status"], "applied", "{document}");
     assert_eq!(
         std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
         "Hello other-value\n"
@@ -343,7 +343,7 @@ fn stage_reanswer_re_asks_a_recorded_answer() {
     let mut apply = support::isolated_command(iso.path());
     apply.arg("apply").arg(target.path());
     let document = support::first_document(&apply.output().unwrap().stdout);
-    assert_eq!(document["update"], "applied", "{document}");
+    assert_eq!(document["status"], "applied", "{document}");
     assert_eq!(
         std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
         "Hello revised-value\n"
@@ -482,7 +482,7 @@ fn agent_stages_continues_and_applies_a_staged_update() {
         .arg("--answers")
         .arg(&env_first);
     let document = support::first_document(&baseline.output().unwrap().stdout);
-    let snapshot = document["snapshot"].as_str().unwrap().to_owned();
+    let snapshot = document["snapshot"]["id"].as_str().unwrap().to_owned();
     git(target.path(), &["add", "."]);
     git(target.path(), &["commit", "--quiet", "-m", "baseline"]);
 
@@ -531,7 +531,7 @@ fn agent_stages_continues_and_applies_a_staged_update() {
     let applied = apply.output().unwrap();
     assert_eq!(applied.status.code(), Some(0), "apply: {applied:?}");
     let document = support::first_document(&applied.stdout);
-    assert_eq!(document["update"], "applied", "{document}");
+    assert_eq!(document["status"], "applied", "{document}");
     assert_eq!(
         std::fs::read_to_string(target.path().join("color.txt")).unwrap(),
         "blue\n"

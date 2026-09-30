@@ -86,8 +86,8 @@ fn baseline_records_then_from_updates_and_detects_current() {
     let output = command.output().unwrap();
     assert!(output.status.success(), "baseline failed: {output:?}");
     let document = support::first_document(&output.stdout);
-    assert_eq!(document["update"], "applied");
-    let snapshot = document["snapshot"].as_str().unwrap().to_owned();
+    assert_eq!(document["status"], "applied");
+    let snapshot = document["snapshot"]["id"].as_str().unwrap().to_owned();
     assert_eq!(
         std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
         "Hello sample-value\n"
@@ -112,7 +112,7 @@ fn baseline_records_then_from_updates_and_detects_current() {
         "already-current failed: {output:?}"
     );
     let document = support::first_document(&output.stdout);
-    assert_eq!(document["update"], "already-current", "{document}");
+    assert_eq!(document["status"], "already-current", "{document}");
 
     // 3. An unrelated local edit is committed, then an update with a changed
     //    answer merges: the greeting is rewritten and the unrelated edit, held on
@@ -137,7 +137,7 @@ fn baseline_records_then_from_updates_and_detects_current() {
     let output = update.output().unwrap();
     assert!(output.status.success(), "update failed: {output:?}");
     let document = support::first_document(&output.stdout);
-    assert_eq!(document["update"], "applied", "{document}");
+    assert_eq!(document["status"], "applied", "{document}");
     assert_eq!(
         std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
         "Hello revised-value\n"
@@ -187,7 +187,7 @@ fn dry_run_from_reports_planned_and_persists_nothing() {
         .arg("--answers")
         .arg(&env_first);
     let document = support::first_document(&baseline.output().unwrap().stdout);
-    let snapshot = document["snapshot"].as_str().unwrap().to_owned();
+    let snapshot = document["snapshot"]["id"].as_str().unwrap().to_owned();
     git(target.path(), &["add", "."]);
     git(target.path(), &["commit", "--quiet", "-m", "baseline"]);
 
@@ -210,7 +210,7 @@ fn dry_run_from_reports_planned_and_persists_nothing() {
     let output = dry.output().unwrap();
     assert!(output.status.success(), "dry-run failed: {output:?}");
     let document = support::first_document(&output.stdout);
-    assert_eq!(document["update"], "planned", "{document}");
+    assert_eq!(document["status"], "planned", "{document}");
     assert_eq!(
         std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
         "Hello sample-value\n",
@@ -257,7 +257,7 @@ fn a_new_required_question_is_reported_as_questions() {
         .arg("--answers")
         .arg(&env_first);
     let document = support::first_document(&baseline.output().unwrap().stdout);
-    let snapshot = document["snapshot"].as_str().unwrap().to_owned();
+    let snapshot = document["snapshot"]["id"].as_str().unwrap().to_owned();
     git(target.path(), &["add", "."]);
     git(target.path(), &["commit", "--quiet", "-m", "baseline"]);
 
@@ -322,7 +322,7 @@ fn a_configured_preset_answers_a_new_question() {
         .arg("--answers")
         .arg(&env_first);
     let document = support::first_document(&baseline.output().unwrap().stdout);
-    let snapshot = document["snapshot"].as_str().unwrap().to_owned();
+    let snapshot = document["snapshot"]["id"].as_str().unwrap().to_owned();
     git(target.path(), &["add", "."]);
     git(target.path(), &["commit", "--quiet", "-m", "baseline"]);
 
@@ -360,7 +360,7 @@ fn a_configured_preset_answers_a_new_question() {
     let output = update.output().unwrap();
     assert!(output.status.success(), "update failed: {output:?}");
     let document = support::first_document(&output.stdout);
-    assert_eq!(document["update"], "applied", "{document}");
+    assert_eq!(document["status"], "applied", "{document}");
     assert_eq!(
         std::fs::read_to_string(target.path().join("color.txt")).unwrap(),
         "green\n",
@@ -386,7 +386,7 @@ fn baseline_snapshot(iso: &Path, address: &str, formal: &str, target: &Path) -> 
         .arg("--answers")
         .arg(&env);
     let document = support::first_document(&command.output().unwrap().stdout);
-    let id = document["snapshot"].as_str().unwrap().to_owned();
+    let id = document["snapshot"]["id"].as_str().unwrap().to_owned();
     git(target, &["add", "."]);
     git(target, &["commit", "--quiet", "-m", "baseline"]);
     id
@@ -539,7 +539,7 @@ fn a_rendered_date_is_byte_stable_across_an_update() {
         .arg(&env_first)
         .env("TOHA_NOW", "2020-06-15T12:00:00+00:00[UTC]");
     let document = support::first_document(&baseline.output().unwrap().stdout);
-    let snapshot = document["snapshot"].as_str().unwrap().to_owned();
+    let snapshot = document["snapshot"]["id"].as_str().unwrap().to_owned();
     assert_eq!(
         std::fs::read_to_string(target.path().join("stamp.txt")).unwrap(),
         "sample-value 2020-06-15\n"
@@ -611,12 +611,13 @@ fn an_update_with_untrusted_hooks_refuses_and_changes_nothing() {
         .arg("--answers")
         .arg(&env_first);
     let output = command.output().unwrap();
-    assert!(
-        !output.status.success(),
-        "an untrusted hooked update must refuse"
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("--trust"), "unexpected: {stderr}");
+    assert!(output.status.success(), "planned is exit 0: {output:?}");
+    let document = support::first_document(&output.stdout);
+    // An untrusted update previews the plan and writes nothing: `planned` with
+    // `trusted: false`, no snapshot, and nothing applied.
+    assert_eq!(document["status"], "planned", "{document}");
+    assert_eq!(document["trusted"], false, "{document}");
+    assert!(document["snapshot"].is_null(), "{document}");
     assert!(
         !target.path().join("greeting.txt").exists(),
         "an untrusted update must write nothing"
