@@ -269,6 +269,56 @@ impl Project {
         Ok(Removed { removed, not_found })
     }
 
+    /// Add the snapshot fetch refspec to a remote in the repository's local git
+    /// config, unless it is already present. Writes nothing else, no push
+    /// setting, and never fetches. Idempotent.
+    pub fn add_fetch(&self, remote: &str) -> Result<FetchSetting, ProjectError> {
+        const REFSPEC: &str = "+refs/toha/snapshots/*:refs/toha/snapshots/*";
+        let path = self.repo.common_dir().join("config");
+        let mut file =
+            gix::config::File::from_path_no_includes(path.clone(), gix::config::Source::Local)
+                .map_err(|err| ProjectError::Config(err.to_string()))?;
+
+        // The remote must already exist; init never creates one.
+        if file
+            .string(format!("remote.{remote}.url").as_str())
+            .is_none()
+        {
+            return Err(ProjectError::RemoteMissing(remote.to_owned()));
+        }
+
+        let already = file
+            .strings(format!("remote.{remote}.fetch").as_str())
+            .unwrap_or_default()
+            .iter()
+            .any(|value| value.to_str_lossy() == REFSPEC);
+        if already {
+            return Ok(FetchSetting {
+                remote: remote.to_owned(),
+                refspec: REFSPEC.to_owned(),
+                added: false,
+            });
+        }
+
+        {
+            let mut section = file
+                .section_mut_or_create_new("remote", remote)
+                .map_err(|err| ProjectError::Config(err.to_string()))?;
+            section
+                .push("fetch", REFSPEC)
+                .map_err(|err| ProjectError::Config(err.to_string()))?;
+        }
+        let mut out =
+            std::fs::File::create(&path).map_err(|err| ProjectError::Io(err.to_string()))?;
+        file.write_to(&mut out)
+            .map_err(|err| ProjectError::Io(err.to_string()))?;
+        Ok(FetchSetting {
+            remote: remote.to_owned(),
+            refspec: REFSPEC.to_owned(),
+            added: true,
+        })
+    }
+
     /// The `HEAD` tree's leaf blob ids under the target, keyed by target-relative
     /// path, for content scoring.
     fn head_target_oids(
@@ -543,6 +593,15 @@ pub struct Removed {
     pub not_found: Vec<SnapshotId>,
 }
 
+/// The outcome of [`Project::add_fetch`]: the remote, the refspec, and whether
+/// it was newly added (`false` when it was already present).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchSetting {
+    pub remote: String,
+    pub refspec: String,
+    pub added: bool,
+}
+
 /// Remove every named `filter.<name>` and `merge.<name>` driver subsection from
 /// the repository's in-memory configuration.
 ///
@@ -601,6 +660,8 @@ pub enum ProjectError {
     Path(String),
     #[error("{0}")]
     Io(String),
+    #[error("no remote named {0}")]
+    RemoteMissing(String),
     #[error(transparent)]
     Snapshot(#[from] SnapshotError),
 }

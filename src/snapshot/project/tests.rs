@@ -589,3 +589,60 @@ fn remove_refuses_to_empty_a_source_without_force() {
     assert_eq!(removed.removed.len(), 2);
     assert_eq!(valid_snapshots(&project).len(), 0);
 }
+
+// --------------------------------------------------------------------------
+// Slice 2b: toha init (add_fetch).
+// --------------------------------------------------------------------------
+
+#[test]
+fn add_fetch_adds_the_refspec_once_and_writes_no_push_setting() {
+    let dir = tempfile::tempdir().unwrap();
+    repo_with_app(dir.path());
+    git(
+        dir.path(),
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://example.invalid/repo.git",
+        ],
+    );
+    let project = open_at(dir.path()).expect("in git");
+
+    let first = project.add_fetch("origin").unwrap();
+    assert!(first.added, "the refspec is newly added");
+    assert_eq!(
+        first.refspec,
+        "+refs/toha/snapshots/*:refs/toha/snapshots/*"
+    );
+
+    // Idempotent: a second call adds nothing.
+    let second = project.add_fetch("origin").unwrap();
+    assert!(!second.added, "the refspec is already present");
+
+    let config = std::fs::read_to_string(dir.path().join(".git/config")).unwrap();
+    let occurrences = config
+        .matches("refs/toha/snapshots/*:refs/toha/snapshots/*")
+        .count();
+    assert_eq!(
+        occurrences, 1,
+        "the refspec appears exactly once:\n{config}"
+    );
+    assert!(
+        !config.contains("push"),
+        "no push setting is written:\n{config}"
+    );
+    // The pre-existing fetch refspec for origin is preserved.
+    assert!(config.contains("+refs/heads/*:refs/remotes/origin/*"));
+}
+
+#[test]
+fn add_fetch_refuses_a_missing_remote() {
+    let dir = tempfile::tempdir().unwrap();
+    repo_with_app(dir.path());
+    let project = open_at(dir.path()).expect("in git");
+    assert!(matches!(
+        project.add_fetch("origin"),
+        Err(ProjectError::RemoteMissing(_))
+    ));
+}

@@ -12,7 +12,9 @@
 mod project;
 mod record;
 
-pub use project::{Cleanliness, LikelyBase, LikelyBaseBy, Listed, Project, ProjectError, Removed};
+pub use project::{
+    Cleanliness, FetchSetting, LikelyBase, LikelyBaseBy, Listed, Project, ProjectError, Removed,
+};
 pub use record::{
     CommitId, FrozenNow, Origin, PathOwnership, ProjectPoint, RepoPath, Revision, Snapshot,
     SnapshotDoc, SnapshotError, SnapshotId, Timestamp,
