@@ -324,6 +324,68 @@ fn a_target_changed_since_the_start_refuses_with_nothing_written() {
 }
 
 #[test]
+fn an_unrelated_dirty_file_in_the_target_fails_the_locked_re_check() {
+    // Behavior 23, the re-check's UNIQUE job: the locked re-check refuses when the
+    // target is dirty in a file the plan does not write. The per-file drift check
+    // is scoped to written paths, so only the whole-target re-check catches this;
+    // nothing is written.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q", "-b", "main"]);
+    write(&root.join("app/both.txt"), b"base\n");
+    write(&root.join("app/unrelated.txt"), b"committed\n");
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "operator"]);
+    make_snapshot(
+        root,
+        BASE_ID,
+        "app",
+        &[("both.txt", b"base\n"), ("unrelated.txt", b"committed\n")],
+    );
+    make_snapshot(
+        root,
+        NEW_ID,
+        "app",
+        &[
+            ("both.txt", b"new-template\n"),
+            ("unrelated.txt", b"committed\n"),
+        ],
+    );
+
+    // Dirty a file the update's plan does not touch. The per-file drift check for
+    // both.txt would pass; only the whole-target re-check sees this.
+    write(
+        &root.join("app/unrelated.txt"),
+        b"operator is editing unrelated\n",
+    );
+
+    let project = open(root, "app");
+    let base = read_snapshot(&project, BASE_ID);
+    let new = read_snapshot(&project, NEW_ID);
+    let result = merge_into_worktree(
+        &project,
+        &Base::Snapshot(base),
+        &new,
+        &MergeOptions {
+            trusted: true,
+            dry_run: false,
+        },
+    );
+    assert!(
+        matches!(result, Err(MergeError::Changed)),
+        "unrelated dirt fails the re-check: {result:?}"
+    );
+    // The plan target was not written and the candidate ref is removed.
+    assert_eq!(
+        std::fs::read_to_string(root.join("app/both.txt")).unwrap(),
+        "base\n",
+        "nothing written"
+    );
+    let refs = git(root, &["for-each-ref", "refs/toha/snapshots/"]);
+    assert!(!refs.contains(NEW_ID), "candidate ref removed on refusal");
+}
+
+#[test]
 fn a_write_failure_rolls_back_and_leaves_the_index_unwritten() {
     // Behavior 24: a failure part-way through writing rolls back the files
     // already written, removes created files, and never writes the index.

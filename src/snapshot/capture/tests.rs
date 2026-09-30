@@ -320,6 +320,64 @@ fn a_hook_file_unchanged_by_the_new_version_is_carried_forward() {
 }
 
 #[test]
+fn a_whole_file_the_new_plan_drops_is_released_so_the_merge_removes_it() {
+    // Behavior 12: a base whole-file (origin toha) the new plan no longer produces
+    // is NOT captured, so the merge sees the template remove it (the A->B->C case).
+    // Keeping it in the merge base would wrongly preserve a file B produced and C
+    // dropped.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q", "-b", "main"]);
+    write(&root.join("app/old.txt"), b"was produced by B\n");
+    write(&root.join("app/main.txt"), b"v1\n");
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "operator"]);
+    let head = git(root, &["rev-parse", "HEAD"]);
+
+    // Base B recorded both as whole files (origin toha); old.txt is still on disk.
+    make_base(
+        root,
+        BASE_ID,
+        "app",
+        &[
+            (
+                "old.txt",
+                b"was produced by B\n",
+                "{ \"origin\": \"toha\" }",
+            ),
+            ("main.txt", b"v1\n", "{ \"origin\": \"toha\" }"),
+        ],
+    );
+
+    // New plan C produces main.txt only.
+    let project = open(root, "app");
+    let base = find_base(&project);
+    let plan = plan_of(vec![whole("main.txt")]);
+    let id = project
+        .capture(root, &plan, Some(&base), inputs(&head))
+        .unwrap();
+
+    let listing = git(root, &["ls-tree", "-r", "--name-only", &snap_ref(&id)]);
+    assert!(
+        !listing.contains("files/old.txt"),
+        "a dropped whole-file is released, not captured: {listing}"
+    );
+    assert!(
+        listing.contains("files/main.txt"),
+        "the new plan target is captured: {listing}"
+    );
+    let json: serde_json::Value = serde_json::from_str(&git(
+        root,
+        &["show", &format!("{}:snapshot.json", snap_ref(&id))],
+    ))
+    .unwrap();
+    assert!(
+        json["paths"]["old.txt"].is_null(),
+        "old.txt is not in the new snapshot's paths: {json}"
+    );
+}
+
+#[test]
 fn a_dropped_region_injection_is_retracted_from_the_captured_file() {
     // Behavior 12: an injection the new version drops is retracted; the region's
     // markers and body are removed and the operator's surrounding content stays.
