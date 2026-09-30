@@ -670,6 +670,8 @@ fn write_all(
             head: expected.copied(),
             wrote: Some(*id),
         });
+        #[cfg(test)]
+        inject_fail::check(done, workdir)?;
     }
     // Deletions the template made.
     for (path, (id, _)) in ours {
@@ -690,8 +692,70 @@ fn write_all(
             head: ours.get(path).copied(),
             wrote: None,
         });
+        #[cfg(test)]
+        inject_fail::check(done, workdir)?;
     }
     Ok(())
+}
+
+/// Test-only deterministic failure injection for the write transaction. Armed by
+/// a test, [`check`] fails immediately after the Nth `done.push` — after the real
+/// write or delete happened but before the index is committed — recording the
+/// on-disk bytes of every path written so far, so a test can prove the mutations
+/// actually occurred before rollback restored them. Compiled only under `cfg(test)`.
+#[cfg(test)]
+mod inject_fail {
+    use super::{MergeError, Restorable};
+    use std::cell::{Cell, RefCell};
+    use std::path::Path;
+
+    thread_local! {
+        static AFTER: Cell<Option<usize>> = const { Cell::new(None) };
+        static COUNT: Cell<usize> = const { Cell::new(0) };
+        static OBSERVED: RefCell<Vec<(String, Option<Vec<u8>>)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// Arm the hook to fail after the `after`-th push (1-based). Resets the count.
+    pub(super) fn arm(after: usize) {
+        AFTER.with(|a| a.set(Some(after)));
+        COUNT.with(|c| c.set(0));
+        OBSERVED.with(|o| o.borrow_mut().clear());
+    }
+
+    pub(super) fn disarm() {
+        AFTER.with(|a| a.set(None));
+    }
+
+    /// The on-disk bytes of each written path, captured at the moment of failure.
+    pub(super) fn observed() -> Vec<(String, Option<Vec<u8>>)> {
+        OBSERVED.with(|o| o.borrow().clone())
+    }
+
+    /// Called after each `done.push`. When the push count reaches the armed point,
+    /// record every done path's current on-disk bytes and return an injected error.
+    pub(super) fn check(done: &[Restorable], workdir: &Path) -> Result<(), MergeError> {
+        let n = COUNT.with(|c| {
+            let v = c.get() + 1;
+            c.set(v);
+            v
+        });
+        if AFTER.with(|a| a.get()) == Some(n) {
+            let snap: Vec<_> = done
+                .iter()
+                .map(|r| {
+                    (
+                        r.repo_rel.clone(),
+                        std::fs::read(workdir.join(&r.repo_rel)).ok(),
+                    )
+                })
+                .collect();
+            OBSERVED.with(|o| *o.borrow_mut() = snap);
+            return Err(MergeError::Io(
+                "injected transaction failure after push".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Refuse when the path on disk no longer holds its HEAD content (or is not

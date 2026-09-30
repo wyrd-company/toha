@@ -450,6 +450,108 @@ fn a_write_failure_rolls_back_and_leaves_the_index_unwritten() {
     );
 }
 
+#[test]
+fn a_failure_after_a_write_but_before_commit_rolls_the_transaction_back() {
+    // Behavior 24, isolating rollback itself: with a CLEAN tree the locked
+    // re-check passes and the write transaction proceeds, so a failure injected
+    // immediately after the first file is written (after done.push, before the
+    // index is committed) must exercise rollback. We prove the write actually
+    // happened, then that rollback restored the owned bytes, left the on-disk
+    // index and outside-target entries untouched, and removed the candidate ref.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q", "-b", "main"]);
+    write(&root.join("app/a.txt"), b"one\n");
+    write(&root.join("app/b.txt"), b"one\n");
+    write(&root.join("outside.txt"), b"outside\n"); // an entry outside the target
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "operator"]);
+    let index_before = std::fs::read(root.join(".git/index")).unwrap();
+
+    // Base = operator's committed content; new changes both files (both written).
+    make_snapshot(
+        root,
+        BASE_ID,
+        "app",
+        &[("a.txt", b"one\n"), ("b.txt", b"one\n")],
+    );
+    make_snapshot(
+        root,
+        NEW_ID,
+        "app",
+        &[("a.txt", b"two\n"), ("b.txt", b"two\n")],
+    );
+
+    let project = open(root, "app");
+    let base = read_snapshot(&project, BASE_ID);
+    let new = read_snapshot(&project, NEW_ID);
+
+    // Fail after the first push: a.txt is written (BTreeMap order), then abort.
+    super::inject_fail::arm(1);
+    let result = merge_into_worktree(
+        &project,
+        &Base::Snapshot(base),
+        &new,
+        &MergeOptions {
+            trusted: true,
+            dry_run: false,
+        },
+    );
+    super::inject_fail::disarm();
+    assert!(
+        result.is_err(),
+        "the injected transaction failure aborts: {result:?}"
+    );
+
+    // The raw on-disk index was never written by the aborted transaction — read
+    // it BEFORE any git command (git status would refresh its stat cache). This
+    // proves outside-target entries are intact byte-for-byte.
+    assert_eq!(
+        std::fs::read(root.join(".git/index")).unwrap(),
+        index_before,
+        "the on-disk index is unchanged (transaction never committed it)"
+    );
+
+    // The write ACTUALLY occurred: at the moment of failure a.txt held the
+    // template bytes on disk (proving we reached write, not a pre-write refusal).
+    let observed = super::inject_fail::observed();
+    assert!(
+        observed
+            .iter()
+            .any(|(p, b)| p == "app/a.txt" && b.as_deref() == Some(b"two\n".as_ref())),
+        "a.txt was written before rollback: {observed:?}"
+    );
+
+    // Rollback restored the owned bytes: a.txt is back to HEAD, b.txt was never
+    // reached, and the outside-target file is intact.
+    assert_eq!(
+        std::fs::read_to_string(root.join("app/a.txt")).unwrap(),
+        "one\n",
+        "a.txt restored to HEAD by rollback"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("app/b.txt")).unwrap(),
+        "one\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("outside.txt")).unwrap(),
+        "outside\n"
+    );
+    // Nothing is left modified — worktree is clean (index and worktree agree).
+    let status = git(root, &["status", "--porcelain"]);
+    assert!(
+        status.is_empty(),
+        "worktree clean after rollback: {status:?}"
+    );
+
+    // The candidate ref was cleaned up (ref-map restored to just the base).
+    let refs = git(root, &["for-each-ref", "refs/toha/snapshots/"]);
+    assert!(
+        !refs.contains(NEW_ID) && refs.contains(BASE_ID),
+        "candidate ref removed, base preserved: {refs}"
+    );
+}
+
 fn action_of(result: &Merged, path: &str) -> Option<Action> {
     if let Merged::Written { changes, .. } = result {
         changes
