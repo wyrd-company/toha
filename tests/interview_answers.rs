@@ -1643,3 +1643,68 @@ fn skipped_invalid_answer_is_dropped_beside_another_failing_answer() {
     );
     assert_eq!(submissions(state.path(), target.path()), 0);
 }
+
+#[test]
+fn a_snapshot_seeded_id_is_prepared_exactly_once_with_a_single_occupant() {
+    // Behavior 11 (duplicate preparation / single occupancy): for an id that has
+    // BOTH a configured default and a snapshot-seeded value, the engine prepares
+    // the id EXACTLY ONCE — one prompt in the batch (an ordered Vec where a
+    // duplicate IS representable), carrying the single surviving occupant (the
+    // snapshot's value). This observes occupancy at the preparation boundary, not
+    // which value wins in a keyed JSON property.
+    //
+    // Sole-kill: src/interview.rs the prompt-push site, when the default source is
+    // Snapshot, pushes the prompt twice (duplicate preparation); the batch then
+    // holds two `style` prompts and the exactly-once assertion fails.
+    use indexmap::IndexMap;
+    use toha::interview::{SnapshotSeed, configured_defaults};
+    use toha::{Id, Interview, Item, RawAnswer};
+
+    let (_folder, template) = inline(
+        "name: sample\ninterview:\n  - { id: name, type: text, prompt: N?, required: true }\n  - { id: style, type: select, prompt: S?, options: [card, panel], default: card }\n",
+    );
+    // A configured default for `style` (card) AND a snapshot seed (panel).
+    let mappings = configured(json!({ "style": "card" }));
+    let presets: IndexMap<PresetName, ConfigEntry<Value>> = IndexMap::new();
+    let resolution = configured_defaults("sample", &template, &presets, &mappings).unwrap();
+    let now = seed().now;
+    let mut defaults: IndexMap<Id, RawAnswer> = IndexMap::new();
+    defaults.insert(Id::parse("style").unwrap(), RawAnswer(json!("panel")));
+    let snap_seed = SnapshotSeed {
+        defaults,
+        from: "01J9Z4K7QX6M2V8R0T5B3N1P9D".to_owned(),
+    };
+    let Interview::Asking(pending) = resolution
+        .start_with_seed(&template, now, ctx(), Some(snap_seed))
+        .unwrap()
+        .0
+    else {
+        panic!("expected questions");
+    };
+    // Exactly one prepared prompt for `style` — not two (no duplicate occupancy).
+    let style_prompts = pending
+        .batch()
+        .items
+        .iter()
+        .filter(|item| matches!(item, Item::Prompt(p) if p.id == Id::parse("style").unwrap()))
+        .count();
+    assert_eq!(
+        style_prompts, 1,
+        "the seeded+configured id is prepared exactly once (single occupant)"
+    );
+    // That single occupant is the snapshot's value (panel), not the configured card.
+    let style_default = pending
+        .batch()
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Prompt(p) if p.id == Id::parse("style").unwrap() => p.default.as_ref(),
+            _ => None,
+        })
+        .expect("style has a prepared default");
+    assert_eq!(
+        style_default.to_json(),
+        json!("panel"),
+        "the single occupant is the snapshot value"
+    );
+}
