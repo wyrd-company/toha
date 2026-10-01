@@ -135,3 +135,23 @@ carries the full set (it accepts the seeded defaults with Enter); the script/age
 route-shaped persisted logs record only the override. A non-identity `format` makes
 the raw differ from the rendered answer. B7 (`snapshot.generated`) and B11 (ordered
 duplicate preparation) are unchanged and remain root-accepted.
+
+## Round 7: complete per-case evidence + script/agent adapter-path raw
+
+Every mutation case (47) was re-run uniformly, each recording its actual cargo
+target+name, patch site, observed named-assertion failure (with `tests/…:line`),
+the explicit `git checkout -- …` restore command, and the green result on restore,
+at one committed basis — retained in `task1030-evidence/soul-kills-complete.md`
+(47/47 killed, 0 survived). Correct targets per case: `--test generator`,
+`--test generator_fixture`, `--test interview_answers`, `--bin toha
+cli::like::tests::…`, `--lib snapshot::project::tests::…`.
+
+Gate 1 (script + agent adapter paths): the scripted adapter
+(`protocol::answer_document_headless`) and the agent resume adapter
+(`StagedRecord::replay_with_seed`) are exercised in-process and each one's
+`Completed::accepted_raw()` is asserted to be the pre-format effective raw
+INCLUDING the seeded defaults; focused seam-mutation runs fail the scripted
+(generator_fixture.rs:1000) and agent (generator_fixture.rs:1037) assertions
+independently. Crate (seam), person (actual persisted), B7 (`snapshot.generated`),
+B11 (ordered duplicate), and the identity-unaware purity check are unchanged and
+root-accepted.
