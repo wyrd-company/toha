@@ -328,10 +328,10 @@ impl RegistryFile {
         // round-trip through this and every other writer; nothing writes
         // `trusted: true`.
         for (formal, entry) in &self.templates {
-            if entry.denied {
-                if let Some(object) = value["templates"][formal].as_object_mut() {
-                    object.insert("trusted".into(), Value::Bool(false));
-                }
+            if entry.denied
+                && let Some(object) = value["templates"][formal].as_object_mut()
+            {
+                object.insert("trusted".into(), Value::Bool(false));
             }
         }
         let mut schema = SCHEMA.clone();

@@ -198,17 +198,16 @@ impl Plan {
         // file is written, exactly as before. A deferred hook's cwd is not known
         // until its result-reading fields render, so it is checked in the loop.
         for planned in &self.hooks {
-            if let Planned::Ready(hook) = planned {
-                if let Some(cwd) = &hook.cwd {
-                    if has_symlink_component(target.as_path(), cwd).map_err(|source| {
-                        ApplyError::Io {
-                            path: target.as_path().join(cwd.as_path()),
-                            source,
-                        }
-                    })? {
-                        return Err(ApplyError::Symlink(cwd.clone()));
+            if let Planned::Ready(hook) = planned
+                && let Some(cwd) = &hook.cwd
+                && has_symlink_component(target.as_path(), cwd).map_err(|source| {
+                    ApplyError::Io {
+                        path: target.as_path().join(cwd.as_path()),
+                        source,
                     }
-                }
+                })?
+            {
+                return Err(ApplyError::Symlink(cwd.clone()));
             }
         }
         // Resolve every injected target fully in memory before the first write, so
@@ -302,15 +301,15 @@ impl Plan {
                         continue;
                     };
                     // A deferred cwd is only now known.
-                    if let Some(cwd) = &hook.cwd {
-                        if has_symlink_component(target.as_path(), cwd).map_err(|source| {
+                    if let Some(cwd) = &hook.cwd
+                        && has_symlink_component(target.as_path(), cwd).map_err(|source| {
                             ApplyError::Io {
                                 path: target.as_path().join(cwd.as_path()),
                                 source,
                             }
-                        })? {
-                            return Err(ApplyError::Symlink(cwd.clone()));
-                        }
+                        })?
+                    {
+                        return Err(ApplyError::Symlink(cwd.clone()));
                     }
                     hook
                 }

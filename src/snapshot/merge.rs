@@ -151,11 +151,11 @@ pub fn merge_apply(
         .unwrap_or_else(|| gix::ObjectId::null(project.repo().object_hash()));
 
     // Already current: the new snapshot equals the base — discard it and stop.
-    if let Base::Snapshot(base_snapshot) = &base {
-        if is_already_current(project, base_snapshot, &new, &inputs)? {
-            remove_candidate(project, new.id(), published)?;
-            return Ok(Merged::AlreadyCurrent);
-        }
+    if let Base::Snapshot(base_snapshot) = &base
+        && is_already_current(project, base_snapshot, &new, &inputs)?
+    {
+        remove_candidate(project, new.id(), published)?;
+        return Ok(Merged::AlreadyCurrent);
     }
 
     let result = merge_into_worktree(project, &base, &new, &options);
@@ -354,14 +354,14 @@ pub(crate) fn merge_into_worktree(
     if !options.dry_run && !matches!(result, Ok(Merged::Written { .. })) {
         // Any unsuccessful post-capture exit removes this candidate ref. A cleanup
         // failure keeps the original error and names the ref that remains.
-        if let (Err(original), Some(published)) = (&result, published) {
-            if let Err(cleanup) = remove_candidate(project, new.id(), published) {
-                return Err(MergeError::Io(format!(
-                    "{original}; additionally, cleanup of {}{} failed: {cleanup}",
-                    SNAPSHOT_REF_PREFIX,
-                    new.id()
-                )));
-            }
+        if let (Err(original), Some(published)) = (&result, published)
+            && let Err(cleanup) = remove_candidate(project, new.id(), published)
+        {
+            return Err(MergeError::Io(format!(
+                "{original}; additionally, cleanup of {}{} failed: {cleanup}",
+                SNAPSHOT_REF_PREFIX,
+                new.id()
+            )));
         }
     }
     result

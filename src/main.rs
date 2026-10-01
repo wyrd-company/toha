@@ -1086,10 +1086,8 @@ fn stage(
             };
         }
     };
-    if interactive {
-        if let Some(seed) = &like_seed {
-            println!("seed defaults from snapshot {}", seed.label);
-        }
+    if interactive && let Some(seed) = &like_seed {
+        println!("seed defaults from snapshot {}", seed.label);
     }
     let seed_from = like_seed.as_ref().map(|seed| seed.id.to_string());
     let mut saved = StagedRecord::new_with_context(
@@ -1124,10 +1122,10 @@ fn stage(
         return match completed {
             Ok(terminal::Session::Completed(completed)) => {
                 // An interview without prompts still needs a staged record.
-                if saved.submissions.is_empty() {
-                    if let Err(e) = store.save(&target, &saved) {
-                        return Outcome::Error(e.to_string());
-                    }
+                if saved.submissions.is_empty()
+                    && let Err(e) = store.save(&target, &saved)
+                {
+                    return Outcome::Error(e.to_string());
                 }
                 completion_preview(
                     &template,
@@ -1413,17 +1411,17 @@ fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome 
         }) => {
             // An accepted abort removes the record and saves no submission; every
             // other accepted step saves the one submission.
-            if let Interview::Ended(ended) = &interview {
-                if ended.kind() == EndKind::Abort {
-                    if let Err(e) = store.remove(&target) {
-                        return Outcome::Error(e.to_string());
-                    }
-                    eprintln!("{}", guidance::flow_ended(ended));
-                    return Outcome::Document(
-                        protocol::ended_document(ended, &context(&target, &saved)),
-                        0,
-                    );
+            if let Interview::Ended(ended) = &interview
+                && ended.kind() == EndKind::Abort
+            {
+                if let Err(e) = store.remove(&target) {
+                    return Outcome::Error(e.to_string());
                 }
+                eprintln!("{}", guidance::flow_ended(ended));
+                return Outcome::Document(
+                    protocol::ended_document(ended, &context(&target, &saved)),
+                    0,
+                );
             }
             saved.submissions.push(submission);
             if let Err(e) = store.save(&target, &saved) {
@@ -2169,12 +2167,11 @@ fn run(
     };
     // `apply PATH` on a staged update resumes it through the update replay
     // adapter and merges from the base.
-    if answers.is_none() {
-        if let Some(saved) = &existing {
-            if update_stage::is_staged_update(saved) {
-                return update_stage::apply_staged(saved.clone(), path, dry_run, trust, dirs);
-            }
-        }
+    if answers.is_none()
+        && let Some(saved) = &existing
+        && update_stage::is_staged_update(saved)
+    {
+        return update_stage::apply_staged(saved.clone(), path, dry_run, trust, dirs);
     }
     let (config, registry, cwd) = match environment(dirs) {
         Ok(v) => v,
@@ -2211,10 +2208,10 @@ fn run(
         dry_run,
         trust,
     };
-    if let (Some(arg), Some(saved)) = (&template, &existing) {
-        if let Some(refusal) = staged_refusal(&invocation, arg, path, saved, &scope, &target) {
-            return refusal;
-        }
+    if let (Some(arg), Some(saved)) = (&template, &existing)
+        && let Some(refusal) = staged_refusal(&invocation, arg, path, saved, &scope, &target)
+    {
+        return refusal;
     }
     // A template named for its own staged interview resumes that interview.
     let template = template.filter(|_| existing.is_none());
@@ -2518,21 +2515,21 @@ fn run(
     ) {
         Ok(Applied::Written { after_apply, .. }) => {
             let mut lines = Vec::from_iter(after_apply);
-            if let (Some(sv), Some(cplan)) = (saved.as_ref(), capture_plan.as_ref()) {
-                if let Some(line) = plain_apply_snapshot_line(
+            if let (Some(sv), Some(cplan)) = (saved.as_ref(), capture_plan.as_ref())
+                && let Some(line) = plain_apply_snapshot_line(
                     capture_project.as_ref(),
                     capture_was_clean,
                     sv,
                     &capture_now,
                     cplan,
-                ) {
-                    lines.push(line);
-                }
+                )
+            {
+                lines.push(line);
             }
-            if saved.is_some() {
-                if let Err(e) = store.remove(&target) {
-                    return Outcome::Error(e.to_string());
-                }
+            if saved.is_some()
+                && let Err(e) = store.remove(&target)
+            {
+                return Outcome::Error(e.to_string());
             }
             Outcome::Written(lines)
         }

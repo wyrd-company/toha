@@ -536,10 +536,11 @@ pub fn apply_staged(
             // A successful, non-preview merge consumes the staged interview; a
             // dry run previews it and leaves the staged interview in place so the
             // real apply remains available.
-            if outcome.is_success() && !dry_run {
-                if let Err(error) = store.remove(&target) {
-                    return Outcome::Error(error.to_string());
-                }
+            if outcome.is_success()
+                && !dry_run
+                && let Err(error) = store.remove(&target)
+            {
+                return Outcome::Error(error.to_string());
             }
             outcome
         }

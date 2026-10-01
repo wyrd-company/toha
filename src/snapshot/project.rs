@@ -429,10 +429,9 @@ impl Project {
         if let Some(entry) = tree
             .lookup_entry_by_path("files")
             .map_err(|err| SnapshotError::Git(err.to_string()))?
+            && entry.mode().is_tree()
         {
-            if entry.mode().is_tree() {
-                self.tree_leaf_oids(entry.oid().to_owned(), "", &mut oids)?;
-            }
+            self.tree_leaf_oids(entry.oid().to_owned(), "", &mut oids)?;
         }
         Ok(oids)
     }

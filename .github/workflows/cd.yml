@@ -85,7 +85,7 @@ jobs:
             manifest_version="$(sed -nE 's/^version = "([^"]+)"/\1/p' Cargo.toml | head -1)"
             [[ "$version" == "$manifest_version" ]]
           fi
-      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: dtolnay/rust-toolchain@1.88.0
         with:
           targets: ${{ matrix.target }}
       - name: Set up Go for Linux package builder
@@ -198,7 +198,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: dtolnay/rust-toolchain@1.88.0
       - name: Publish or verify the crate
         shell: bash
         env:

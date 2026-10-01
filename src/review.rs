@@ -256,10 +256,10 @@ fn executed_files(command: &Value, root: &Path) -> Result<Vec<ScriptDigest>, Rev
                     .flatten()
                     .filter_map(Value::as_str);
                 for token in tokens {
-                    if is_literal(token) {
-                        if let Some(script) = hash_literal(root, token)? {
-                            scripts.push(script);
-                        }
+                    if is_literal(token)
+                        && let Some(script) = hash_literal(root, token)?
+                    {
+                        scripts.push(script);
                     }
                 }
             }

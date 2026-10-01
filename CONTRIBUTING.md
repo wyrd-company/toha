@@ -10,7 +10,7 @@ behavior, expected behavior, and a small reproduction. For a pull request,
 link the issue when one exists and explain the user-visible change and how you
 tested it.
 
-Use Rust stable (minimum supported version 1.85) and [Task](https://taskfile.dev).
+Use Rust stable (minimum supported version 1.88) and [Task](https://taskfile.dev).
 Install `actionlint` for GitHub workflow validation, `ryl` for YAML validation,
 and `intentional` for release intents. Install `vhs` when editing the terminal
 demo.

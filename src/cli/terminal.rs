@@ -32,10 +32,10 @@ pub(crate) struct InquireAsk;
 impl Ask for InquireAsk {
     fn text(&mut self, prompt: &Prompt, title: &str) -> Result<String, String> {
         let mut input = Text::new(title);
-        if prompt.kind != PromptKind::TextLoop {
-            if let Some(Answer::Text(default)) = &prompt.default {
-                input = input.with_default(default);
-            }
+        if prompt.kind != PromptKind::TextLoop
+            && let Some(Answer::Text(default)) = &prompt.default
+        {
+            input = input.with_default(default);
         }
         if let Some(placeholder) = &prompt.placeholder {
             input = input.with_placeholder(placeholder);
@@ -75,10 +75,10 @@ impl Ask for InquireAsk {
 
     fn select(&mut self, prompt: &Prompt) -> Result<String, String> {
         let mut input = Select::new(&prompt.title, prompt.options.clone());
-        if let Some(Answer::Text(default)) = &prompt.default {
-            if let Some(index) = prompt.options.iter().position(|option| option == default) {
-                input = input.with_starting_cursor(index);
-            }
+        if let Some(Answer::Text(default)) = &prompt.default
+            && let Some(index) = prompt.options.iter().position(|option| option == default)
+        {
+            input = input.with_starting_cursor(index);
         }
         if let Some(description) = &prompt.description {
             input = input.with_help_message(description);

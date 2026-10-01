@@ -153,20 +153,20 @@ fn fetch_new(
         reference: Some(commit),
         ..
     } = address
+        && commit.len() == 40
+        && commit.bytes().all(|byte| byte.is_ascii_hexdigit())
     {
-        if commit.len() == 40 && commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            let root = parent.join(commit);
-            if root.is_dir() {
-                return Ok(ResolvedTemplate {
-                    formal_name,
-                    commit: commit.clone(),
-                    folder: selected_folder(&root, address)?,
-                    approval: None,
-                    named: false,
-                    aliases: Vec::new(),
-                    source: None,
-                });
-            }
+        let root = parent.join(commit);
+        if root.is_dir() {
+            return Ok(ResolvedTemplate {
+                formal_name,
+                commit: commit.clone(),
+                folder: selected_folder(&root, address)?,
+                approval: None,
+                named: false,
+                aliases: Vec::new(),
+                source: None,
+            });
         }
     }
     fs::create_dir_all(&parent).map_err(ResolveError::text)?;
@@ -285,14 +285,14 @@ pub fn resume_template(
             source: None,
         });
     }
-    if let Some(found) = entry(formal.into(), registry) {
-        if found.commit == commit {
-            return Ok(ResolvedTemplate {
-                approval: if named { found.approval.clone() } else { None },
-                named,
-                ..found
-            });
-        }
+    if let Some(found) = entry(formal.into(), registry)
+        && found.commit == commit
+    {
+        return Ok(ResolvedTemplate {
+            approval: if named { found.approval.clone() } else { None },
+            named,
+            ..found
+        });
     }
     if let Some(result) = bundled::resume(formal, commit, dirs) {
         return result;

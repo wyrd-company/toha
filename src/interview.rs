@@ -703,42 +703,41 @@ fn make_prompt(
     };
     let default_source = prepared.as_ref().map(|value| value.source.clone());
     let mut configured_rejection = None;
-    if let Some(prepared) = prepared {
-        if let Err(rejected) =
+    if let Some(prepared) = prepared
+        && let Err(rejected) =
             validate(id, &Rules::of_prompt(&prompt, q), prepared.answer.to_json())
-        {
-            match prepared.source {
-                PreparedDefaultSource::Template { expression } => {
-                    return Err(EvalError {
-                        id: id.clone(),
-                        field: "default",
-                        message: format!(
-                            "default {} is not allowed: {}",
-                            prepared.answer.to_json(),
-                            rejected.message
-                        ),
-                        expression,
-                        config_key: None,
-                    });
-                }
-                PreparedDefaultSource::Configured(origin) => {
-                    prompt.default = None;
-                    configured_rejection = Some(rejection(
-                        id,
-                        format!(
-                            "default {} from {} is not allowed: {}",
-                            prepared.answer.to_json(),
-                            origin.description(),
-                            rejected.message
-                        ),
-                    ));
-                }
-                // A snapshot-seeded default is an optional default, like a replay
-                // seed: keep it shown so the person can accept or override, and
-                // let the headless walk re-ask (exit 4) rather than writing an
-                // invalid value. It is never a hard error.
-                PreparedDefaultSource::Seed | PreparedDefaultSource::Snapshot { .. } => {}
+    {
+        match prepared.source {
+            PreparedDefaultSource::Template { expression } => {
+                return Err(EvalError {
+                    id: id.clone(),
+                    field: "default",
+                    message: format!(
+                        "default {} is not allowed: {}",
+                        prepared.answer.to_json(),
+                        rejected.message
+                    ),
+                    expression,
+                    config_key: None,
+                });
             }
+            PreparedDefaultSource::Configured(origin) => {
+                prompt.default = None;
+                configured_rejection = Some(rejection(
+                    id,
+                    format!(
+                        "default {} from {} is not allowed: {}",
+                        prepared.answer.to_json(),
+                        origin.description(),
+                        rejected.message
+                    ),
+                ));
+            }
+            // A snapshot-seeded default is an optional default, like a replay
+            // seed: keep it shown so the person can accept or override, and
+            // let the headless walk re-ask (exit 4) rather than writing an
+            // invalid value. It is never a hard error.
+            PreparedDefaultSource::Seed | PreparedDefaultSource::Snapshot { .. } => {}
         }
     }
     Ok(PreparedPrompt {
@@ -886,24 +885,24 @@ fn skipped_default(
     let Some(prepared) = prepared else {
         return Ok(None);
     };
-    if let PreparedDefaultSource::Template { expression } = &prepared.source {
-        if let Err(rejected) = validate(
+    if let PreparedDefaultSource::Template { expression } = &prepared.source
+        && let Err(rejected) = validate(
             &q.id,
             &Rules::ready(q, answers, template, seed)?,
             prepared.answer.to_json(),
-        ) {
-            return Err(EvalError {
-                id: q.id.clone(),
-                field: "default",
-                message: format!(
-                    "default {} is not allowed: {}",
-                    prepared.answer.to_json(),
-                    rejected.message
-                ),
-                expression: expression.clone(),
-                config_key: None,
-            });
-        }
+        )
+    {
+        return Err(EvalError {
+            id: q.id.clone(),
+            field: "default",
+            message: format!(
+                "default {} is not allowed: {}",
+                prepared.answer.to_json(),
+                rejected.message
+            ),
+            expression: expression.clone(),
+            config_key: None,
+        });
     }
     Ok(Some(prepared.answer))
 }
@@ -975,10 +974,10 @@ fn validate(id: &Id, rules: &Rules, value: Value) -> Result<Answer, Rejection> {
             return fail(format!("must have at most {}", count(n, "item", "items")));
         }
         if rules.kind == PromptKind::MultiSelect {
-            if let Some(options) = &rules.options {
-                if v.iter().any(|s| !options.contains(s)) {
-                    return fail(format!("each item must be one of: {}", options.join(", ")));
-                }
+            if let Some(options) = &rules.options
+                && v.iter().any(|s| !options.contains(s))
+            {
+                return fail(format!("each item must be one of: {}", options.join(", ")));
             }
             let mut seen = HashSet::new();
             if !v.iter().all(|s| seen.insert(s)) {
@@ -988,10 +987,9 @@ fn validate(id: &Id, rules: &Rules, value: Value) -> Result<Answer, Rejection> {
     }
     if let (Answer::Text(v), PromptKind::Select, Some(options)) =
         (&answer, rules.kind, &rules.options)
+        && !options.contains(v)
     {
-        if !options.contains(v) {
-            return fail(format!("must be one of: {}", options.join(", ")));
-        }
+        return fail(format!("must be one of: {}", options.join(", ")));
     }
     Ok(answer)
 }
@@ -1514,10 +1512,10 @@ fn unresolved(nodes: &[Node], available: &mut HashSet<String>, t: &Template) -> 
                 ));
             }
         }
-        if let Node::Group(g) = node {
-            if let Some(error) = unresolved(&g.nodes, available, t) {
-                return Some(error);
-            }
+        if let Node::Group(g) = node
+            && let Some(error) = unresolved(&g.nodes, available, t)
+        {
+            return Some(error);
         }
         if let Node::Question(Question { id, .. })
         | Node::Computed(crate::template::Computed { id, .. }) = node

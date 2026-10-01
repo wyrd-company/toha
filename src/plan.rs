@@ -526,8 +526,8 @@ impl Plan {
                 }
                 continue;
             }
-            if let Some(when) = &hook.when {
-                if !when
+            if let Some(when) = &hook.when
+                && !when
                     .eval(&ctx)
                     .map_err(|e| PlanError::Render {
                         path: template.root.clone(),
@@ -537,9 +537,8 @@ impl Plan {
                         ),
                     })?
                     .is_true()
-                {
-                    continue;
-                }
+            {
+                continue;
             }
             let rendered =
                 crate::interview::render_hooks(hook, &ctx).map_err(|f| PlanError::Render {
@@ -629,10 +628,10 @@ impl Plan {
         let field = format!("inject[{index}]");
         match rule {
             InjectRule::Region(region) => {
-                if let Some(when) = &region.when {
-                    if !inject_when(when, &field, ctx)? {
-                        return Ok(());
-                    }
+                if let Some(when) = &region.when
+                    && !inject_when(when, &field, ctx)?
+                {
+                    return Ok(());
                 }
                 let path = inject_target(&region.into, &field, ctx)?;
                 if json_format(&path).is_some() {
@@ -676,10 +675,10 @@ impl Plan {
                 self.edits.push(PlannedEdit::Region(edit));
             }
             InjectRule::Struct(rule) => {
-                if let Some(when) = &rule.when {
-                    if !inject_when(when, &field, ctx)? {
-                        return Ok(());
-                    }
+                if let Some(when) = &rule.when
+                    && !inject_when(when, &field, ctx)?
+                {
+                    return Ok(());
                 }
                 let path = inject_target(&rule.into, &field, ctx)?;
                 let Some(format) = json_format(&path) else {
@@ -707,13 +706,14 @@ impl Plan {
     /// Rejects a second region rule with the same key on one target.
     fn check_region_unique(&self, edit: &PlannedRegionEdit, field: &str) -> Result<(), PlanError> {
         for existing in &self.edits {
-            if let PlannedEdit::Region(other) = existing {
-                if other.path == edit.path && other.region == edit.region {
-                    return Err(PlanError::Inject {
-                        field: field.to_owned(),
-                        message: format!("duplicate region `{}` on `{}`", edit.region, edit.path),
-                    });
-                }
+            if let PlannedEdit::Region(other) = existing
+                && other.path == edit.path
+                && other.region == edit.region
+            {
+                return Err(PlanError::Inject {
+                    field: field.to_owned(),
+                    message: format!("duplicate region `{}` on `{}`", edit.region, edit.path),
+                });
             }
         }
         Ok(())
@@ -721,16 +721,17 @@ impl Plan {
     /// Rejects a duplicate or ancestor/descendant JSON path on one target.
     fn check_json_unique(&self, edit: &PlannedJsonEdit, field: &str) -> Result<(), PlanError> {
         for existing in &self.edits {
-            if let PlannedEdit::JsonValue(other) = existing {
-                if other.path == edit.path && other.json_path.overlaps(&edit.json_path) {
-                    return Err(PlanError::Inject {
-                        field: field.to_owned(),
-                        message: format!(
-                            "JSON paths `{}` and `{}` overlap on `{}`",
-                            other.json_path, edit.json_path, edit.path
-                        ),
-                    });
-                }
+            if let PlannedEdit::JsonValue(other) = existing
+                && other.path == edit.path
+                && other.json_path.overlaps(&edit.json_path)
+            {
+                return Err(PlanError::Inject {
+                    field: field.to_owned(),
+                    message: format!(
+                        "JSON paths `{}` and `{}` overlap on `{}`",
+                        other.json_path, edit.json_path, edit.path
+                    ),
+                });
             }
         }
         Ok(())

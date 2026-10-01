@@ -264,14 +264,14 @@ pub(crate) fn prepare(
 
     // Preconditions: the target must be clean, and a base snapshot must have been
     // taken for this same target (identity 17, target side).
-    if let Some(snapshot) = &base_snapshot {
-        if snapshot.target() != project.target() {
-            return Err(Outcome::Error(format!(
-                "the snapshot was taken for target {:?}, not {:?}",
-                snapshot.target().as_str(),
-                project.target().as_str()
-            )));
-        }
+    if let Some(snapshot) = &base_snapshot
+        && snapshot.target() != project.target()
+    {
+        return Err(Outcome::Error(format!(
+            "the snapshot was taken for target {:?}, not {:?}",
+            snapshot.target().as_str(),
+            project.target().as_str()
+        )));
     }
     match project.cleanliness() {
         Ok(Cleanliness::Clean) => {}
@@ -425,14 +425,14 @@ pub(crate) fn resume_prepared(
         },
         UpdateBase::Baseline => (Base::Empty, None),
     };
-    if let Some(snapshot) = &base_snapshot {
-        if snapshot.target() != project.target() {
-            return Err(Outcome::Error(format!(
-                "the snapshot was taken for target {:?}, not {:?}",
-                snapshot.target().as_str(),
-                project.target().as_str()
-            )));
-        }
+    if let Some(snapshot) = &base_snapshot
+        && snapshot.target() != project.target()
+    {
+        return Err(Outcome::Error(format!(
+            "the snapshot was taken for target {:?}, not {:?}",
+            snapshot.target().as_str(),
+            project.target().as_str()
+        )));
     }
 
     let cwd = std::env::current_dir().map_err(|e| Outcome::Error(e.to_string()))?;

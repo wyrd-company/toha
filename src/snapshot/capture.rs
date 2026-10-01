@@ -156,18 +156,16 @@ fn collect(
                         .as_ref()
                         .map(|(oid, _)| head.get(&rel).map(|(head_oid, _)| head_oid) != Some(oid))
                         .unwrap_or(false);
-                    if !changed {
-                        if let Some((oid, kind)) = base_file_blob(repo, base.id(), &rel)? {
-                            push(
-                                &mut blobs,
-                                &mut paths,
-                                &mut seen,
-                                &rel,
-                                kind,
-                                oid,
-                                Origin::Hook,
-                            )?;
-                        }
+                    if !changed && let Some((oid, kind)) = base_file_blob(repo, base.id(), &rel)? {
+                        push(
+                            &mut blobs,
+                            &mut paths,
+                            &mut seen,
+                            &rel,
+                            kind,
+                            oid,
+                            Origin::Hook,
+                        )?;
                     }
                 }
                 // An edit path: released when it owns nothing, otherwise captured

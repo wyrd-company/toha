@@ -75,20 +75,20 @@ pub fn parse(arg: &str, hosts: &Hosts, cwd: &Path, home: &Path) -> Result<Addres
             path,
         });
     }
-    if let Some((prefix, rest)) = arg.split_once(':') {
-        if let Some(base) = hosts.get(prefix) {
-            let (repo, reference, path) = split_git(rest)?;
-            if !repo.contains('/') {
-                return Err(SourceError::Address(
-                    "host address requires owner/repository".into(),
-                ));
-            }
-            return Ok(Address::Git {
-                repo: format!("{}/{}", base.trim_end_matches('/'), repo),
-                reference,
-                path,
-            });
+    if let Some((prefix, rest)) = arg.split_once(':')
+        && let Some(base) = hosts.get(prefix)
+    {
+        let (repo, reference, path) = split_git(rest)?;
+        if !repo.contains('/') {
+            return Err(SourceError::Address(
+                "host address requires owner/repository".into(),
+            ));
         }
+        return Ok(Address::Git {
+            repo: format!("{}/{}", base.trim_end_matches('/'), repo),
+            reference,
+            path,
+        });
     }
     let drive = arg.as_bytes().get(0..3).is_some_and(|v| {
         v[0].is_ascii_alphabetic() && v[1] == b':' && matches!(v[2], b'/' | b'\\')

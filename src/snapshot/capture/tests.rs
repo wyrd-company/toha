@@ -121,7 +121,7 @@ fn captures_plan_targets_and_hook_changes_excluding_ignored_files() {
 }
 
 #[test]
-fn captures_symlink_executable_and_crlf_stored_form() {
+fn captures_platform_modes_and_crlf_stored_form() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     git(root, &["init", "-q", "-b", "main"]);
@@ -133,6 +133,7 @@ fn captures_symlink_executable_and_crlf_stored_form() {
 
     // Applied plan targets: an executable and a CRLF text file.
     write(&root.join("app/script.sh"), b"#!/bin/sh\necho hi\n");
+    #[cfg(unix)]
     std::fs::set_permissions(
         root.join("app/script.sh"),
         std::os::unix::fs::PermissionsExt::from_mode(0o755),
@@ -140,6 +141,7 @@ fn captures_symlink_executable_and_crlf_stored_form() {
     .unwrap();
     write(&root.join("app/data.crlf"), b"a\r\nb\r\n");
     // A hook-created symbolic link.
+    #[cfg(unix)]
     std::os::unix::fs::symlink("keep.txt", root.join("app/link")).unwrap();
 
     let target = canonical_target(&root.join("app")).unwrap();
@@ -147,24 +149,27 @@ fn captures_symlink_executable_and_crlf_stored_form() {
     let plan = plan_of(vec![whole("script.sh"), whole("data.crlf")]);
     let id = project.capture(root, &plan, None, inputs(&head)).unwrap();
 
-    // Modes: executable is 100755, the symlink is 120000.
-    let ls = git(root, &["ls-tree", "-r", &snap_ref(&id)]);
-    let mode_of = |name: &str| -> String {
-        ls.lines()
-            .find(|l| l.ends_with(name))
-            .map(|l| l.split_whitespace().next().unwrap().to_owned())
-            .unwrap_or_default()
-    };
-    assert_eq!(
-        mode_of("files/script.sh"),
-        "100755",
-        "executable bit recorded"
-    );
-    assert_eq!(
-        mode_of("files/link"),
-        "120000",
-        "symbolic link recorded as a link"
-    );
+    #[cfg(unix)]
+    {
+        // Modes: executable is 100755, the symlink is 120000.
+        let ls = git(root, &["ls-tree", "-r", &snap_ref(&id)]);
+        let mode_of = |name: &str| -> String {
+            ls.lines()
+                .find(|l| l.ends_with(name))
+                .map(|l| l.split_whitespace().next().unwrap().to_owned())
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            mode_of("files/script.sh"),
+            "100755",
+            "executable bit recorded"
+        );
+        assert_eq!(
+            mode_of("files/link"),
+            "120000",
+            "symbolic link recorded as a link"
+        );
+    }
 
     // The CRLF file is captured in its stored (LF) form.
     let stored = git(
@@ -505,6 +510,7 @@ fn a_dropped_region_injection_is_retracted_from_the_captured_file() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn read_blob_rejects_a_process_filter_rather_than_streaming_it() {
     // The read side rejects a `ToGitOutcome::Process` filter symmetrically with
