@@ -15,3 +15,6 @@ interview:
     type: text
     prompt: Copyright holder
     default: Example Org
+
+  - id: slug
+    computed: "title | kebab"

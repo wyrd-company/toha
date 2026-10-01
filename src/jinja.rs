@@ -1238,7 +1238,8 @@ mod tests {
     #[test]
     fn file_body_rejects_a_sibling_statement_nested_in_an_unreachable_branch() {
         let dir = tempfile::tempdir().unwrap();
-        let partials = super::Partials::rooted(dir.path());
+        let root = dir.path().canonicalize().unwrap();
+        let partials = super::Partials::rooted(&root);
         // The block is unreachable at render, but the capability gate walks the
         // whole AST and refuses it before any closure is registered.
         let error = partials
@@ -1258,7 +1259,8 @@ mod tests {
     fn file_body_admits_only_include_from_the_multi_template_grammar() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("frag.txt"), "fragment").unwrap();
-        let partials = super::Partials::rooted(dir.path());
+        let root = dir.path().canonicalize().unwrap();
+        let partials = super::Partials::rooted(&root);
         let body = partials
             .compile("before {% include \"frag.txt\" %} after".into(), "body.txt")
             .unwrap();
@@ -1273,7 +1275,8 @@ mod tests {
         // Every jinja-include message is prefixed with "jinja"; the YAML
         // `!include` tag's messages never are, so no message collides.
         let dir = tempfile::tempdir().unwrap();
-        let partials = super::Partials::rooted(dir.path());
+        let root = dir.path().canonicalize().unwrap();
+        let partials = super::Partials::rooted(&root);
         let error = partials
             .compile("{% include \"missing.txt\" %}".into(), "body.txt")
             .unwrap_err()
