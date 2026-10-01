@@ -403,6 +403,12 @@ fn wrong_kind_seed_is_dropped_and_the_apply_proceeds() {
         stderr.contains("with_tests") && stderr.contains("does not match"),
         "the wrong-kind drop warns, naming the id: {stderr}"
     );
+    // The warning carries exactly one "warning: " prefix (report_config_warnings
+    // prepends it; the message must not prepend its own).
+    assert!(
+        !stderr.contains("warning: warning:"),
+        "the wrong-kind warning has no doubled prefix: {stderr}"
+    );
     // Behavior 8 (fallback conjunct): style (still a select) inherited; with_tests
     // fell back to the template default because the boolean seed did not apply to
     // the text question. Sole-kill: accept the wrong-kind value -> the apply errors
@@ -1041,7 +1047,12 @@ fn like_selection_writes_no_ref() {
     let out = cmd.output().unwrap();
     let doc = support::first_document(&out.stdout);
     assert_eq!(doc["status"].as_str(), Some("planned"), "{doc}");
-    assert_eq!(doc["seed"]["from"].as_str(), Some(s.root_snapshot.as_str()));
+    // The `planned` document carries no `seed` member (per the approved design,
+    // only `applied` and `questions` do); the selection still reads the snapshot.
+    assert!(
+        doc.get("seed").is_none(),
+        "planned carries no seed member: {doc}"
+    );
     let refs_after = snapshot_refs(&s.project);
     assert_eq!(
         refs_before, refs_after,

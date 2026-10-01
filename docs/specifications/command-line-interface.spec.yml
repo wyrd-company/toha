@@ -111,6 +111,10 @@ commands:
           meaning: >-
             The template failed to load, or an interview is already staged at
             the path; the message names the commands that finish or replace it.
+            Or a `--like` selector could not be honoured while staging (it is
+            resolved and pinned at stage time) — unknown, ambiguous, wrong-source,
+            no snapshot of the source, or a target not in git with an explicit
+            selector — reported as an `error` document of kind `snapshot`.
         - code: 2
           meaning: Invalid command line.
         - code: 4
@@ -171,7 +175,10 @@ commands:
             staged interview cannot be resumed and why, and names `abort`
             followed by `stage`. Or an expression in the template failed to
             evaluate while answering; the message starts with `template error
-            in` and names the field and the expression.
+            in` and names the field and the expression. Or the staged record
+            pinned a `--like` snapshot that is now missing or invalid when it is
+            re-read from git on resume; the staged interview cannot be resumed and
+            an `error` document of kind `snapshot` is reported.
         - code: 4
           meaning: Questions remain or answers were rejected; the result holds the batch.
   - name: apply
@@ -312,6 +319,11 @@ commands:
             `snapshot`. The scripted route reports every failure as an `error`
             result document; the person and agent routes report on standard
             error.
+        - code: 2
+          meaning: >-
+            Invalid command line: a bare `--like` without a selector on the
+            script or agent route (a selector is required off the person route),
+            or `--like` combined with `--from` or `--baseline`.
         - code: 3
           meaning: >-
             The template has hooks and is not trusted. The scripted route emits a

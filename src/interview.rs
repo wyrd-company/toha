@@ -1158,7 +1158,7 @@ impl Resolution {
                 );
             } else {
                 warnings.push(format!(
-                    "warning: snapshot {} default for \"{id}\" does not match the question's type; ignored",
+                    "snapshot {} default for \"{id}\" does not match the question's type; ignored",
                     seed.from
                 ));
             }

@@ -283,8 +283,6 @@ $defs:
         type: boolean
       merge:
         $ref: "#/$defs/merge"
-      seed:
-        $ref: "#/$defs/seed"
   error:
     description: >-
       The scripted route refused the request or a step failed. `kind` names the

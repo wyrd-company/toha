@@ -230,7 +230,7 @@ description: >-
   `trusted: false` and writes nothing, as a dry run does.
 
   Generator seed. When an application is seeded from a snapshot with `--like`
-  (the generate axis), its `questions`, `applied`, and `planned` documents carry
+  (the generate axis), its `questions` and `applied` documents carry
   an optional `seed` member, `{ "from": "<snapshot id>" }`, naming the snapshot
   whose recorded answers pre-filled the defaults; the member holds no answer
   values and is absent when `--like` did not seed. The staged record carries the

@@ -1904,25 +1904,13 @@ fn scripted_completed(
     if dry_run {
         let code = if has_hooks && !trusted { 3 } else { 0 };
         return Outcome::Document(
-            with_seed(
-                protocol::planned_document(&classified, &plan, &messages, ctx, trust_state),
-                seed_from,
-            ),
+            protocol::planned_document(&classified, &plan, &messages, ctx, trust_state),
             code,
         );
     }
     if has_hooks && !trusted {
         return Outcome::Document(
-            with_seed(
-                protocol::planned_document(
-                    &classified,
-                    &plan,
-                    &messages,
-                    ctx,
-                    TrustState::Untrusted,
-                ),
-                seed_from,
-            ),
+            protocol::planned_document(&classified, &plan, &messages, ctx, TrustState::Untrusted),
             3,
         );
     }
