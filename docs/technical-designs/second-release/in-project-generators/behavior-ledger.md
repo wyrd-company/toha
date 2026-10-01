@@ -155,3 +155,23 @@ INCLUDING the seeded defaults; focused seam-mutation runs fail the scripted
 independently. Crate (seam), person (actual persisted), B7 (`snapshot.generated`),
 B11 (ordered duplicate), and the identity-unaware purity check are unchanged and
 root-accepted.
+
+## Round 8: three evidence records closed
+
+The uniform per-case file `task1030-evidence/soul-kills-complete.md` now carries 48
+cases, all with a real named-assertion failure (no "FAILED at ?" compile-error
+rows). Three records were closed this round, each with its concrete mutation
+description linked to the ledger row, the executed basis, and the exact restore
+command + green result:
+
+- **2 leg 2 configured > template** — src/interview.rs `start_with_context` builder
+  (anchored by `context: Some(context),`) `.filter(|_| false)` before the Configured
+  map → FAILED generator.rs:1120 (tests=True, configured False dropped).
+- **10 driver-parity** — same builder, tag configured defaults as `Snapshot` →
+  FAILED interview_answers.rs:1293 (message "from snapshot" not "from user.yml").
+- **G1 unexpected-file** — add `template/template/extra.txt` → FAILED
+  generator_fixture.rs:263 (the route tree holds an UNEXPECTED `extra.txt`).
+
+Basis for the three re-runs: 297cca7 (src and tests are byte-identical to 28a3c5f;
+the intervening commits are ledger-only). The other 45 records retain their 28a3c5f
+basis and exact checkout-green results.
