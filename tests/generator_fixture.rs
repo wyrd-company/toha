@@ -215,15 +215,89 @@ fn submissions_of(snapshot: &toha::snapshot::Snapshot) -> Vec<IndexMap<String, V
     snapshot.submissions().to_vec()
 }
 
+/// A completed interview's accepted EFFECTIVE raw values BEFORE formatting: one
+/// typed answer per id straight from the engine (`Completed::answers`), rendered
+/// to JSON. This is the actual engine acceptance, never a manufactured vector.
+fn effective_of(completed: &toha::Completed) -> IndexMap<String, Value> {
+    completed
+        .answers
+        .iter()
+        .map(|(id, answer)| (id.to_string(), answer.to_json()))
+        .collect()
+}
+
+/// Re-drive the REAL engine seam with a route's own recorded submissions and the
+/// seed read from `SA`, then return the completed interview's effective raw values
+/// (pre-format). For the CLI routes whose completion ran in a subprocess, this
+/// reads their actual recorded submissions back through the same engine the crate
+/// route drives in-process, so all routes' effective values are compared on the
+/// identical boundary. Read-only: it drives the engine but applies no plan.
+fn effective_from_recorded(
+    copy_root: &Path,
+    beta_target: &str,
+    sa: &str,
+    recorded: &[IndexMap<String, Value>],
+) -> IndexMap<String, Value> {
+    use toha::{
+        Interview, RawAnswer, Template,
+        config::{ConfigEntry, DefaultSource, PresetName},
+        interview::{SnapshotSeed, configured_defaults},
+        snapshot::Project,
+        staging::canonical_target,
+        template::Id,
+    };
+    let template_root = fixture().join("template").canonicalize().unwrap();
+    let template = Template::load(&template_root).unwrap();
+    let formal = support::formal_name(&template_root);
+    let target = canonical_target(&copy_root.join(beta_target)).unwrap();
+    let project = Project::open(&target).unwrap().expect("in git");
+    let snapshot = project.find(sa).unwrap();
+    let mut defaults: IndexMap<Id, RawAnswer> = IndexMap::new();
+    for batch in snapshot.submissions() {
+        for (key, value) in batch {
+            defaults.insert(Id::parse(key).unwrap(), RawAnswer(value.clone()));
+        }
+    }
+    let seed = SnapshotSeed {
+        defaults,
+        from: sa.to_owned(),
+    };
+    let presets: IndexMap<PresetName, ConfigEntry<Value>> = IndexMap::new();
+    let mappings: IndexMap<String, IndexMap<Id, ConfigEntry<DefaultSource>>> = IndexMap::new();
+    let resolution = configured_defaults(&formal, &template, &presets, &mappings).unwrap();
+    let context = toha::context::InvocationContext::for_target(target.clone());
+    let (mut interview, _warnings) = resolution
+        .start_with_seed(&template, NOW.parse().unwrap(), context, Some(seed))
+        .unwrap();
+    for batch in recorded {
+        let pending = match interview {
+            Interview::Asking(pending) => pending,
+            _ => break,
+        };
+        let mut answer: IndexMap<Id, RawAnswer> = IndexMap::new();
+        for (key, value) in batch {
+            answer.insert(Id::parse(key).unwrap(), RawAnswer(value.clone()));
+        }
+        interview = pending.answer(answer).unwrap();
+    }
+    match interview {
+        Interview::Complete(completed) => effective_of(&completed),
+        _ => panic!("the recorded submissions did not complete the interview"),
+    }
+}
+
 /// What one route produced for the beta application, for cross-route comparison.
 struct RouteResult {
     /// The complete rendered tree under the beta target.
     tree: BTreeMap<String, Vec<u8>>,
     /// The result document's `seed.from`, when the route emits a document.
     seed_from: Option<String>,
-    /// The raw submissions the route recorded (read back from the snapshot for
-    /// the CLI routes; the submitted document for the crate route).
+    /// The EXPLICIT raw submissions the route recorded — route-shaped: document
+    /// routes record only the override, the person records every accepted value.
     submissions: Vec<IndexMap<String, Value>>,
+    /// The actual engine-accepted EFFECTIVE raw values (pre-format), common across
+    /// routes for identical context/seed/overrides.
+    effective: IndexMap<String, Value>,
 }
 
 /// Build the base project in `root`: an empty git repo with one seed commit, then
@@ -317,10 +391,13 @@ fn scripted_route(
     );
     assert_eq!(code, 0, "beta (scripted) applied: {doc}");
     let snapshot = snapshot_at(&root, &expect.beta.target);
+    let submissions = submissions_of(&snapshot);
+    let effective = effective_from_recorded(&root, &expect.beta.target, sa, &submissions);
     RouteResult {
         tree: read_tree(&root.join(&expect.beta.target)),
         seed_from: doc["seed"]["from"].as_str().map(ToOwned::to_owned),
-        submissions: submissions_of(&snapshot),
+        submissions,
+        effective,
     }
 }
 
@@ -381,10 +458,13 @@ fn agent_route(
     );
 
     let snapshot = snapshot_at(&root, &expect.beta.target);
+    let submissions = submissions_of(&snapshot);
+    let effective = effective_from_recorded(&root, &expect.beta.target, sa, &submissions);
     RouteResult {
         tree: read_tree(&beta_dir),
         seed_from: staged_seed,
-        submissions: submissions_of(&snapshot),
+        submissions,
+        effective,
     }
 }
 
@@ -432,10 +512,13 @@ fn person_route(
     drop(session);
 
     let snapshot = snapshot_at(&root, &expect.beta.target);
+    let submissions = submissions_of(&snapshot);
+    let effective = effective_from_recorded(&root, &expect.beta.target, sa, &submissions);
     RouteResult {
         tree: read_tree(&beta_dir),
         seed_from: Some(sa.to_owned()),
-        submissions: submissions_of(&snapshot),
+        submissions,
+        effective,
     }
 }
 
@@ -527,14 +610,19 @@ fn crate_route(
     RouteResult {
         tree: read_tree(&beta_dir),
         seed_from: Some(sa.to_owned()),
+        // The crate's parity proof is `effective`, read from the actual completed
+        // interview; `submissions` is only its explicit (document-shaped) log.
         submissions: vec![submission],
+        effective: effective_of(&completed),
     }
 }
 
 /// A pure-engine witness of behavior 21's engine purity: seeding the engine with
-/// a hand-built `IndexMap` of the identical values — with NO `Project`, snapshot,
-/// or git state anywhere in the call — produces the identical beta tree. If the
-/// engine reached past the seam into snapshot or git state, this git-free route
+/// a hand-built `IndexMap` of the identical values and a `from` that is NOT a real
+/// snapshot id — with NO `Project`, snapshot, or git state anywhere in the call —
+/// produces the identical beta tree. The engine is identity-unaware: it uses only
+/// the folded defaults, never resolves `from`. If the engine reached past the seam
+/// into snapshot/git state or gated on `from` being a real id, this git-free route
 /// would diverge from the git-backed crate route.
 fn pure_engine_tree(
     template_root: &Path,
@@ -562,7 +650,9 @@ fn pure_engine_tree(
     }
     let seed = SnapshotSeed {
         defaults,
-        from: "01J9Z4K7QX6M2V8R0T5B3N1P9D".to_owned(),
+        // Deliberately NOT a real snapshot id: the engine must not resolve or gate
+        // on `from`, so a git-free bogus value still produces the identical tree.
+        from: "pure-engine-no-git".to_owned(),
     };
 
     let presets: IndexMap<PresetName, ConfigEntry<Value>> = IndexMap::new();
@@ -651,11 +741,54 @@ fn generator_twice_fixture_agrees_across_person_scripted_agent_and_crate_routes(
         }
     }
 
-    // (4) Accepted raw submissions, by route shape. The document routes record
-    // only the submitted override; the person route records every prompt's
-    // accepted value — the override plus the accepted seed defaults — which proves
-    // the seed is a DEFAULT (overridable), not a replayed answer, on the live
-    // person route.
+    // (3b) COMMON accepted EFFECTIVE RAW parity, BEFORE formatting. For identical
+    // context, seed, and route overrides, every route's actual engine-accepted
+    // effective values are equal — read from the real completed interview (the
+    // crate route in-process via `Completed::answers`; the CLI routes by
+    // re-driving the same engine seam with their own recorded submissions). This
+    // is the common raw-parity the route-shaped explicit logs below cannot express.
+    let want_effective: BTreeMap<String, Value> = {
+        let mut m: BTreeMap<String, Value> = BTreeMap::new();
+        for (k, v) in fixture_answers(&expect.alpha.answers).as_object().unwrap() {
+            m.insert(k.clone(), v.clone()); // the seed value for every id
+        }
+        for (k, v) in fixture_answers(&expect.beta.answers).as_object().unwrap() {
+            m.insert(k.clone(), v.clone()); // the route override wins
+        }
+        m
+    };
+    for (route, result) in &results {
+        let got: BTreeMap<String, Value> = result
+            .effective
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        assert_eq!(
+            got, want_effective,
+            "the {route} route's accepted effective raw values (pre-format) match the seed+override"
+        );
+    }
+    let effectives: Vec<BTreeMap<String, Value>> = results
+        .values()
+        .map(|r| {
+            r.effective
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
+        })
+        .collect();
+    for window in effectives.windows(2) {
+        assert_eq!(
+            window[0], window[1],
+            "all routes agree on the accepted effective raw values (pre-format)"
+        );
+    }
+
+    // (4) Explicit, route-shaped raw submission logs, kept SEPARATE from the
+    // effective parity above. The document routes record only the submitted
+    // override; the person route records every prompt's accepted value — the
+    // override plus the accepted seed defaults — which proves the seed is a DEFAULT
+    // (overridable), not a replayed answer, on the live person route.
     let override_key = fixture_answers(&expect.beta.answers)
         .as_object()
         .unwrap()
@@ -755,14 +888,26 @@ fn generator_twice_fixture_agrees_across_person_scripted_agent_and_crate_routes(
     want_targets.sort();
     assert_eq!(got_targets, want_targets, "the two snapshot targets");
 
-    // (6) Engine purity: a git-free pure-engine seed of the identical values
-    // produces the identical beta tree. Diverges if the engine reached past the
-    // seam into snapshot/git state.
+    // (6) Engine purity. A git-free pure-engine seed — hand-built folded defaults
+    // and a `from` that is NOT a real snapshot id, with NO Project/snapshot/git
+    // anywhere — produces the identical beta tree AS the git-backed crate route
+    // (which folded from a real snapshot). The engine is identity-unaware and
+    // reaches no snapshot/git state past the seam: if it resolved or gated on
+    // `from`, the bogus-`from` git-free route would diverge from the git-backed
+    // crate route. Sole-kill: make the seam gate default application on `from`
+    // being a real ULID; the git-free route then drops its defaults and this
+    // assertion fails while the git-backed crate route still passes.
+    let git_free = pure_engine_tree(&template_root, &formal, &expect);
     assert_eq!(
-        pure_engine_tree(&template_root, &formal, &expect),
-        want_beta,
-        "the pure-engine (git-free) seed produces the identical tree"
+        git_free, want_beta,
+        "the pure-engine (git-free, bogus-from) seed produces the identical tree"
     );
+    if let Some(crate_result) = results.get("crate") {
+        assert_eq!(
+            git_free, crate_result.tree,
+            "the git-free engine (no snapshot/Project/git) equals the git-backed crate route"
+        );
+    }
 }
 
 /// One submission batch with a single entry.
