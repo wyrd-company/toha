@@ -133,6 +133,7 @@ pub struct Pending<'a> {
     template: &'a Template,
     seed: InterviewSeed,
     answers: Answers,
+    accepted_raw: IndexMap<Id, RawAnswer>,
     held: RawAnswers,
     skipped: Skipped,
     messages: Vec<String>,
@@ -143,6 +144,10 @@ pub struct Pending<'a> {
 #[derive(Debug)]
 pub struct Completed {
     pub answers: Answers,
+    /// The accepted EFFECTIVE RAW value per id BEFORE formatting — the submitted
+    /// raw for an answered id, or the pre-format default (incl. a snapshot seed)
+    /// for a defaulted id. An internal in-process readback seam; not serialized.
+    accepted_raw: IndexMap<Id, RawAnswer>,
     /// Every message reached, in interview order.
     pub messages: Vec<String>,
     /// The messages reached by the step that completed the interview.
@@ -161,6 +166,11 @@ pub struct Completed {
 /// number of messages reached before it was skipped.
 type Skipped = IndexMap<Id, usize>;
 impl Completed {
+    /// The accepted effective raw values (pre-format) per id, including the
+    /// snapshot-seeded defaults the interview applied.
+    pub fn accepted_raw(&self) -> &IndexMap<Id, RawAnswer> {
+        &self.accepted_raw
+    }
     pub fn disposition(&self) -> Disposition {
         self.disposition
     }
@@ -1534,6 +1544,7 @@ struct Advance<'a> {
     template: &'a Template,
     seed: InterviewSeed,
     answers: Answers,
+    accepted_raw: IndexMap<Id, RawAnswer>,
     held: RawAnswers,
     skipped: Skipped,
     messages: Vec<String>,
@@ -1925,6 +1936,7 @@ fn advance(mut state: Advance<'_>) -> Result<Interview<'_>, EvalError> {
     if complete && !has_prompt {
         Ok(Interview::Complete(Completed {
             answers: state.answers,
+            accepted_raw: state.accepted_raw,
             last_messages: state.messages[state.step_start..].to_vec(),
             messages: state.messages,
             hooks: state.hooks,
@@ -1939,6 +1951,7 @@ fn advance(mut state: Advance<'_>) -> Result<Interview<'_>, EvalError> {
             template,
             seed: state.seed,
             answers: state.answers,
+            accepted_raw: state.accepted_raw,
             held: state.held,
             skipped: state.skipped,
             messages: state.messages,
@@ -1980,6 +1993,7 @@ impl<'a> Interview<'a> {
             template,
             seed,
             answers: Answers::new(),
+            accepted_raw: IndexMap::new(),
             held: RawAnswers::new(),
             skipped: Skipped::new(),
             messages: vec![],
@@ -2101,10 +2115,13 @@ impl<'a> Pending<'a> {
             held.insert(id, raw);
         }
         let mut next = Answers::new();
+        let mut raw_next: IndexMap<Id, RawAnswer> = IndexMap::new();
         for item in &self.batch.items {
             let Item::Prompt(p) = item else { continue };
             let raw = held.get(&p.id).cloned();
             let carried = self.batch.errors.iter().find(|e| e.id == p.id);
+            // The submitted raw, captured before the match consumes it.
+            let raw_captured: Option<Value> = raw.as_ref().map(|r| r.0.clone());
             let checked = match (raw, carried) {
                 (Some(raw), _) => self.check_inner(&p.id, raw),
                 // A value recorded earlier that failed stays an error until
@@ -2166,6 +2183,10 @@ impl<'a> Pending<'a> {
             };
             match checked {
                 Ok(v) => {
+                    let raw_value = raw_captured
+                        .or_else(|| p.default.as_ref().map(|d| d.to_json()))
+                        .unwrap_or_else(|| v.to_json());
+                    raw_next.insert(p.id.clone(), RawAnswer(raw_value));
                     next.insert(p.id.clone(), v);
                 }
                 Err(CheckError::Rejected(r)) => rejections.push(r),
@@ -2186,10 +2207,13 @@ impl<'a> Pending<'a> {
         }
         let mut answers = self.answers.clone();
         answers.extend(next);
+        let mut accepted_raw = self.accepted_raw.clone();
+        accepted_raw.extend(raw_next);
         let (probe_skipped, probe_ended) = probe_skips(Advance {
             template: self.template,
             seed: self.seed.clone(),
             answers: answers.clone(),
+            accepted_raw: accepted_raw.clone(),
             held: held.clone(),
             skipped: self.skipped.clone(),
             step_start: self.messages.len(),
@@ -2222,6 +2246,7 @@ impl<'a> Pending<'a> {
             template: self.template,
             seed: self.seed,
             answers,
+            accepted_raw,
             held,
             skipped: self.skipped,
             step_start: self.messages.len(),
