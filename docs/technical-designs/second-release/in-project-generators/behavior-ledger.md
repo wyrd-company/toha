@@ -29,7 +29,7 @@ failure), then a green restore.
 | G1 complete-tree content | "complete beta tree equals expected/beta" | `expected/beta/mod.txt` → WRONG | the relative-path→bytes map differs |
 | G1 unexpected-file | same complete-tree assertion | add `template/template/extra.txt` | the route tree holds an UNEXPECTED file absent from `expected/` |
 | G2 route-specific divergence | "the agent route's complete beta tree equals expected/beta" | `main.rs` `resolve_pinned_seed` → drop the resumed seed | ONLY the agent route diverges; distinct from the common seam |
-| G1 actual pre-format raw | `routes_record_the_pre_format_raw_submission_not_the_formatted_answer` | `main.rs` `plain_apply_snapshot` → persist the formatted `completed.answers` instead of the raw `submissions` | under a non-identity `format` (upper), the actual persisted snapshot records "BETA" not the raw "beta"; the RAW assertion fails while the tree is unchanged (generator_fixture.rs) |
+| G1 accepted effective raw incl seeded defaults | `routes_accept_the_same_effective_raw_including_seeded_defaults_before_formatting` | `interview.rs` `answer()` → capture the FORMATTED answer as `accepted_raw` instead of the pre-format value | the crate route's `Completed::accepted_raw()` reports "BETA" not the raw "beta"; the full effective raw (incl seeded style/with_tests) assertion fails (generator_fixture.rs) |
 | G2/B21 engine purity | "the pure-engine (git-free, bogus-from) seed produces the identical tree" / "== the git-backed crate route" | `interview.rs` `start_with_seed` → `if seed.from.len() != 26 { fall back }` (resolve/gate on `from` identity) | the bogus-`from` git-free route drops its defaults while the git-backed crate route still seeds → they diverge (boundary identity-leak detection, not a drop-default-everywhere) |
 
 ## Behaviors 1–21 and conjuncts
@@ -122,3 +122,16 @@ failure), then a green restore.
   snapshot::project::tests::…`, or `--test interview_answers`. Full commands,
   observed named failures, committed HEAD, and restore results are retained in
   `task1030-evidence/soul-kills.md`.
+
+## Round 6: in-process accepted-raw seam
+
+The replay-based and label-only raw proofs are replaced by an internal in-process
+readback seam, `Completed::accepted_raw()` (pre-format raw per id INCLUDING the
+seeded defaults the engine applied; not serialized; no CLI/output/env/persisted-
+answer/public-Seed/serialized-contract change). `routes_accept_the_same_effective_
+raw_including_seeded_defaults_before_formatting` reads it for the crate route (not a
+manufactured vector, not a replay); the person route's ACTUAL persisted snapshot
+carries the full set (it accepts the seeded defaults with Enter); the script/agent
+route-shaped persisted logs record only the override. A non-identity `format` makes
+the raw differ from the rendered answer. B7 (`snapshot.generated`) and B11 (ordered
+duplicate preparation) are unchanged and remain root-accepted.
