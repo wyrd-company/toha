@@ -2172,7 +2172,7 @@ fn run(
     if answers.is_none() {
         if let Some(saved) = &existing {
             if update_stage::is_staged_update(saved) {
-                return update_stage::apply_staged(saved.clone(), path, trust, dirs);
+                return update_stage::apply_staged(saved.clone(), path, dry_run, trust, dirs);
             }
         }
     }

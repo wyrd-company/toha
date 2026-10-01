@@ -489,9 +489,16 @@ fn continue_person(
     }
 }
 
-/// `apply PATH` for a staged update: resume it and, when complete, merge from the
-/// base, removing the record; when incomplete, report the pending batch.
-pub fn apply_staged(saved: StagedRecord, path: &Path, trust: bool, dirs: &Dirs) -> Outcome {
+/// `apply PATH` for a staged update: resume it and, when complete, merge from
+/// the base, removing the record only once that merge actually writes;
+/// when incomplete, report the pending batch.
+pub fn apply_staged(
+    saved: StagedRecord,
+    path: &Path,
+    dry_run: bool,
+    trust: bool,
+    dirs: &Dirs,
+) -> Outcome {
     let (target, store) = match setup(path, dirs) {
         Ok(value) => value,
         Err(error) => return Outcome::Error(error),
@@ -520,9 +527,12 @@ pub fn apply_staged(saved: StagedRecord, path: &Path, trust: bool, dirs: &Dirs) 
             completed,
             submissions,
         } => {
-            let outcome = update::finish_merge(prep, &base, &target, completed, submissions, false);
-            // A successful merge consumes the staged interview.
-            if outcome.is_success() {
+            let outcome =
+                update::finish_merge(prep, &base, &target, completed, submissions, dry_run);
+            // A successful, non-preview merge consumes the staged interview; a
+            // dry run previews it and leaves the staged interview in place so the
+            // real apply remains available.
+            if outcome.is_success() && !dry_run {
                 if let Err(error) = store.remove(&target) {
                     return Outcome::Error(error.to_string());
                 }

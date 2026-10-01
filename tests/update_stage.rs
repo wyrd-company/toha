@@ -628,3 +628,281 @@ fn the_final_agent_apply_path_refuses_a_dirty_target() {
     );
     assert!(!target.path().join("color.txt").exists(), "nothing written");
 }
+
+/// Every tracked worktree file, the staged record, every git ref, and the git
+/// index, captured so a dry-run preview can be proved to leave them untouched.
+#[derive(Debug, PartialEq)]
+struct State {
+    worktree: Vec<(String, Vec<u8>)>,
+    staged: Vec<(String, Vec<u8>)>,
+    refs: String,
+    index: Vec<u8>,
+}
+
+fn capture_state(iso: &Path, target: &Path) -> State {
+    State {
+        worktree: tracked_files(target),
+        staged: staged_files(iso),
+        refs: show_refs(target),
+        index: std::fs::read(target.join(".git/index")).unwrap(),
+    }
+}
+
+fn tracked_files(dir: &Path) -> Vec<(String, Vec<u8>)> {
+    fn walk(root: &Path, dir: &Path, files: &mut Vec<(String, Vec<u8>)>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.file_name().unwrap() == ".git" {
+                continue;
+            }
+            if path.is_dir() {
+                walk(root, &path, files);
+            } else {
+                let rel = path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
+                files.push((rel, std::fs::read(&path).unwrap()));
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(dir, dir, &mut files);
+    files.sort();
+    files
+}
+
+fn staged_files(iso: &Path) -> Vec<(String, Vec<u8>)> {
+    let dir = support::staged_dir(iso);
+    if !dir.exists() {
+        return Vec::new();
+    }
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .map(|path| {
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let bytes = std::fs::read(&path).unwrap();
+            (name, bytes)
+        })
+        .collect();
+    files.sort();
+    files
+}
+
+fn show_refs(dir: &Path) -> String {
+    let output = StdCommand::new("git")
+        .args(["show-ref"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    String::from_utf8(output.stdout).unwrap()
+}
+
+/// A completed staged update (`apply --from ID` staged and completed) previews
+/// under `apply PATH --dry-run`: the document reports `planned`, the hook does
+/// not run, and the target, index, refs, and staged record are byte-identical
+/// before and after. The real apply that follows still merges, runs the hook,
+/// and consumes the staged interview.
+#[test]
+fn apply_dry_run_on_a_completed_staged_update_previews_and_preserves_everything() {
+    let iso = tempfile::tempdir().unwrap();
+    let template_dir = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    write_one_question(template_dir.path());
+    target_repo(target.path());
+    let formal = support::formal_name(template_dir.path());
+    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let snapshot = baseline(iso.path(), &address, &formal, target.path(), false);
+
+    // The new version adds a second question and a trusted hook whose marker
+    // file makes a hook run observable.
+    std::fs::write(
+        template_dir.path().join("template.yml"),
+        "name: greeter\ndescription: A greeting\ninterview:\n  - id: name\n    type: text\n    prompt: Name\n    required: true\n  - id: color\n    type: text\n    prompt: Colour\n    required: true\nhooks:\n  - run: [ touch, ran.txt ]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        template_dir.path().join("template/color.txt"),
+        "{{ color }}\n",
+    )
+    .unwrap();
+
+    // Stage with --trust so the hook is trusted; the replay asks only `color`.
+    let mut stage = support::isolated_command(iso.path());
+    stage
+        .arg("stage")
+        .arg(&address)
+        .arg(target.path())
+        .arg("--from")
+        .arg(&snapshot)
+        .arg("--trust")
+        .arg("--async");
+    assert_eq!(stage.output().unwrap().status.code(), Some(4), "stage");
+
+    // Answer the new question through the agent continue route, completing the
+    // staged update.
+    let env_color = envelope(
+        iso.path(),
+        "color.json",
+        &formal,
+        serde_json::json!({ "color": "blue" }),
+    );
+    let mut cont = support::isolated_command(iso.path());
+    cont.arg("continue").arg(target.path()).arg(&env_color);
+    assert_eq!(cont.output().unwrap().status.code(), Some(0), "continue");
+
+    let before = capture_state(iso.path(), target.path());
+
+    // `apply PATH --dry-run --trust` must preview the merge without writing
+    // anything. `--trust` re-asserts the hook trust established at stage, the
+    // same as the real apply that follows would need.
+    let mut dry = support::isolated_command(iso.path());
+    dry.arg("apply")
+        .arg(target.path())
+        .arg("--dry-run")
+        .arg("--trust");
+    let dry_output = dry.output().unwrap();
+    assert_eq!(dry_output.status.code(), Some(0), "dry-run: {dry_output:?}");
+    let document = support::first_document(&dry_output.stdout);
+    assert_eq!(document["status"], "planned", "{document}");
+
+    let after_dry_run = capture_state(iso.path(), target.path());
+    assert_eq!(
+        before, after_dry_run,
+        "a dry-run preview must leave the target, index, refs, and staged state untouched"
+    );
+    assert!(
+        !target.path().join("ran.txt").exists(),
+        "a dry run must not run hooks"
+    );
+
+    // The real apply that follows is still available: it merges, runs the hook,
+    // and consumes the staged interview.
+    let mut apply = support::isolated_command(iso.path());
+    apply.arg("apply").arg(target.path()).arg("--trust");
+    let applied = apply.output().unwrap();
+    assert_eq!(applied.status.code(), Some(0), "apply: {applied:?}");
+    let document = support::first_document(&applied.stdout);
+    assert_eq!(document["status"], "applied", "{document}");
+    assert_eq!(
+        std::fs::read_to_string(target.path().join("color.txt")).unwrap(),
+        "blue\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
+        "Hello sample-value\n"
+    );
+    assert!(
+        target.path().join("ran.txt").exists(),
+        "the real apply runs the trusted hook"
+    );
+
+    // The staged record is consumed; a second apply finds nothing staged.
+    let mut again = support::isolated_command(iso.path());
+    again.arg("apply").arg(target.path());
+    let output = again.output().unwrap();
+    assert_ne!(output.status.code(), Some(0), "the record should be gone");
+}
+
+/// A completed staged baseline (`stage --baseline` staged and completed, merged
+/// from an empty base) previews the same way: `apply PATH --dry-run` reports
+/// `planned`, writes nothing, and leaves the staged record in place for the
+/// real apply that follows.
+#[test]
+fn apply_dry_run_on_a_completed_staged_baseline_previews_and_preserves_everything() {
+    let iso = tempfile::tempdir().unwrap();
+    let template_dir = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    // A hook-bearing template so a hook run is observable.
+    std::fs::create_dir_all(template_dir.path().join("template")).unwrap();
+    std::fs::write(
+        template_dir.path().join("template.yml"),
+        "name: greeter\ndescription: A greeting\ninterview:\n  - id: name\n    type: text\n    prompt: Name\n    required: true\nhooks:\n  - run: [ touch, ran.txt ]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        template_dir.path().join("template/greeting.txt"),
+        "Hello {{ name }}\n",
+    )
+    .unwrap();
+    target_repo(target.path());
+    let formal = support::formal_name(template_dir.path());
+    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+
+    // Stage a trusted baseline: there is no recorded answer, so it asks `name`.
+    let mut stage = support::isolated_command(iso.path());
+    stage
+        .arg("stage")
+        .arg(&address)
+        .arg(target.path())
+        .arg("--baseline")
+        .arg("--trust")
+        .arg("--async");
+    let staged = stage.output().unwrap();
+    assert_eq!(staged.status.code(), Some(4), "stage: {staged:?}");
+
+    // Answer it, completing the staged baseline.
+    let env = envelope(
+        iso.path(),
+        "n.json",
+        &formal,
+        serde_json::json!({ "name": "other-value" }),
+    );
+    let mut cont = support::isolated_command(iso.path());
+    cont.arg("continue").arg(target.path()).arg(&env);
+    assert_eq!(cont.output().unwrap().status.code(), Some(0), "continue");
+
+    let before = capture_state(iso.path(), target.path());
+
+    // `apply PATH --dry-run --trust` previews the staged baseline merge without
+    // writing.
+    let mut dry = support::isolated_command(iso.path());
+    dry.arg("apply")
+        .arg(target.path())
+        .arg("--dry-run")
+        .arg("--trust");
+    let dry_output = dry.output().unwrap();
+    assert_eq!(dry_output.status.code(), Some(0), "dry-run: {dry_output:?}");
+    let document = support::first_document(&dry_output.stdout);
+    assert_eq!(document["status"], "planned", "{document}");
+
+    let after_dry_run = capture_state(iso.path(), target.path());
+    assert_eq!(
+        before, after_dry_run,
+        "a dry-run preview of a staged baseline must leave the target, index, refs, \
+         and staged state untouched"
+    );
+    assert!(
+        !target.path().join("ran.txt").exists(),
+        "a dry run must not run hooks"
+    );
+    assert!(
+        !target.path().join("greeting.txt").exists(),
+        "a dry run writes nothing"
+    );
+
+    // The real apply that follows still works and consumes the staged state.
+    let mut apply = support::isolated_command(iso.path());
+    apply.arg("apply").arg(target.path()).arg("--trust");
+    let applied = apply.output().unwrap();
+    assert_eq!(applied.status.code(), Some(0), "apply: {applied:?}");
+    let document = support::first_document(&applied.stdout);
+    assert_eq!(document["status"], "applied", "{document}");
+    assert_eq!(
+        std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
+        "Hello other-value\n"
+    );
+    assert!(
+        target.path().join("ran.txt").exists(),
+        "the real apply runs the trusted hook"
+    );
+
+    // The staged record is consumed; a second apply finds nothing staged.
+    let mut again = support::isolated_command(iso.path());
+    again.arg("apply").arg(target.path());
+    let output = again.output().unwrap();
+    assert_ne!(output.status.code(), Some(0), "the record should be gone");
+}
