@@ -854,6 +854,15 @@ fn a_constraint_invalid_seed_is_re_asked_not_written() {
         doc["errors"]["label"].is_array(),
         "the label question carries the rejection: {doc}"
     );
+    // Behavior 11 (provenance): the rejection names the snapshot the invalid
+    // default came from, not just a generic error.
+    let label_errors = doc["errors"]["label"].as_array().unwrap();
+    assert!(
+        label_errors
+            .iter()
+            .any(|m| m.as_str().unwrap_or_default().contains(&s.root_snapshot)),
+        "the rejection names the seed snapshot (provenance): {doc}"
+    );
     assert!(
         !s.project.join("feature/beta/mod.txt").exists(),
         "nothing is written when a seeded value is re-asked"
@@ -1013,6 +1022,113 @@ fn like_selection_writes_no_ref() {
     assert_eq!(
         refs_before, refs_after,
         "the --like selection (and a dry-run apply) write no snapshot ref"
+    );
+}
+
+#[test]
+fn a_deleted_pinned_snapshot_fails_the_resume_clearly() {
+    // Behavior 19 (deleted-pin refusal): stage --like pins the snapshot id; a
+    // pinned snapshot deleted before apply PATH fails clearly (exit 1) and writes
+    // nothing. The pin is re-read from git on resume, so a missing ref is caught
+    // rather than silently proceeding unseeded.
+    let s = scene();
+    let beta = s.project.join("feature/beta");
+    let mut stage = support::isolated_command(s.iso.path());
+    stage
+        .arg("stage")
+        .arg(&s.address)
+        .arg(&beta)
+        .arg("--like")
+        .arg("latest")
+        .arg("--async");
+    assert_eq!(stage.output().unwrap().status.code(), Some(4), "stage pins");
+
+    // Delete the pinned snapshot ref before resuming.
+    git_ok(
+        &s.project,
+        &[
+            "update-ref",
+            "-d",
+            &format!("refs/toha/snapshots/{}", s.root_snapshot),
+        ],
+    );
+
+    let mut apply = support::isolated_command(s.iso.path());
+    apply.arg("apply").arg(&beta);
+    let out = apply.output().unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a deleted pin fails the resume: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !beta.join("mod.txt").exists(),
+        "nothing is written when the pinned snapshot is gone"
+    );
+}
+
+#[test]
+fn configured_default_shadows_the_template_default_and_the_template_is_the_fallback() {
+    // Behavior 2 (precedence legs 2 and 3): with no snapshot seeded, a configured
+    // default shadows the template's own default (leg 2); an id with neither a
+    // snapshot nor a configured default takes the template default (leg 3). The
+    // configured value is chosen distinct from the template default so the two
+    // legs are observable independently.
+    let s = scene();
+    // with_tests template default is true; configure it to false (a distinct value).
+    write_template_defaults(s.iso.path(), &s.formal, "    with_tests: false\n");
+    let plain = answers_file(
+        s.iso.path(),
+        "p.json",
+        &s.formal,
+        json!({ "label": "Plain" }),
+    );
+    let (code, doc) = apply_scripted(
+        s.iso.path(),
+        &s.address,
+        &s.project.join("feature/cfg"),
+        None,
+        &plain,
+        false,
+    );
+    assert_eq!(code, 0, "{doc}");
+    assert_eq!(
+        read(&s.project.join("feature/cfg/mod.txt")),
+        "label=Plain\nstyle=card\ntests=False\n",
+        "with_tests=false from the configured default (leg 2); style=card from the template default (leg 3)"
+    );
+}
+
+#[test]
+fn an_unknown_configured_id_warns_while_an_extra_seed_id_is_silent() {
+    // Behavior 12 (two conjuncts): a configured mapping for an id the template does
+    // not define still warns (unchanged template-defaults behavior); a snapshot
+    // that carries an id the template dropped is ignored silently. Here the
+    // snapshot carries `with_tests`, the template keeps it, and the config names a
+    // nonexistent id — the warning is the observable for the configured side.
+    let s = scene();
+    write_template_defaults(s.iso.path(), &s.formal, "    nonexistent: value\n");
+    let beta = answers_file(
+        s.iso.path(),
+        "b.json",
+        &s.formal,
+        json!({ "label": "Beta" }),
+    );
+    let mut cmd = support::isolated_command(s.iso.path());
+    cmd.arg("apply")
+        .arg(&s.address)
+        .arg(s.project.join("feature/beta"))
+        .arg("--like")
+        .arg("latest")
+        .arg("--answers")
+        .arg(&beta);
+    let out = cmd.output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "apply proceeds");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("nonexistent") && stderr.contains("not defined"),
+        "an unknown configured id still warns: {stderr}"
     );
 }
 
