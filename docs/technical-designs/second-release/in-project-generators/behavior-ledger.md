@@ -29,7 +29,7 @@ failure), then a green restore.
 | G1 complete-tree content | "complete beta tree equals expected/beta" | `expected/beta/mod.txt` → WRONG | the relative-path→bytes map differs |
 | G1 unexpected-file | same complete-tree assertion | add `template/template/extra.txt` | the route tree holds an UNEXPECTED file absent from `expected/` |
 | G2 route-specific divergence | "the agent route's complete beta tree equals expected/beta" | `main.rs` `resolve_pinned_seed` → drop the resumed seed | ONLY the agent route diverges; distinct from the common seam |
-| G1 common effective-raw parity | "the \<route\> route's accepted effective raw values (pre-format) match" | representation: crate reads `Completed::answers`; CLI routes re-drive the engine with their own recorded submissions | B1/B3 seed-wins makes the override lost (caught at the tree assertion that precedes it); the effective block reads actual engine acceptance, never a manufactured vector |
+| G1 actual pre-format raw | `routes_record_the_pre_format_raw_submission_not_the_formatted_answer` | `main.rs` `plain_apply_snapshot` → persist the formatted `completed.answers` instead of the raw `submissions` | under a non-identity `format` (upper), the actual persisted snapshot records "BETA" not the raw "beta"; the RAW assertion fails while the tree is unchanged (generator_fixture.rs) |
 | G2/B21 engine purity | "the pure-engine (git-free, bogus-from) seed produces the identical tree" / "== the git-backed crate route" | `interview.rs` `start_with_seed` → `if seed.from.len() != 26 { fall back }` (resolve/gate on `from` identity) | the bogus-`from` git-free route drops its defaults while the git-backed crate route still seeds → they diverge (boundary identity-leak detection, not a drop-default-everywhere) |
 
 ## Behaviors 1–21 and conjuncts
@@ -44,7 +44,7 @@ failure), then a green restore.
 | 4 source identity, not formal name | `candidates_and_find_required_match_on_source_identity_across_versions` | `like.rs:151` `snapshot.source() != source` → `snapshot.template() != source` | the `@v1` snapshot is refused for the bare source |
 | 5 generate axis, not update (no target match) | `generate_seeds_across_targets_without_a_target_match` | `main.rs` resolve_like_seed Reference → require `snapshot.target() == project.target()` | seeding feature/beta from the root snapshot is refused (exit 1) |
 | 6 producer capture preserved (seeded, chaining) | `a_third_application_can_seed_from_the_second` | `main.rs` apply flow → when `seed_from.is_some()` skip `plain_apply_snapshot` | the SEEDED second application records no snapshot; a third cannot seed |
-| 7 fresh instant | `the_new_application_uses_its_own_instant_not_the_seed_snapshots` | `interview.rs` `start_with_seed` → decode the seed snapshot's instant from its ULID id (`seed.from`) and use it as `now` (inherit the seed instant) | beta renders when=2026 (SA's decoded instant), not its own 2022 (generator.rs:816) |
+| 7 fresh instant | `the_new_application_uses_its_own_instant_not_the_seed_snapshots` | carry `snapshot.generated().get().clone()` through `cli::like::LikeSeed.generated` and use it as `now` on the scripted apply path (`main.rs`) — the ACTUAL frozen generated instant, not the ULID creation time | beta renders when=2020-01-01 (the inherited `snapshot.generated`), not its own 2022 (generator.rs:816) |
 | 8 wrong-kind dropped, not fatal | `wrong_kind_seed_is_dropped_and_the_apply_proceeds` | `interview.rs` seam else → hard-error instead of drop | the apply errors instead of exit 0 |
 | 8 wrong-kind WARNING conjunct | same test | `interview.rs` seam → remove the `warnings.push` (silent drop) | the warning assertion fails (generator.rs:402) |
 | 8 wrong-kind FALLBACK conjunct | same test | `interview.rs` seam → `if true || parse_kind(...)` (accept any kind) | the fallback assertion (tests="unknown") fails (generator.rs:398) |
@@ -53,7 +53,7 @@ failure), then a green restore.
 | 10 no-`--like` byte-identical (driver parity) | `configured_default_that_fails_a_constraint_is_attributed_to_configuration` | `interview.rs` `start_with_context` → tag configured defaults as `Snapshot` | a rejected configured default's message changes to "from snapshot …" |
 | 10 no seed member | `no_like_path_carries_no_seed_member` | `main.rs` `with_seed` → always insert a `seed` member | a plain apply carries a seed member (generator.rs:179) |
 | 11 provenance (names the snapshot) | `a_constraint_invalid_seed_is_re_asked_not_written` | `interview.rs` `answer()` Snapshot arm → drop "from snapshot {from}" | the rejection no longer names the seed snapshot id |
-| 11 single occupant | `the_bank_holds_a_single_snapshot_occupant_for_an_id_with_both_defaults` | `interview.rs` seam → skip the snapshot insert when a configured entry exists | the prepared staged default for style is the configured `card`, not the snapshot `panel` |
+| 11 single occupant / duplicate preparation | `a_snapshot_seeded_id_is_prepared_exactly_once_with_a_single_occupant` (tests/interview_answers.rs) | `interview.rs` prompt-push site → push the seeded prompt TWICE into `batch.items` (an ordered Vec) | the seeded id is prepared twice (style_prompts == 2); exactly-once occupancy fails (interview_answers.rs) |
 | 12 extra seed id ignored | `an_extra_seed_id_the_template_dropped_is_ignored` | `interview.rs` seam → error on an unknown id | status `error` instead of `applied` |
 | 12 extra seed id SILENCE | same test | `interview.rs` seam unknown-id branch → `warnings.push(...)` | stderr warns about the extra snapshot id (generator.rs:938) |
 | 12 unknown CONFIGURED id warns | `an_unknown_configured_id_warns_while_an_extra_seed_id_is_silent` | `interview.rs` `configured_defaults` → drop the "not defined" warning | stderr no longer warns |
@@ -104,3 +104,21 @@ failure), then a green restore.
 - **Single occupant** is proven on the prepared-bank surface (the staged questions
   default is the snapshot value), killed by making the seam keep the configured
   occupant — distinct from the rendered-file precedence check.
+
+## Round 5 strengthening (per the four material gaps)
+
+- **Actual pre-format raw observation.** The replay-based effective comparison is
+  removed. `routes_record_the_pre_format_raw_submission_not_the_formatted_answer`
+  observes each real route's ACTUAL persisted snapshot (the design's raw pre-format
+  submission record) under a non-identity `format`, so the raw submission ("beta")
+  differs from the rendered answer ("BETA"); its kill (`plain_apply_snapshot`
+  recording formatted answers) fails the RAW assertion specifically, not the tree.
+- **B7 inherits `snapshot.generated`.** The kill carries the actual frozen
+  generated instant (2020) through `LikeSeed.generated`, not the ULID creation time.
+- **B11 occupancy** is proven at the `batch.items` Vec boundary (prepared exactly
+  once), where a duplicate IS representable — not in a keyed JSON property.
+- **Per-case targets.** Every case records its correct cargo target: `--test
+  generator`, `--test generator_fixture`, `--bin toha cli::like::tests::…`, `--lib
+  snapshot::project::tests::…`, or `--test interview_answers`. Full commands,
+  observed named failures, committed HEAD, and restore results are retained in
+  `task1030-evidence/soul-kills.md`.
