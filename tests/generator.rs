@@ -383,17 +383,30 @@ fn wrong_kind_seed_is_dropped_and_the_apply_proceeds() {
         &s.formal,
         json!({ "label": "Beta" }),
     );
-    let (code, doc) = apply_scripted(
-        s.iso.path(),
-        &s.address,
-        &s.project.join("feature/beta"),
-        Some("latest"),
-        &beta,
-        false,
-    );
+    let mut cmd = support::isolated_command(s.iso.path());
+    cmd.arg("apply")
+        .arg(&s.address)
+        .arg(s.project.join("feature/beta"))
+        .arg("--like")
+        .arg("latest")
+        .arg("--answers")
+        .arg(&beta);
+    let out = cmd.output().unwrap();
+    let code = out.status.code().unwrap();
+    let doc = support::first_document(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(code, 0, "wrong-kind seed is not fatal: {doc}");
-    // style (still a select) inherited; with_tests fell back to the template
-    // default because the boolean seed did not apply to the text question.
+    // Behavior 8 (warning conjunct): the wrong-kind seed is dropped WITH a warning
+    // naming the id. Sole-kill: remove the `warnings.push` in the seam -> this
+    // assertion fails (independent of the fallback assertion below).
+    assert!(
+        stderr.contains("with_tests") && stderr.contains("does not match"),
+        "the wrong-kind drop warns, naming the id: {stderr}"
+    );
+    // Behavior 8 (fallback conjunct): style (still a select) inherited; with_tests
+    // fell back to the template default because the boolean seed did not apply to
+    // the text question. Sole-kill: accept the wrong-kind value -> the apply errors
+    // or renders the boolean, failing this.
     assert_eq!(
         read(&s.project.join("feature/beta/mod.txt")),
         "label=Beta\nstyle=panel\ntests=unknown\n"
@@ -901,19 +914,30 @@ fn an_extra_seed_id_the_template_dropped_is_ignored() {
         &s.formal,
         json!({ "label": "Beta" }),
     );
-    let (code, doc) = apply_scripted(
-        s.iso.path(),
-        &s.address,
-        &s.project.join("feature/beta"),
-        Some("latest"),
-        &beta,
-        false,
-    );
+    let mut cmd = support::isolated_command(s.iso.path());
+    cmd.arg("apply")
+        .arg(&s.address)
+        .arg(s.project.join("feature/beta"))
+        .arg("--like")
+        .arg("latest")
+        .arg("--answers")
+        .arg(&beta);
+    let out = cmd.output().unwrap();
+    let code = out.status.code().unwrap();
+    let doc = support::first_document(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(code, 0, "extra seed id ignored, apply proceeds: {doc}");
     assert_eq!(
         read(&s.project.join("feature/beta/mod.txt")),
         "label=Beta\nstyle=panel\n",
         "the dropped id is ignored; style still inherited"
+    );
+    // Behavior 12 (silence conjunct): the extra snapshot id is ignored SILENTLY —
+    // no warning on stderr about it (unlike an unknown configured id, which warns).
+    // Sole-kill: push a warning in the seam's unknown-id branch -> this fails.
+    assert!(
+        !stderr.contains("with_tests"),
+        "an extra snapshot id is ignored without a warning: {stderr}"
     );
 }
 
@@ -1129,6 +1153,114 @@ fn an_unknown_configured_id_warns_while_an_extra_seed_id_is_silent() {
     assert!(
         stderr.contains("nonexistent") && stderr.contains("not defined"),
         "an unknown configured id still warns: {stderr}"
+    );
+}
+
+#[test]
+fn a_bare_like_on_the_agent_route_is_a_usage_error() {
+    // Behavior 14 (bare selector, AGENT route): `stage --async --like` with no
+    // selector is a usage error (exit 2), as on the scripted route — selection is
+    // non-interactive and deterministic there. Sole-kill: drop the
+    // bare-on-non-interactive guard in resolve_like_seed -> this returns non-2.
+    let s = scene();
+    let mut stage = support::isolated_command(s.iso.path());
+    stage
+        .arg("stage")
+        .arg(&s.address)
+        .arg(s.project.join("feature/beta"))
+        .arg("--async")
+        .arg("--like");
+    let out = stage.output().unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a bare --like on the agent route is a usage error: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn a_deleted_pin_fails_continue_independently_of_apply() {
+    // Behavior 19 (continue reconstruction, independent of apply): `continue`
+    // re-reads the pinned snapshot from git, not a cached seed. Deleting the pin
+    // BEFORE `continue` fails the continue step (exit 1) and writes nothing — a
+    // boundary distinct from the apply-time reconstruction. Sole-kill: swallow a
+    // missing pin in resolve_pinned_seed -> continue proceeds unseeded.
+    let s = scene();
+    let beta = s.project.join("feature/beta");
+    let mut stage = support::isolated_command(s.iso.path());
+    stage
+        .arg("stage")
+        .arg(&s.address)
+        .arg(&beta)
+        .arg("--async")
+        .arg("--like")
+        .arg("latest");
+    assert_eq!(stage.output().unwrap().status.code(), Some(4), "stage pins");
+
+    git_ok(
+        &s.project,
+        &[
+            "update-ref",
+            "-d",
+            &format!("refs/toha/snapshots/{}", s.root_snapshot),
+        ],
+    );
+
+    let cont = answers_file(
+        s.iso.path(),
+        "c.json",
+        &s.formal,
+        json!({ "label": "Beta" }),
+    );
+    let mut cont_cmd = support::isolated_command(s.iso.path());
+    cont_cmd.arg("continue").arg(&beta).arg(&cont);
+    let out = cont_cmd.output().unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "continue reconstructs from the pin and fails clearly when it is gone: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(
+        !beta.join("mod.txt").exists(),
+        "nothing written when the pin is gone at continue"
+    );
+}
+
+#[test]
+fn the_bank_holds_a_single_snapshot_occupant_for_an_id_with_both_defaults() {
+    // Behavior 11 (single occupant): for an id with BOTH a configured default and a
+    // snapshot value, the bank holds exactly one occupant — the Snapshot. The staged
+    // questions document (the prepared bank, before any answer) shows `style` once,
+    // and its prepared default is the snapshot value (panel), never the configured
+    // one (card). Sole-kill: skip the snapshot insert when a configured entry exists
+    // (so the surviving occupant is the configured default) -> the prepared default
+    // is `card`, failing this. This inspects the prepared bank, a surface distinct
+    // from the rendered-file precedence check.
+    let s = scene();
+    write_template_defaults(s.iso.path(), &s.formal, "    style: card\n");
+    let beta = s.project.join("feature/beta");
+    let mut stage = support::isolated_command(s.iso.path());
+    stage
+        .arg("stage")
+        .arg(&s.address)
+        .arg(&beta)
+        .arg("--like")
+        .arg("latest")
+        .arg("--async");
+    let out = stage.output().unwrap();
+    assert_eq!(out.status.code(), Some(4), "stage emits a batch");
+    let staged = support::first_document(&out.stdout);
+    let props = &staged["schema"]["properties"];
+    assert!(
+        props.get("style").is_some(),
+        "style is a question: {staged}"
+    );
+    assert_eq!(
+        props["style"]["default"].as_str(),
+        Some("panel"),
+        "the single bank occupant for style is the snapshot (panel), not the configured card: {staged}"
     );
 }
 
