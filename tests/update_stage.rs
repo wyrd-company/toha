@@ -717,6 +717,13 @@ fn apply_dry_run_on_a_completed_staged_update_previews_and_preserves_everything(
     let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
     let snapshot = baseline(iso.path(), &address, &formal, target.path(), false);
 
+    // A generic, user-owned file the template never names, committed before
+    // the update is staged: a real three-way merge, not an empty target, must
+    // carry it through both the preview and the real apply.
+    std::fs::write(target.path().join("notes.txt"), "user notes\n").unwrap();
+    git(target.path(), &["add", "."]);
+    git(target.path(), &["commit", "--quiet", "-m", "user notes"]);
+
     // The new version adds a second question and a trusted hook whose marker
     // file makes a hook run observable.
     std::fs::write(
@@ -778,6 +785,13 @@ fn apply_dry_run_on_a_completed_staged_update_previews_and_preserves_everything(
         !target.path().join("ran.txt").exists(),
         "a dry run must not run hooks"
     );
+    // The committed user edit is untouched by the preview, named explicitly
+    // (the byte-identical worktree check above already covers it structurally).
+    assert_eq!(
+        std::fs::read_to_string(target.path().join("notes.txt")).unwrap(),
+        "user notes\n",
+        "a dry-run preview must not touch the committed user file"
+    );
 
     // The real apply that follows is still available: it merges, runs the hook,
     // and consumes the staged interview.
@@ -798,6 +812,13 @@ fn apply_dry_run_on_a_completed_staged_update_previews_and_preserves_everything(
     assert!(
         target.path().join("ran.txt").exists(),
         "the real apply runs the trusted hook"
+    );
+    // The committed user edit survives the real three-way merge too, not just
+    // the preview.
+    assert_eq!(
+        std::fs::read_to_string(target.path().join("notes.txt")).unwrap(),
+        "user notes\n",
+        "the real apply must preserve the committed user file across the merge"
     );
 
     // The staged record is consumed; a second apply finds nothing staged.
