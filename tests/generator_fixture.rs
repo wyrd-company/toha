@@ -773,6 +773,89 @@ fn one_entry(key: &str, value: &Value) -> IndexMap<String, Value> {
 }
 
 #[test]
+fn a_person_is_re_asked_a_constraint_invalid_seed_and_overrides_it() {
+    // Behavior 9 (person route): a seeded default that fails a tightened constraint
+    // in the new template version is re-asked on the real terminal — the person is
+    // prompted again and types a valid value; nothing invalid is written. This maps
+    // the person re-ask the scripted exit-4 case cannot show.
+    use expectrl::{Expect, Session};
+    let iso = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let template = work.path().join("widget");
+    std::fs::create_dir_all(template.join("template")).unwrap();
+    // v1: label is a free text question (so "Root" is a valid recorded answer).
+    std::fs::write(
+        template.join("template.yml"),
+        "name: widget\ninterview:\n  - { id: label, type: text, prompt: Label, required: true }\n",
+    )
+    .unwrap();
+    std::fs::write(template.join("template/mod.txt"), "label={{ label }}\n").unwrap();
+    let project = work.path().join("project");
+    std::fs::create_dir(&project).unwrap();
+    git(&project, &["init", "-q", "-b", "main"]);
+    std::fs::write(project.join("seed.txt"), "seed\n").unwrap();
+    git(&project, &["add", "-A"]);
+    git(&project, &["commit", "-q", "-m", "seed"]);
+    let address = support::folder_address(&template.canonicalize().unwrap());
+    let formal = support::formal_name(&template);
+
+    // Root application records label="Root"; capture its snapshot.
+    let root = envelope(
+        iso.path(),
+        "root.json",
+        &formal,
+        &json!({ "label": "Root" }),
+    );
+    let (code, doc) = scripted(
+        iso.path(),
+        &address,
+        &project.join("src/alpha"),
+        None,
+        &root,
+    );
+    assert_eq!(code, 0, "root applied: {doc}");
+    let sa = doc["snapshot"]["id"].as_str().unwrap().to_owned();
+    git(&project, &["add", "-A"]);
+    git(&project, &["commit", "-q", "-m", "root"]);
+
+    // v2 tightens label to digits only; the recorded "Root" now fails the constraint.
+    std::fs::write(
+        template.join("template.yml"),
+        "name: widget\ninterview:\n  - { id: label, type: text, prompt: Label, required: true, validate: { regex: '^[0-9]+$' } }\n",
+    )
+    .unwrap();
+
+    // Person apply --like SA: the seeded "Root" is shown, accepted (Enter), rejected,
+    // re-asked; the person then types a valid value.
+    let beta = project.join("src/beta");
+    let mut command = support::isolated_command(iso.path());
+    command
+        .arg("apply")
+        .arg(&address)
+        .arg(&beta)
+        .arg("--like")
+        .arg(&sa)
+        .env("TOHA_NOW", NOW);
+    let mut session = Session::spawn(command).unwrap();
+    session.expect("Label").unwrap();
+    session.send_line("Root").unwrap(); // the seeded value, which now fails the constraint
+    session.expect("Label").unwrap(); // re-asked after the rejection
+    session.send_line("123").unwrap(); // a valid override
+    session.expect(expectrl::Eof).unwrap();
+    drop(session);
+
+    assert_eq!(
+        read_tree(&beta),
+        {
+            let mut m = BTreeMap::new();
+            m.insert("mod.txt".to_owned(), b"label=123\n".to_vec());
+            m
+        },
+        "the person was re-asked the constraint-invalid seed and the valid override was written"
+    );
+}
+
+#[test]
 fn a_seeded_plan_is_single_target_and_refuses_a_foreign_target() {
     // Behavior 18 (single-target plan): a seeded interview's plan renders exactly
     // the one subpath carried in its context, and `Plan::build` refuses any other
