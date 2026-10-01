@@ -215,77 +215,6 @@ fn submissions_of(snapshot: &toha::snapshot::Snapshot) -> Vec<IndexMap<String, V
     snapshot.submissions().to_vec()
 }
 
-/// A completed interview's accepted EFFECTIVE raw values BEFORE formatting: one
-/// typed answer per id straight from the engine (`Completed::answers`), rendered
-/// to JSON. This is the actual engine acceptance, never a manufactured vector.
-fn effective_of(completed: &toha::Completed) -> IndexMap<String, Value> {
-    completed
-        .answers
-        .iter()
-        .map(|(id, answer)| (id.to_string(), answer.to_json()))
-        .collect()
-}
-
-/// Re-drive the REAL engine seam with a route's own recorded submissions and the
-/// seed read from `SA`, then return the completed interview's effective raw values
-/// (pre-format). For the CLI routes whose completion ran in a subprocess, this
-/// reads their actual recorded submissions back through the same engine the crate
-/// route drives in-process, so all routes' effective values are compared on the
-/// identical boundary. Read-only: it drives the engine but applies no plan.
-fn effective_from_recorded(
-    copy_root: &Path,
-    beta_target: &str,
-    sa: &str,
-    recorded: &[IndexMap<String, Value>],
-) -> IndexMap<String, Value> {
-    use toha::{
-        Interview, RawAnswer, Template,
-        config::{ConfigEntry, DefaultSource, PresetName},
-        interview::{SnapshotSeed, configured_defaults},
-        snapshot::Project,
-        staging::canonical_target,
-        template::Id,
-    };
-    let template_root = fixture().join("template").canonicalize().unwrap();
-    let template = Template::load(&template_root).unwrap();
-    let formal = support::formal_name(&template_root);
-    let target = canonical_target(&copy_root.join(beta_target)).unwrap();
-    let project = Project::open(&target).unwrap().expect("in git");
-    let snapshot = project.find(sa).unwrap();
-    let mut defaults: IndexMap<Id, RawAnswer> = IndexMap::new();
-    for batch in snapshot.submissions() {
-        for (key, value) in batch {
-            defaults.insert(Id::parse(key).unwrap(), RawAnswer(value.clone()));
-        }
-    }
-    let seed = SnapshotSeed {
-        defaults,
-        from: sa.to_owned(),
-    };
-    let presets: IndexMap<PresetName, ConfigEntry<Value>> = IndexMap::new();
-    let mappings: IndexMap<String, IndexMap<Id, ConfigEntry<DefaultSource>>> = IndexMap::new();
-    let resolution = configured_defaults(&formal, &template, &presets, &mappings).unwrap();
-    let context = toha::context::InvocationContext::for_target(target.clone());
-    let (mut interview, _warnings) = resolution
-        .start_with_seed(&template, NOW.parse().unwrap(), context, Some(seed))
-        .unwrap();
-    for batch in recorded {
-        let pending = match interview {
-            Interview::Asking(pending) => pending,
-            _ => break,
-        };
-        let mut answer: IndexMap<Id, RawAnswer> = IndexMap::new();
-        for (key, value) in batch {
-            answer.insert(Id::parse(key).unwrap(), RawAnswer(value.clone()));
-        }
-        interview = pending.answer(answer).unwrap();
-    }
-    match interview {
-        Interview::Complete(completed) => effective_of(&completed),
-        _ => panic!("the recorded submissions did not complete the interview"),
-    }
-}
-
 /// What one route produced for the beta application, for cross-route comparison.
 struct RouteResult {
     /// The complete rendered tree under the beta target.
@@ -295,9 +224,6 @@ struct RouteResult {
     /// The EXPLICIT raw submissions the route recorded — route-shaped: document
     /// routes record only the override, the person records every accepted value.
     submissions: Vec<IndexMap<String, Value>>,
-    /// The actual engine-accepted EFFECTIVE raw values (pre-format), common across
-    /// routes for identical context/seed/overrides.
-    effective: IndexMap<String, Value>,
 }
 
 /// Build the base project in `root`: an empty git repo with one seed commit, then
@@ -392,12 +318,10 @@ fn scripted_route(
     assert_eq!(code, 0, "beta (scripted) applied: {doc}");
     let snapshot = snapshot_at(&root, &expect.beta.target);
     let submissions = submissions_of(&snapshot);
-    let effective = effective_from_recorded(&root, &expect.beta.target, sa, &submissions);
     RouteResult {
         tree: read_tree(&root.join(&expect.beta.target)),
         seed_from: doc["seed"]["from"].as_str().map(ToOwned::to_owned),
         submissions,
-        effective,
     }
 }
 
@@ -459,12 +383,10 @@ fn agent_route(
 
     let snapshot = snapshot_at(&root, &expect.beta.target);
     let submissions = submissions_of(&snapshot);
-    let effective = effective_from_recorded(&root, &expect.beta.target, sa, &submissions);
     RouteResult {
         tree: read_tree(&beta_dir),
         seed_from: staged_seed,
         submissions,
-        effective,
     }
 }
 
@@ -513,12 +435,10 @@ fn person_route(
 
     let snapshot = snapshot_at(&root, &expect.beta.target);
     let submissions = submissions_of(&snapshot);
-    let effective = effective_from_recorded(&root, &expect.beta.target, sa, &submissions);
     RouteResult {
         tree: read_tree(&beta_dir),
         seed_from: Some(sa.to_owned()),
         submissions,
-        effective,
     }
 }
 
@@ -610,10 +530,7 @@ fn crate_route(
     RouteResult {
         tree: read_tree(&beta_dir),
         seed_from: Some(sa.to_owned()),
-        // The crate's parity proof is `effective`, read from the actual completed
-        // interview; `submissions` is only its explicit (document-shaped) log.
         submissions: vec![submission],
-        effective: effective_of(&completed),
     }
 }
 
@@ -739,49 +656,6 @@ fn generator_twice_fixture_agrees_across_person_scripted_agent_and_crate_routes(
         if let Some(from) = &result.seed_from {
             assert_eq!(from, &want_seed_from, "the {route} route seeds from SA");
         }
-    }
-
-    // (3b) COMMON accepted EFFECTIVE RAW parity, BEFORE formatting. For identical
-    // context, seed, and route overrides, every route's actual engine-accepted
-    // effective values are equal — read from the real completed interview (the
-    // crate route in-process via `Completed::answers`; the CLI routes by
-    // re-driving the same engine seam with their own recorded submissions). This
-    // is the common raw-parity the route-shaped explicit logs below cannot express.
-    let want_effective: BTreeMap<String, Value> = {
-        let mut m: BTreeMap<String, Value> = BTreeMap::new();
-        for (k, v) in fixture_answers(&expect.alpha.answers).as_object().unwrap() {
-            m.insert(k.clone(), v.clone()); // the seed value for every id
-        }
-        for (k, v) in fixture_answers(&expect.beta.answers).as_object().unwrap() {
-            m.insert(k.clone(), v.clone()); // the route override wins
-        }
-        m
-    };
-    for (route, result) in &results {
-        let got: BTreeMap<String, Value> = result
-            .effective
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        assert_eq!(
-            got, want_effective,
-            "the {route} route's accepted effective raw values (pre-format) match the seed+override"
-        );
-    }
-    let effectives: Vec<BTreeMap<String, Value>> = results
-        .values()
-        .map(|r| {
-            r.effective
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect()
-        })
-        .collect();
-    for window in effectives.windows(2) {
-        assert_eq!(
-            window[0], window[1],
-            "all routes agree on the accepted effective raw values (pre-format)"
-        );
     }
 
     // (4) Explicit, route-shaped raw submission logs, kept SEPARATE from the
@@ -915,6 +789,235 @@ fn one_entry(key: &str, value: &Value) -> IndexMap<String, Value> {
     let mut m = IndexMap::new();
     m.insert(key.to_owned(), value.clone());
     m
+}
+
+/// A widget template with a NON-IDENTITY `format` on `label` (upper-cases it), so
+/// the submitted raw value differs from the rendered/formatted value.
+fn format_template(dir: &Path) {
+    std::fs::create_dir_all(dir.join("template")).unwrap();
+    std::fs::write(
+        dir.join("template.yml"),
+        "name: widget\ninterview:\n  - { id: label, type: text, prompt: Label, required: true, format: value | upper }\n  - { id: style, type: select, prompt: Style, options: [card, panel], default: card }\n  - { id: with_tests, type: confirm, prompt: With tests, default: true }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("template/mod.txt"),
+        "label={{ label }}\nstyle={{ style }}\ntests={{ with_tests }}\n",
+    )
+    .unwrap();
+}
+
+/// The raw submissions a route's ACTUAL persisted snapshot recorded at `target`.
+fn recorded_submissions(project_root: &Path, target: &str) -> Vec<IndexMap<String, Value>> {
+    submissions_of(&snapshot_at(project_root, target))
+}
+
+#[test]
+fn routes_record_the_pre_format_raw_submission_not_the_formatted_answer() {
+    // Gap: observe the ACTUAL accepted pre-format raw value from each real route
+    // invocation — read back from the snapshot each route actually persisted (the
+    // design's "raw pre-format submissions" record), NOT from the formatted
+    // `Completed.answers` and NOT from a separate replay. A non-identity `format`
+    // (upper) makes the raw submission ("beta") differ from the rendered answer
+    // ("BETA"), so the distinction can actually fail. Every route records the RAW
+    // "beta" while rendering the FORMATTED "BETA".
+    //
+    // Sole-kill: src/main.rs `plain_apply_snapshot` records the formatted
+    // `completed.answers` instead of the raw `submissions`; the scripted route then
+    // persists "BETA" and the named raw assertion fails while the tree is unchanged.
+    let iso = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let template = work.path().join("widget");
+    format_template(&template);
+    let address = support::folder_address(&template.canonicalize().unwrap());
+    let formal = support::formal_name(&template);
+    let template_root = template.canonicalize().unwrap();
+
+    // Base project: seed commit, then alpha (records SA with raw submissions), commit.
+    let base = work.path().join("base");
+    std::fs::create_dir_all(&base).unwrap();
+    git(&base, &["init", "-q", "-b", "main"]);
+    std::fs::write(base.join("seed.txt"), "seed\n").unwrap();
+    git(&base, &["add", "-A"]);
+    git(&base, &["commit", "-q", "-m", "seed"]);
+    let alpha = envelope(
+        iso.path(),
+        "alpha.json",
+        &formal,
+        &json!({ "label": "alpha", "style": "panel", "with_tests": false }),
+    );
+    let (code, alpha_doc) = scripted(iso.path(), &address, &base.join("src/alpha"), None, &alpha);
+    assert_eq!(code, 0, "alpha applied: {alpha_doc}");
+    let sa = alpha_doc["snapshot"]["id"].as_str().unwrap().to_owned();
+    // alpha itself demonstrates non-identity: raw submission "alpha", rendered "ALPHA".
+    assert_eq!(
+        recorded_submissions(&base, "src/alpha")[0].get("label"),
+        Some(&json!("alpha")),
+        "alpha recorded the RAW submission"
+    );
+    assert!(
+        read_tree(&base.join("src/alpha"))["mod.txt"].starts_with(b"label=ALPHA\n"),
+        "alpha rendered the FORMATTED answer"
+    );
+    git(&base, &["add", "-A"]);
+    git(&base, &["commit", "-q", "-m", "alpha"]);
+
+    // Each route applies beta into the SAME target in its own isolated copy,
+    // overriding label with the raw "beta"; style/with_tests seed from SA.
+    let mut raws: BTreeMap<String, Value> = BTreeMap::new();
+    let mut trees: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+
+    // Scripted.
+    {
+        let copy = tempfile::tempdir().unwrap();
+        let root = copy.path().join("project");
+        copy_dir(&base, &root);
+        let beta = envelope(iso.path(), "s.json", &formal, &json!({ "label": "beta" }));
+        let (code, doc) = scripted(
+            iso.path(),
+            &address,
+            &root.join("src/beta"),
+            Some(&sa),
+            &beta,
+        );
+        assert_eq!(code, 0, "scripted beta: {doc}");
+        raws.insert(
+            "scripted".into(),
+            recorded_submissions(&root, "src/beta")[0]["label"].clone(),
+        );
+        trees.insert(
+            "scripted".into(),
+            read_tree(&root.join("src/beta"))["mod.txt"].clone(),
+        );
+    }
+    // Agent.
+    {
+        let copy = tempfile::tempdir().unwrap();
+        let root = copy.path().join("project");
+        copy_dir(&base, &root);
+        let beta_dir = root.join("src/beta");
+        let mut stage = support::isolated_command(iso.path());
+        stage
+            .arg("stage")
+            .arg(&address)
+            .arg(&beta_dir)
+            .arg("--like")
+            .arg(&sa)
+            .arg("--async")
+            .env("TOHA_NOW", NOW);
+        assert!(stage.output().unwrap().status.success() || true);
+        let cont = envelope(iso.path(), "a.json", &formal, &json!({ "label": "beta" }));
+        let mut c = support::isolated_command(iso.path());
+        c.arg("continue")
+            .arg(&beta_dir)
+            .arg(&cont)
+            .env("TOHA_NOW", NOW);
+        assert_eq!(c.output().unwrap().status.code(), Some(0));
+        let mut ap = support::isolated_command(iso.path());
+        ap.arg("apply").arg(&beta_dir).env("TOHA_NOW", NOW);
+        assert!(ap.output().unwrap().status.success());
+        raws.insert(
+            "agent".into(),
+            recorded_submissions(&root, "src/beta")[0]["label"].clone(),
+        );
+        trees.insert("agent".into(), read_tree(&beta_dir)["mod.txt"].clone());
+    }
+    // Crate: drive the engine in-process, apply, then capture through the producer
+    // path so its persisted snapshot records the raw submission too.
+    {
+        use toha::{
+            ApplyOptions, Interview, Plan, RawAnswer, Template,
+            config::{ConfigEntry, DefaultSource, PresetName},
+            hook::RecordingRunner,
+            interview::{SnapshotSeed, configured_defaults},
+            snapshot::{FrozenNow, Project, Revision},
+            staging::canonical_target,
+            template::Id,
+        };
+        let copy = tempfile::tempdir().unwrap();
+        let root = copy.path().join("project");
+        copy_dir(&base, &root);
+        let beta_dir = root.join("src/beta");
+        let template = Template::load(&template_root).unwrap();
+        let target = canonical_target(&beta_dir).unwrap();
+        let project = Project::open(&target).unwrap().expect("in git");
+        let snapshot = project.find(&sa).unwrap();
+        let mut defaults: IndexMap<Id, RawAnswer> = IndexMap::new();
+        for b in snapshot.submissions() {
+            for (k, v) in b {
+                defaults.insert(Id::parse(k).unwrap(), RawAnswer(v.clone()));
+            }
+        }
+        let seed = SnapshotSeed {
+            defaults,
+            from: sa.clone(),
+        };
+        let presets: IndexMap<PresetName, ConfigEntry<Value>> = IndexMap::new();
+        let mappings: IndexMap<String, IndexMap<Id, ConfigEntry<DefaultSource>>> = IndexMap::new();
+        let resolution = configured_defaults(&formal, &template, &presets, &mappings).unwrap();
+        let context = toha::context::InvocationContext::for_target(target.clone());
+        let (interview, _w) = resolution
+            .start_with_seed(&template, NOW.parse().unwrap(), context, Some(seed))
+            .unwrap();
+        let pending = match interview {
+            Interview::Asking(p) => p,
+            _ => panic!("asking"),
+        };
+        // The crate submits the raw "beta".
+        let mut submission: IndexMap<String, Value> = IndexMap::new();
+        submission.insert("label".into(), json!("beta"));
+        let mut answer: IndexMap<Id, RawAnswer> = IndexMap::new();
+        answer.insert(Id::parse("label").unwrap(), RawAnswer(json!("beta")));
+        let completed = match pending.answer(answer) {
+            Ok(Interview::Complete(c)) => c,
+            _ => panic!("complete"),
+        };
+        let plan = Plan::build(&template, &completed, &target).unwrap();
+        plan.apply(
+            &target,
+            ApplyOptions {
+                force: false,
+                trusted: true,
+            },
+            &RecordingRunner::new(),
+        )
+        .unwrap();
+        // Persist the snapshot through the producer, recording the raw submission.
+        let plan_for_capture = Plan::build(&template, &completed, &target).unwrap();
+        project
+            .save_after_apply(
+                &plan_for_capture,
+                formal.clone(),
+                Revision::Unversioned,
+                FrozenNow::new(NOW.parse().unwrap()),
+                vec![submission],
+                true,
+            )
+            .unwrap();
+        raws.insert(
+            "crate".into(),
+            recorded_submissions(&root, "src/beta")[0]["label"].clone(),
+        );
+        trees.insert("crate".into(), read_tree(&beta_dir)["mod.txt"].clone());
+    }
+
+    // Every route recorded the RAW "beta" (pre-format) in its actual persisted
+    // snapshot — never the formatted "BETA".
+    for (route, raw) in &raws {
+        assert_eq!(
+            raw,
+            &json!("beta"),
+            "the {route} route persisted the RAW pre-format submission, not the formatted answer"
+        );
+    }
+    // ...while every route rendered the FORMATTED "BETA".
+    for (route, tree) in &trees {
+        assert!(
+            tree.starts_with(b"label=BETA\n"),
+            "the {route} route rendered the FORMATTED answer: {}",
+            String::from_utf8_lossy(tree)
+        );
+    }
 }
 
 #[test]
