@@ -1341,3 +1341,26 @@ fn a_hook_failure_leaves_the_project_unchanged_and_saves_no_ref() {
     // Only the base ref exists (the candidate was never published).
     assert_eq!(refs.lines().count(), 1, "no candidate ref saved: {refs}");
 }
+
+#[test]
+fn atomic_write_preserves_an_unrelated_temporary_filename() {
+    let dir = tempfile::tempdir().unwrap();
+    write(&dir.path().join("note.md"), b"old output");
+    write(&dir.path().join("note.toha-tmp"), b"operator data");
+    super::write_atomically(
+        dir.path(),
+        "note.md",
+        b"new output",
+        gix::index::entry::Mode::FILE,
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read(dir.path().join("note.md")).unwrap(),
+        b"new output"
+    );
+    assert_eq!(
+        std::fs::read(dir.path().join("note.toha-tmp")).unwrap(),
+        b"operator data"
+    );
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+}

@@ -91,10 +91,23 @@ interview:
 # {{ title }}
 ```
 
+Create `answers.json` with the template's canonical absolute folder path. For
+example, if the template is at `/tmp/note-template`:
+
+```json
+{
+  "template": "/tmp/note-template",
+  "answers": { "title": "Sample note" }
+}
+```
+
+Use your template's actual path. An agent batch exposes this identity in
+`context.template`; copy that value exactly into each external answers document.
+
 Apply it and commit the result:
 
 ```sh
-toha apply ./note-template ./project --answers answers.json  # answers: {"title": "sample-value"}
+toha apply ./note-template ./project --answers answers.json
 git -C ./project add . && git -C ./project commit -m "generate note"
 ```
 

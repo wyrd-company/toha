@@ -842,15 +842,29 @@ fn write_atomically(
     if let Some(parent) = full.parent() {
         std::fs::create_dir_all(parent).map_err(|e| MergeError::Io(e.to_string()))?;
     }
-    let tmp = full.with_extension("toha-tmp");
-    std::fs::write(&tmp, bytes).map_err(|e| MergeError::Io(e.to_string()))?;
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".toha-");
+    // Preserve ordinary file creation permissions (subject to the process umask).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(std::fs::Permissions::from_mode(0o666));
+    }
+    let mut tmp = builder
+        .tempfile_in(full.parent().expect("a worktree path has a parent"))
+        .map_err(|e| MergeError::Io(e.to_string()))?;
+    use std::io::Write;
+    tmp.write_all(bytes)
+        .map_err(|e| MergeError::Io(e.to_string()))?;
     #[cfg(unix)]
     if mode == gix::index::entry::Mode::FILE_EXECUTABLE {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))
+        tmp.as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o755))
             .map_err(|e| MergeError::Io(e.to_string()))?;
     }
-    std::fs::rename(&tmp, &full).map_err(|e| MergeError::Io(e.to_string()))?;
+    tmp.persist(&full)
+        .map_err(|e| MergeError::Io(e.to_string()))?;
     Ok(())
 }
 

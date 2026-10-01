@@ -102,22 +102,32 @@ evaluates any answer:
 ```rust
 use std::path::Path;
 use toha::{Interview, Seed, Template};
-use toha::context::InvocationContext;
+use toha::context::{EnvironmentSnapshot, ExecutionFacts, HostFacts, InvocationContext, SelectedTemplate};
 use toha::protocol::{self, DocumentStep};
 use toha::staging::canonical_target;
-let template = Template::load(Path::new("docs/examples/demo")).unwrap();
+let template_root = Path::new("docs/examples/demo").canonicalize().unwrap();
+let template = Template::load(&template_root).unwrap();
+let expected = template_root.to_str().unwrap();
 let target = canonical_target(Path::new("./notes")).unwrap();
 let seed = Seed {
     now: "2026-01-01T00:00:00Z[UTC]".parse().unwrap(),
     defaults: Default::default(),
-    context: InvocationContext::for_target(target),
+    context: InvocationContext::new(
+        target,
+        SelectedTemplate::new(expected.into(), template.name.clone(), Vec::new(), None),
+        HostFacts::capture(),
+        ExecutionFacts::new(false, false),
+        EnvironmentSnapshot::Unavailable,
+    ).unwrap(),
 };
 let Interview::Asking(pending) = Interview::start(&template, seed).unwrap() else { panic!("expected questions") };
 // The document must name the formal template it answers.
-let expected = "acme:demo@1";
-let text = r#"{"template":"acme:demo@1","answers":{"title":"Sample note","topic":"Research"}}"#;
+let text = serde_json::json!({
+    "template": expected,
+    "answers": {"title": "Sample note", "topic": "Research"},
+}).to_string();
 let DocumentStep::Accepted { interview, .. } =
-    protocol::answer_document_once(expected, pending, text).unwrap()
+    protocol::answer_document_once(expected, pending, &text).unwrap()
 else { panic!("the document was rejected") };
 let Interview::Complete(done) = interview else { panic!("expected complete interview") };
 assert_eq!(done.answers.len(), 2);

@@ -40,7 +40,12 @@ question takes its seeded default:
 toha apply ./widget ./src/widgets/beta --like latest --answers beta.json
 ```
 
-If `beta.json` only sets `label`, the new `beta` inherits `style`, `with_tests`,
+Each answers document uses the identity envelope
+`{"template": "<canonical absolute path to widget>", "answers": {...}}`.
+Copy the template identity exactly from a batch's `context.template`.
+
+If the `answers` object in `beta.json` only sets `label`, the new `beta` inherits
+`style`, `with_tests`,
 and every other answer from `alpha`'s snapshot. The `applied` document carries a
 `seed` member naming the snapshot it seeded from:
 
