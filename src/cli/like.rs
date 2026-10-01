@@ -464,4 +464,34 @@ mod tests {
             "foreign source refused: {err:?}"
         );
     }
+
+    #[test]
+    fn a_prefix_matching_several_snapshots_is_ambiguous_and_a_unique_one_resolves() {
+        // Behavior 16 (exact-one): a >= 6-char prefix shared by two snapshots of
+        // the source is Ambiguous (never an arbitrary pick); a prefix that is a
+        // prefix of exactly one resolves. ID_A and ID_B differ only in the final
+        // character, so `01JA2B` matches both and the full ID_A matches one.
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        git(repo, &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("seed.txt"), "seed\n").unwrap();
+        git(repo, &["add", "-A"]);
+        git(repo, &["commit", "-q", "-m", "seed"]);
+        write_ref(repo, ID_A, "gh:example/widget", "src/widgets/alpha");
+        write_ref(repo, ID_B, "gh:example/widget", "src/widgets/beta");
+        let project = open(repo, "src/widgets/gamma");
+
+        // The 6-char prefix shared by both ids is ambiguous, not an arbitrary pick.
+        let shared = &ID_A[..6];
+        assert_eq!(shared, &ID_B[..6], "the two ids share this >=6-char prefix");
+        let err = find_required(Some(&project), "gh:example/widget", shared).unwrap_err();
+        assert!(
+            matches!(err, LikeError::Ambiguous { .. }),
+            "a shared prefix is ambiguous: {err:?}"
+        );
+
+        // The full id (a prefix of exactly one) resolves.
+        let found = find_required(Some(&project), "gh:example/widget", ID_A).unwrap();
+        assert_eq!(found.id().to_string(), ID_A);
+    }
 }
