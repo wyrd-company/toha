@@ -623,3 +623,174 @@ fn an_update_with_untrusted_hooks_refuses_and_changes_nothing() {
         "an untrusted update must write nothing"
     );
 }
+
+/// A scripted update (`apply --from ID --answers FILE`, no CLI `--dry-run`)
+/// whose answers trigger the template's own `flow: dry-run` node previews the
+/// merge: `planned`, no hook, and the target, index, and refs untouched. A
+/// second update whose answers no longer trigger the flow still applies for
+/// real and runs the hook.
+#[test]
+fn flow_dry_run_on_a_scripted_update_previews_without_writing() {
+    let iso = tempfile::tempdir().unwrap();
+    let template_dir = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    write_template(template_dir.path());
+    target_repo(target.path());
+    let formal = support::formal_name(template_dir.path());
+    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let env_first = envelope(
+        iso.path(),
+        "first.json",
+        &formal,
+        serde_json::json!({ "name": "sample-value" }),
+    );
+
+    let mut baseline = support::isolated_command(iso.path());
+    baseline
+        .arg("apply")
+        .arg(&address)
+        .arg(target.path())
+        .arg("--baseline")
+        .arg("--answers")
+        .arg(&env_first);
+    let document = support::first_document(&baseline.output().unwrap().stdout);
+    let snapshot = document["snapshot"]["id"].as_str().unwrap().to_owned();
+    git(target.path(), &["add", "."]);
+    git(target.path(), &["commit", "--quiet", "-m", "baseline"]);
+
+    // The new version adds a `mode` question, a flow dry-run node gated on it,
+    // and a trusted hook whose marker makes a hook run observable.
+    std::fs::write(
+        template_dir.path().join("template.yml"),
+        "name: greeter\ndescription: A greeting\ninterview:\n  - id: name\n    type: text\n    prompt: Name\n    required: true\n  - id: mode\n    type: text\n    prompt: Mode\n    required: true\n  - flow: dry-run\n    when: \"mode == 'preview'\"\nhooks:\n  - run: [ touch, ran.txt ]\n",
+    )
+    .unwrap();
+
+    // `mode: preview` fires the flow dry-run without a CLI `--dry-run` flag.
+    let env_preview = envelope(
+        iso.path(),
+        "preview.json",
+        &formal,
+        serde_json::json!({ "name": "revised-value", "mode": "preview" }),
+    );
+    let mut preview = support::isolated_command(iso.path());
+    preview
+        .arg("apply")
+        .arg(target.path())
+        .arg("--from")
+        .arg(&snapshot)
+        .arg("--answers")
+        .arg(&env_preview)
+        .arg("--trust");
+    let output = preview.output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let document = support::first_document(&output.stdout);
+    assert_eq!(document["status"], "planned", "{document}");
+    assert_eq!(
+        std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
+        "Hello sample-value\n",
+        "a flow dry-run must not rewrite the target"
+    );
+    assert!(
+        !target.path().join("ran.txt").exists(),
+        "a flow dry-run must not run hooks"
+    );
+
+    // `mode: apply` no longer fires the flow node: the real apply is still
+    // available and merges for real, running the hook.
+    let env_apply = envelope(
+        iso.path(),
+        "apply.json",
+        &formal,
+        serde_json::json!({ "name": "revised-value", "mode": "apply" }),
+    );
+    let mut real = support::isolated_command(iso.path());
+    real.arg("apply")
+        .arg(target.path())
+        .arg("--from")
+        .arg(&snapshot)
+        .arg("--answers")
+        .arg(&env_apply)
+        .arg("--trust");
+    let output = real.output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let document = support::first_document(&output.stdout);
+    assert_eq!(document["status"], "applied", "{document}");
+    assert_eq!(
+        std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
+        "Hello revised-value\n"
+    );
+    assert!(
+        target.path().join("ran.txt").exists(),
+        "the real apply runs the trusted hook"
+    );
+}
+
+/// The person-route update (`apply --from ID`, interactive, no `--answers`)
+/// previews the same way when the prompted answers trigger the template's own
+/// `flow: dry-run` node: `planned`, no hook, target untouched.
+#[cfg(unix)]
+#[test]
+fn flow_dry_run_on_a_person_update_previews_without_writing() {
+    use expectrl::{Expect, Session};
+
+    let iso = tempfile::tempdir().unwrap();
+    let template_dir = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    write_template(template_dir.path());
+    target_repo(target.path());
+    let formal = support::formal_name(template_dir.path());
+    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let env_first = envelope(
+        iso.path(),
+        "first.json",
+        &formal,
+        serde_json::json!({ "name": "sample-value" }),
+    );
+
+    let mut baseline = support::isolated_command(iso.path());
+    baseline
+        .arg("apply")
+        .arg(&address)
+        .arg(target.path())
+        .arg("--baseline")
+        .arg("--answers")
+        .arg(&env_first);
+    let document = support::first_document(&baseline.output().unwrap().stdout);
+    let snapshot = document["snapshot"]["id"].as_str().unwrap().to_owned();
+    git(target.path(), &["add", "."]);
+    git(target.path(), &["commit", "--quiet", "-m", "baseline"]);
+
+    std::fs::write(
+        template_dir.path().join("template.yml"),
+        "name: greeter\ndescription: A greeting\ninterview:\n  - id: name\n    type: text\n    prompt: Name\n    required: true\n  - id: mode\n    type: text\n    prompt: Mode\n    required: true\n  - flow: dry-run\n    when: \"mode == 'preview'\"\nhooks:\n  - run: [ touch, ran.txt ]\n",
+    )
+    .unwrap();
+
+    // The person route prompts `name` (defaulting to the recorded answer) and
+    // the new `mode`; answering `mode` with `preview` fires the flow dry-run.
+    let mut command = support::isolated_command(iso.path());
+    command
+        .arg("apply")
+        .arg(&address)
+        .arg(target.path())
+        .arg("--from")
+        .arg(&snapshot)
+        .arg("--trust");
+    let mut session = Session::spawn(command).unwrap();
+    session.expect("Name").unwrap();
+    session.send_line("sample-value").unwrap();
+    session.expect("Mode").unwrap();
+    session.send_line("preview").unwrap();
+    session.expect(expectrl::Eof).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
+        "Hello sample-value\n",
+        "a flow dry-run must not rewrite the target"
+    );
+    assert!(
+        !target.path().join("ran.txt").exists(),
+        "a flow dry-run must not run hooks"
+    );
+}

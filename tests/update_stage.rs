@@ -927,3 +927,126 @@ fn apply_dry_run_on_a_completed_staged_baseline_previews_and_preserves_everythin
     let output = again.output().unwrap();
     assert_ne!(output.status.code(), Some(0), "the record should be gone");
 }
+
+/// A completed staged update whose answers trigger the template's own
+/// `flow: dry-run` node previews on a plain `apply PATH` — no CLI `--dry-run`
+/// flag needed: `planned`, the target/index/refs/staged state byte-identical
+/// before and after, and no hook execution. `abort` still clears the staged
+/// record (stop/abort is preserved), and restaging with answers that no
+/// longer trigger the flow node still applies for real and runs the hook.
+#[test]
+fn flow_dry_run_on_a_completed_staged_update_previews_and_preserves_staged_state() {
+    let iso = tempfile::tempdir().unwrap();
+    let template_dir = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    write_one_question(template_dir.path());
+    target_repo(target.path());
+    let formal = support::formal_name(template_dir.path());
+    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let snapshot = baseline(iso.path(), &address, &formal, target.path(), false);
+
+    // The new version adds a `mode` question, a flow dry-run node gated on it,
+    // and a trusted hook whose marker makes a hook run observable.
+    std::fs::write(
+        template_dir.path().join("template.yml"),
+        "name: greeter\ndescription: A greeting\ninterview:\n  - id: name\n    type: text\n    prompt: Name\n    required: true\n  - id: mode\n    type: text\n    prompt: Mode\n    required: true\n  - flow: dry-run\n    when: \"mode == 'preview'\"\nhooks:\n  - run: [ touch, ran.txt ]\n",
+    )
+    .unwrap();
+
+    // Stage with --trust so the hook is trusted; the replay asks only `mode`.
+    let mut stage = support::isolated_command(iso.path());
+    stage
+        .arg("stage")
+        .arg(&address)
+        .arg(target.path())
+        .arg("--from")
+        .arg(&snapshot)
+        .arg("--trust")
+        .arg("--async");
+    assert_eq!(stage.output().unwrap().status.code(), Some(4), "stage");
+
+    // Answer `mode: preview`, firing the flow dry-run, completing the staged
+    // update.
+    let env_preview = envelope(
+        iso.path(),
+        "preview.json",
+        &formal,
+        serde_json::json!({ "mode": "preview" }),
+    );
+    let mut cont = support::isolated_command(iso.path());
+    cont.arg("continue").arg(target.path()).arg(&env_preview);
+    assert_eq!(cont.output().unwrap().status.code(), Some(0), "continue");
+
+    let before = capture_state(iso.path(), target.path());
+
+    // `apply PATH --trust`, with no CLI `--dry-run` flag, previews because the
+    // template's own flow node requested it.
+    let mut preview = support::isolated_command(iso.path());
+    preview.arg("apply").arg(target.path()).arg("--trust");
+    let preview_output = preview.output().unwrap();
+    assert_eq!(
+        preview_output.status.code(),
+        Some(0),
+        "preview: {preview_output:?}"
+    );
+    let document = support::first_document(&preview_output.stdout);
+    assert_eq!(document["status"], "planned", "{document}");
+
+    let after_preview = capture_state(iso.path(), target.path());
+    assert_eq!(
+        before, after_preview,
+        "a flow dry-run must leave the target, index, refs, and staged state untouched"
+    );
+    assert!(
+        !target.path().join("ran.txt").exists(),
+        "a flow dry-run must not run hooks"
+    );
+
+    // Stop/abort is preserved: aborting the staged interview clears it.
+    let mut abort = support::isolated_command(iso.path());
+    abort.arg("abort").arg(target.path());
+    assert_eq!(abort.output().unwrap().status.code(), Some(0), "abort");
+
+    // Restaging with answers that no longer trigger the flow node still
+    // applies for real: the real apply remains available.
+    let mut restage = support::isolated_command(iso.path());
+    restage
+        .arg("stage")
+        .arg(&address)
+        .arg(target.path())
+        .arg("--from")
+        .arg(&snapshot)
+        .arg("--trust")
+        .arg("--async");
+    assert_eq!(restage.output().unwrap().status.code(), Some(4), "restage");
+    let env_apply = envelope(
+        iso.path(),
+        "apply.json",
+        &formal,
+        serde_json::json!({ "mode": "apply" }),
+    );
+    let mut cont2 = support::isolated_command(iso.path());
+    cont2.arg("continue").arg(target.path()).arg(&env_apply);
+    assert_eq!(cont2.output().unwrap().status.code(), Some(0), "continue 2");
+
+    let mut real = support::isolated_command(iso.path());
+    real.arg("apply").arg(target.path()).arg("--trust");
+    let applied = real.output().unwrap();
+    assert_eq!(applied.status.code(), Some(0), "apply: {applied:?}");
+    let document = support::first_document(&applied.stdout);
+    assert_eq!(document["status"], "applied", "{document}");
+    assert_eq!(
+        std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
+        "Hello sample-value\n"
+    );
+    assert!(
+        target.path().join("ran.txt").exists(),
+        "the real apply runs the trusted hook"
+    );
+
+    // The staged record is consumed; a second apply finds nothing staged.
+    let mut again = support::isolated_command(iso.path());
+    again.arg("apply").arg(target.path());
+    let output = again.output().unwrap();
+    assert_ne!(output.status.code(), Some(0), "the record should be gone");
+}

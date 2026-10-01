@@ -527,6 +527,10 @@ pub fn apply_staged(
             completed,
             submissions,
         } => {
+            // A flow `dry-run` composes with the CLI `--dry-run` by union; the
+            // staged-record retention gate below must use the same effective
+            // value as the merge itself.
+            let dry_run = update::effective_dry_run(dry_run, &completed);
             let outcome =
                 update::finish_merge(prep, &base, &target, completed, submissions, dry_run);
             // A successful, non-preview merge consumes the staged interview; a

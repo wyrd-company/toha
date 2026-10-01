@@ -153,6 +153,8 @@ pub fn run_update(
         }
     };
 
+    // A flow `dry-run` composes with the CLI `--dry-run` by union.
+    let dry_run = effective_dry_run(dry_run, &completed);
     finish_merge(prep, &base, &target, completed, submissions, dry_run)
 }
 
@@ -182,7 +184,11 @@ fn person_update(
             UpdateDrive::Completed {
                 completed,
                 submissions,
-            } => return finish_merge(prep, base, target, completed, submissions, dry_run),
+            } => {
+                // A flow `dry-run` composes with the CLI `--dry-run` by union.
+                let dry_run = effective_dry_run(dry_run, &completed);
+                return finish_merge(prep, base, target, completed, submissions, dry_run);
+            }
             UpdateDrive::Ask { pending, .. } => {
                 let submission =
                     match crate::terminal::prompt_batch(&pending, &mut crate::terminal::InquireAsk)
@@ -502,6 +508,14 @@ fn to_raw_staged(
                 .collect::<Result<IndexMap<_, _>, _>>()
         })
         .collect()
+}
+
+/// Whether an update route's merge is a dry run: the invocation's `--dry-run`
+/// composes with a completed interview's own `flow: dry-run` disposition by
+/// union, either suppresses the write, matching the scripted and agent-apply
+/// routes (`main.rs`'s `scripted_completed` and fresh-apply resume).
+pub(crate) fn effective_dry_run(dry_run: bool, completed: &toha::Completed) -> bool {
+    dry_run || matches!(completed.step(), toha::Step::Plan { apply: false })
 }
 
 /// Build the snapshot inputs from a completed update interview and merge them
