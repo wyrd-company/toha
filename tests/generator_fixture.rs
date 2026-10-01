@@ -945,6 +945,100 @@ fn routes_accept_the_same_effective_raw_including_seeded_defaults_before_formatt
     // Non-identity: the accepted raw override is "beta", the rendered answer "BETA".
     assert_eq!(crate_effective["label"], json!("beta"));
 
+    // A seed folded from SA at the CLI boundary, shared by the script/agent adapters.
+    let fold_seed = |root: &Path| -> (SnapshotSeed, Template, toha::staging::CanonicalTarget) {
+        let template = Template::load(&template_root).unwrap();
+        let target = canonical_target(&root.join("src/beta")).unwrap();
+        let project = Project::open(&target).unwrap().expect("in git");
+        let snapshot = project.find(&sa).unwrap();
+        let mut defaults: IndexMap<Id, RawAnswer> = IndexMap::new();
+        for b in snapshot.submissions() {
+            for (k, v) in b {
+                defaults.insert(Id::parse(k).unwrap(), RawAnswer(v.clone()));
+            }
+        }
+        (
+            SnapshotSeed {
+                defaults,
+                from: sa.clone(),
+            },
+            template,
+            target,
+        )
+    };
+    let empty_presets: IndexMap<PresetName, ConfigEntry<Value>> = IndexMap::new();
+    let empty_mappings: IndexMap<String, IndexMap<Id, ConfigEntry<DefaultSource>>> =
+        IndexMap::new();
+
+    // --- SCRIPT: the ACTUAL scripted adapter path (protocol::answer_document_headless),
+    // driven in-process, reading its Completed::accepted_raw() — the pre-format effective
+    // raw INCLUDING the seeded defaults the headless walk applied. ---
+    let script_effective: BTreeMap<String, Value> = {
+        let copy = tempfile::tempdir().unwrap();
+        let root = copy.path().join("project");
+        copy_dir(&base, &root);
+        let (seed, template, target) = fold_seed(&root);
+        let resolution =
+            configured_defaults(&formal, &template, &empty_presets, &empty_mappings).unwrap();
+        let context = toha::context::InvocationContext::for_target(target);
+        let (interview, _w) = resolution
+            .start_with_seed(&template, NOW.parse().unwrap(), context, Some(seed))
+            .unwrap();
+        let doc =
+            serde_json::to_string(&json!({ "template": formal, "answers": { "label": "beta" } }))
+                .unwrap();
+        match toha::protocol::answer_document_headless(&formal, &template, interview, &doc).unwrap()
+        {
+            toha::protocol::Headless::Completed { completed, .. } => completed
+                .accepted_raw()
+                .iter()
+                .map(|(id, raw)| (id.to_string(), raw.0.clone()))
+                .collect(),
+            _ => panic!("scripted headless did not complete"),
+        }
+    };
+    assert_eq!(
+        script_effective, want_effective,
+        "the scripted adapter path's actual accepted effective raw (incl seeded defaults, pre-format) via the seam"
+    );
+
+    // --- AGENT: the ACTUAL agent resume adapter path (StagedRecord::replay_with_seed),
+    // driven in-process, reading its Completed::accepted_raw(). ---
+    let agent_effective: BTreeMap<String, Value> = {
+        use toha::staging::StagedRecord;
+        let copy = tempfile::tempdir().unwrap();
+        let root = copy.path().join("project");
+        copy_dir(&base, &root);
+        let (seed, template, target) = fold_seed(&root);
+        let resolution =
+            configured_defaults(&formal, &template, &empty_presets, &empty_mappings).unwrap();
+        let context = toha::context::InvocationContext::for_target(target.clone());
+        let mut submission: IndexMap<String, Value> = IndexMap::new();
+        submission.insert("label".to_owned(), json!("beta"));
+        let saved = StagedRecord::new_with_context(
+            context,
+            String::new(),
+            false,
+            NOW.to_owned(),
+            vec![submission],
+        );
+        match saved
+            .replay_with_seed(&template, resolution, Some(seed), &target)
+            .unwrap()
+        {
+            Interview::Complete(completed) => completed
+                .accepted_raw()
+                .iter()
+                .map(|(id, raw)| (id.to_string(), raw.0.clone()))
+                .collect(),
+            _ => panic!("agent replay did not complete"),
+        }
+    };
+    assert_eq!(
+        agent_effective, want_effective,
+        "the agent resume adapter path's actual accepted effective raw (incl seeded defaults, pre-format) via the seam"
+    );
+
     // --- PERSON: real PTY; the accepted seeded defaults are in its persisted snapshot. ---
     let person_effective: BTreeMap<String, Value> = {
         use expectrl::{Expect, Session};
