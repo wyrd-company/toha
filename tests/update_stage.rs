@@ -701,6 +701,20 @@ fn show_refs(dir: &Path) -> String {
     String::from_utf8(output.stdout).unwrap()
 }
 
+/// The `path` of every entry in a result document's `merge.changes`, sorted,
+/// so a test can assert the plan is complete and accurate rather than merely
+/// present.
+fn changed_paths(document: &Value) -> Vec<String> {
+    let mut paths: Vec<String> = document["merge"]["changes"]
+        .as_array()
+        .expect("merge.changes array")
+        .iter()
+        .map(|change| change["path"].as_str().expect("change path").to_owned())
+        .collect();
+    paths.sort();
+    paths
+}
+
 /// A completed staged update (`apply --from ID` staged and completed) previews
 /// under `apply PATH --dry-run`: the document reports `planned`, the hook does
 /// not run, and the target, index, refs, and staged record are byte-identical
@@ -724,11 +738,21 @@ fn apply_dry_run_on_a_completed_staged_update_previews_and_preserves_everything(
     git(target.path(), &["add", "."]);
     git(target.path(), &["commit", "--quiet", "-m", "user notes"]);
 
-    // The new version adds a second question and a trusted hook whose marker
-    // file makes a hook run observable.
+    // The new version adds a second question and a trusted hook. One hook
+    // writes `ran.txt` inside the checkout (so a run shows up in the plan's
+    // own `merge.changes`); the other touches an absolute marker entirely
+    // outside the target and the throwaway checkout, so its presence proves a
+    // hook process actually ran, wherever its cwd was — a target-relative
+    // marker alone cannot distinguish "no hook ran" from "a hook ran in the
+    // scratch checkout and nothing merged to the target".
+    let marker_dir = tempfile::tempdir().unwrap();
+    let marker = marker_dir.path().join("hook-ran.marker");
     std::fs::write(
         template_dir.path().join("template.yml"),
-        "name: greeter\ndescription: A greeting\ninterview:\n  - id: name\n    type: text\n    prompt: Name\n    required: true\n  - id: color\n    type: text\n    prompt: Colour\n    required: true\nhooks:\n  - run: [ touch, ran.txt ]\n",
+        format!(
+            "name: greeter\ndescription: A greeting\ninterview:\n  - id: name\n    type: text\n    prompt: Name\n    required: true\n  - id: color\n    type: text\n    prompt: Colour\n    required: true\nhooks:\n  - run: [ touch, ran.txt ]\n  - run: [ touch, {:?} ]\n",
+            marker
+        ),
     )
     .unwrap();
     std::fs::write(
@@ -775,6 +799,13 @@ fn apply_dry_run_on_a_completed_staged_update_previews_and_preserves_everything(
     assert_eq!(dry_output.status.code(), Some(0), "dry-run: {dry_output:?}");
     let document = support::first_document(&dry_output.stdout);
     assert_eq!(document["status"], "planned", "{document}");
+    // The plan is accurate: the new file the template would render is listed,
+    // and no hook-written path leaks into it (the hook never ran).
+    assert_eq!(
+        changed_paths(&document),
+        vec!["color.txt".to_owned()],
+        "the preview must list the rendered file and nothing a hook would write: {document}"
+    );
 
     let after_dry_run = capture_state(iso.path(), target.path());
     assert_eq!(
@@ -784,6 +815,11 @@ fn apply_dry_run_on_a_completed_staged_update_previews_and_preserves_everything(
     assert!(
         !target.path().join("ran.txt").exists(),
         "a dry run must not run hooks"
+    );
+    assert!(
+        !marker.exists(),
+        "a dry run must not run hooks, proved by an absolute marker outside the target \
+         and the throwaway checkout"
     );
     // The committed user edit is untouched by the preview, named explicitly
     // (the byte-identical worktree check above already covers it structurally).
@@ -813,6 +849,10 @@ fn apply_dry_run_on_a_completed_staged_update_previews_and_preserves_everything(
         target.path().join("ran.txt").exists(),
         "the real apply runs the trusted hook"
     );
+    assert!(
+        marker.exists(),
+        "the real apply runs the trusted hook, proved by the absolute marker"
+    );
     // The committed user edit survives the real three-way merge too, not just
     // the preview.
     assert_eq!(
@@ -837,11 +877,18 @@ fn apply_dry_run_on_a_completed_staged_baseline_previews_and_preserves_everythin
     let iso = tempfile::tempdir().unwrap();
     let template_dir = tempfile::tempdir().unwrap();
     let target = tempfile::tempdir().unwrap();
-    // A hook-bearing template so a hook run is observable.
+    // A hook-bearing template, plus an absolute marker outside the target and
+    // the throwaway checkout, so a hook run is observable regardless of where
+    // its cwd was.
     std::fs::create_dir_all(template_dir.path().join("template")).unwrap();
+    let marker_dir = tempfile::tempdir().unwrap();
+    let marker = marker_dir.path().join("hook-ran.marker");
     std::fs::write(
         template_dir.path().join("template.yml"),
-        "name: greeter\ndescription: A greeting\ninterview:\n  - id: name\n    type: text\n    prompt: Name\n    required: true\nhooks:\n  - run: [ touch, ran.txt ]\n",
+        format!(
+            "name: greeter\ndescription: A greeting\ninterview:\n  - id: name\n    type: text\n    prompt: Name\n    required: true\nhooks:\n  - run: [ touch, ran.txt ]\n  - run: [ touch, {:?} ]\n",
+            marker
+        ),
     )
     .unwrap();
     std::fs::write(
@@ -889,6 +936,11 @@ fn apply_dry_run_on_a_completed_staged_baseline_previews_and_preserves_everythin
     assert_eq!(dry_output.status.code(), Some(0), "dry-run: {dry_output:?}");
     let document = support::first_document(&dry_output.stdout);
     assert_eq!(document["status"], "planned", "{document}");
+    assert_eq!(
+        changed_paths(&document),
+        vec!["greeting.txt".to_owned()],
+        "the preview must list the rendered file and nothing a hook would write: {document}"
+    );
 
     let after_dry_run = capture_state(iso.path(), target.path());
     assert_eq!(
@@ -899,6 +951,11 @@ fn apply_dry_run_on_a_completed_staged_baseline_previews_and_preserves_everythin
     assert!(
         !target.path().join("ran.txt").exists(),
         "a dry run must not run hooks"
+    );
+    assert!(
+        !marker.exists(),
+        "a dry run must not run hooks, proved by an absolute marker outside the target \
+         and the throwaway checkout"
     );
     assert!(
         !target.path().join("greeting.txt").exists(),
@@ -919,6 +976,10 @@ fn apply_dry_run_on_a_completed_staged_baseline_previews_and_preserves_everythin
     assert!(
         target.path().join("ran.txt").exists(),
         "the real apply runs the trusted hook"
+    );
+    assert!(
+        marker.exists(),
+        "the real apply runs the trusted hook, proved by the absolute marker"
     );
 
     // The staged record is consumed; a second apply finds nothing staged.
@@ -946,10 +1007,16 @@ fn flow_dry_run_on_a_completed_staged_update_previews_and_preserves_staged_state
     let snapshot = baseline(iso.path(), &address, &formal, target.path(), false);
 
     // The new version adds a `mode` question, a flow dry-run node gated on it,
-    // and a trusted hook whose marker makes a hook run observable.
+    // and a trusted hook. An absolute marker outside the target and the
+    // throwaway checkout makes a hook run observable regardless of its cwd.
+    let marker_dir = tempfile::tempdir().unwrap();
+    let marker = marker_dir.path().join("hook-ran.marker");
     std::fs::write(
         template_dir.path().join("template.yml"),
-        "name: greeter\ndescription: A greeting\ninterview:\n  - id: name\n    type: text\n    prompt: Name\n    required: true\n  - id: mode\n    type: text\n    prompt: Mode\n    required: true\n  - flow: dry-run\n    when: \"mode == 'preview'\"\nhooks:\n  - run: [ touch, ran.txt ]\n",
+        format!(
+            "name: greeter\ndescription: A greeting\ninterview:\n  - id: name\n    type: text\n    prompt: Name\n    required: true\n  - id: mode\n    type: text\n    prompt: Mode\n    required: true\n  - flow: dry-run\n    when: \"mode == 'preview'\"\nhooks:\n  - run: [ touch, ran.txt ]\n  - run: [ touch, {:?} ]\n",
+            marker
+        ),
     )
     .unwrap();
 
@@ -991,6 +1058,13 @@ fn flow_dry_run_on_a_completed_staged_update_previews_and_preserves_staged_state
     );
     let document = support::first_document(&preview_output.stdout);
     assert_eq!(document["status"], "planned", "{document}");
+    // This update renders no new file; the plan must stay empty rather than
+    // leak a hook-written path into it.
+    assert_eq!(
+        changed_paths(&document),
+        Vec::<String>::new(),
+        "the preview must not include anything a hook would write: {document}"
+    );
 
     let after_preview = capture_state(iso.path(), target.path());
     assert_eq!(
@@ -1000,6 +1074,11 @@ fn flow_dry_run_on_a_completed_staged_update_previews_and_preserves_staged_state
     assert!(
         !target.path().join("ran.txt").exists(),
         "a flow dry-run must not run hooks"
+    );
+    assert!(
+        !marker.exists(),
+        "a flow dry-run must not run hooks, proved by an absolute marker outside the \
+         target and the throwaway checkout"
     );
 
     // Stop/abort is preserved: aborting the staged interview clears it.
@@ -1042,6 +1121,10 @@ fn flow_dry_run_on_a_completed_staged_update_previews_and_preserves_staged_state
     assert!(
         target.path().join("ran.txt").exists(),
         "the real apply runs the trusted hook"
+    );
+    assert!(
+        marker.exists(),
+        "the real apply runs the trusted hook, proved by the absolute marker"
     );
 
     // The staged record is consumed; a second apply finds nothing staged.

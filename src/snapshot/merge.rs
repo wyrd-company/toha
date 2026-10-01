@@ -212,6 +212,13 @@ fn capture_inputs(project: &Project, inputs: &SnapshotInputs) -> Result<CaptureI
 /// Build the candidate snapshot through the throwaway checkout: check out HEAD,
 /// retract uncovered base ownership, apply the plan (and hooks unless it is a dry
 /// run), then capture with the base. The checkout is deleted afterwards.
+///
+/// `merge_apply` already refused untrusted hooks before calling this function
+/// (`Merged::NeedsTrust`), so trust is always established here, or there are no
+/// hooks to run. A dry run still renders every file into the checkout so the
+/// candidate reflects the real change — it just drops the plan's hooks first,
+/// so the apply loop runs none of them; `trusted: true` is therefore always
+/// correct and never re-triggers the untrusted refusal for files alone.
 fn build_candidate(
     project: &Project,
     base: &Base,
@@ -239,7 +246,13 @@ fn build_candidate(
             .map_err(|e| MergeError::Git(e.to_string()))?;
     }
 
-    // Step 4: apply the plan into the checkout, running hooks unless it is a dry run.
+    // Step 4: apply the plan into the checkout. A dry run drops the hooks from
+    // the plan first, so every file still renders but the apply loop has none
+    // to run.
+    let mut plan = plan;
+    if !run_hooks {
+        plan.hooks.clear();
+    }
     let checkout_target_path = if target.is_root() {
         checkout.path().to_owned()
     } else {
@@ -247,15 +260,29 @@ fn build_candidate(
     };
     let checkout_target = crate::staging::canonical_target(&checkout_target_path)
         .map_err(|e| MergeError::Io(e.to_string()))?;
-    plan.apply(
-        &checkout_target,
-        crate::apply::ApplyOptions {
-            force: true,
-            trusted: run_hooks,
-        },
-        runner,
-    )
-    .map_err(|e| MergeError::Git(format!("apply: {e}")))?;
+    match plan
+        .apply(
+            &checkout_target,
+            crate::apply::ApplyOptions {
+                force: true,
+                trusted: true,
+            },
+            runner,
+        )
+        .map_err(|e| MergeError::Git(format!("apply: {e}")))?
+    {
+        crate::apply::Applied::Written { .. } => {}
+        // Unreachable given the precondition above (trust established, or no
+        // hooks left to trigger the refusal): refuse to capture an incomplete
+        // checkout rather than silently proceed.
+        crate::apply::Applied::NeedsTrust(_) => {
+            return Err(MergeError::Git(
+                "internal: a candidate build reached an untrusted-hooks refusal \
+                 after trust was already established"
+                    .to_owned(),
+            ));
+        }
+    }
 
     // Step 6: capture the new snapshot from the checkout, then read it back.
     let id = capture::capture(

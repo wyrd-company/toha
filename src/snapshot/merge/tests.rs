@@ -1231,6 +1231,21 @@ fn a_dry_run_previews_the_change_and_saves_nothing() {
     )
     .unwrap();
 
+    // The candidate's own captured tree carries the new render, not the base's
+    // stale bytes: a dry run must still produce an accurate preview, it just
+    // must not run the hook.
+    let captured = git(
+        root,
+        &[
+            "show",
+            &format!("{SNAPSHOT_REF_PREFIX}{}:files/app.txt", new.id()),
+        ],
+    );
+    assert_eq!(
+        captured, "v2",
+        "the candidate must capture the new render, not the base's v1"
+    );
+
     let result = merge_into_worktree(
         &project,
         &Base::Snapshot(read_snapshot(&project, BASE_ID)),

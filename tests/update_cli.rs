@@ -48,6 +48,73 @@ fn target_repo(dir: &Path) {
     git(dir, &["commit", "--quiet", "-m", "seed"]);
 }
 
+/// Every tracked worktree file, every git ref, and the git index, captured so
+/// a preview can be proved to leave the whole target untouched, not just the
+/// one file a test happens to check.
+#[derive(Debug, PartialEq)]
+struct FullState {
+    worktree: Vec<(String, Vec<u8>)>,
+    refs: String,
+    index: Vec<u8>,
+}
+
+fn capture_target_state(target: &Path) -> FullState {
+    FullState {
+        worktree: tracked_files(target),
+        refs: show_refs(target),
+        index: std::fs::read(target.join(".git/index")).unwrap(),
+    }
+}
+
+fn tracked_files(dir: &Path) -> Vec<(String, Vec<u8>)> {
+    fn walk(root: &Path, dir: &Path, files: &mut Vec<(String, Vec<u8>)>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.file_name().unwrap() == ".git" {
+                continue;
+            }
+            if path.is_dir() {
+                walk(root, &path, files);
+            } else {
+                let rel = path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
+                files.push((rel, std::fs::read(&path).unwrap()));
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(dir, dir, &mut files);
+    files.sort();
+    files
+}
+
+fn show_refs(dir: &Path) -> String {
+    let output = StdCommand::new("git")
+        .args(["show-ref"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    String::from_utf8(output.stdout).unwrap()
+}
+
+/// The `path` of every entry in a result document's `merge.changes`, sorted,
+/// so a test can assert the plan is complete and accurate rather than merely
+/// present.
+fn changed_paths(document: &Value) -> Vec<String> {
+    let mut paths: Vec<String> = document["merge"]["changes"]
+        .as_array()
+        .expect("merge.changes array")
+        .iter()
+        .map(|change| change["path"].as_str().expect("change path").to_owned())
+        .collect();
+    paths.sort();
+    paths
+}
+
 /// Write the identity envelope naming `formal` around `answers`.
 fn envelope(dir: &Path, name: &str, formal: &str, answers: Value) -> std::path::PathBuf {
     let document = serde_json::json!({ "template": formal, "answers": answers });
@@ -659,12 +726,20 @@ fn flow_dry_run_on_a_scripted_update_previews_without_writing() {
     git(target.path(), &["commit", "--quiet", "-m", "baseline"]);
 
     // The new version adds a `mode` question, a flow dry-run node gated on it,
-    // and a trusted hook whose marker makes a hook run observable.
+    // and a trusted hook. An absolute marker outside the target and the
+    // throwaway checkout makes a hook run observable regardless of its cwd.
+    let marker_dir = tempfile::tempdir().unwrap();
+    let marker = marker_dir.path().join("hook-ran.marker");
     std::fs::write(
         template_dir.path().join("template.yml"),
-        "name: greeter\ndescription: A greeting\ninterview:\n  - id: name\n    type: text\n    prompt: Name\n    required: true\n  - id: mode\n    type: text\n    prompt: Mode\n    required: true\n  - flow: dry-run\n    when: \"mode == 'preview'\"\nhooks:\n  - run: [ touch, ran.txt ]\n",
+        format!(
+            "name: greeter\ndescription: A greeting\ninterview:\n  - id: name\n    type: text\n    prompt: Name\n    required: true\n  - id: mode\n    type: text\n    prompt: Mode\n    required: true\n  - flow: dry-run\n    when: \"mode == 'preview'\"\nhooks:\n  - run: [ touch, ran.txt ]\n  - run: [ touch, {:?} ]\n",
+            marker
+        ),
     )
     .unwrap();
+
+    let before = capture_target_state(target.path());
 
     // `mode: preview` fires the flow dry-run without a CLI `--dry-run` flag.
     let env_preview = envelope(
@@ -686,14 +761,28 @@ fn flow_dry_run_on_a_scripted_update_previews_without_writing() {
     assert!(output.status.success(), "{output:?}");
     let document = support::first_document(&output.stdout);
     assert_eq!(document["status"], "planned", "{document}");
+    // The plan is accurate: the rendered change the new answers would make is
+    // listed, proving the preview reflects the real render rather than an
+    // incomplete candidate.
     assert_eq!(
-        std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
-        "Hello sample-value\n",
-        "a flow dry-run must not rewrite the target"
+        changed_paths(&document),
+        vec!["greeting.txt".to_owned()],
+        "the preview must list the rendered file and nothing a hook would write: {document}"
+    );
+
+    let after = capture_target_state(target.path());
+    assert_eq!(
+        before, after,
+        "a flow dry-run must leave the whole target, index, and refs untouched"
     );
     assert!(
         !target.path().join("ran.txt").exists(),
         "a flow dry-run must not run hooks"
+    );
+    assert!(
+        !marker.exists(),
+        "a flow dry-run must not run hooks, proved by an absolute marker outside the \
+         target and the throwaway checkout"
     );
 
     // `mode: apply` no longer fires the flow node: the real apply is still
@@ -723,6 +812,10 @@ fn flow_dry_run_on_a_scripted_update_previews_without_writing() {
     assert!(
         target.path().join("ran.txt").exists(),
         "the real apply runs the trusted hook"
+    );
+    assert!(
+        marker.exists(),
+        "the real apply runs the trusted hook, proved by the absolute marker"
     );
 }
 
@@ -761,11 +854,20 @@ fn flow_dry_run_on_a_person_update_previews_without_writing() {
     git(target.path(), &["add", "."]);
     git(target.path(), &["commit", "--quiet", "-m", "baseline"]);
 
+    // An absolute marker outside the target and the throwaway checkout makes a
+    // hook run observable regardless of its cwd.
+    let marker_dir = tempfile::tempdir().unwrap();
+    let marker = marker_dir.path().join("hook-ran.marker");
     std::fs::write(
         template_dir.path().join("template.yml"),
-        "name: greeter\ndescription: A greeting\ninterview:\n  - id: name\n    type: text\n    prompt: Name\n    required: true\n  - id: mode\n    type: text\n    prompt: Mode\n    required: true\n  - flow: dry-run\n    when: \"mode == 'preview'\"\nhooks:\n  - run: [ touch, ran.txt ]\n",
+        format!(
+            "name: greeter\ndescription: A greeting\ninterview:\n  - id: name\n    type: text\n    prompt: Name\n    required: true\n  - id: mode\n    type: text\n    prompt: Mode\n    required: true\n  - flow: dry-run\n    when: \"mode == 'preview'\"\nhooks:\n  - run: [ touch, ran.txt ]\n  - run: [ touch, {:?} ]\n",
+            marker
+        ),
     )
     .unwrap();
+
+    let before = capture_target_state(target.path());
 
     // The person route prompts `name` (defaulting to the recorded answer) and
     // the new `mode`; answering `mode` with `preview` fires the flow dry-run.
@@ -782,8 +884,28 @@ fn flow_dry_run_on_a_person_update_previews_without_writing() {
     session.send_line("sample-value").unwrap();
     session.expect("Mode").unwrap();
     session.send_line("preview").unwrap();
-    session.expect(expectrl::Eof).unwrap();
+    // The result document still prints to standard output on the person
+    // route. `expect(Eof)`'s `before()` is relative to that call's own read,
+    // and expectrl's greedy default matching can already have consumed the
+    // document while matching an earlier prompt; read the PTY stream to its
+    // actual end instead, then locate the JSON object in the full transcript
+    // (whose start carries the echoed prompts).
+    let mut transcript = Vec::new();
+    std::io::Read::read_to_end(&mut session, &mut transcript).ok();
+    let document = first_json_object(&transcript);
+    assert_eq!(document["status"], "planned", "{document}");
+    assert_eq!(
+        changed_paths(&document),
+        Vec::<String>::new(),
+        "this update renders no file change; the plan must not include \
+         anything a hook would write: {document}"
+    );
 
+    let after = capture_target_state(target.path());
+    assert_eq!(
+        before, after,
+        "a flow dry-run must leave the whole target, index, and refs untouched"
+    );
     assert_eq!(
         std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
         "Hello sample-value\n",
@@ -793,4 +915,53 @@ fn flow_dry_run_on_a_person_update_previews_without_writing() {
         !target.path().join("ran.txt").exists(),
         "a flow dry-run must not run hooks"
     );
+    assert!(
+        !marker.exists(),
+        "a flow dry-run must not run hooks, proved by an absolute marker outside the \
+         target and the throwaway checkout"
+    );
+
+    // Answers that no longer trigger the flow node still apply for real
+    // through the person route: the real apply remains available.
+    let mut real = support::isolated_command(iso.path());
+    real.arg("apply")
+        .arg(&address)
+        .arg(target.path())
+        .arg("--from")
+        .arg(&snapshot)
+        .arg("--trust");
+    let mut session = Session::spawn(real).unwrap();
+    session.expect("Name").unwrap();
+    session.send_line("revised-value").unwrap();
+    session.expect("Mode").unwrap();
+    session.send_line("apply").unwrap();
+    let mut transcript = Vec::new();
+    std::io::Read::read_to_end(&mut session, &mut transcript).ok();
+    let document = first_json_object(&transcript);
+    assert_eq!(document["status"], "applied", "{document}");
+    assert_eq!(
+        std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
+        "Hello revised-value\n"
+    );
+    assert!(
+        target.path().join("ran.txt").exists(),
+        "the real apply runs the trusted hook"
+    );
+    assert!(
+        marker.exists(),
+        "the real apply runs the trusted hook, proved by the absolute marker"
+    );
+}
+
+/// Locate and parse the first JSON object in a byte stream that also carries
+/// PTY-echoed prompt text before it.
+#[cfg(unix)]
+fn first_json_object(bytes: &[u8]) -> serde_json::Value {
+    let text = String::from_utf8_lossy(bytes);
+    let start = text.find('{').expect("a JSON document in the PTY output");
+    serde_json::Deserializer::from_str(&text[start..])
+        .into_iter::<serde_json::Value>()
+        .next()
+        .expect("a JSON document in the PTY output")
+        .expect("a valid JSON document in the PTY output")
 }
