@@ -821,7 +821,8 @@ fn flow_dry_run_on_a_scripted_update_previews_without_writing() {
 
 /// The person-route update (`apply --from ID`, interactive, no `--answers`)
 /// previews the same way when the prompted answers trigger the template's own
-/// `flow: dry-run` node: `planned`, no hook, target untouched.
+/// `flow: dry-run` node: `planned`, the rendered change the new answer would
+/// make is listed, no hook runs, and the target stays untouched.
 #[cfg(unix)]
 #[test]
 fn flow_dry_run_on_a_person_update_previews_without_writing() {
@@ -881,7 +882,7 @@ fn flow_dry_run_on_a_person_update_previews_without_writing() {
         .arg("--trust");
     let mut session = Session::spawn(command).unwrap();
     session.expect("Name").unwrap();
-    session.send_line("sample-value").unwrap();
+    session.send_line("revised-value").unwrap();
     session.expect("Mode").unwrap();
     session.send_line("preview").unwrap();
     // The result document still prints to standard output on the person
@@ -894,11 +895,14 @@ fn flow_dry_run_on_a_person_update_previews_without_writing() {
     std::io::Read::read_to_end(&mut session, &mut transcript).ok();
     let document = first_json_object(&transcript);
     assert_eq!(document["status"], "planned", "{document}");
+    // `name: revised-value` renders a different greeting than the recorded
+    // `sample-value`, so the plan must list it — an empty or stale plan
+    // (the exact P1 symptom) would also satisfy a weaker, unchanged-answer
+    // assertion here.
     assert_eq!(
         changed_paths(&document),
-        Vec::<String>::new(),
-        "this update renders no file change; the plan must not include \
-         anything a hook would write: {document}"
+        vec!["greeting.txt".to_owned()],
+        "the preview must list the rendered file and nothing a hook would write: {document}"
     );
 
     let after = capture_target_state(target.path());
