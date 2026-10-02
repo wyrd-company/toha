@@ -299,7 +299,7 @@ description: >-
   drives it through `continue` and `apply PATH`, which resume through the update
   replay adapter and merge from the base. A scripted update reports `applied` or
   `planned` with a `merge` member and, when it saved one, a `snapshot` member,
-  or `already-current` when the re-render equals the base; an untrusted update
+  or `already-current` when the re-render equals the base; an untrusted scripted update
   reports `planned` with `trusted: false` and writes nothing.
 
   Human-readable update completion. The person route and completed staged-agent
