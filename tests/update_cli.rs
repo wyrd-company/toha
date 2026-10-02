@@ -886,26 +886,10 @@ fn flow_dry_run_on_a_person_update_previews_without_writing() {
     session.send_line("revised-value").unwrap();
     session.expect("Mode").unwrap();
     session.send_line("preview").unwrap();
-    // The result document still prints to standard output on the person
-    // route. `expect(Eof)`'s `before()` is relative to that call's own read,
-    // and expectrl's greedy default matching can already have consumed the
-    // document while matching an earlier prompt; read the PTY stream to its
-    // actual end instead, then locate the JSON object in the full transcript
-    // (whose start carries the echoed prompts).
-    let mut transcript = Vec::new();
-    std::io::Read::read_to_end(&mut session, &mut transcript).ok();
-    let document = first_json_object(&transcript);
-    assert_eq!(document["status"], "planned", "{document}");
-    // `name: revised-value` renders a different greeting than the recorded
-    // `sample-value`, so the plan must list it — an empty or stale plan
-    // (the exact P1 symptom) would also satisfy a weaker, unchanged-answer
-    // assertion here.
-    assert_eq!(
-        changed_paths(&document),
-        vec!["greeting.txt".to_owned()],
-        "the preview must list the rendered file and nothing a hook would write: {document}"
-    );
-
+    session.expect("Template: ").unwrap();
+    session.expect("Merged greeting.txt").unwrap();
+    session.expect("Preview only; no changes written.").unwrap();
+    session.expect(expectrl::Eof).unwrap();
     let after = capture_target_state(target.path());
     assert_eq!(
         before, after,
@@ -940,10 +924,9 @@ fn flow_dry_run_on_a_person_update_previews_without_writing() {
     session.send_line("revised-value").unwrap();
     session.expect("Mode").unwrap();
     session.send_line("apply").unwrap();
-    let mut transcript = Vec::new();
-    std::io::Read::read_to_end(&mut session, &mut transcript).ok();
-    let document = first_json_object(&transcript);
-    assert_eq!(document["status"], "applied", "{document}");
+    session.expect("Merged greeting.txt").unwrap();
+    session.expect("Saved snapshot ").unwrap();
+    session.expect(expectrl::Eof).unwrap();
     assert_eq!(
         std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
         "Hello revised-value\n"
@@ -956,17 +939,4 @@ fn flow_dry_run_on_a_person_update_previews_without_writing() {
         marker.exists(),
         "the real apply runs the trusted hook, proved by the absolute marker"
     );
-}
-
-/// Locate and parse the first JSON object in a byte stream that also carries
-/// PTY-echoed prompt text before it.
-#[cfg(unix)]
-fn first_json_object(bytes: &[u8]) -> serde_json::Value {
-    let text = String::from_utf8_lossy(bytes);
-    let start = text.find('{').expect("a JSON document in the PTY output");
-    serde_json::Deserializer::from_str(&text[start..])
-        .into_iter::<serde_json::Value>()
-        .next()
-        .expect("a JSON document in the PTY output")
-        .expect("a valid JSON document in the PTY output")
 }

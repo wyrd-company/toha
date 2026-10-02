@@ -534,8 +534,9 @@ fn bundled_snapshots_preserve_content_identity_and_update_offline() {
             run(&root, &cwd, &["apply", ".", "--dry-run"], 0);
             assert_eq!(fs::read(cwd.join("note.txt")).unwrap(), before);
             let output = run(&root, &cwd, &["apply", "."], 0);
-            let applied: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-            assert!(applied["snapshot"]["id"].is_string());
+            let text = String::from_utf8(output.stdout).unwrap();
+            assert!(text.contains("Saved snapshot "), "{text}");
+            assert!(text.contains("Merged note.txt"), "{text}");
             assert_eq!(
                 fs::read_to_string(cwd.join("note.txt")).unwrap(),
                 "Updated Title\nTopic: Sample Topic\n\nKeep this operator note.\n"
@@ -613,4 +614,137 @@ fn person_bundled_apply_reports_saved_snapshot() {
             .len(),
         64
     );
+}
+
+#[test]
+#[cfg(unix)]
+fn person_update_completion_is_prose_and_preserves_operator_edits() {
+    use expectrl::{Expect, Session};
+    let root = TempDir::new().unwrap();
+    let cwd = root.path().join("project");
+    fs::create_dir_all(&cwd).unwrap();
+    git_fixture(&cwd, &["init", "-q"]);
+    git_fixture(&cwd, &["config", "user.name", "Fixture Author"]);
+    git_fixture(&cwd, &["config", "user.email", "fixture@example.test"]);
+    git_fixture(&cwd, &["config", "core.autocrlf", "false"]);
+    git_fixture(&cwd, &["commit", "--allow-empty", "-qm", "Initial project"]);
+    let answers = demo_answers(root.path(), "toha-demo");
+    let output = run(
+        &root,
+        &cwd,
+        &["apply", "toha-demo", ".", "--answers", &answers],
+        0,
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let id = doc["snapshot"]["id"].as_str().unwrap();
+    fs::write(
+        cwd.join("note.txt"),
+        format!("{NOTE}\nKeep this operator note.\n"),
+    )
+    .unwrap();
+    git_fixture(&cwd, &["add", "note.txt"]);
+    git_fixture(&cwd, &["commit", "-qm", "Keep operator note"]);
+    for preview in [true, false] {
+        let mut command = command(&root, &cwd);
+        command.args(["apply", "toha-demo", ".", "--from", id, "--reanswer"]);
+        if preview {
+            command.arg("--dry-run");
+        }
+        let mut session = Session::spawn(command).unwrap();
+        session.expect("Note title").unwrap();
+        session.send_line("Updated Title").unwrap();
+        session.expect("Topic").unwrap();
+        session.send_line("Sample Topic").unwrap();
+        session.expect("Template: toha-demo").unwrap();
+        session
+            .expect(format!("Target: {}", cwd.canonicalize().unwrap().display()))
+            .unwrap();
+        session.expect("Merged note.txt").unwrap();
+        if preview {
+            session.expect("Preview only; no changes written.").unwrap();
+        } else {
+            session.expect("Saved snapshot ").unwrap();
+        }
+        session.expect(expectrl::Eof).unwrap();
+        assert_eq!(
+            fs::read_to_string(cwd.join("note.txt")).unwrap(),
+            if preview {
+                format!("{NOTE}\nKeep this operator note.\n")
+            } else {
+                "Updated Title\nTopic: Sample Topic\n\nKeep this operator note.\n".into()
+            }
+        );
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn staged_update_reports_messages_and_allowed_hook_failure() {
+    let root = TempDir::new().unwrap();
+    let cwd = root.path().join("project");
+    fs::create_dir_all(&cwd).unwrap();
+    git_fixture(&cwd, &["init", "-q"]);
+    git_fixture(&cwd, &["config", "user.name", "Fixture Author"]);
+    git_fixture(&cwd, &["config", "user.email", "fixture@example.test"]);
+    git_fixture(&cwd, &["config", "core.autocrlf", "false"]);
+    git_fixture(&cwd, &["commit", "--allow-empty", "-qm", "Initial project"]);
+    let template = root.path().join("sample-template");
+    fs::create_dir_all(template.join("template")).unwrap();
+    fs::write(template.join("template/note.txt"), "Sample note\n").unwrap();
+    fs::write(template.join("template.yml"), "name: sample-template\ninterview:\n  - message: Interview message\nmessages:\n  before-apply: Before message\n  after-apply: 'After message {{ setup.exit_code }}'\nhooks:\n  - id: setup\n    run: [sh, -c, 'exit 7']\n    allow-failure: true\n").unwrap();
+    run(
+        &root,
+        &cwd,
+        &[
+            "stage",
+            template.to_str().unwrap(),
+            ".",
+            "--baseline",
+            "--trust",
+            "--async",
+        ],
+        0,
+    );
+    let output = run(&root, &cwd, &["apply", ".", "--trust"], 0);
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.starts_with("Template: "), "{text}");
+    for expected in [
+        "Added note.txt",
+        "Interview message",
+        "Before message",
+        "After message",
+        "Hook setup failed (exit 7); failure was allowed.",
+        "Saved snapshot ",
+    ] {
+        assert!(text.contains(expected), "missing {expected}: {text}");
+    }
+    assert!(!text.contains("\"protocol\""), "{text}");
+    for message in ["Interview message", "Before message", "After message"] {
+        assert_eq!(text.matches(message).count(), 1, "{text}");
+    }
+    git_fixture(&cwd, &["add", "."]);
+    git_fixture(&cwd, &["commit", "-qm", "Apply staged baseline"]);
+    let manifest = template.join("template.yml");
+    let source = fs::read_to_string(&manifest)
+        .unwrap()
+        .replace("exit 7", "printf hook-output; exit 7");
+    fs::write(&manifest, source).unwrap();
+    let answers = envelope(root.path(), template.to_str().unwrap(), "{}");
+    let output = run(
+        &root,
+        &cwd,
+        &[
+            "apply",
+            template.to_str().unwrap(),
+            "scripted",
+            "--baseline",
+            "--trust",
+            "--answers",
+            &answers,
+        ],
+        0,
+    );
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(document["status"], "applied");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("hook-output"));
 }

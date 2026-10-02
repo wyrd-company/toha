@@ -531,7 +531,8 @@ pub fn apply_staged(
             // staged-record retention gate below must use the same effective
             // value as the merge itself.
             let dry_run = update::effective_dry_run(dry_run, &completed);
-            let outcome = update::finish_merge(prep, &target, completed, submissions, dry_run);
+            let outcome =
+                update::finish_merge(prep, &target, completed, submissions, dry_run, false);
             // A successful, non-preview merge consumes the staged interview; a
             // dry run previews it and leaves the staged interview in place so the
             // real apply remains available.

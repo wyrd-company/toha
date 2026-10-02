@@ -102,6 +102,13 @@ proposed-design:
     Cleanup failure retains the original error and names the remaining ref or
     paths. After transaction commit, reporting failure retains the result and
     snapshot. Recovery guidance is target-scoped.
+  completion-output: >-
+    The candidate apply retains interview and apply messages and hook outcomes
+    through merge_apply_reported. The CLI formats person and completed
+    staged-agent updates as prose naming template, target, merge actions,
+    conflicts and snapshot outcome. Scripted updates retain JSON results.
+    Remaining-question batches retain their protocol. Preview, already-current,
+    trust and conflict guidance follow the command-line-interface contract.
   selection-and-housekeeping: >-
     Snapshot listing is target-scoped and marks one likely base per source using
     project ancestry, then content agreement when ancestry finds none. A mark is

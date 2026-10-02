@@ -27,7 +27,7 @@ use toha::protocol::Context;
 use toha::snapshot::{
     Action, Base, Change, Cleanliness, ConflictKind, FrozenNow, MergeOptions, Merged, Project,
     RepoPath, Snapshot, SnapshotInputs, UpdateDrive, drive_update, drive_update_resume,
-    merge_apply,
+    merge_apply_reported,
 };
 use toha::template::{Id, Template};
 use toha::{RawAnswer, RawAnswers};
@@ -155,7 +155,14 @@ pub fn run_update(
 
     // A flow `dry-run` composes with the CLI `--dry-run` by union.
     let dry_run = effective_dry_run(dry_run, &completed);
-    finish_merge(prep, &target, completed, submissions, dry_run)
+    finish_merge(
+        prep,
+        &target,
+        completed,
+        submissions,
+        dry_run,
+        answers.is_some(),
+    )
 }
 
 /// The person route for a one-shot update: prompt the questions the recorded
@@ -186,7 +193,7 @@ fn person_update(
             } => {
                 // A flow `dry-run` composes with the CLI `--dry-run` by union.
                 let dry_run = effective_dry_run(dry_run, &completed);
-                return finish_merge(prep, target, completed, submissions, dry_run);
+                return finish_merge(prep, target, completed, submissions, dry_run, false);
             }
             UpdateDrive::Ask { pending, .. } => {
                 let submission =
@@ -526,6 +533,7 @@ pub(crate) fn finish_merge(
     completed: toha::Completed,
     submissions: Vec<IndexMap<Id, RawAnswer>>,
     dry_run: bool,
+    scripted: bool,
 ) -> Outcome {
     // The result documents carry the invocation context; build it from `prep`
     // before the merge consumes the base.
@@ -565,16 +573,28 @@ pub(crate) fn finish_merge(
         trusted: prep.trusted,
         dry_run,
     };
-    match merge_apply(
+    let runner: &dyn toha::hook::HookRunner = if scripted {
+        &crate::ScriptedRunner
+    } else {
+        &ProcessRunner
+    };
+    match merge_apply_reported(
         &prep.project,
         prep.merge_base,
         &prep.template,
         &completed,
         inputs,
         options,
-        &ProcessRunner,
+        runner,
     ) {
-        Ok(merged) => merged_outcome(merged, &ctx, base_id.as_deref()),
+        Ok((merged, report)) => {
+            let outcome = merged_outcome(merged, &ctx, base_id.as_deref());
+            if scripted {
+                outcome
+            } else {
+                crate::update_output::text_outcome(outcome, &report, dry_run)
+            }
+        }
         Err(error) => Outcome::Error(error.to_string()),
     }
 }

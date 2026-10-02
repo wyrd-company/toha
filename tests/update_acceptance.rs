@@ -177,20 +177,14 @@ fn the_two_clone_acceptance_scenario() {
         .arg(&snapshot);
     let output = update.output().unwrap();
     assert_eq!(output.status.code(), Some(0), "update: {output:?}");
-    let document = support::first_document(&output.stdout);
-    assert_eq!(document["status"], "applied", "{document}");
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("Conflicted README.md (content)"), "{text}");
     assert!(
-        document["merge"]["conflicted"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|p| p == "README.md"),
-        "the README is reported conflicted: {document}"
+        text.contains("Resolve conflicts in these files before committing."),
+        "{text}"
     );
-    assert!(
-        document["snapshot"]["id"].is_string(),
-        "a new snapshot: {document}"
-    );
+    assert!(text.contains("Saved snapshot "), "{text}");
+    assert!(!text.contains("\"protocol\""), "{text}");
 
     // The template's clean change reached src/app.txt and the new file was added.
     assert_eq!(
@@ -252,8 +246,14 @@ fn the_two_clone_acceptance_scenario() {
         .arg(&clone2)
         .arg("--from")
         .arg(&newest);
-    let document = support::first_document(&current.output().unwrap().stdout);
-    assert_eq!(document["status"], "already-current", "{document}");
+    let output = current.output().unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("Already current."), "{text}");
+    assert!(
+        text.contains("No snapshot saved: already current."),
+        "{text}"
+    );
     assert_eq!(
         std::fs::read_to_string(clone2.join("README.md")).unwrap(),
         readme_before,

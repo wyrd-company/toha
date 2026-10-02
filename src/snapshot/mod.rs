@@ -18,7 +18,7 @@ mod replay;
 pub use capture::CaptureInputs;
 pub use merge::{
     Action, Base, Change, ConflictKind, MergeError, MergeOptions, Merged, SnapshotInputs,
-    merge_apply,
+    UpdateReport, merge_apply, merge_apply_reported,
 };
 pub use project::{
     Cleanliness, FetchSetting, LikelyBase, LikelyBaseBy, Listed, Project, ProjectError, Removed,

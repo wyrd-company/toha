@@ -276,6 +276,10 @@ commands:
             The person route (`apply TEMPLATE PATH`) and the applied agent route
             (`apply PATH` on a complete interview): prompts and messages as
             needed, each written path as its file is written, then hook output.
+            Updates (--from or --baseline) print template and target, merge actions
+            and conflict kinds, messages, allowed hook failures, snapshot outcome,
+            preview or already-current notices, and conflict resolution guidance.
+            They emit no JSON completion document.
           machine-readable: false
         - name: batch-and-instructions
           description: >-

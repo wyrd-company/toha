@@ -127,18 +127,49 @@ pub fn merge_apply(
     options: MergeOptions,
     runner: &dyn crate::hook::HookRunner,
 ) -> Result<Merged, MergeError> {
+    merge_apply_reported(project, base, template, completed, inputs, options, runner)
+        .map(|(merged, _)| merged)
+}
+
+/// Messages and hook outcomes from the candidate apply. Captured hook streams
+/// remain private to the apply loop.
+#[derive(Debug, Default)]
+pub struct UpdateReport {
+    pub messages: Vec<String>,
+    pub hooks: Vec<crate::apply::HookReport>,
+}
+
+/// Apply an update and retain its messages and hook outcomes for caller output.
+#[allow(clippy::too_many_arguments)]
+pub fn merge_apply_reported(
+    project: &Project,
+    base: Base,
+    template: &crate::template::Template,
+    completed: &crate::interview::Completed,
+    inputs: SnapshotInputs,
+    options: MergeOptions,
+    runner: &dyn crate::hook::HookRunner,
+) -> Result<(Merged, UpdateReport), MergeError> {
     // Build the plan for the real target with the snapshot's frozen instant.
     let target_path = candidate_target(project)?;
     let plan = crate::plan::Plan::build(template, completed, &target_path)
         .map_err(|err| MergeError::Git(err.to_string()))?;
 
+    let mut report = UpdateReport {
+        messages: completed.messages.clone(),
+        hooks: vec![],
+    };
+    if let Some(before) = &plan.before_apply {
+        report.messages.push(before.clone());
+    }
+
     // Untrusted hooks: report the plan without running anything.
     if !options.trusted && !plan.hooks.is_empty() {
-        return Ok(Merged::NeedsTrust);
+        return Ok((Merged::NeedsTrust, report));
     }
 
     let capture_inputs = capture_inputs(project, &inputs)?;
-    let new = build_candidate(
+    let (new, candidate_report) = build_candidate_reported(
         project,
         &base,
         plan,
@@ -147,6 +178,8 @@ pub fn merge_apply(
         runner,
     )?;
 
+    report.messages.extend(candidate_report.messages);
+    report.hooks = candidate_report.hooks;
     let published = published_commit(project, new.id())
         .unwrap_or_else(|| gix::ObjectId::null(project.repo().object_hash()));
 
@@ -155,7 +188,7 @@ pub fn merge_apply(
         && is_already_current(project, base_snapshot, &new, &inputs)?
     {
         remove_candidate(project, new.id(), published)?;
-        return Ok(Merged::AlreadyCurrent);
+        return Ok((Merged::AlreadyCurrent, report));
     }
 
     let result = merge_into_worktree(project, &base, &new, &options);
@@ -163,7 +196,7 @@ pub fn merge_apply(
         // A dry run saves nothing: remove the candidate ref the builder created.
         remove_candidate(project, new.id(), published)?;
     }
-    result
+    result.map(|merged| (merged, report))
 }
 
 /// The candidate target: a `CanonicalTarget` for the project's real target.
@@ -219,6 +252,7 @@ fn capture_inputs(project: &Project, inputs: &SnapshotInputs) -> Result<CaptureI
 /// candidate reflects the real change — it just drops the plan's hooks first,
 /// so the apply loop runs none of them; `trusted: true` is therefore always
 /// correct and never re-triggers the untrusted refusal for files alone.
+#[cfg(test)]
 fn build_candidate(
     project: &Project,
     base: &Base,
@@ -227,6 +261,19 @@ fn build_candidate(
     run_hooks: bool,
     runner: &dyn crate::hook::HookRunner,
 ) -> Result<Snapshot, MergeError> {
+    build_candidate_reported(project, base, plan, inputs, run_hooks, runner)
+        .map(|(snapshot, _)| snapshot)
+}
+
+fn build_candidate_reported(
+    project: &Project,
+    base: &Base,
+    plan: crate::plan::Plan,
+    inputs: CaptureInputs,
+    run_hooks: bool,
+    runner: &dyn crate::hook::HookRunner,
+) -> Result<(Snapshot, UpdateReport), MergeError> {
+    let mut report = UpdateReport::default();
     let repo = project.repo();
     let target = project.target().clone();
     let checkout = tempfile::tempdir().map_err(|e| MergeError::Io(e.to_string()))?;
@@ -271,7 +318,12 @@ fn build_candidate(
         )
         .map_err(|e| MergeError::Git(format!("apply: {e}")))?
     {
-        crate::apply::Applied::Written { .. } => {}
+        crate::apply::Applied::Written {
+            hooks, after_apply, ..
+        } => {
+            report.hooks = hooks;
+            report.messages.extend(after_apply);
+        }
         // Unreachable given the precondition above (trust established, or no
         // hooks left to trigger the refusal): refuse to capture an incomplete
         // checkout rather than silently proceed.
@@ -298,6 +350,7 @@ fn build_candidate(
     // Read the captured snapshot back through the validating reader.
     project
         .find(&id.to_string())
+        .map(|snapshot| (snapshot, report))
         .map_err(|e| MergeError::Git(e.to_string()))
 }
 

@@ -100,9 +100,29 @@ fn update_from(
         .arg(target)
         .arg("--from")
         .arg(snapshot);
-    if let Some(env) = env {
-        command.arg("--answers").arg(env);
-    }
+    let empty;
+    let env = match env {
+        Some(env) => env,
+        None => {
+            let stored = StdCommand::new("git")
+                .current_dir(target)
+                .args([
+                    "show",
+                    &format!("refs/toha/snapshots/{snapshot}:snapshot.json"),
+                ])
+                .output()
+                .unwrap();
+            let stored: serde_json::Value = serde_json::from_slice(&stored.stdout).unwrap();
+            empty = envelope(
+                iso,
+                "empty.json",
+                stored["template"].as_str().unwrap(),
+                serde_json::json!({}),
+            );
+            &empty
+        }
+    };
+    command.arg("--answers").arg(env);
     let output = command.output().unwrap();
     assert!(output.status.success(), "update failed: {output:?}");
     support::first_document(&output.stdout)
@@ -433,10 +453,17 @@ fn released_file_survives(json: bool, reclaim: bool) {
         .unwrap();
     }
     let index = std::fs::read(repo.path().join(".git/index")).unwrap();
+    let empty = envelope(
+        iso.path(),
+        "preview-empty.json",
+        &support::formal_name(template.path()),
+        serde_json::json!({}),
+    );
     let preview = support::isolated_command(iso.path())
         .args(["apply", &address])
         .arg(&target)
-        .args(["--from", second, "--dry-run"])
+        .args(["--from", second, "--dry-run", "--answers"])
+        .arg(&empty)
         .output()
         .unwrap();
     assert!(preview.status.success(), "{preview:?}");

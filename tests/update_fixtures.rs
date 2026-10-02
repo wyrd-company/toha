@@ -124,7 +124,9 @@ fn the_update_conflict_fixture_merges_as_expect_yml_states() {
         .arg(&address)
         .arg(&target)
         .arg("--from")
-        .arg(&snapshot);
+        .arg(&snapshot)
+        .arg("--answers")
+        .arg(&envelope);
     let output = update.output().unwrap();
     assert_eq!(output.status.code(), Some(0), "update: {output:?}");
     let document = support::first_document(&output.stdout);

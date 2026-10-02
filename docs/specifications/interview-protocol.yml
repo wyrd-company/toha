@@ -221,13 +221,16 @@ description: >-
   staged update and merges it from the base.
 
 
-  Update results. An update reports an `applied` or `planned` document with a
+  Update results. A scripted update reports an `applied` or `planned` document with a
   `merge` member — each changed path with its action (`added`, `updated`,
   `merged`, `deleted`, `conflicted`, `not-previewed`), the kind of any conflict,
   and the paths left conflicted — and, when it saved one, a `snapshot` member
   naming the id. A re-render equal to the base reports an `already-current`
   document and writes nothing. An untrusted update reports `planned` with
   `trusted: false` and writes nothing, as a dry run does.
+
+  Person and completed staged-agent updates print the human-readable completion
+  specified by command-line-interface, with no JSON result document.
 
   Generator seed. When an application is seeded from a snapshot with `--like`
   (the generate axis), its `questions` and `applied` documents carry

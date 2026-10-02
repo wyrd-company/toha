@@ -168,8 +168,9 @@ fn a_person_stage_prompts_saves_each_batch_then_applies() {
     apply.arg("apply").arg(target.path());
     let output = apply.output().unwrap();
     assert_eq!(output.status.code(), Some(0), "apply: {output:?}");
-    let document = support::first_document(&output.stdout);
-    assert_eq!(document["status"], "applied", "{document}");
+    let text = String::from_utf8(output.stdout.clone()).unwrap();
+    assert!(text.contains("Saved snapshot "), "{text}");
+    assert!(!text.contains("\"protocol\""), "{text}");
     assert_eq!(
         std::fs::read_to_string(target.path().join("color.txt")).unwrap(),
         "blue\n"
@@ -297,8 +298,9 @@ fn stage_baseline_then_continue_and_apply_records_a_snapshot() {
 
     let mut apply = support::isolated_command(iso.path());
     apply.arg("apply").arg(target.path());
-    let document = support::first_document(&apply.output().unwrap().stdout);
-    assert_eq!(document["status"], "applied", "{document}");
+    let text = String::from_utf8(apply.output().unwrap().stdout.clone()).unwrap();
+    assert!(text.contains("Saved snapshot "), "{text}");
+    assert!(!text.contains("\"protocol\""), "{text}");
     assert_eq!(
         std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
         "Hello other-value\n"
@@ -346,8 +348,9 @@ fn stage_reanswer_re_asks_a_recorded_answer() {
     assert_eq!(cont.output().unwrap().status.code(), Some(0));
     let mut apply = support::isolated_command(iso.path());
     apply.arg("apply").arg(target.path());
-    let document = support::first_document(&apply.output().unwrap().stdout);
-    assert_eq!(document["status"], "applied", "{document}");
+    let text = String::from_utf8(apply.output().unwrap().stdout.clone()).unwrap();
+    assert!(text.contains("Saved snapshot "), "{text}");
+    assert!(!text.contains("\"protocol\""), "{text}");
     assert_eq!(
         std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
         "Hello revised-value\n"
@@ -534,8 +537,9 @@ fn agent_stages_continues_and_applies_a_staged_update() {
     apply.arg("apply").arg(target.path());
     let applied = apply.output().unwrap();
     assert_eq!(applied.status.code(), Some(0), "apply: {applied:?}");
-    let document = support::first_document(&applied.stdout);
-    assert_eq!(document["status"], "applied", "{document}");
+    let text = String::from_utf8(applied.stdout.clone()).unwrap();
+    assert!(text.contains("Saved snapshot "), "{text}");
+    assert!(!text.contains("\"protocol\""), "{text}");
     assert_eq!(
         std::fs::read_to_string(target.path().join("color.txt")).unwrap(),
         "blue\n"
@@ -543,6 +547,11 @@ fn agent_stages_continues_and_applies_a_staged_update() {
     assert_eq!(
         std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
         "Hello sample-value\n"
+    );
+
+    assert!(
+        staged_files(iso.path()).is_empty(),
+        "successful apply must remove the staged record"
     );
 
     // The staged record is consumed; a second apply finds nothing staged.
@@ -708,12 +717,22 @@ fn show_refs(dir: &Path) -> String {
 /// The `path` of every entry in a result document's `merge.changes`, sorted,
 /// so a test can assert the plan is complete and accurate rather than merely
 /// present.
-fn changed_paths(document: &Value) -> Vec<String> {
-    let mut paths: Vec<String> = document["merge"]["changes"]
-        .as_array()
-        .expect("merge.changes array")
-        .iter()
-        .map(|change| change["path"].as_str().expect("change path").to_owned())
+fn changed_paths(text: &str) -> Vec<String> {
+    let mut paths: Vec<String> = text
+        .lines()
+        .filter_map(|line| {
+            [
+                "Added ",
+                "Updated ",
+                "Merged ",
+                "Deleted ",
+                "Conflicted ",
+                "Not previewed ",
+            ]
+            .iter()
+            .find_map(|prefix| line.strip_prefix(prefix))
+            .map(|path| path.split(" (").next().unwrap().to_owned())
+        })
         .collect();
     paths.sort();
     paths
@@ -801,14 +820,14 @@ fn apply_dry_run_on_a_completed_staged_update_previews_and_preserves_everything(
         .arg("--trust");
     let dry_output = dry.output().unwrap();
     assert_eq!(dry_output.status.code(), Some(0), "dry-run: {dry_output:?}");
-    let document = support::first_document(&dry_output.stdout);
-    assert_eq!(document["status"], "planned", "{document}");
+    let text = String::from_utf8(dry_output.stdout.clone()).unwrap();
+    assert!(text.contains("Preview only; no changes written."), "{text}");
     // The plan is accurate: the new file the template would render is listed,
     // and no hook-written path leaks into it (the hook never ran).
     assert_eq!(
-        changed_paths(&document),
+        changed_paths(&text),
         vec!["color.txt".to_owned()],
-        "the preview must list the rendered file and nothing a hook would write: {document}"
+        "the preview must list the rendered file and nothing a hook would write: {text}"
     );
 
     let after_dry_run = capture_state(iso.path(), target.path());
@@ -839,8 +858,9 @@ fn apply_dry_run_on_a_completed_staged_update_previews_and_preserves_everything(
     apply.arg("apply").arg(target.path()).arg("--trust");
     let applied = apply.output().unwrap();
     assert_eq!(applied.status.code(), Some(0), "apply: {applied:?}");
-    let document = support::first_document(&applied.stdout);
-    assert_eq!(document["status"], "applied", "{document}");
+    let text = String::from_utf8(applied.stdout.clone()).unwrap();
+    assert!(text.contains("Saved snapshot "), "{text}");
+    assert!(!text.contains("\"protocol\""), "{text}");
     assert_eq!(
         std::fs::read_to_string(target.path().join("color.txt")).unwrap(),
         "blue\n"
@@ -863,6 +883,11 @@ fn apply_dry_run_on_a_completed_staged_update_previews_and_preserves_everything(
         std::fs::read_to_string(target.path().join("notes.txt")).unwrap(),
         "user notes\n",
         "the real apply must preserve the committed user file across the merge"
+    );
+
+    assert!(
+        staged_files(iso.path()).is_empty(),
+        "successful apply must remove the staged record"
     );
 
     // The staged record is consumed; a second apply finds nothing staged.
@@ -938,12 +963,12 @@ fn apply_dry_run_on_a_completed_staged_baseline_previews_and_preserves_everythin
         .arg("--trust");
     let dry_output = dry.output().unwrap();
     assert_eq!(dry_output.status.code(), Some(0), "dry-run: {dry_output:?}");
-    let document = support::first_document(&dry_output.stdout);
-    assert_eq!(document["status"], "planned", "{document}");
+    let text = String::from_utf8(dry_output.stdout.clone()).unwrap();
+    assert!(text.contains("Preview only; no changes written."), "{text}");
     assert_eq!(
-        changed_paths(&document),
+        changed_paths(&text),
         vec!["greeting.txt".to_owned()],
-        "the preview must list the rendered file and nothing a hook would write: {document}"
+        "the preview must list the rendered file and nothing a hook would write: {text}"
     );
 
     let after_dry_run = capture_state(iso.path(), target.path());
@@ -971,8 +996,9 @@ fn apply_dry_run_on_a_completed_staged_baseline_previews_and_preserves_everythin
     apply.arg("apply").arg(target.path()).arg("--trust");
     let applied = apply.output().unwrap();
     assert_eq!(applied.status.code(), Some(0), "apply: {applied:?}");
-    let document = support::first_document(&applied.stdout);
-    assert_eq!(document["status"], "applied", "{document}");
+    let text = String::from_utf8(applied.stdout.clone()).unwrap();
+    assert!(text.contains("Saved snapshot "), "{text}");
+    assert!(!text.contains("\"protocol\""), "{text}");
     assert_eq!(
         std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
         "Hello other-value\n"
@@ -984,6 +1010,11 @@ fn apply_dry_run_on_a_completed_staged_baseline_previews_and_preserves_everythin
     assert!(
         marker.exists(),
         "the real apply runs the trusted hook, proved by the absolute marker"
+    );
+
+    assert!(
+        staged_files(iso.path()).is_empty(),
+        "successful apply must remove the staged record"
     );
 
     // The staged record is consumed; a second apply finds nothing staged.
@@ -1060,14 +1091,14 @@ fn flow_dry_run_on_a_completed_staged_update_previews_and_preserves_staged_state
         Some(0),
         "preview: {preview_output:?}"
     );
-    let document = support::first_document(&preview_output.stdout);
-    assert_eq!(document["status"], "planned", "{document}");
+    let text = String::from_utf8(preview_output.stdout.clone()).unwrap();
+    assert!(text.contains("Preview only; no changes written."), "{text}");
     // This update renders no new file; the plan must stay empty rather than
     // leak a hook-written path into it.
     assert_eq!(
-        changed_paths(&document),
+        changed_paths(&text),
         Vec::<String>::new(),
-        "the preview must not include anything a hook would write: {document}"
+        "the preview must not include anything a hook would write: {text}"
     );
 
     let after_preview = capture_state(iso.path(), target.path());
@@ -1116,8 +1147,9 @@ fn flow_dry_run_on_a_completed_staged_update_previews_and_preserves_staged_state
     real.arg("apply").arg(target.path()).arg("--trust");
     let applied = real.output().unwrap();
     assert_eq!(applied.status.code(), Some(0), "apply: {applied:?}");
-    let document = support::first_document(&applied.stdout);
-    assert_eq!(document["status"], "applied", "{document}");
+    let text = String::from_utf8(applied.stdout.clone()).unwrap();
+    assert!(text.contains("Saved snapshot "), "{text}");
+    assert!(!text.contains("\"protocol\""), "{text}");
     assert_eq!(
         std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
         "Hello sample-value\n"
@@ -1129,6 +1161,11 @@ fn flow_dry_run_on_a_completed_staged_update_previews_and_preserves_staged_state
     assert!(
         marker.exists(),
         "the real apply runs the trusted hook, proved by the absolute marker"
+    );
+
+    assert!(
+        staged_files(iso.path()).is_empty(),
+        "successful apply must remove the staged record"
     );
 
     // The staged record is consumed; a second apply finds nothing staged.

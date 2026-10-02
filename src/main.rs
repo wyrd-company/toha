@@ -7,6 +7,7 @@ mod cli {
     pub mod templates;
 }
 mod update;
+mod update_output;
 mod update_stage;
 // ---
 // relationships:
@@ -532,10 +533,10 @@ enum Outcome {
     },
 }
 impl Outcome {
-    /// Whether the outcome reports a successful result document (not an error).
+    /// Whether the outcome reports a successful result (not an error).
     /// The staged update apply removes its record only on success.
     pub(crate) fn is_success(&self) -> bool {
-        matches!(self, Self::Document(_, 0))
+        matches!(self, Self::Document(_, 0) | Self::Written(_))
     }
     /// Names `command` with each formal name when the template name is ambiguous.
     fn retry(self, command: impl Fn(&str) -> String) -> Self {

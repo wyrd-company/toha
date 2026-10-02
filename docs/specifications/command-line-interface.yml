@@ -291,10 +291,24 @@ description: >-
   the recorded answers; `--answers` supplies overrides; `--reanswer` re-asks
   every answer. An agent stages an update with `stage --from`/`--baseline` and
   drives it through `continue` and `apply PATH`, which resume through the update
-  replay adapter and merge from the base. An update reports `applied` or
+  replay adapter and merge from the base. A scripted update reports `applied` or
   `planned` with a `merge` member and, when it saved one, a `snapshot` member,
   or `already-current` when the re-render equals the base; an untrusted update
   reports `planned` with `trusted: false` and writes nothing.
+
+  Human-readable update completion. The person route and completed staged-agent
+  route print `Template: <formal name>` and `Target: <path>`, followed by one
+  line per merge change: `Added`, `Updated`, `Merged`, `Deleted`, `Conflicted`
+  (with the conflict kind), or `Not previewed`, then the repository-relative
+  path. They show interview and apply messages and allowed hook failures with
+  their id or ordinal and exit status. A written update prints `Saved snapshot
+  <id>`; a preview prints `Preview only; no changes written.` and `No snapshot
+  saved: preview.`; an unchanged render prints `Already current.` and `No
+  snapshot saved: already current.`. An untrusted preview names `--trust` after
+  hook review. Written conflicts end with `Resolve conflicts in these files
+  before committing.`. These routes emit no JSON completion document. Remaining
+  question batches keep their agent protocol output. The scripted `--answers`
+  route emits its JSON result document.
 
   In-project generators. `apply <TEMPLATE> <PATH> --like <SELECTOR>` and `stage
   <TEMPLATE> <PATH> --like <SELECTOR>` apply the template into a fresh subpath
