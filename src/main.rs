@@ -2026,7 +2026,7 @@ fn plain_apply_snapshot(
     resolved: &ResolvedTemplate,
     submissions: Vec<indexmap::IndexMap<String, serde_json::Value>>,
 ) -> serde_json::Value {
-    use toha::snapshot::{FrozenNow, Revision, SnapshotOutcome};
+    use toha::snapshot::{FrozenNow, SnapshotOutcome};
 
     let Some(project) = project else {
         return serde_json::json!({ "skipped": toha::snapshot::SkipReason::NotGit.as_str() });
@@ -2035,13 +2035,9 @@ fn plain_apply_snapshot(
         Ok(plan) => plan,
         Err(error) => return serde_json::json!({ "error": error.to_string() }),
     };
-    let revision = if resolved.commit.is_empty() {
-        Revision::Unversioned
-    } else {
-        match toha::snapshot::CommitId::parse(&resolved.commit) {
-            Ok(commit) => Revision::Commit(commit),
-            Err(error) => return serde_json::json!({ "error": error.to_string() }),
-        }
+    let revision = match cli::resolve::snapshot_revision(&resolved.formal_name, &resolved.commit) {
+        Ok(revision) => revision,
+        Err(error) => return serde_json::json!({ "error": error.to_string() }),
     };
     let generated = FrozenNow::new(completed.now.clone());
     match project.save_after_apply(
@@ -2069,13 +2065,12 @@ fn plain_apply_snapshot_line(
     generated_now: &jiff::Zoned,
     plan: &Plan,
 ) -> Option<String> {
-    use toha::snapshot::{FrozenNow, Revision, SnapshotOutcome};
+    use toha::snapshot::{FrozenNow, SnapshotOutcome};
 
     let project = project?;
-    let revision = if saved.commit.is_empty() {
-        Revision::Unversioned
-    } else {
-        Revision::Commit(toha::snapshot::CommitId::parse(&saved.commit).ok()?)
+    let revision = match cli::resolve::snapshot_revision(&saved.template, &saved.commit) {
+        Ok(revision) => revision,
+        Err(error) => return Some(format!("snapshot not saved: {error}")),
     };
     match project.save_after_apply(
         plan,

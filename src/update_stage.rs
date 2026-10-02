@@ -503,7 +503,7 @@ pub fn apply_staged(
         Ok(value) => value,
         Err(error) => return Outcome::Error(error),
     };
-    let (prep, base, staged) = match resume_prep(&saved, &target, dirs, trust) {
+    let (prep, _base, staged) = match resume_prep(&saved, &target, dirs, trust) {
         Ok(value) => value,
         Err(outcome) => return outcome,
     };
@@ -531,8 +531,7 @@ pub fn apply_staged(
             // staged-record retention gate below must use the same effective
             // value as the merge itself.
             let dry_run = update::effective_dry_run(dry_run, &completed);
-            let outcome =
-                update::finish_merge(prep, &base, &target, completed, submissions, dry_run);
+            let outcome = update::finish_merge(prep, &target, completed, submissions, dry_run);
             // A successful, non-preview merge consumes the staged interview; a
             // dry run previews it and leaves the staged interview in place so the
             // real apply remains available.

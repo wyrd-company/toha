@@ -36,7 +36,7 @@ $defs:
   record:
     description: >-
       A snapshot's `snapshot.json`. `snapshot` is the format version. `commit` is
-      the template's resolved commit, or null for a folder template. `generated`
+      the template's resolved Git commit, or null for a non-Git template. The optional content_digest holds a lowercase SHA-256 content revision and is absent or null for Git and folder revisions. `generated`
       is the frozen instant the render used, carried forward so a date-rendering
       template stays byte-stable. `submissions` are the raw answers that produced
       it; `paths` maps each captured path to its ownership.
@@ -45,6 +45,13 @@ $defs:
     required:
       [ snapshot, id, template, source, target, created, generated, project,
         submissions, paths ]
+    not:
+      required: [ commit, content_digest ]
+      properties:
+        commit:
+          type: string
+        content_digest:
+          type: string
     properties:
       snapshot:
         type: integer
@@ -58,6 +65,10 @@ $defs:
         type: string
       commit:
         type: [ string, "null" ]
+        pattern: "^[0-9a-fA-F]{40}$"
+      content_digest:
+        type: [ string, "null" ]
+        pattern: "^[0-9a-f]{64}$"
       target:
         description: The applied path relative to the repository root.
         type: string
@@ -112,6 +123,9 @@ $defs:
                   type: string
                 commit:
                   type: [ string, "null" ]
+                content_digest:
+                  type: [ string, "null" ]
+                  pattern: "^[0-9a-f]{64}$"
                 target:
                   type: string
                 created:

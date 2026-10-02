@@ -335,3 +335,35 @@ fn folder_template_serialises_a_null_commit() {
     assert_eq!(snapshot.revision(), &Revision::Unversioned);
     assert_eq!(snapshot.target(), &RepoPath::root());
 }
+
+#[test]
+fn content_revision_roundtrips_without_claiming_a_git_commit() {
+    let id = SAMPLE_ID.parse().unwrap();
+    let mut wire: serde_json::Value = serde_json::from_str(&valid_json(SAMPLE_ID)).unwrap();
+    wire["commit"] = serde_json::Value::Null;
+    wire["content_digest"] = serde_json::Value::String("ab".repeat(32));
+    let snapshot = Snapshot::validate(id, &serde_json::to_vec(&wire).unwrap(), &files()).unwrap();
+    assert!(matches!(snapshot.revision(), Revision::Content(_)));
+    let written: serde_json::Value = serde_json::from_slice(&snapshot.doc.to_json_bytes()).unwrap();
+    assert!(written["commit"].is_null());
+    assert_eq!(written["content_digest"], wire["content_digest"]);
+}
+
+#[test]
+fn content_revision_rejects_malformed_and_dual_identities() {
+    let id = SAMPLE_ID.parse().unwrap();
+    let mut wire: serde_json::Value = serde_json::from_str(&valid_json(SAMPLE_ID)).unwrap();
+    wire["content_digest"] = serde_json::Value::String("ab".repeat(32));
+    assert!(matches!(
+        Snapshot::validate(id, &serde_json::to_vec(&wire).unwrap(), &files()),
+        Err(SnapshotError::ConflictingRevision)
+    ));
+    wire["commit"] = serde_json::Value::Null;
+    for digest in ["ab".repeat(20), "AB".repeat(32), "g".repeat(64)] {
+        wire["content_digest"] = serde_json::Value::String(digest);
+        assert!(matches!(
+            Snapshot::validate(id, &serde_json::to_vec(&wire).unwrap(), &files()),
+            Err(SnapshotError::ContentDigest(_))
+        ));
+    }
+}

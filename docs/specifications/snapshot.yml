@@ -10,7 +10,8 @@ description: >-
 
   The record. `snapshot.json` holds a format version, the id, the template's
   formal name and its source (the name without its `@reference`), the resolved
-  commit or null for a folder template, the target relative to the repository
+  Git commit or null for a non-Git template, an optional content_digest for
+  content-addressed templates, the target relative to the repository
   root, the instant it was created, the frozen instant the render used, the
   project point (the `HEAD` commit and branch the apply ran against), the id of a
   base snapshot it was built from when it was an update, the raw answers that
@@ -43,7 +44,10 @@ description: >-
   `snapshot.json` and the `files/` subtree when captured files exist. The `files/`
   paths must equal the record's
   captured paths, the source must be the template without its reference, and the
-  format version must be one Toha supports.
+  format version must be one Toha supports. A template revision carries either
+  a 40-hex Git commit or a 64-hex lowercase SHA-256 content digest, never both.
+  Records without content_digest remain valid. Content revisions are resolved
+  through a content-aware template resolver and never used as Git object ids.
 
 
   Preview. CLI dry-run and interview flow dry-run compute the candidate and merge

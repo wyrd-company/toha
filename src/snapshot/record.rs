@@ -233,11 +233,35 @@ impl CommitId {
     }
 }
 
+/// A lowercase SHA-256 content identity, distinct from a Git object id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContentDigest(String);
+
+impl ContentDigest {
+    pub fn parse(text: &str) -> Result<Self, SnapshotError> {
+        if text.len() == 64
+            && text
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            Ok(Self(text.to_owned()))
+        } else {
+            Err(SnapshotError::ContentDigest(text.to_owned()))
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// The template revision a snapshot was built at.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Revision {
     /// A git-addressed template resolved to this commit.
     Commit(CommitId),
+    /// Content-addressed template bytes; never a Git object id.
+    Content(ContentDigest),
     /// A folder template, which has no commit.
     Unversioned,
 }
@@ -368,6 +392,8 @@ struct DocWire {
     template: String,
     source: String,
     commit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    content_digest: Option<String>,
     target: String,
     created: String,
     generated: String,
@@ -478,7 +504,11 @@ impl SnapshotDoc {
             source: self.source.clone(),
             commit: match &self.revision {
                 Revision::Commit(commit) => Some(commit.as_str().to_owned()),
-                Revision::Unversioned => None,
+                Revision::Content(_) | Revision::Unversioned => None,
+            },
+            content_digest: match &self.revision {
+                Revision::Content(digest) => Some(digest.as_str().to_owned()),
+                _ => None,
             },
             target: self.target.to_string(),
             created: self.created.to_string(),
@@ -563,9 +593,11 @@ impl Snapshot {
             });
         }
 
-        let revision = match wire.commit.as_deref() {
-            None => Revision::Unversioned,
-            Some(text) => Revision::Commit(CommitId::parse(text)?),
+        let revision = match (wire.commit.as_deref(), wire.content_digest.as_deref()) {
+            (Some(_), Some(_)) => return Err(SnapshotError::ConflictingRevision),
+            (Some(text), None) => Revision::Commit(CommitId::parse(text)?),
+            (None, Some(text)) => Revision::Content(ContentDigest::parse(text)?),
+            (None, None) => Revision::Unversioned,
         };
 
         let target = RepoPath::parse(&wire.target)?;
@@ -792,6 +824,10 @@ pub enum SnapshotError {
     Source { template: String, declared: String },
     #[error("invalid commit in snapshot: {0}")]
     Commit(String),
+    #[error("invalid content digest in snapshot: {0}")]
+    ContentDigest(String),
+    #[error("snapshot cannot carry both a commit and a content digest")]
+    ConflictingRevision,
     #[error("invalid instant in snapshot: {0}")]
     Instant(String),
     #[error("invalid snapshot path {path}: {message}")]

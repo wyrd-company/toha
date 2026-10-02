@@ -25,9 +25,9 @@ use toha::interview::Seed;
 
 use toha::protocol::Context;
 use toha::snapshot::{
-    Action, Base, Change, Cleanliness, CommitId, ConflictKind, FrozenNow, MergeOptions, Merged,
-    Project, RepoPath, Revision, Snapshot, SnapshotInputs, UpdateDrive, drive_update,
-    drive_update_resume, merge_apply,
+    Action, Base, Change, Cleanliness, ConflictKind, FrozenNow, MergeOptions, Merged, Project,
+    RepoPath, Snapshot, SnapshotInputs, UpdateDrive, drive_update, drive_update_resume,
+    merge_apply,
 };
 use toha::template::{Id, Template};
 use toha::{RawAnswer, RawAnswers};
@@ -97,7 +97,7 @@ pub fn run_update(
     // recorded answers do not settle, then merges; the script and agent route
     // reports them.
     if answers.is_none() && std::io::stdin().is_terminal() {
-        return person_update(prep, &base, &target, reanswer, dry_run);
+        return person_update(prep, &target, reanswer, dry_run);
     }
 
     let seed = Seed {
@@ -155,7 +155,7 @@ pub fn run_update(
 
     // A flow `dry-run` composes with the CLI `--dry-run` by union.
     let dry_run = effective_dry_run(dry_run, &completed);
-    finish_merge(prep, &base, &target, completed, submissions, dry_run)
+    finish_merge(prep, &target, completed, submissions, dry_run)
 }
 
 /// The person route for a one-shot update: prompt the questions the recorded
@@ -163,7 +163,6 @@ pub fn run_update(
 /// the recorded answers cover is never prompted — then merge.
 fn person_update(
     prep: Prepared,
-    base: &UpdateBase,
     target: &toha::staging::CanonicalTarget,
     reanswer: bool,
     dry_run: bool,
@@ -187,7 +186,7 @@ fn person_update(
             } => {
                 // A flow `dry-run` composes with the CLI `--dry-run` by union.
                 let dry_run = effective_dry_run(dry_run, &completed);
-                return finish_merge(prep, base, target, completed, submissions, dry_run);
+                return finish_merge(prep, target, completed, submissions, dry_run);
             }
             UpdateDrive::Ask { pending, .. } => {
                 let submission =
@@ -290,12 +289,13 @@ pub(crate) fn prepare(
     let resolved = match (&base_snapshot, &template_arg) {
         (Some(snapshot), None) => {
             let formal = snapshot.template().to_owned();
-            let commit = match snapshot.revision() {
-                Revision::Commit(commit) => commit.as_str().to_owned(),
-                Revision::Unversioned => String::new(),
-            };
-            match crate::cli::resolve::resume_template(
-                &formal, &commit, false, &config, &registry, dirs, &cwd,
+            match crate::cli::resolve::resume_snapshot_template(
+                &formal,
+                snapshot.revision(),
+                &config,
+                &registry,
+                dirs,
+                &cwd,
             ) {
                 Ok(value) => value,
                 Err(error) => return Err(crate::resolve_error(error)),
@@ -522,7 +522,6 @@ pub(crate) fn effective_dry_run(dry_run: bool, completed: &toha::Completed) -> b
 /// into the project, mapping the merge result to an `Outcome`.
 pub(crate) fn finish_merge(
     prep: Prepared,
-    base: &UpdateBase,
     target: &toha::staging::CanonicalTarget,
     completed: toha::Completed,
     submissions: Vec<IndexMap<Id, RawAnswer>>,
@@ -543,22 +542,14 @@ pub(crate) fn finish_merge(
         .as_ref()
         .map(|snapshot| snapshot.id().to_string());
 
-    let revision = match base {
-        UpdateBase::From(_) => prep
-            .base_snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.revision().clone())
-            .unwrap_or(Revision::Unversioned),
-        UpdateBase::Baseline => {
-            if prep.resolved.commit.is_empty() {
-                Revision::Unversioned
-            } else {
-                match CommitId::parse(&prep.resolved.commit) {
-                    Ok(commit) => Revision::Commit(commit),
-                    Err(error) => return Outcome::Error(error.to_string()),
-                }
-            }
-        }
+    // Record the revision actually rendered, including a newly selected content
+    // revision when the caller names the current template explicitly.
+    let revision = match crate::cli::resolve::snapshot_revision(
+        &prep.resolved.formal_name,
+        &prep.resolved.commit,
+    ) {
+        Ok(revision) => revision,
+        Err(error) => return Outcome::Error(error.to_string()),
     };
     let generated = match &prep.base_snapshot {
         Some(snapshot) => snapshot.generated().clone(),

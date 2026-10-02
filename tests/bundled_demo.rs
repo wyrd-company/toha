@@ -418,3 +418,199 @@ fn templates_list_text_and_json_agree_on_the_bundled_row() {
     assert!(text_bundled_rows(&String::from_utf8_lossy(&text.stdout)).is_empty());
     assert!(json_demo_rows(&String::from_utf8_lossy(&json.stdout)).is_empty());
 }
+
+fn git_fixture(cwd: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .current_dir(cwd)
+        .args(["-c", "maintenance.auto=false", "-c", "gc.auto=0"])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+#[test]
+fn bundled_snapshots_preserve_content_identity_and_update_offline() {
+    for route in ["scripted", "staged", "baseline"] {
+        let root = TempDir::new().unwrap();
+        let cwd = root.path().join("project");
+        fs::create_dir_all(&cwd).unwrap();
+        git_fixture(&cwd, &["init", "-q"]);
+        git_fixture(&cwd, &["config", "user.name", "Fixture Author"]);
+        git_fixture(&cwd, &["config", "user.email", "fixture@example.test"]);
+        git_fixture(&cwd, &["config", "core.autocrlf", "false"]);
+        git_fixture(&cwd, &["commit", "--allow-empty", "-qm", "Initial project"]);
+        let answers = demo_answers(root.path(), "toha-demo");
+        if route == "staged" {
+            let batch = root.path().join("batch.json");
+            run(
+                &root,
+                &cwd,
+                &[
+                    "stage",
+                    "toha-demo",
+                    ".",
+                    "--async",
+                    batch.to_str().unwrap(),
+                ],
+                4,
+            );
+            run(&root, &cwd, &["continue", ".", &answers], 0);
+            let output = run(&root, &cwd, &["apply", "."], 0);
+            assert!(String::from_utf8_lossy(&output.stdout).contains("saved snapshot"));
+        } else {
+            let mut args = vec!["apply", "toha-demo", ".", "--answers", &answers];
+            if route == "baseline" {
+                args.push("--baseline");
+            }
+            let output = run(&root, &cwd, &args, 0);
+            let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert!(value["snapshot"]["id"].is_string(), "{value}");
+        }
+        let output = run(&root, &cwd, &["snapshots", "list", ".", "--json"], 0);
+        let listing: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let row = &listing["snapshots"][0];
+        let id = row["id"].as_str().unwrap();
+        assert!(row["commit"].is_null());
+        let digest = row["content_digest"].as_str().unwrap();
+        assert_eq!(digest.len(), 64);
+        let record = git_fixture(
+            &cwd,
+            &["show", &format!("refs/toha/snapshots/{id}:snapshot.json")],
+        );
+        let record: serde_json::Value = serde_json::from_str(&record).unwrap();
+        assert!(record["commit"].is_null());
+        assert_eq!(record["content_digest"], digest);
+        let schema: serde_json::Value = serde_norway::from_str(
+            &fs::read_to_string("docs/specifications/snapshot.schema.yml").unwrap(),
+        )
+        .unwrap();
+        for (definition, value) in [("record", &record), ("list", &listing)] {
+            let mut schema = schema.clone();
+            schema["$ref"] = serde_json::json!(format!("#/$defs/{definition}"));
+            let validator = jsonschema::options()
+                .with_draft(jsonschema::Draft::Draft202012)
+                .build(&schema)
+                .unwrap();
+            assert!(validator.is_valid(value), "{definition}: {value}");
+        }
+
+        fs::write(
+            cwd.join("note.txt"),
+            format!("{NOTE}\nKeep this operator note.\n"),
+        )
+        .unwrap();
+        git_fixture(&cwd, &["add", "note.txt"]);
+        git_fixture(&cwd, &["commit", "-qm", "Keep operator note"]);
+        let override_answers = envelope(
+            root.path(),
+            "toha-demo",
+            r#"{"title":"Updated Title","topic":"Sample Topic"}"#,
+        );
+        if route == "staged" {
+            let batch = root.path().join("update-batch.json");
+            run(
+                &root,
+                &cwd,
+                &[
+                    "stage",
+                    "toha-demo",
+                    ".",
+                    "--from",
+                    id,
+                    "--reanswer",
+                    "--async",
+                    batch.to_str().unwrap(),
+                ],
+                4,
+            );
+            run(&root, &cwd, &["continue", ".", &override_answers], 0);
+            let before = fs::read(cwd.join("note.txt")).unwrap();
+            run(&root, &cwd, &["apply", ".", "--dry-run"], 0);
+            assert_eq!(fs::read(cwd.join("note.txt")).unwrap(), before);
+            let output = run(&root, &cwd, &["apply", "."], 0);
+            let applied: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert!(applied["snapshot"]["id"].is_string());
+            assert_eq!(
+                fs::read_to_string(cwd.join("note.txt")).unwrap(),
+                "Updated Title\nTopic: Sample Topic\n\nKeep this operator note.\n"
+            );
+            continue;
+        }
+        let before = fs::read(cwd.join("note.txt")).unwrap();
+        let refs = git_fixture(&cwd, &["for-each-ref", "refs/toha/snapshots"]);
+        // No TEMPLATE argument: resolve the stored content revision offline.
+        let output = run(
+            &root,
+            &cwd,
+            &[
+                "apply",
+                ".",
+                "--from",
+                id,
+                "--answers",
+                &override_answers,
+                "--dry-run",
+            ],
+            0,
+        );
+        let preview: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(preview["merge"]["changes"][0]["action"], "merged");
+        assert_eq!(fs::read(cwd.join("note.txt")).unwrap(), before);
+        assert_eq!(
+            git_fixture(&cwd, &["for-each-ref", "refs/toha/snapshots"]),
+            refs
+        );
+        let output = run(
+            &root,
+            &cwd,
+            &["apply", ".", "--from", id, "--answers", &override_answers],
+            0,
+        );
+        let applied: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(applied["snapshot"]["id"].is_string());
+        assert_eq!(
+            fs::read_to_string(cwd.join("note.txt")).unwrap(),
+            "Updated Title\nTopic: Sample Topic\n\nKeep this operator note.\n"
+        );
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn person_bundled_apply_reports_saved_snapshot() {
+    use expectrl::{Expect, Session};
+    let root = TempDir::new().unwrap();
+    let cwd = root.path().join("project");
+    fs::create_dir_all(&cwd).unwrap();
+    git_fixture(&cwd, &["init", "-q"]);
+    git_fixture(&cwd, &["config", "user.name", "Fixture Author"]);
+    git_fixture(&cwd, &["config", "user.email", "fixture@example.test"]);
+    git_fixture(&cwd, &["config", "core.autocrlf", "false"]);
+    git_fixture(&cwd, &["commit", "--allow-empty", "-qm", "Initial project"]);
+    let mut command = command(&root, &cwd);
+    command.args(["apply", "toha-demo", "."]);
+    let mut session = Session::spawn(command).unwrap();
+    session.expect("Note title").unwrap();
+    session.send_line("Sample Title").unwrap();
+    session.expect("Topic").unwrap();
+    session.send_line("Sample Topic").unwrap();
+    session.expect("saved snapshot").unwrap();
+    session.expect(expectrl::Eof).unwrap();
+    let output = run(&root, &cwd, &["snapshots", "list", ".", "--json"], 0);
+    let listing: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(listing["snapshots"].as_array().unwrap().len(), 1);
+    assert!(listing["snapshots"][0]["commit"].is_null());
+    assert_eq!(
+        listing["snapshots"][0]["content_digest"]
+            .as_str()
+            .unwrap()
+            .len(),
+        64
+    );
+}

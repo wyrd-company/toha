@@ -25,7 +25,7 @@ pub use project::{
     SkipReason, SnapshotOutcome,
 };
 pub use record::{
-    CommitId, FrozenNow, Origin, PathOwnership, ProjectPoint, RepoPath, Revision, Snapshot,
-    SnapshotDoc, SnapshotError, SnapshotId, Timestamp, source_identity,
+    CommitId, ContentDigest, FrozenNow, Origin, PathOwnership, ProjectPoint, RepoPath, Revision,
+    Snapshot, SnapshotDoc, SnapshotError, SnapshotId, Timestamp, source_identity,
 };
 pub use replay::{UpdateDrive, drive_update, drive_update_resume};

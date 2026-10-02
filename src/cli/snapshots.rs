@@ -83,6 +83,7 @@ pub fn list(path: Option<PathBuf>, as_json: bool) -> SnapshotOutput {
                         "template": s.template(),
                         "source": s.source(),
                         "commit": revision_commit(s.revision()),
+                        "content_digest": revision_content_digest(s.revision()),
                         "target": s.target().as_str(),
                         "created": s.created().to_string(),
                         "project": { "commit": s.project().commit().as_str(), "branch": s.project().branch() },
@@ -197,6 +198,13 @@ fn not_in_git() -> String {
 fn revision_commit(revision: &Revision) -> Option<&str> {
     match revision {
         Revision::Commit(commit) => Some(commit.as_str()),
-        Revision::Unversioned => None,
+        Revision::Content(_) | Revision::Unversioned => None,
+    }
+}
+
+fn revision_content_digest(revision: &Revision) -> Option<&str> {
+    match revision {
+        Revision::Content(digest) => Some(digest.as_str()),
+        _ => None,
     }
 }

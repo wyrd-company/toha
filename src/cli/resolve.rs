@@ -417,3 +417,102 @@ mod tests {
         );
     }
 }
+
+/// Interpret the selected template revision without treating content as Git.
+pub fn snapshot_revision(
+    formal: &str,
+    commit: &str,
+) -> Result<toha::snapshot::Revision, toha::snapshot::SnapshotError> {
+    use toha::snapshot::{CommitId, ContentDigest, Revision};
+    if commit.is_empty() {
+        Ok(Revision::Unversioned)
+    } else if formal == bundled::RESERVED {
+        ContentDigest::parse(commit).map(Revision::Content)
+    } else {
+        CommitId::parse(commit).map(Revision::Commit)
+    }
+}
+
+/// Resume a content snapshot only through a content-aware source resolver.
+pub fn resume_snapshot_template(
+    formal: &str,
+    revision: &toha::snapshot::Revision,
+    config: &Config,
+    registry: &Registry,
+    dirs: &Dirs,
+    cwd: &Path,
+) -> Result<ResolvedTemplate, ResolveError> {
+    use toha::snapshot::Revision;
+    match revision {
+        Revision::Content(digest) => {
+            bundled::resume(formal, digest.as_str(), dirs).unwrap_or_else(|| {
+                Err(ResolveError::text(
+                    "no content resolver for this template source",
+                ))
+            })
+        }
+        Revision::Commit(commit) => {
+            resume_template(formal, commit.as_str(), false, config, registry, dirs, cwd)
+        }
+        Revision::Unversioned => resume_template(formal, "", false, config, registry, dirs, cwd),
+    }
+}
+
+#[cfg(test)]
+mod content_revision_tests {
+    use super::*;
+    use toha::snapshot::{ContentDigest, Revision};
+
+    #[test]
+    fn content_revision_never_falls_through_to_git_resolution() {
+        let root = tempfile::tempdir().unwrap();
+        let dirs = Dirs {
+            system_config: root.path().join("system-config"),
+            user_config: root.path().join("user-config"),
+            local_config_override: None,
+            system_data: root.path().join("system-data"),
+            user_data: root.path().join("user-data"),
+            cache: root.path().join("cache"),
+            state: root.path().join("state"),
+            home: root.path().join("home"),
+        };
+        let config = config::load(&dirs.config_paths(), root.path()).unwrap();
+        let revision = Revision::Content(ContentDigest::parse(&"ab".repeat(32)).unwrap());
+        let result = resume_snapshot_template(
+            "gh:example/template",
+            &revision,
+            &config,
+            &Registry::default(),
+            &dirs,
+            root.path(),
+        );
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("content revision reached Git"),
+        };
+        assert!(
+            matches!(&error, ResolveError::Error(message) if message.contains("no content resolver")),
+            "{error:?}"
+        );
+        assert!(
+            !dirs.cache.exists(),
+            "no Git fetch or cache materialization"
+        );
+        let result = resume_snapshot_template(
+            bundled::RESERVED,
+            &revision,
+            &config,
+            &Registry::default(),
+            &dirs,
+            root.path(),
+        );
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("stale content accepted"),
+        };
+        assert!(
+            matches!(&error, ResolveError::Error(message) if message.contains("changed since")),
+            "{error:?}"
+        );
+    }
+}

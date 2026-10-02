@@ -31,6 +31,15 @@ proposed-design:
     failure with instructions to stage again. Identical demo content preserves
     the identity across binary builds. Registry entries that shadow the fallback
     keep their own formal identity and resume through their ordinary source.
+  snapshots: >-
+    A bundled apply in a clean committed Git target follows the ordinary
+    snapshot save rules. Its snapshot records commit as null and the embedded
+    SHA-256 identity in content_digest. The content revision is distinct from a
+    Git commit revision. Snapshot replay resolves toha-demo through its bundled
+    content resolver and refuses a changed digest without a Git lookup.
+    Preview preserves files, index and snapshot refs; apply merges template
+    changes while retaining operator edits. Capture errors are reported on the
+    person, staged-agent and scripted routes.
   boundaries: >-
     cli::resolve owns selection; cli::bundled owns embedded bytes, digest,
     materialization and the listing descriptor. ResolvedTemplate supplies the
