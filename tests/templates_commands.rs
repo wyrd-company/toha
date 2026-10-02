@@ -769,7 +769,7 @@ fn suggested_commands_for_folder_templates_are_accepted() {
             .as_str()
             .unwrap(),
     );
-    envelope(&root, &named[3]);
+    envelope(&root, &support::formal_name(Path::new(&named[3])));
     let disambiguated = run(&root, &named.iter().map(String::as_str).collect::<Vec<_>>());
     let planned = support::first_document(&assert_exit(&disambiguated, 3).into_bytes());
     assert_eq!(planned["status"], "planned");

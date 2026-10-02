@@ -95,8 +95,8 @@ export TOHA_CONFIG="$TOHA_TARGET/local.yml"
 peek() { sed '/^}$/q' "$1"; }
 if "$TOHA_BIN" stage "$TOHA_TEMPLATE" "$TOHA_TARGET" --async "$TOHA_TARGET/batch.json" >/dev/null; then exit 1; else test "$?" -eq 4; fi
 jq -cS '{status,questions:(.schema.properties|keys),required:.schema.required,messages}' "$TOHA_TARGET/batch.json"
-formal=$(jq -r .context.template "$TOHA_TARGET/batch.json")
-answer() { printf '{"template":"%s","answers":%s}' "$formal" "$1"; }
+formal=$(jq -rj .context.template "$TOHA_TARGET/batch.json")
+answer() { jq -nc --arg template "$formal" --argjson answers "$1" '{template:$template,answers:$answers}'; }
 if answer '{"title":"Sample Note"}' | "$TOHA_BIN" continue "$TOHA_TARGET" - >"$TOHA_TARGET/out.txt"; then exit 1; else test "$?" -eq 4; fi
 peek "$TOHA_TARGET/out.txt" | jq -cS '{status,questions:(.schema.properties|keys),slug_default:.schema.properties.slug.default,tags_type:.schema.properties.tags.type}'
 if answer '{"slug":"BAD NAME","tags":["One"]}' | "$TOHA_BIN" continue "$TOHA_TARGET" - >"$TOHA_TARGET/out.txt"; then exit 1; else test "$?" -eq 4; fi

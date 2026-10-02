@@ -28,6 +28,7 @@ fn git(dir: &Path, args: &[&str]) {
 
 fn target_repo(dir: &Path) {
     git(dir, &["init", "--quiet"]);
+    git(dir, &["config", "core.autocrlf", "false"]);
     std::fs::write(dir.join("README.md"), "seed\n").unwrap();
     git(dir, &["add", "."]);
     git(dir, &["commit", "--quiet", "-m", "seed"]);

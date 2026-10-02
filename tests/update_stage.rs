@@ -50,6 +50,7 @@ fn add_second_question(dir: &Path) {
 
 fn target_repo(dir: &Path) {
     git(dir, &["init", "--quiet"]);
+    git(dir, &["config", "core.autocrlf", "false"]);
     std::fs::write(dir.join("README.md"), "seed\n").unwrap();
     git(dir, &["add", "."]);
     git(dir, &["commit", "--quiet", "-m", "seed"]);
@@ -217,7 +218,8 @@ fn stage_trust_environment_is_carried_through_continue_and_apply() {
         .arg(&snapshot)
         .arg("--trust")
         .arg("--async")
-        .env("USER", "staged-user");
+        .env("USER", "staged-user")
+        .env("USERNAME", "staged-user");
     assert_eq!(
         stage.output().unwrap().status.code(),
         Some(4),
@@ -235,14 +237,16 @@ fn stage_trust_environment_is_carried_through_continue_and_apply() {
     cont.arg("continue")
         .arg(target.path())
         .arg(&env_color)
-        .env("USER", "continue-user");
+        .env("USER", "continue-user")
+        .env("USERNAME", "continue-user");
     assert_eq!(cont.output().unwrap().status.code(), Some(0));
 
     let mut apply = support::isolated_command(iso.path());
     apply
         .arg("apply")
         .arg(target.path())
-        .env("USER", "apply-user");
+        .env("USER", "apply-user")
+        .env("USERNAME", "apply-user");
     let output = apply.output().unwrap();
     assert_eq!(output.status.code(), Some(0), "apply: {output:?}");
 

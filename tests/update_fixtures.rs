@@ -70,6 +70,7 @@ fn the_update_conflict_fixture_merges_as_expect_yml_states() {
     let target = work.path().join("target");
     std::fs::create_dir(&target).unwrap();
     git(&target, &["init", "--quiet"]);
+    git(&target, &["config", "core.autocrlf", "false"]);
     std::fs::write(target.join("seed-to-remove.txt"), "seed\n").unwrap();
     git(&target, &["add", "."]);
     git(&target, &["commit", "--quiet", "-m", "seed"]);

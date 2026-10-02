@@ -43,6 +43,7 @@ fn write_template(dir: &Path) {
 /// A fresh git target with one commit.
 fn target_repo(dir: &Path) {
     git(dir, &["init", "--quiet"]);
+    git(dir, &["config", "core.autocrlf", "false"]);
     std::fs::write(dir.join("README.md"), "seed\n").unwrap();
     git(dir, &["add", "."]);
     git(dir, &["commit", "--quiet", "-m", "seed"]);

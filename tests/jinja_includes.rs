@@ -208,6 +208,7 @@ mod nested_include_trust {
         let mut command = support::isolated_command(state);
         command
             .env("USER", user)
+            .env("USERNAME", user)
             .env("TOHA_NOW", "2026-01-02T03:04:05+00:00[UTC]")
             .stdin(Stdio::null());
         command

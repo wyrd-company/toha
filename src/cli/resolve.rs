@@ -195,6 +195,17 @@ pub fn resolve_template(
     dirs: &Dirs,
     cwd: &Path,
 ) -> Result<ResolvedTemplate, ResolveError> {
+    // Windows verbatim formal names already address installed registry entries.
+    // Keep that named route while allowing unregistered absolute folder paths.
+    if cfg!(windows) && arg.starts_with(r"\\?\") {
+        match registry.resolve(arg) {
+            Ok(resolved) => {
+                return Ok(entry(resolved.formal_name, registry).expect("resolved registry entry"));
+            }
+            Err(registry::ResolveError::NotFound(_)) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
     let address = source::parse(arg, &config.hosts, cwd, &dirs.home).map_err(ResolveError::text)?;
     match &address {
         Address::Folder(folder) => Ok(ResolvedTemplate {
