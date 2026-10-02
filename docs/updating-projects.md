@@ -47,9 +47,12 @@ Toha re-renders the template, replays the answers the snapshot recorded, asks
 only a question the new version added, and merges the difference three-way from
 the snapshot. Your own edits to the generated files survive; where the template
 and your edits touched the same lines, Toha writes the file with conflict markers
-and leaves it for you to resolve. The result is `applied` with a `merge` member
-listing each changed path, or `already-current` when the new render matches the
-snapshot.
+and leaves it for you to resolve. Human and completed staged-agent updates print
+the template and target, each merge action or conflict, messages, and the saved
+snapshot id. A preview says no changes were written; an unchanged render says
+`Already current.`. Conflicts include instructions to resolve them before
+committing. With `--answers`, the scripted route returns an `applied` document
+with a `merge` member, or `already-current` when the render matches the snapshot.
 
 Update interactively, and Toha prompts anything the recorded answers do not
 settle. An agent stages the update instead:
