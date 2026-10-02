@@ -25,7 +25,7 @@ use gix::objs::tree::EntryKind;
 use crate::snapshot::capture::{self, CaptureInputs};
 use crate::snapshot::project::Project;
 use crate::snapshot::record::{
-    CommitId, FrozenNow, ProjectPoint, RepoPath, Revision, SNAPSHOT_REF_PREFIX, Snapshot,
+    CommitId, FrozenNow, Origin, ProjectPoint, RepoPath, Revision, SNAPSHOT_REF_PREFIX, Snapshot,
     SnapshotId, Timestamp,
 };
 
@@ -395,7 +395,27 @@ fn merge_inner(
 
     let head_tree = repo.head_tree().map_err(git)?.id().detach();
     let base_files = match base {
-        Base::Snapshot(snapshot) => snapshot_files_tree(project, snapshot.id())?,
+        Base::Snapshot(snapshot) => {
+            let files = snapshot_files_tree(project, snapshot.id())?;
+            let mut editor = repo.edit_tree(files).map_err(git)?;
+            // The previous update captured the retracted operator file with
+            // empty edit ownership. Once the candidate stops capturing it,
+            // omit it from both merge inputs so absence cannot mean deletion.
+            // A candidate that owns it again still needs its original base.
+            for entry in snapshot.paths() {
+                if matches!(entry.origin(), Origin::Edit { regions, values } if regions.is_empty() && values.is_empty())
+                    && !new
+                        .paths()
+                        .iter()
+                        .any(|candidate| candidate.path() == entry.path())
+                {
+                    editor
+                        .remove(entry.path().to_string().as_str())
+                        .map_err(git)?;
+                }
+            }
+            editor.write().map_err(git)?.detach()
+        }
         // Write the empty tree so the merge can read it as the base; the
         // well-known id is otherwise not guaranteed to be present in the odb.
         Base::Empty => repo
