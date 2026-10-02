@@ -647,7 +647,9 @@ fn b20_a_new_apply_template_path_saves_each_batch_and_resumes_after_interrupt() 
     session.expect("After One?").unwrap();
     // Interrupt before answering the second batch; the first batch is saved.
     session.send(char::from(3).to_string()).unwrap(); // Ctrl-C
-    let _ = session.get_process().wait();
+    // Drain the PTY before waiting: the child may still write terminal cleanup.
+    session.expect(expectrl::Eof).unwrap();
+    session.get_process().wait().unwrap();
     let record = Store::new(support::staged_dir(state.path()))
         .load(&canonical_target(target.path()).unwrap())
         .unwrap()
@@ -734,7 +736,9 @@ fn b22_agent_and_person_staged_interviews_complete_through_the_other_route() {
     session.send_line("One").unwrap();
     session.expect("After One?").unwrap();
     session.send(char::from(3).to_string()).unwrap(); // interrupt after the first batch is saved
-    let _ = session.get_process().wait();
+    // Drain the PTY before waiting: the child may still write terminal cleanup.
+    session.expect(expectrl::Eof).unwrap();
+    session.get_process().wait().unwrap();
     assert!(
         staged(state.path(), target.path()),
         "the first batch was staged"

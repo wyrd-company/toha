@@ -22,6 +22,9 @@ fn git(repo: &Path, args: &[&str]) -> String {
         "git {args:?}: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+    if args.first() == Some(&"init") {
+        git(repo, &["config", "core.autocrlf", "false"]);
+    }
     String::from_utf8_lossy(&out.stdout).trim().to_owned()
 }
 

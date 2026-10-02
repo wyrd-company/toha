@@ -67,8 +67,16 @@ impl Project {
             .map_err(|err| ProjectError::Io(err.to_string()))?;
         let rel = match target.as_path().strip_prefix(&workdir) {
             Ok(suffix) if suffix.as_os_str().is_empty() => RepoPath::root(),
-            Ok(suffix) => RepoPath::parse(&suffix.to_string_lossy())
-                .map_err(|err| ProjectError::Path(err.to_string()))?,
+            Ok(suffix) => {
+                // Git records slash-separated components on every host. Convert
+                // the OS path at this boundary before validating the git path.
+                let git_path = suffix
+                    .iter()
+                    .map(|part| part.to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                RepoPath::parse(&git_path).map_err(|err| ProjectError::Path(err.to_string()))?
+            }
             Err(_) => return Err(ProjectError::Outside(target.to_string())),
         };
         Ok(Some(Project { repo, rel }))
