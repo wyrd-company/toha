@@ -126,7 +126,9 @@ fn expected_tree(which: &str) -> BTreeMap<String, Vec<u8>> {
 }
 
 fn git(dir: &Path, args: &[&str]) {
+    // Keep the fixture quiescent before copying its complete Git directory.
     let status = StdCommand::new("git")
+        .args(["-c", "maintenance.auto=false", "-c", "gc.auto=0"])
         .args(args)
         .current_dir(dir)
         .env("GIT_AUTHOR_NAME", "Test")
