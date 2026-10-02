@@ -729,7 +729,8 @@ fn staged_update_reports_messages_and_allowed_hook_failure() {
         .unwrap()
         .replace("exit 7", "printf hook-output; exit 7");
     fs::write(&manifest, source).unwrap();
-    let answers = envelope(root.path(), template.to_str().unwrap(), "{}");
+    let formal = template.canonicalize().unwrap();
+    let answers = envelope(root.path(), formal.to_str().unwrap(), "{}");
     let output = run(
         &root,
         &cwd,
