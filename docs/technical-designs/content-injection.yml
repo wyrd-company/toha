@@ -1,0 +1,62 @@
+$schema: https://refinery.systems/ontology/technical-design
+relationships:
+  realizes: toha
+  implements: template-format
+  related-to:
+    - architecture
+    - jinja-includes
+    - project-updates
+objective: >-
+  Plan bounded edits with explicit ownership and resolve every candidate image
+  before apply writes target files.
+proposed-design:
+  high-level-overview: >-
+    PlannedEdit separates Region and JsonValue intents from whole-file content.
+    Plan building renders bodies, typed values, paths and ownership identifiers.
+    Pure resolvers transform target images in memory. Apply groups all mutations
+    by target and commits each changed image once before running hooks.
+  regions: >-
+    A region owns its marker pair and enclosed bytes in a non-JSON text file.
+    RegionKey is unique per target and permits lowercase ASCII letters, digits,
+    underscore and hyphen. Inline content or a confined include-capable support
+    source supplies the rendered body. Marker style comes from the extension or
+    an explicit line/block override. Initial placement uses an optional line
+    anchor with only, first or last occurrence; absent anchor appends. Subsequent
+    apply finds the exact marker pair. The end marker records SHA-256 of the
+    owned body: matching desired bytes are unchanged, a matching recorded body
+    accepts template replacement, and operator drift requires force. Malformed
+    markers and missing or ambiguous anchors remain errors under force.
+  structured-values: >-
+    JsonPath contains object keys and array indexes, begins with a key, and
+    parses escaped dots, brackets and backslashes. Missing object parents are
+    created; arrays must exist and indexes be in range. Scalar traversal fails.
+    String leaves render recursively but retain string type; other JSON types
+    remain typed serde_json values. Equality is a byte no-op; a differing owned
+    value converges without force. Equal or ancestor/descendant paths on one
+    target are planning errors. Missing targets require create true.
+  syntax-and-source-fidelity: >-
+    The jsonc-parser CST retains comments, ordering, whitespace and lexical
+    source outside changed nodes and required punctuation. Json targets first
+    pass strict serde_json parsing before CST traversal. Jsonc enables comments
+    and trailing commas. Json5 explicitly enables the parser's JSON5-compatible
+    relaxations, including missing commas, and is a permissive superset. Each
+    parser-option bundle is constructed explicitly. Typed values convert
+    recursively to CstInputValue; new object values follow sorted map order.
+    Replacing an owned node can normalize that node's lexical spelling.
+  apply-order: >-
+    Apply recomputes whole-file conflicts, checks trust and paths, then starts
+    each target image from planned whole-file bytes or one read of current bytes.
+    Edits fold in source order over that image. Any conflict, unforced drift,
+    parse error or path error stops before writes. Each final changed image uses
+    an exclusive sibling temporary file, applicable mode and atomic replacement.
+    Reports contain each changed path once; unchanged paths are absent. Atomicity
+    is per file; an I/O fault during the commit loop can leave earlier targets
+    committed. Hooks execute after file writes.
+  ownership-view: >-
+    Plan::mutations exposes Whole(path), Region(path, region) and
+    JsonValue(path, json_path) from plan intent. Snapshot capture and update
+    ownership transitions consume that view. Region checksums govern direct
+    drift; JSON ownership converges. Project updates own three-way merge,
+    retraction and release semantics. Marker rules reject JSON-family targets
+    and structured rules reject other families; whole-file generation remains
+    available for either.

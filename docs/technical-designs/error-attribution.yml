@@ -1,0 +1,51 @@
+$schema: https://refinery.systems/ontology/technical-design
+relationships:
+  realizes: toha
+  implements:
+    - template-format
+    - interview-protocol
+    - config
+  related-to:
+    - architecture
+    - template-defaults
+objective: >-
+  Attribute template and configured-default faults to their owning inputs and
+  reject answer documents atomically according to question reachability.
+proposed-design:
+  high-level-overview: >-
+    Compiled Jinja values retain their source and origin. Default-bank entries
+    retain template, configured, seed or snapshot provenance. An effect-free
+    tentative walk classifies early-answer failures before a submission commits.
+    A producer-created CanonicalTarget supplies one identity to all consumers.
+  template-faults: >-
+    Compilation and evaluation errors identify the authored field, expression
+    when present, and engine error. Planning identifies files[i].when,
+    files[i].each, files[i].path or the exact ordinary source-path segment, with
+    its support or source file. A template-authored default is validated against
+    rendered constraints and fails as a template fault rather than caller input.
+    Skipped questions validate such defaults against ready constraints without
+    rendering presentation fields or forcing unavailable dynamic constraints.
+  configured-rejections: >-
+    Resolution carries the winning mapping origin and optional preset origin
+    into the engine. Missing presets and kind mismatches fail at resolution.
+    Correct-kind defaults rejected by question constraints are removed from the
+    prompt default and reported in the batch, so a terminal or document caller
+    can supply a replacement. Explicit answers take precedence over the carried
+    default rejection.
+  answer-transaction: >-
+    Known early answers are checked against their kind and ready literal rules.
+    A private probe using tentative current answers classifies each failed early
+    question as active, skipped or unresolved. Active and unresolved failures
+    remain rejections; a proven skipped failure is removed even if another
+    current answer rejects. A rejected probe publishes no submission, warning,
+    message, hook or flow effect. Acceptance performs a fresh committed walk.
+    Skipped held-answer warnings appear once, in interview order, on that walk.
+  target-identity: >-
+    staging::canonical_target makes an absolute path, resolves lexical dot
+    components, canonicalizes the closest existing ancestor and appends a
+    non-empty suffix. Filesystem roots retain their required separator.
+    CanonicalTarget exposes as_path and has no public unchecked constructor.
+    Storage, staged replay, protocol context, invocation context, planning and
+    apply receive this carrier rather than normalizing independent paths.
+    Plan building checks a current completed context against the supplied target
+    before rendering.

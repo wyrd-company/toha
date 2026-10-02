@@ -1,0 +1,48 @@
+$schema: https://refinery.systems/ontology/technical-design
+relationships:
+  realizes: toha
+  implements: template-format
+  related-to:
+    - architecture
+    - jinja-context
+objective: >-
+  Compile confined file-body include closures at template load and retain them
+  as an immutable render program through interview and planning.
+proposed-design:
+  high-level-overview: >-
+    Template owns Partials rooted at its canonical template directory. Partials
+    compiles include-capable FileTmpl values for rendered source-tree bodies,
+    files-rule support bodies and injection support bodies. Loaderless Tmpl and
+    Expr serve other fields. Holding FileTmpl identifies the include capability.
+  literal-closure: >-
+    The private AST walk accepts include targets that are string constants or
+    literal lists of strings. Candidate order selects the first existing valid
+    file; later candidates are not read. A missing candidate advances to the
+    next. An existing candidate that is unsafe, unreadable, non-UTF-8 or invalid
+    fails immediately. All missing candidates fail unless ignore missing is
+    present; an empty list produces no edge. Transitive includes compile at load
+    and union their answer references and environment needs into the body.
+    A canonical-path stack identifies cycles with the include chain.
+  confinement: >-
+    One locate operation checks every include name. Names are slash-separated
+    paths relative to the selected root, with no required directory prefix or
+    extension. Absolute paths, parent traversal, backslashes and symlinks in any
+    component are refused. Canonicalized targets are regular UTF-8 files inside
+    the root. A partial outside the source subdirectory is support material and
+    is emitted only through inclusion.
+  statement-surfaces: >-
+    The recursive AST visitor has FileBody and LoaderlessField modes. FileBody
+    admits literal includes and rejects block, import, from-import and extends.
+    LoaderlessField rejects all multi-template statements, including statements
+    in unreachable branches or nested macros. Interview fields, hook fields,
+    apply messages and path segments compile in loaderless mode. YAML !include
+    remains configuration loading with separate parsing and diagnostics.
+  ownership-and-errors: >-
+    Template::load compiles each body and its selected closure once, retaining
+    FileTmpl on file rules and source entries. Reference checking sees the union
+    with the file-rule each binding in scope. Plan building renders those values
+    without discovering or reopening partial files. Load failures identify the
+    rule source or walked file plus the include candidate and including file;
+    render failures retain the support or source origin. Jinja include
+    diagnostics identify their own feature rather than using YAML !include
+    messages.

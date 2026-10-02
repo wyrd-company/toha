@@ -1,0 +1,97 @@
+$schema: https://refinery.systems/ontology/technical-design
+relationships:
+  realizes: toha
+  implements:
+    - template-format
+    - interview-protocol
+    - command-line-interface
+  related-to:
+    - architecture
+    - error-attribution
+    - jinja-includes
+    - hook-review-trust
+objective: >-
+  Supply explicit invocation facts to every Jinja surface and preserve those
+  facts through staged replay without ambient reads in the interview engine.
+proposed-design:
+  high-level-overview: >-
+    Template loading retains a complete compiled render program and its
+    conservative environment need. Environment admission combines that need with
+    the caller's typed decision and fixed-value adapter. InvocationContext
+    carries selected-template, canonical-target, host, execution and environment
+    facts through the engine, staging and planning. One private projection joins
+    them with template data, answers and frozen time.
+  identity-and-host: >-
+    SelectedTemplate contains the loaded short name and resolved formal name.
+    Named registry selection supplies effective aliases in registry order and
+    its source; folder, direct Git and bundled selection supply an empty alias
+    list and null source. Target name is the final Unicode component of the
+    canonical target, or null for a root or non-Unicode component. Host OS and
+    architecture use Rust target vocabulary. Linux os-release supplies NAME, ID
+    and whitespace-split ID_LIKE; absent or invalid input projects null, null
+    and an empty list. Parsing accepts quoted assignments without execution and
+    uses the last valid duplicate. Effective admin status is positively observed
+    through native Unix or Windows adapters; detection failure is false.
+    Interactive status records whether the originating driver could prompt.
+  projection-and-names: >-
+    Current contexts bind toha_target_name; toha_template_name,
+    toha_template_formal_name, toha_template_aliases and toha_template_source;
+    toha_host_os, toha_host_arch, toha_host_os_name, toha_host_os_id and
+    toha_host_os_id_like; toha_is_admin and toha_is_interactive; and
+    toha_env_user, toha_env_hostname, toha_env_editor, toha_env_shell and
+    toha_env_visual. Values are variables with fixed types and unavailable
+    optional values are none, never undefined. These exact seventeen names are
+    reserved in top-level data, authored ids, each bindings and global/callable
+    positions. Nested object keys and other toha_ names remain ordinary names.
+    Load errors aggregate every collision site.
+  complete-render-program: >-
+    Load compiles interview fields, rules, messages and hook Jinja, all
+    non-static source-tree path segments and file bodies, injection content and
+    the transitive literal include closures. Planning renders retained compiled
+    bytes without reopening Jinja sources. Configuration documents, globs,
+    metadata, script paths, raw answers and configured data are not recursively
+    interpreted as templates. The private MiniJinja AST adapter tracks lexical
+    shadowing, assignment read order, aliases, macro and branch bodies, dynamic
+    operands and include closures. A possible built-in debug call or an AST form
+    not proven safe marks all five environment values observable. The first
+    deterministic RenderOrigin attributes admission failure without values.
+  admission: >-
+    FixedEnvironmentSource reads user from USER on Unix or USERNAME on Windows,
+    native hostname, EDITOR, SHELL and VISUAL. Empty, absent or non-Unicode
+    observations are null. Deny performs no reads and projects five nulls.
+    GrantIfNeeded captures all five once when a need exists; without need it
+    reads nothing. RequireStageGrant refuses a present need before capture,
+    interview evaluation or staged writes, and reads nothing without need.
+    CarryStageGrant captures all five once with or without an initial need.
+    Direct apply grants through the explicit trust flag or a current matching
+    hook-surface approval on eligible named registry selection. Stage uses only
+    its explicit trust flag. The review digest covers executable hooks, not every
+    Jinja source; user guidance describes that scope precisely.
+  context-and-provenance: >-
+    InvocationContext accepts the producer-created CanonicalTarget and typed
+    facts. Configured Resolution::start_with_context moves raw defaults and their
+    retained origins directly into the private configured bank alongside that
+    context. Ordinary Interview::start consumes Seed with flat defaults and
+    context. Plan::build compares its supplied target with a current completed
+    context before rendering. Neither context construction nor consumers invent
+    a second target normalizer or configured-default resolver.
+  staged-wire-and-replay: >-
+    Staged context has a separate versioned wire containing short name, aliases,
+    source, host, execution and either unavailable or captured environment.
+    Target and formal name come from the existing record fields. Captured
+    optional strings are plaintext under the store directory and process umask;
+    redacted Debug and diagnostics exclude them. They persist until stage
+    removal. Store::load and every replay route validate recorded target text
+    against the supplied CanonicalTarget. replay, replay_with_defaults and
+    replay_with_resolution restore the record-owned context internally before
+    applying accepted submissions and live configured defaults. Replay reads no
+    current host, environment, terminal, privilege or registry approval.
+  mutable-folders-and-compatibility: >-
+    Mutable folders load current bytes on resume. An unavailable environment
+    remains five nulls when an edit introduces a need; a captured snapshot
+    supplies all five recorded values. Named and Git source resumption uses its
+    recorded content version. Context-free records and StagedRecord::new retain
+    a private legacy projection of data, answers and frozen time; the seventeen
+    names are not injected or reserved in that mode. new_with_context writes
+    current context. Each public replay route restores the record's mode without
+    requiring a caller to construct a private context or recapture values.

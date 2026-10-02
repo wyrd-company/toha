@@ -1,0 +1,62 @@
+$schema: https://refinery.systems/ontology/technical-design
+relationships:
+  realizes: toha
+  implements:
+    - interview-protocol
+    - command-line-interface
+  related-to:
+    - architecture
+    - confirm-flow
+    - error-attribution
+    - jinja-context
+objective: >-
+  Give scripts, agents and people explicit command routes while preserving
+  template identity, accepted submissions and recoverable staged interviews.
+proposed-design:
+  high-level-overview: >-
+    Command shape selects modality. The protocol module parses and verifies
+    external answers documents before answer evaluation. The CLI owns input,
+    presentation, persistence and effects; the engine owns validation and its
+    atomic transaction. Staged state has no caller-kind field and can move
+    between person and agent routes.
+  scripted-route: >-
+    apply TEMPLATE PATH --answers FILE is one shot. It constructs the canonical
+    target and refuses an existing stage before reading the document. It resolves
+    and loads the command template, starts the interview and drives the verified
+    document through the headless walk. It emits one JSON result after argument
+    parsing, with diagnostics on stderr, and never changes staged state.
+    Missing required answers produce a questions result with their rejections.
+    CLI or flow preview emits planned; writing emits applied; flow termination
+    emits ended. Source and preparation failures use the error document.
+  agent-route: >-
+    stage TEMPLATE PATH --async creates a record and emits a question batch with
+    instructions; an optional output file receives the batch. continue PATH FILE
+    reads one document, verifies the saved template identity and calls the
+    one-step answer operation once. An accepted submission is saved; a rejected
+    document leaves history unchanged. Remaining questions emit a batch and
+    instructions; completion emits apply instructions. apply PATH consumes a
+    complete stage or reports the remaining batch without prompting. Continue
+    without a stage names the stage and direct apply routes.
+  person-route: >-
+    stage TEMPLATE PATH and continue PATH prompt and save each accepted batch.
+    Completion shows a preview and apply instructions. apply TEMPLATE PATH
+    starts or resumes a matching stage, prompts as needed and applies at
+    completion. A different staged identity is refused. Only prompting routes
+    inspect stdin terminal availability; a complete stage needs no terminal.
+    Ctrl-C leaves accepted batches available through continue or named apply.
+  document-boundary: >-
+    External JSON contains exactly template and answers. The identity is a
+    non-empty string equal to the route-established formal name, copied from
+    context.template. Comparison performs no source lookup, alias resolution,
+    path normalization or case folding. The private VerifiedSubmission carries
+    parsed answers and stored raw values only after verification. Document
+    failures precede answer-derived messages, warnings and effects. In-memory
+    RawAnswers submission remains available to crate and terminal callers.
+  result-and-effect-ownership: >-
+    Protocol builders own questions, ended, applied, planned and error documents;
+    command-line-interface and interview-protocol define fields and exit codes.
+    The CLI reads a document once and owns instructions. Store supplies the saved
+    identity and accepted submissions; replay restores invocation context using
+    the same canonical target. Rejected input does not build a plan, mutate the
+    target, change a stage or run a hook. Successful staged apply removes the
+    record; preview keeps it.

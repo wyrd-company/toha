@@ -1,0 +1,58 @@
+$schema: https://refinery.systems/ontology/technical-design
+relationships:
+  realizes: toha
+  implements:
+    - command-line-interface
+    - interview-protocol
+    - snapshot
+  related-to:
+    - architecture
+    - project-updates
+    - template-defaults
+objective: >-
+  Seed a new template application from one prior snapshot while preserving
+  selected source identity, ordinary apply behavior and default provenance.
+proposed-design:
+  high-level-overview: >-
+    The generate axis is an apply pattern: the same template writes to distinct
+    project subpaths. cli::like selects a snapshot through the repository-wide
+    reader and folds its raw submissions into SnapshotSeed. Resolution layers
+    that seed over configured entries before starting the shared engine.
+  selection: >-
+    Candidates are validated snapshots whose source identity matches the
+    template source, across all target subpaths in the repository. Latest selects
+    the greatest ULID. An explicit id or prefix resolves exactly one valid
+    snapshot and verifies source equality; unknown, ambiguous, invalid or
+    wrong-source selection fails. Bare like is a person picker with newest
+    preselected and a none choice; scripts and agents name latest or a reference.
+    Without like, apply asks its ordinary questions. Like excludes from and
+    baseline; explicit selection requires a containing Git project.
+  seed-boundary: >-
+    Folding submissions keeps the last raw value per question id and preserves
+    loop arrays. Snapshot and repository types stop at this boundary. SnapshotSeed
+    carries the raw defaults and snapshot provenance. Resolution::start_with_seed
+    builds a single-occupant default bank: a kind-matching snapshot value wins
+    over the configured value for that id; wrong-kind snapshot values are dropped
+    with warnings, revealing the configured or template fallback. Entries for
+    questions the template does not define do not become defaults.
+  precedence-and-validation: >-
+    Route submissions win over snapshot defaults, then configured defaults,
+    then template defaults. Snapshot bank entries retain their source id in
+    prepared-default rejections. The engine validates and formats values under
+    the selected template. A constraint rejection prompts a person or reports a
+    remaining question to a script or agent. No seed follows the normal
+    context-bearing Resolution start path; configured entries retain their
+    mapping and preset origins in either path.
+  staged-pinning: >-
+    The optional staged seed member stores the selected snapshot id, not copied
+    answers. Resume rereads that exact snapshot and source-checks it; missing or
+    invalid pinned data fails rather than selecting another snapshot. The seed
+    remains separate from the update base. Accepted explicit submissions replay
+    over seeded defaults. Result documents expose optional seed provenance
+    without answer values.
+  apply-and-capture: >-
+    Selection writes no repository state. The ordinary plan and apply path writes
+    the new target, enforces existing conflicts and trust, and invokes the
+    snapshot producer's capture rules for the new application. Identity is the
+    selected source and target pair. The interview engine knows neither Gitoxide
+    nor snapshot repository selection.

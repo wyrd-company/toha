@@ -1,12 +1,10 @@
-# ---
-# relationships:
-#   realizes: snapshot
-# ---
-title: Toha Snapshot
+$schema: https://refinery.systems/ontology/specification
+relationships:
+  realizes: toha
 description: >-
   A snapshot is the stored output of one apply. Toha keeps it as a parentless git
   commit under a Toha-owned ref, `refs/toha/snapshots/<id>`, whose tree holds the
-  `snapshot.json` record and a `files/` subtree of the captured files. The id is
+  `snapshot.json` record and, when files are captured, a `files/` subtree. The id is
   a ULID, so snapshots sort by the instant they were taken.
 
 
@@ -21,8 +19,20 @@ description: >-
 
 
   What is captured. A snapshot captures every path the plan targets, whether or
-  not its bytes changed, and every file a hook changed under the target. It does
-  not capture an untracked file git ignores, a gitlink or a path inside a
+  not its bytes changed, and every file a hook changed under the target. Updates
+  carry hook-owned content forward unless the plan takes ownership or changes
+  it. Uncovered region and JSON-value ownership is retracted before applying
+  replacement intent. A retraction that removes the last owned identity still
+  captures the retracted image with origin `edit` and empty ownership lists, so
+  the retraction participates in the merge. A path whose base snapshot already
+  records `edit` with empty ownership lists is released to the operator and
+  excluded from both merge base and candidate trees. Whole
+  ownership covers every bounded ownership identity of that path; region
+  ownership covers its matching key, and JSON ownership covers values at or
+  below its path. An edit-owned file is never deleted by update.
+
+
+  Capture exclusions. A snapshot does not capture an untracked file git ignores, a gitlink or a path inside a
   submodule, or a path outside the target. Content is stored in its git form,
   with git's built-in conversions only and no filter driver, and symbolic links
   are stored as links.
@@ -30,9 +40,16 @@ description: >-
 
   Validation. Reading a snapshot refuses a malformed or forged record before any
   render: the commit must be parentless, its tree must hold exactly
-  `snapshot.json` and `files/`, the `files/` paths must equal the record's
+  `snapshot.json` and the `files/` subtree when captured files exist. The `files/`
+  paths must equal the record's
   captured paths, the source must be the template without its reference, and the
   format version must be one Toha supports.
+
+
+  Preview. CLI dry-run and interview flow dry-run compute the candidate and merge
+  in memory without running hooks, writing the target or index, publishing a
+  snapshot ref, or removing staged state. Hook output is carried forward and
+  marked as not previewed.
 
 
   Frozen instant. A snapshot records the instant its render used. An update
