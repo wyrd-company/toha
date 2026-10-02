@@ -166,7 +166,10 @@ impl Scenario {
         // drives the `hooks-untrusted` fixture, so its formal names it.
         std::fs::write(
             &path,
-            support::envelope_text(&hooks_template(), &serde_json::json!({})),
+            support::envelope_text(
+                &support::formal_name(Path::new("tests/fixtures/hooks-untrusted/template")),
+                &serde_json::json!({}),
+            ),
         )
         .unwrap();
         path.to_str().unwrap().to_string()
