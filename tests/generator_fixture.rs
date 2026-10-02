@@ -151,7 +151,9 @@ fn copy_dir(source: &Path, target: &Path) {
         if entry.file_type().unwrap().is_dir() {
             copy_dir(&from, &to);
         } else {
-            std::fs::copy(&from, &to).unwrap();
+            std::fs::copy(&from, &to).unwrap_or_else(|error| {
+                panic!("copy {} to {}: {error}", from.display(), to.display())
+            });
         }
     }
 }

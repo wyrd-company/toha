@@ -192,7 +192,7 @@ fn file_rule_faults_retain_support_path_field_expression_and_engine_text() {
 #[test]
 fn ordinary_path_fault_names_exact_segment_and_content_fault_stays_unchanged() {
     let folder = tempfile::tempdir().unwrap();
-    let segment = "{{ label | dateformat }}";
+    let segment = "{{ label + [] }}";
     let source = folder
         .path()
         .join("template")
@@ -214,7 +214,9 @@ fn ordinary_path_fault_names_exact_segment_and_content_fault_stays_unchanged() {
         "{error}"
     );
     assert!(
-        error.contains("invalid operation: expected four digit year"),
+        error.contains(
+            "invalid operation: tried to use + operator on unsupported types string and sequence"
+        ),
         "{error}"
     );
 
