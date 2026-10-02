@@ -194,7 +194,7 @@ fn b04_a_bare_map_fails_with_wrapper_guidance_and_never_answers() {
     assert_eq!(document["kind"], "identity");
     let message = document["message"].as_str().unwrap();
     assert!(
-        message.contains("template") && message.contains(&formal),
+        message.contains("template") && message.contains(&serde_json::to_string(&formal).unwrap()),
         "{message}"
     );
 }

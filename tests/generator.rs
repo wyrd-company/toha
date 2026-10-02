@@ -1017,7 +1017,14 @@ fn a_like_apply_plans_exactly_one_target() {
     assert_eq!(files[0]["path"].as_str(), Some("mod.txt"));
     assert_eq!(
         doc["context"]["target"].as_str(),
-        Some(s.project.join("feature/beta").to_str().unwrap())
+        Some(
+            s.project
+                .join("feature/beta")
+                .canonicalize()
+                .unwrap()
+                .to_str()
+                .unwrap()
+        )
     );
 }
 
