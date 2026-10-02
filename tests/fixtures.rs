@@ -174,7 +174,12 @@ fn file_rule_faults_retain_support_path_field_expression_and_engine_text() {
     assert!(
         error.starts_with(&format!(
             "{}: template error in files[0].path `{{{{ item | dateformat }}}}.txt`: ",
-            folder.path().join("part.txt").display()
+            folder
+                .path()
+                .join("part.txt")
+                .canonicalize()
+                .unwrap()
+                .display()
         )),
         "{error}"
     );
@@ -204,7 +209,7 @@ fn ordinary_path_fault_names_exact_segment_and_content_fault_stays_unchanged() {
     assert!(
         error.starts_with(&format!(
             "{}: template error in path `{segment}`: ",
-            source.display()
+            source.canonicalize().unwrap().display()
         )),
         "{error}"
     );
@@ -220,7 +225,10 @@ fn ordinary_path_fault_names_exact_segment_and_content_fault_stays_unchanged() {
     fs::write(content_folder.path().join("template.yml"), "name: sample\n").unwrap();
     let error = planning_error(content_folder.path());
     assert!(
-        error.starts_with(&format!("{}: invalid operation", content.display())),
+        error.starts_with(&format!(
+            "{}: invalid operation",
+            content.canonicalize().unwrap().display()
+        )),
         "{error}"
     );
     assert!(!error.contains("template error in path"), "{error}");
