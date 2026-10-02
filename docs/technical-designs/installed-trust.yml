@@ -1,0 +1,44 @@
+$schema: https://refinery.systems/ontology/technical-design
+relationships:
+  realizes: toha
+  implements:
+    - command-line-interface
+    - template-registry
+  related-to:
+    - architecture
+    - hook-review-trust
+objective: >-
+  Grant or revoke approval of installed user-registry templates without
+  refetching sources or changing installed identity.
+proposed-design:
+  high-level-overview: >-
+    templates trust and templates untrust resolve an installed user entry by
+    formal, short or alias name. RegistryFile::set_approval supplies one immutable
+    approval mutation, and the command adapter atomically writes the user layer.
+    The review module supplies surface construction and effective trust.
+  grant: >-
+    Trust loads the installed folder and constructs its current HookSurface.
+    evaluate_trust determines idempotency. Matching approval reports already
+    trusted without writing. Otherwise the command stores the current digest,
+    reports trusted and prints the approved surface on stderr. Missing,
+    unreadable or escaping surface files fail before the registry write. The
+    command grants the installed content and neither fetches nor executes it.
+  revoke: >-
+    Untrust clears approval and marks sparse field presence so serialization
+    omits the key rather than writing null. It reads no template or executable
+    surface, so revocation remains possible with a missing installed folder.
+    An absent approval reports already untrusted without writing.
+  registry-boundary: >-
+    set_approval requires an existing formal entry and touches only approval.
+    Source, reference, commit, path and aliases remain intact. Command resolution
+    confines writes to the user registry; system-only, local-only, discovered or
+    unknown selections receive installation guidance. Ambiguous template names
+    use the existing ambiguity result and retry guidance. A missing operand is
+    an argument-parsing error. Grant and revoke use the existing atomic registry
+    persistence path.
+  presentation-and-integration: >-
+    Apply refusal and preview guidance name templates trust as the installed
+    approval route. Template listing reports effective trust from a freshly read
+    surface. Changed executable content requires a grant of the current digest;
+    documentation-only changes retain effective approval. The commands add no
+    review UI or approval state to the interview engine.

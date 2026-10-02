@@ -1,5 +1,5 @@
 //! Opt-in Jinja hook results (task 1063): the named behaviours, load errors, and
-//! JSON mode of `docs/technical-designs/second-release/hook-results/`.
+//! JSON mode of `docs/technical-designs/hook-results.yml`.
 //!
 //! Templates are built in a tempdir and driven end to end — load, interview,
 //! plan, apply — with a scripted runner that returns configured exit codes and

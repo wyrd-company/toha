@@ -39,8 +39,8 @@ description: >-
   surface — question, computed, message, hook, file path, and file body — with a
   fixed type; an unavailable value is `none`, never undefined. The five
   `toha_env_` values are read from the environment only under stage or apply
-  trust; without trust they are `none`. A staged interview created before these
-  variables existed injects none of them. Toha registers the case filters
+  trust; without trust they are `none`. A staged record with no invocation-context member
+  injects none of them. Toha registers the case filters
   `kebab`, `snake`, `camel`, `pascal`, `constant`, and `title`, the `toyaml`
   filter, and the date function `now()` with the `dateformat` filter, in
   addition to the minijinja built-ins, the `tojson` filter, macros
@@ -56,7 +56,8 @@ description: >-
   `from ... import`, and `extends` are not available.
 
   File-body includes. In a rendered file body — a source-subdirectory file or a
-  `files:` rule source — `{% include %}` pulls in another file inside the
+  `files:` rule source or an injection `source` body — `{% include %}` pulls
+  in another file inside the
   template root, resolved when the template loads and inlined as raw text. The
   target is a string literal or an ordered literal list of string literals; a
   computed target, or a list with a computed or non-string item, is rejected. A
@@ -191,7 +192,7 @@ description: >-
 
   A `region` rule whose target ends in `.json`, `.jsonc`, or `.json5` is a
   planning error that directs the author to `struct` or an existing whole-file
-  `files` rule; whole-file JSON generation is unchanged. A whole-file rule and
+  `files` rule; whole-file JSON generation uses source files and `files` rules. A whole-file rule and
   injection may both change one target: the whole-file bytes are the starting
   image and the edits fold over them into one committed replacement. An injected
   value or region reads no hook result: injection renders at plan time, before
@@ -228,7 +229,7 @@ description: >-
   and Toha never prints a captured stream. A read stream that is not captured, a
   captured stream that is never read, a read before its producer runs, a read of
   its own result, and a read on a disallowed surface are load errors. The
-  default failure behaviour is unchanged: a nonzero exit or any signal stops the
+  default failure behaviour is: a nonzero exit or any signal stops the
   remaining hooks and fails the apply. `allow-failure: true`, which requires an
   `id` whose result is read, tolerates a nonzero exit code only; a signal stays
   fatal. A captured stream is decoded as strict UTF-8; invalid UTF-8 fails the
@@ -264,7 +265,7 @@ description: >-
   apply, composing with `apply --dry-run`; `{ skip: rest }` skips every
   remaining question, and `{ skip: group }` skips the rest of the enclosing
   group. A skipped question takes the same answer it takes under a false
-  `when`. The `confirm` question type is unchanged; a flow node reads answers
+  `when`. A `confirm` question records a boolean answer; a flow node reads answers
   only through `when`.
 format: json-schema
 validation-criteria: >-

@@ -56,7 +56,7 @@ description: >-
   for other templates and unreferenced presets are not validated. Live
   configuration is resolved again when a staged interview resumes.
 
-  The former `defaults` property is refused with conversion guidance. Each value
+  The `defaults` property is refused with conversion guidance. Each value
   must be given a preset name or written as a literal under an explicit
   `template-defaults` mapping, because a global question id does not identify a
   template.

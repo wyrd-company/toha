@@ -4,9 +4,9 @@
 //   implements: command-line-interface
 // ---
 //! The 27 behaviors of the caller-route and identity-bearing-answers design
-//! (docs/technical-designs/second-release/headless-recovery/design.md, "Behaviors
-//! to prove"). Each behavior has one named test `bNN_...`. The compile-fail
-//! guards for behavior 25 live as doctests on `src/protocol.rs`.
+//! (docs/technical-designs/headless-recovery.yml). Each behavior has one named
+//! test `bNN_...`. The compile-fail guards for behavior 25 live as doctests on
+//! `src/protocol.rs`.
 #[allow(dead_code)]
 mod support;
 

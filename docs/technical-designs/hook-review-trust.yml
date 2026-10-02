@@ -1,0 +1,47 @@
+$schema: https://refinery.systems/ontology/technical-design
+relationships:
+  realizes: toha
+  implements:
+    - template-registry
+    - command-line-interface
+  related-to:
+    - architecture
+    - installed-trust
+    - hook-results
+objective: >-
+  Derive effective hook trust from the executable content actually approved,
+  using one content comparison shared by command adapters.
+proposed-design:
+  high-level-overview: >-
+    review::HookSurface collects declared hook nodes and executed in-tree files
+    in stable order. Its digest is a ReviewDigest stored as registry approval.
+    evaluate_trust is the sole producer of trust from stored approval and the
+    live digest. Apply receives the resulting trust boolean through its existing
+    gate; the interview engine has no trust or review responsibility.
+  executable-surface: >-
+    Surface order is interview hook order followed by the top-level list. Each
+    HookView retains its origin, canonical sorted-key encoding of the complete
+    parsed post-YAML-include and pre-render node, and template-relative file
+    digests. Declared script files and literal in-tree run/args tokens contribute
+    their bytes. Jinja-dependent tokens are covered by the authored node rather
+    than inferred runtime file lookup. Missing, unreadable or escaping declared
+    files prevent review. The digest is answer-independent and includes dormant
+    conditional hooks. Generated files, questions, messages and unrelated docs
+    do not participate.
+  approval-and-evaluation: >-
+    ReviewDigest parses the prefix `sha256:` followed by 64 lowercase hex digits. Registry
+    approval is optional; trusted requires equality with the current surface.
+    Missing or mismatched approval requires review. The digest binds content
+    rather than a name, branch or commit. Updates retain the stored approval,
+    while a changed surface makes it ineffective until reapproved. Source
+    resolution, listing and apply use the same evaluator; an unreadable installed
+    surface is presented as untrusted. Explicit apply trust remains a caller
+    grant. Local registry entries cannot carry approval.
+  persistence-and-growth: >-
+    Registry sparse round-trip and layer merging carry approval with its field
+    presence. Re-add can retain existing approval, whose effect is still governed
+    by the live equality check. Apply does not write approval. Hashing the whole
+    parsed node includes opt-in hook result fields automatically. A schema-driven
+    coverage guard classifies executable-reference keys and node-only keys so a
+    schema extension cannot omit an executable file from review. HookSurfaceDiff
+    matches origins for review presentation; it does not determine trust.

@@ -7,6 +7,21 @@ relationships:
     - config
     - template-registry
     - command-line-interface
+    - snapshot
+  related-to:
+    - bundled-demo
+    - template-defaults
+    - error-attribution
+    - confirm-flow
+    - headless-recovery
+    - jinja-context
+    - jinja-includes
+    - hook-results
+    - content-injection
+    - project-updates
+    - in-project-generators
+    - hook-review-trust
+    - installed-trust
 objective: >-
   Structure the toha crate and binary so that one pure interview engine serves
   the terminal, the JSON interview protocol, headless answers files, and crate
@@ -73,7 +88,7 @@ proposed-design:
     interview engine from a base snapshot's recorded answers, is crate-private;
     the command driver reaches it through the `drive_update`/`drive_update_resume`
     seam, which returns the adapter's typed outcome over already-public interview
-    types. `StagedRecord` gains optional `base` and `reanswer` members for a
+    types. `StagedRecord` carries optional `base` and `reanswer` members for a
     staged update. No gitoxide type appears in a public signature.
 
   template-module: >-
@@ -100,7 +115,7 @@ proposed-design:
     Typed<Vec<String>>, default: Option<Typed<Vec<String>>> }`.
     A loop exists only on text, and options exist only on the two select
     kinds, because no other variant has the field. Nodes are the sum type
-    `Node::{Question, Computed, Group, Message}`, each with an optional
+    `Node::{Question, Computed, Group, Message, Hook, Flow}`, each with an optional
     `when`. File generation rules, the ignore and static glob sets, the
     top-level hooks, and the two apply messages complete the `Template`.
 
@@ -123,8 +138,9 @@ proposed-design:
     The engine is a state machine whose states are values:
     `Interview::start(template: &Template, seed: Seed) -> Result<Interview,
     EvalError>` and
-    `enum Interview { Asking(Pending), Complete(Completed) }`. `Seed` holds
-    ordinary flat defaults and the frozen instant that `now()` returns.
+    `enum Interview { Asking(Pending), Complete(Completed), Ended(Ended) }`. `Seed` holds
+    ordinary flat defaults, the frozen instant that `now()` returns and an
+    explicit invocation context.
     Configured defaults enter through an origin-bearing `Resolution`; its
     consuming start and staged-replay routes keep each winning mapping and
     preset origin beside the value until constraints pass. Converting a
@@ -171,16 +187,16 @@ proposed-design:
     seam is `Resolution::start_with_seed(template, now, context, Option<seed>) ->
     Result<(Interview, Vec<warning>), EvalError>`, a sibling of
     `start_with_context`; with `None` it is byte-for-byte `start_with_context`, so
-    the no-`--like` path is unchanged. The seam is the single place generator
+    an absent seed uses the ordinary configured start. The seam is the single place generator
     precedence is realized and the single-occupant default bank is built: it adds
     a private `DefaultBankEntry::Snapshot { raw, from }` (mirrored by
     `PreparedDefaultSource::Snapshot { from }`) that shadows a configured entry
     for an id when the snapshot value matches the question's kind, drops a
-    wrong-kind value as a warning, and leaves the public `Seed` type unchanged.
-    The `snapshot` reader gains one additive repository-wide listing,
+    wrong-kind value as a warning, without adding snapshot repository types to public `Seed`.
+    The `snapshot` reader exposes a repository-wide listing,
     `Project::snapshots_all()`, the sibling of the target-scoped
-    `Project::snapshots()`; the target-scoped listing is unchanged. The staged
-    record gains an optional pinned snapshot id, re-read from git on resume.
+    `Project::snapshots()`. The staged
+    record carries an optional pinned snapshot id, re-read from git on resume.
 
   answers: >-
     `Answer` is `Text(String)`, `Bool(bool)`, `List(Vec<String>)`, `None`, or
@@ -213,32 +229,29 @@ proposed-design:
     `answer_headless` without the envelope.
 
   staging: >-
-    A staged interview is stored as its inputs, not as engine internals: the
-    target path, the template formal name and resolved commit, whether the
-    argument resolved by name, the frozen
-    `now()` instant, and every accepted answers submission, in order. Resuming loads the
-    template at the recorded commit, recomputes registry trust only when the
-    argument resolved by name, starts a new interview with the same
-    `Seed`, and replays the raw submissions through `answer`. Because the
-    engine is pure, replay reaches the same pending batch as the original
-    process, in either modality. A template whose content changed so that
-    replay rejects a recorded answer fails with that rejection, and `abort`
-    clears it. `staging` writes records atomically through a temporary file
-    and rename, in the state directory resolved by the binary. The opaque
-    `CanonicalTarget` is created only by `canonical_target(&Path)`, has a
-    read-only `as_path()`, and crosses storage, protocol, plan, and apply.
-    Storage checks the canonical key before a validated legacy separator key;
-    a successful canonical save removes that legacy key.
+    Staged records persist invocation inputs: the canonical target text,
+    selected formal identity and content version, originating context, frozen
+    time and ordered accepted raw submissions. Optional base, reanswer and seed
+    members describe update or generator input. Store validates the target against
+    the producer-created CanonicalTarget. Replay loads the recorded named/Git
+    version or current mutable folder, restores recorded context inside the
+    record, resolves live configured defaults and submits accepted values through
+    the shared engine. Legacy context-free records retain the legacy projection.
+    Hook trust is evaluated when applying the resulting plan; replay itself reads
+    no environment or approval. Persistence uses a temporary file and rename in
+    the state directory. Canonical storage keys precede validated legacy separator
+    keys; saving the canonical key removes the legacy key.
 
   plan-and-apply: >-
     `Plan::build(template: &Template, completed: &Completed, target:
     &CanonicalTarget) ->
-    Result<Plan, PlanError>` renders every file and path and reads nothing but
-    the template folder and the target directory listing. A `Plan` holds
+    Result<Plan, PlanError>` renders retained compiled file bodies and paths and
+    reads the target directory listing. It performs no target-content mutation. A `Plan` holds
     `PlannedFile { path: TargetPath, content: Content }`, where `Content` is
     `Rendered(String)` or `Copied(PathBuf)`; the conflicts with existing
-    files; the ordered hook commands, interview hooks first; and the rendered
-    apply messages. `TargetPath` is a newtype built only by a constructor that
+    files; the ordered hook commands, interview hooks first; and ready or deferred
+    apply messages. Hook-result readers defer rendering to ordered apply.
+    `TargetPath` is a newtype built only by a constructor that
     normalizes a rendered relative path and rejects `..` escapes, absolute
     paths, and any path inside `.git`, so no later code checks for them.
     A `Plan` also holds `edits: Vec<PlannedEdit>`, the bounded content-injection
@@ -304,11 +317,9 @@ proposed-design:
     before consuming it through configured start or replay.
 
   outcomes-and-exit-codes: >-
-    Each command returns a domain outcome, and one exhaustive match in the
-    binary maps outcomes and errors to the exit codes in the command-line
+    Command adapters map domain outcomes and errors to the exit codes in the command-line
     specification: success 0, errors 1, usage 2, `NeedsTrust` 3, a pending
-    batch 4, and `ResolveError::Ambiguous` 5. Adding a variant fails
-    compilation until it has an exit code.
+    batch 4, and `ResolveError::Ambiguous` 5.
 
   schemas-as-source: >-
     The JSON Schemas in `docs/specifications/` are embedded with
