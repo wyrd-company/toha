@@ -625,13 +625,15 @@ hooks:
     let Planned::Ready(hook) = &plan.hooks[0] else {
         panic!("a result-free hook is ready")
     };
+    let mut hook = hook.clone();
+    // Field-like text inside a path is data, not an added debug field.
+    hook.template_root = hook.template_root.join("identity-template");
     let debug = format!("{hook:?}");
-    // The new fields print only when non-default, so an id-less hook shows none.
-    assert!(!debug.contains("id"), "{debug}");
-    assert!(!debug.contains("capture"), "{debug}");
-    assert!(!debug.contains("allow_failure"), "{debug}");
-    assert!(!debug.contains("parse_json"), "{debug}");
-    assert!(!debug.contains("status_id"), "{debug}");
+    let expected = format!(
+        "PlannedHook {{ program: Run([\"tool\", \"arg\"]), cwd: None, template_root: {:?} }}",
+        hook.template_root,
+    );
+    assert_eq!(debug, expected);
 }
 
 // ---------------------------------------------------------------------------
