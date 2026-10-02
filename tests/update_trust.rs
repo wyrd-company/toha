@@ -197,4 +197,41 @@ fn an_unapproved_template_update_plans_without_running_hooks() {
     assert_eq!(document["status"], "planned", "{document}");
     assert_eq!(document["trusted"], false, "{document}");
     assert!(!target.path().join("ran.txt").exists());
+    // A complete person update needs no prompt and reports trust in prose.
+    fs::write(
+        template_dir.path().join("template.yml"),
+        "name: trustdemo\nhooks:\n  - run: [ touch, ran.txt ]\n",
+    )
+    .unwrap();
+    fs::write(
+        template_dir.path().join("template/greeting.txt"),
+        "Sample greeting\n",
+    )
+    .unwrap();
+    let index = fs::read(target.path().join(".git/index")).unwrap();
+    let output = toha(
+        &root,
+        &[
+            "apply",
+            &address,
+            target.path().to_str().unwrap(),
+            "--baseline",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(0));
+    let text = String::from_utf8(output.stdout.clone()).unwrap();
+    for expected in [
+        "Template: ",
+        "Target: ",
+        "Preview only; no changes written.",
+        "Hooks need trust; rerun with --trust after reviewing them.",
+        "No snapshot saved: preview.",
+    ] {
+        assert!(text.contains(expected), "missing {expected}: {text}");
+    }
+    assert!(!text.contains("\"protocol\""), "{text}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert_eq!(fs::read(target.path().join(".git/index")).unwrap(), index);
+    assert!(!target.path().join("greeting.txt").exists());
+    assert!(!target.path().join("ran.txt").exists());
 }

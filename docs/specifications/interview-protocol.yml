@@ -29,7 +29,7 @@ description: >-
   standard error still carries any configuration diagnostics and an uncaptured
   hook's stream:
   `questions` (exit 4), `ended` (exit 0), `applied` (exit 0), `planned` (exit 0,
-  or exit 3 when hooks are untrusted), or `error` (exit 1, or exit 5 for an
+  or exit 3 when hooks are untrusted on a plain apply; updates preview at exit 0), or `error` (exit 1, or exit 5 for an
   ambiguous template). An `applied` document lists each written path with its
   action, the messages, and the hooks that ran; a `planned` document lists each
   planned path with its action, the messages, the planned hooks, and whether
@@ -225,8 +225,8 @@ description: >-
   `merge` member — each changed path with its action (`added`, `updated`,
   `merged`, `deleted`, `conflicted`, `not-previewed`), the kind of any conflict,
   and the paths left conflicted — and, when it saved one, a `snapshot` member
-  naming the id. A re-render equal to the base reports an `already-current`
-  document and writes nothing. An untrusted update reports `planned` with
+  naming the id. A scripted re-render equal to the base reports an `already-current`
+  document and writes nothing. An untrusted scripted update reports `planned` with
   `trusted: false` and writes nothing, as a dry run does.
 
   Person and completed staged-agent updates print the human-readable completion

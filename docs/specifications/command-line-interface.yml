@@ -73,7 +73,8 @@ description: >-
   changes any hook or script no longer matches and the template is untrusted
   until it is approved again. Templates from a local templates path and
   templates given by address or folder to `stage` or `apply` are trusted only
-  through `--trust`. When the template has hooks and is not trusted, `apply`
+  through `--trust`. The following reporting rules cover plain applications
+  without `--from` or `--baseline`. When the template has hooks and is not trusted, `apply`
   exits with code 3. On the person and agent routes it performs a dry run,
   lists the hooks, states that `--trust` is required, and names the same
   command with `--trust`; when an approval exists but no longer matches, the
@@ -100,6 +101,11 @@ description: >-
   at exit 0; and a trusted template is `trusted: true` at exit 0. On the person
   and agent routes, the dry run of a trusted template, or of a template without
   hooks, names neither.
+  Untrusted project updates preview without writing and exit with code 0. The
+  person and completed staged-agent routes show completion prose and hook-trust
+  guidance on standard output; the scripted route emits its `planned` JSON
+  document with `trusted: false`.
+
   `templates trust <name>` approves the current
   executable surface of an installed template, reading the installed folder
   only and never fetching or changing the commit, and echoes the approved hooks

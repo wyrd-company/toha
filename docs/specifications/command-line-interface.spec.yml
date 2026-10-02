@@ -304,7 +304,10 @@ commands:
             Files were written and every hook succeeded (the scripted route emits
             the `applied` document; the person and agent routes print the file
             lines), or a dry run completed (the scripted route emits the `planned`
-            document; other routes print the plan). A flow stop/abort ended the
+            document; other routes print the plan). An untrusted project update
+            previews without writing and exits 0; scripted updates emit planned
+            with trusted: false, while person and staged-agent updates print
+            completion prose and trust guidance on standard output. A flow stop/abort ended the
             run or a flow dry-run showed the plan: the scripted route emits the
             `ended` or `planned` document and other routes print a one-line notice
             on standard error; nothing is written and an abort removes the staged
@@ -330,7 +333,8 @@ commands:
             or `--like` combined with `--from` or `--baseline`.
         - code: 3
           meaning: >-
-            The template has hooks and is not trusted. The scripted route emits a
+            A plain application (without --from or --baseline) has hooks and is
+            not trusted. The scripted route emits a
             `planned` document with `trusted: false`; the person and agent routes
             print the plan and name the `--trust` command on standard error.
         - code: 4
