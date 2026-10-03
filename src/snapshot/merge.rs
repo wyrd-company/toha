@@ -322,7 +322,11 @@ fn build_candidate_reported(
             hooks, after_apply, ..
         } => {
             report.hooks = hooks;
-            report.messages.extend(after_apply);
+            // The scratch checkout is written even for a preview; only a
+            // real apply may report its after-apply message to the caller.
+            if run_hooks {
+                report.messages.extend(after_apply);
+            }
         }
         // Unreachable given the precondition above (trust established, or no
         // hooks left to trigger the refusal): refuse to capture an incomplete

@@ -738,6 +738,17 @@ fn changed_paths(text: &str) -> Vec<String> {
     paths
 }
 
+/// Preview output retains interview and before-apply messages only.
+fn assert_preview_messages(text: &str) {
+    for message in ["Interview message", "Before message"] {
+        assert_eq!(text.matches(message).count(), 1, "{text}");
+    }
+    assert!(
+        !text.contains("After message"),
+        "a preview must not show after-apply messages: {text}"
+    );
+}
+
 /// A completed staged update (`apply --from ID` staged and completed) previews
 /// under `apply PATH --dry-run`: the document reports `planned`, the hook does
 /// not run, and the target, index, refs, and staged record are byte-identical
@@ -773,7 +784,7 @@ fn apply_dry_run_on_a_completed_staged_update_previews_and_preserves_everything(
     std::fs::write(
         template_dir.path().join("template.yml"),
         format!(
-            "name: greeter\ndescription: A greeting\ninterview:\n  - id: name\n    type: text\n    prompt: Name\n    required: true\n  - id: color\n    type: text\n    prompt: Colour\n    required: true\nhooks:\n  - run: [ touch, ran.txt ]\n  - run: [ touch, {:?} ]\n",
+            "name: greeter\ndescription: A greeting\ninterview:\n  - id: name\n    type: text\n    prompt: Name\n    required: true\n  - id: color\n    type: text\n    prompt: Colour\n    required: true\n  - message: Interview message\nmessages:\n  before-apply: Before message\n  after-apply: After message\nhooks:\n  - run: [ touch, ran.txt ]\n  - run: [ touch, {:?} ]\n",
             marker
         ),
     )
@@ -822,6 +833,7 @@ fn apply_dry_run_on_a_completed_staged_update_previews_and_preserves_everything(
     assert_eq!(dry_output.status.code(), Some(0), "dry-run: {dry_output:?}");
     let text = String::from_utf8(dry_output.stdout.clone()).unwrap();
     assert!(text.contains("Preview only; no changes written."), "{text}");
+    assert_preview_messages(&text);
     // The plan is accurate: the new file the template would render is listed,
     // and no hook-written path leaks into it (the hook never ran).
     assert_eq!(
@@ -860,6 +872,9 @@ fn apply_dry_run_on_a_completed_staged_update_previews_and_preserves_everything(
     assert_eq!(applied.status.code(), Some(0), "apply: {applied:?}");
     let text = String::from_utf8(applied.stdout.clone()).unwrap();
     assert!(text.contains("Saved snapshot "), "{text}");
+    for message in ["Interview message", "Before message", "After message"] {
+        assert_eq!(text.matches(message).count(), 1, "{text}");
+    }
     assert!(!text.contains("\"protocol\""), "{text}");
     assert_eq!(
         std::fs::read_to_string(target.path().join("color.txt")).unwrap(),
@@ -1049,7 +1064,7 @@ fn flow_dry_run_on_a_completed_staged_update_previews_and_preserves_staged_state
     std::fs::write(
         template_dir.path().join("template.yml"),
         format!(
-            "name: greeter\ndescription: A greeting\ninterview:\n  - id: name\n    type: text\n    prompt: Name\n    required: true\n  - id: mode\n    type: text\n    prompt: Mode\n    required: true\n  - flow: dry-run\n    when: \"mode == 'preview'\"\nhooks:\n  - run: [ touch, ran.txt ]\n  - run: [ touch, {:?} ]\n",
+            "name: greeter\ndescription: A greeting\ninterview:\n  - id: name\n    type: text\n    prompt: Name\n    required: true\n  - id: mode\n    type: text\n    prompt: Mode\n    required: true\n  - message: Interview message\n  - flow: dry-run\n    when: \"mode == 'preview'\"\nmessages:\n  before-apply: Before message\n  after-apply: After message\nhooks:\n  - run: [ touch, ran.txt ]\n  - run: [ touch, {:?} ]\n",
             marker
         ),
     )
@@ -1093,6 +1108,7 @@ fn flow_dry_run_on_a_completed_staged_update_previews_and_preserves_staged_state
     );
     let text = String::from_utf8(preview_output.stdout.clone()).unwrap();
     assert!(text.contains("Preview only; no changes written."), "{text}");
+    assert_preview_messages(&text);
     // This update renders no new file; the plan must stay empty rather than
     // leak a hook-written path into it.
     assert_eq!(
@@ -1149,6 +1165,9 @@ fn flow_dry_run_on_a_completed_staged_update_previews_and_preserves_staged_state
     assert_eq!(applied.status.code(), Some(0), "apply: {applied:?}");
     let text = String::from_utf8(applied.stdout.clone()).unwrap();
     assert!(text.contains("Saved snapshot "), "{text}");
+    for message in ["Interview message", "Before message", "After message"] {
+        assert_eq!(text.matches(message).count(), 1, "{text}");
+    }
     assert!(!text.contains("\"protocol\""), "{text}");
     assert_eq!(
         std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
@@ -1173,4 +1192,125 @@ fn flow_dry_run_on_a_completed_staged_update_previews_and_preserves_staged_state
     again.arg("apply").arg(target.path());
     let output = again.output().unwrap();
     assert_ne!(output.status.code(), Some(0), "the record should be gone");
+}
+
+#[test]
+fn hook_free_staged_update_previews_suppress_after_apply_but_real_apply_retains_it() {
+    hook_free_update_messages(false);
+}
+
+#[test]
+fn scripted_update_previews_preserve_json_messages_and_state() {
+    hook_free_update_messages(true);
+}
+
+/// Exercise both effective dry-run sources without any hooks. Staged prose
+/// retains interview/before messages; scripted updates keep their empty JSON
+/// message array. Both routes still apply after previewing.
+fn hook_free_update_messages(scripted: bool) {
+    let iso = tempfile::tempdir().unwrap();
+    let template_dir = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    write_one_question(template_dir.path());
+    target_repo(target.path());
+    let formal = support::formal_name(template_dir.path());
+    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let snapshot = baseline(iso.path(), &address, &formal, target.path(), false);
+    std::fs::write(
+        template_dir.path().join("template.yml"),
+        "name: greeter\ninterview:\n  - id: name\n    type: text\n    prompt: Name\n    required: true\n  - id: mode\n    type: text\n    prompt: Mode\n    required: true\n  - message: Interview message\n  - flow: dry-run\n    when: \"mode == 'preview'\"\nmessages:\n  before-apply: Before message\n  after-apply: After message\n",
+    )
+    .unwrap();
+    std::fs::write(template_dir.path().join("template/color.txt"), "blue\n").unwrap();
+
+    for (mode, cli_dry_run) in [("apply", true), ("preview", false), ("apply", false)] {
+        let answers = envelope(
+            iso.path(),
+            "update.json",
+            &formal,
+            serde_json::json!({ "mode": mode }),
+        );
+        let before = capture_state(iso.path(), target.path());
+        let mut command = support::isolated_command(iso.path());
+        if scripted {
+            command
+                .arg("apply")
+                .arg(&address)
+                .arg(target.path())
+                .arg("--from")
+                .arg(&snapshot)
+                .arg("--answers")
+                .arg(&answers);
+        } else {
+            let mut stage = support::isolated_command(iso.path());
+            stage
+                .arg("stage")
+                .arg(&address)
+                .arg(target.path())
+                .arg("--from")
+                .arg(&snapshot)
+                .arg("--async");
+            let staged = stage.output().unwrap();
+            assert_eq!(staged.status.code(), Some(4), "{staged:?}");
+            let mut cont = support::isolated_command(iso.path());
+            cont.arg("continue").arg(target.path()).arg(&answers);
+            let completed = cont.output().unwrap();
+            assert_eq!(completed.status.code(), Some(0), "{completed:?}");
+            command.arg("apply").arg(target.path());
+        }
+        // Include the staged record when comparing state across a preview.
+        let before = if scripted {
+            before
+        } else {
+            capture_state(iso.path(), target.path())
+        };
+        if cli_dry_run {
+            command.arg("--dry-run");
+        }
+        let output = command.output().unwrap();
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        let preview = cli_dry_run || mode == "preview";
+        if scripted {
+            let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(
+                document["status"],
+                if preview { "planned" } else { "applied" },
+                "{document}"
+            );
+            assert_eq!(document["messages"], serde_json::json!([]), "{document}");
+        } else {
+            let text = String::from_utf8(output.stdout).unwrap();
+            if preview {
+                assert!(text.contains("Preview only; no changes written."), "{text}");
+                assert_preview_messages(&text);
+            } else {
+                assert!(text.contains("Saved snapshot "), "{text}");
+                for message in ["Interview message", "Before message", "After message"] {
+                    assert_eq!(text.matches(message).count(), 1, "{text}");
+                }
+            }
+        }
+        if preview {
+            assert_eq!(
+                before,
+                capture_state(iso.path(), target.path()),
+                "previews must preserve files, index, refs, and staged state"
+            );
+            if !scripted {
+                let mut abort = support::isolated_command(iso.path());
+                abort.arg("abort").arg(target.path());
+                assert_eq!(abort.output().unwrap().status.code(), Some(0));
+            }
+        } else {
+            assert_eq!(
+                std::fs::read_to_string(target.path().join("color.txt")).unwrap(),
+                "blue\n"
+            );
+            assert_ne!(
+                before.refs,
+                show_refs(target.path()),
+                "real apply saves a snapshot"
+            );
+        }
+    }
 }
