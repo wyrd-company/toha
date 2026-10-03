@@ -1,0 +1,3 @@
+exit: 1
+error_contains:
+  - "must be a literal string or literal list of strings"

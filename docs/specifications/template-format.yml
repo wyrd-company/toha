@@ -28,8 +28,19 @@ description: >-
   array, or object) accepts either a literal of that type or a string, and a
   string is evaluated as an expression whose result has that type. `when`,
   `computed`, and `format` values are always expressions. The evaluation
-  context holds every top-level key of `data`, every answer given so far, and
-  every computed value evaluated so far. Toha registers the case filters
+  context holds every top-level key of `data`, every answer given so far,
+  every computed value evaluated so far, and seventeen reserved `toha_`
+  variables. The reserved variables are `toha_target_name`,
+  `toha_template_name`, `toha_template_formal_name`, `toha_template_aliases`,
+  `toha_template_source`, `toha_host_os`, `toha_host_arch`, `toha_host_os_name`,
+  `toha_host_os_id`, `toha_host_os_id_like`, `toha_is_admin`,
+  `toha_is_interactive`, `toha_env_user`, `toha_env_hostname`, `toha_env_editor`,
+  `toha_env_shell`, and `toha_env_visual`. Each is present at every render
+  surface — question, computed, message, hook, file path, and file body — with a
+  fixed type; an unavailable value is `none`, never undefined. The five
+  `toha_env_` values are read from the environment only under stage or apply
+  trust; without trust they are `none`. A staged record with no invocation-context member
+  injects none of them. Toha registers the case filters
   `kebab`, `snake`, `camel`, `pascal`, `constant`, and `title`, the `toyaml`
   filter, and the date function `now()` with the `dateformat` filter, in
   addition to the minijinja built-ins, the `tojson` filter, macros
@@ -40,26 +51,58 @@ description: >-
   optional indent. `toyaml` serializes a value as YAML with no leading `---`
   and no trailing document newline, so it composes with `indent`; a trailing
   newline that is part of the value is kept. Object keys serialize
-  in sorted order. A macro is visible only in the value that defines it;
-  `import`, `include`, and `extends` are not available.
+  in sorted order. A macro is visible only in the value that defines it.
+  `{% include %}` is available in rendered file bodies only; `import`,
+  `from ... import`, and `extends` are not available.
+
+  File-body includes. In a rendered file body — a source-subdirectory file or a
+  `files:` rule source or an injection `source` body — `{% include %}` pulls
+  in another file inside the
+  template root, resolved when the template loads and inlined as raw text. The
+  target is a string literal or an ordered literal list of string literals; a
+  computed target, or a list with a computed or non-string item, is rejected. A
+  list selects the first candidate that exists in author order; if none exists
+  the include fails unless `ignore missing` is present, which renders empty, as
+  does an empty list. `ignore missing` suppresses only the all-not-found result.
+  The include name is a `/`-separated path relative to the template root, with
+  no required prefix or extension: it may name a root-level file, a nested file,
+  or any extension. Resolution mirrors the `!include` and file-path confinement
+  — absolute names, `..`, backslash separators, and any symlinked component are
+  refused, and the canonicalized target must be a regular file inside the root —
+  and a cycle is reported by name. A partial shares the including file's
+  variables and, when it lies outside the source subdirectory, is not emitted.
+  Includes are available in file bodies only: on every other surface a
+  `{% include %}` is reported as unavailable outside file bodies. Its
+  diagnostics are distinct from the YAML `!include` tag's. `template.yml` and
+  every document loaded through its YAML `!include` tag are configuration parsed
+  as data, never a Jinja render surface, so they receive no include processing;
+  a file's role follows how it is referenced, not its extension.
 
   Identifiers. Question ids, computed ids, and top-level `data` keys are Jinja
   identifiers matching `^[a-z_][a-z0-9_]*$`. They share one namespace; a
   duplicate is a load error. The `<name>` bound by an `each` is a load error
   when it equals any id in that namespace, wherever the id is defined; two
   `each` entries may bind the same `<name>`. Answers are one flat object keyed
-  by id.
+  by id. The seventeen reserved `toha_` variable names are also reserved in this
+  namespace: a `data` key, question id, computed id, or `each` binding that
+  equals one is a load error naming every colliding location. Other `toha_`
+  names remain available.
 
   Interview. `interview` is an ordered list of nodes. Every node has an
   optional `when` expression; a node whose `when` is false is skipped, with all
   of its children. A node kind is identified by its key: a question has `id`
   and `type`; a computed value has `id` and `computed`; a group has `group` and
-  `nodes`; a hook has `hook`; a message has `message`. Each expression and
+  `nodes`; a hook has `hook`; a message has `message`; a flow node has `flow`. Each
+  expression and
   template in a node references only ids defined by earlier nodes in document
   order, so the interview is acyclic; toha rejects a template that references
   a later or unknown id. A skipped question takes its `default` as its answer
   when it has one; otherwise a looped `text` or a `multiselect` question takes
-  `[]`, and any other question takes `none`.
+  `[]`, and any other question takes `none`. A template-authored default must
+  satisfy the question constraints. A failing default is a template error,
+  not an answer rejection. A skipped question checks the default against each
+  constraint whose inputs are available without rendering its presentation
+  fields or forcing an unavailable dynamic constraint.
 
   Questions. `type` is one of `text`, `multiline`, `confirm`, `select`, and
   `multiselect`. `prompt` is required. `description` and `placeholder` are
@@ -91,7 +134,69 @@ description: >-
   `source` once for each item of the `each` expression. `each` has the form
   `<expression> as <name>`; the item is bound to `<name>` while `source` and
   `path` are rendered. `path` is relative to the target directory. An entry
-  with a `when` that is false generates nothing.
+  with a `when` that is false generates nothing. A render fault names the
+  authored field and value: `files[i].when`, `files[i].each`, or
+  `files[i].path`. A fault in an ordinary source path names field `path` and
+  the exact failing segment. Each fault also names the support or source file;
+  a source-content fault keeps its source-file diagnostic.
+
+  Injection. `inject` is a list of rules that each change one bounded part of an
+  existing target file, rather than replacing the whole file as `files` and the
+  source subdirectory do. Every rule names its target with `into`, a template
+  relative to the target directory, and carries an optional `when`; a rule whose
+  `when` is false injects nothing. A rule that does not create its target fails
+  when the target is missing unless `create: true` is set. Injection is resolved
+  fully in memory before the first write, so a plan, parse, path, or unforced
+  drift failure writes nothing; each changed target is then replaced atomically
+  and reported once. A rule is one of two kinds.
+
+  A `region` rule owns a visible block in a non-JSON text file, marked by a begin
+  and end comment and a checksum. `region` names the block with a key of
+  lowercase letters, digits, `_`, and `-`, unique per target. Its body is an
+  inline `content` template or the rendered body of a `source` support file
+  relative to the template root; exactly one is given. The comment style is
+  inferred from the target extension, or set by `marker` — a string line-comment
+  prefix, or an object `{ open, close }` for a block comment. An extension with
+  no inferred style and no `marker` is a planning error. On the first apply Toha
+  places the block at `anchor`: `after` is a template naming the line to place
+  the block after, and `occurrence` is `only` (the default, which rejects more
+  than one matching line), `first`, or `last`; with no anchor the block is
+  appended at end of file. Later applies find the markers, not the anchor. The
+  checksum records the body Toha last wrote: a matching body whose template body
+  is unchanged is a byte no-op; a changed template body replaces only the block;
+  an operator edit inside the owned bytes is drift, which `apply` refuses and
+  reports as `<path> (<region>)` unless `--force` is given, in which case
+  `--force` replaces only that block and never invents a missing anchor.
+
+  A `struct` rule owns one typed value at a path in a JSON, JSONC, or JSON5 file,
+  selected by the `.json`, `.jsonc`, or `.json5` extension. `struct.path` is
+  dot-separated object keys and bracketed array indexes, such as `routes[0].name`;
+  a backslash escapes `.`, `[`, `]`, and `\` in a key, and the path begins with a
+  key. `struct.value` is a JSON-compatible value whose string leaves are
+  templates and whose other JSON types are kept; a rendered string stays a JSON
+  string. Toha owns the value at the path: a matching value is a byte no-op, and
+  an operator change to the owned value converges to the template value on the
+  next apply without `--force`. All unrelated keys and source text — comments,
+  key order, whitespace, quote style, and trailing commas in JSONC and JSON5 —
+  are preserved; Toha adds no marker or provenance comment to a JSON-family file.
+  Missing object parents in the path are created; an array in the path must
+  already exist and each index must be in range, and a scalar where the path
+  needs an object or array is an error. A `.json` target is strict JSON: a
+  comment, a trailing comma, a single-quoted string, or any other relaxation is
+  rejected and nothing is written. `Jsonc` additionally accepts comments and
+  trailing commas, and `Json5` is a permissive JSON5-compatible superset; both
+  keep the comments and formatting already in the file. New object values
+  serialize with sorted keys. Two `struct` rules on one target whose paths are
+  equal or are an ancestor and descendant, and two `region` rules with the same
+  key, are planning errors.
+
+  A `region` rule whose target ends in `.json`, `.jsonc`, or `.json5` is a
+  planning error that directs the author to `struct` or an existing whole-file
+  `files` rule; whole-file JSON generation uses source files and `files` rules. A whole-file rule and
+  injection may both change one target: the whole-file bytes are the starting
+  image and the edits fold over them into one committed replacement. An injected
+  value or region reads no hook result: injection renders at plan time, before
+  hooks run, so a hook-result reference in an `inject` field is a load error.
 
   Hooks. A hook runs a command after all files are written, with the target
   directory as its working directory unless `cwd` names a path relative to it.
@@ -110,11 +215,58 @@ description: >-
   hooks, including `--dry-run` output and the listing shown when hooks need
   trust, shows each invocation with its rendered arguments.
 
+  Hook results. A hook opts in to a readable result with `id`. A later
+  top-level hook reads it in `when`, in `run[1..]` or `args`, or in `cwd`, and
+  `messages.after-apply` reads it too; no other surface may — not a file, a path
+  segment, `before-apply`, an interview field, an interview hook, `run[0]`, the
+  script path, or `each`. An interview hook may produce a result but never reads
+  one. A result is the object `{exit_code, stdout, stderr}`, read as
+  `<id>.exit_code`/`.stdout`/`.stderr`. A producer that did not run — a false
+  `when`, a skipped position — binds all three to `none`, so `<id>.exit_code is
+  none` means the hook did not run; a read is always bound, never undefined. A
+  stream is readable only when the producer declares it in `capture`, the list
+  of `stdout`/`stderr` piped to Toha; an uncaptured stream inherits the terminal,
+  and Toha never prints a captured stream. A read stream that is not captured, a
+  captured stream that is never read, a read before its producer runs, a read of
+  its own result, and a read on a disallowed surface are load errors. The
+  default failure behaviour is: a nonzero exit or any signal stops the
+  remaining hooks and fails the apply. `allow-failure: true`, which requires an
+  `id` whose result is read, tolerates a nonzero exit code only; a signal stays
+  fatal. A captured stream is decoded as strict UTF-8; invalid UTF-8 fails the
+  apply with a byte-free error. A result exists for one apply only and is never
+  written to a file, shown in output, or persisted.
+
+  JSON hook results. A producer with `parse: json`, which requires `id` and
+  `capture: [stdout]`, parses its stdout so the parsed value is read directly at
+  `<id>`: an object as `<id>.key` or `<id>['a-key']`, an array as `<id>[i]`, a
+  scalar as itself, and JSON `null` as `none`. A parsed string is data, never a
+  template. Execution metadata moves to an author-declared `status-id`, bound to
+  `{exit_code, stdout, stderr, parsed}`, where `parsed` is true when stdout
+  parsed this run. `status-id` is required when the producer may not run or has
+  `allow-failure`, so a `none` `<id>` is never ambiguous. On exit 0, empty or
+  malformed stdout fails the apply with a byte-free error; a tolerated nonzero
+  exit whose stdout does not parse leaves `<id>` `none`, `<status-id>.parsed`
+  false, and the raw text in `<status-id>.stdout`.
+
   Messages. A message node shows its rendered text when the interview reaches
   it. The top-level `messages` map has two optional keys, each a template:
   `before-apply` is shown before any file is written, and `after-apply` is
   shown after the last hook. A dry run does not show `after-apply`. A message
   that renders to an empty or whitespace-only string is not shown.
+
+  Flow control. A flow node carries one control action in `flow`, an optional
+  `when`, and an optional `label`. It has no `id` and records no answer. When
+  its position is reached and its `when` is true, or it has no `when`, its
+  action fires; under an ancestor `when` that is false it is inert, like any
+  skipped node. The action is one of `stop`, `abort`, `dry-run`,
+  `{ skip: rest }`, or `{ skip: group }`. `stop` ends the interview where it
+  fires, writing no files and running no hooks; `abort` also removes the
+  target's staged record; `dry-run` completes the interview but suppresses the
+  apply, composing with `apply --dry-run`; `{ skip: rest }` skips every
+  remaining question, and `{ skip: group }` skips the rest of the enclosing
+  group. A skipped question takes the same answer it takes under a false
+  `when`. A `confirm` question records a boolean answer; a flow node reads answers
+  only through `when`.
 format: json-schema
 validation-criteria: >-
   A conforming `template.yml` validates against
@@ -123,8 +275,17 @@ validation-criteria: >-
   duplicate identifier, an `each` name equal to an identifier, an expression or template that references an id not
   defined earlier in interview order, a `loop` on a question whose type is not
   `text`, `options` on a question whose type is not `select` or `multiselect`,
-  an `!include` or `script` path outside the template root, and a `source`
-  path that does not exist. Rendering fails when a rendered target path leaves
-  the target directory or enters the target's `.git` directory. Every example
+  a `flow` value that is not `stop`, `abort`, `dry-run`, or
+  `{ skip: rest | group }`, a `{ skip: group }` on a flow node outside any
+  group, a `flow` combined with another node key,
+  an `!include` or `script` path outside the template root, a `source`
+  path that does not exist, an invalid `struct.path`, an `inject` field that
+  reads a hook result, and a `region` or `struct` rule whose target does not
+  match its family. Planning additionally rejects a `region` rule targeting a
+  JSON-family file, a `struct` rule targeting a non-JSON-family file, a marker
+  style that cannot be inferred without an override, a duplicate region key, and
+  two `struct` paths on one target that are equal or overlap. Rendering fails
+  when a rendered target path leaves the target directory or enters the target's
+  `.git` directory. Every example
   in `docs/examples/` loads without error, and the fixture suite renders each
   fixture template with its answers file to the expected output tree.

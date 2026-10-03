@@ -30,6 +30,12 @@ Toha generates files from reusable templates and lets people, scripts, and agent
 - **Alias:** A user-chosen template name.
 - **Trust:** Permission to run template hooks.
 - **Plan:** The files and conflicts computed before writing.
+- **Snapshot:** The stored output of one apply, kept as a parentless git commit under a Toha-owned ref (`refs/toha/snapshots/<id>`), holding the rendered files and the answers that produced them.
+- **Base snapshot:** The snapshot an update merges from, three-way, to carry a template's changes into a project while the operator's edits survive.
+- **Baseline:** An apply that adopts an existing project against an empty base, recording the first snapshot without a prior one.
+- **Generator:** An apply pattern that writes one template repeatedly into project subpaths, each application carrying its own answers and identity `(source, target)`; not a `template.yml` object.
+- **Seed selector:** The `--like` value that names a snapshot whose recorded answers pre-fill a new application's defaults — `latest`, a snapshot id or prefix, or a person-route picker.
+- **Snapshot-seeded default:** A default that enters the interview engine as a `Snapshot` bank entry, folded from a selected snapshot's submissions; a route answer still overrides it and a wrong-kind value is dropped.
 
 ## Thar be dragons
 

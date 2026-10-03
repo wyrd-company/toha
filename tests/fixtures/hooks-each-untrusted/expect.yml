@@ -1,6 +1,4 @@
 exit: 3
-error_contains:
-- hooks will not run without --trust
 stdout_contains:
 - |-
   create file.txt

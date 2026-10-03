@@ -3,8 +3,10 @@
 //   implements: architecture
 // ---
 use crate::{
-    jinja::{Expr, Typed, context_from_answers, is_global},
-    template::{Id, Node, Question, QuestionKind, Template},
+    config::{ConfigEntry, DefaultSource, PresetName},
+    context::InvocationContext,
+    jinja::{Expr, Typed, context_from_answers, is_global, is_reserved},
+    template::{FlowAction, Id, Node, Question, QuestionKind, SkipScope, Template},
 };
 use indexmap::IndexMap;
 use serde_json::Value;
@@ -37,18 +39,101 @@ pub type RawAnswers = IndexMap<Id, RawAnswer>;
 pub struct Seed {
     pub now: jiff::Zoned,
     pub defaults: IndexMap<Id, RawAnswer>,
+    pub context: InvocationContext,
+}
+#[derive(Debug, Clone)]
+struct InterviewSeed {
+    now: jiff::Zoned,
+    defaults: IndexMap<Id, DefaultBankEntry>,
+    /// The invocation context, or `None` for the pre-context legacy projection
+    /// route used by [`Resolution::start`], which projects none of the reserved
+    /// names.
+    context: Option<InvocationContext>,
+}
+#[derive(Debug, Clone)]
+enum DefaultBankEntry {
+    Seed(RawAnswer),
+    Configured(ResolvedDefault),
+    /// A default sourced from a snapshot's recorded answers (the generate axis's
+    /// `--like`). Carries the snapshot id as provenance so a prompt or a
+    /// rejection can name where the default came from. Precedence is resolved
+    /// before the bank is built, so a `Snapshot` entry and a `Configured` entry
+    /// never coexist for one id: the bank still holds exactly one occupant per id.
+    Snapshot {
+        raw: RawAnswer,
+        from: String,
+    },
+}
+/// A snapshot-sourced seed for [`Resolution::start_with_seed`]: the folded
+/// defaults (one raw answer per id) and the snapshot id they came from. Built at
+/// the CLI-side boundary from a selected snapshot; the engine never sees a
+/// `Snapshot`, a `Project`, or any gitoxide type.
+#[derive(Debug, Clone)]
+pub struct SnapshotSeed {
+    pub defaults: IndexMap<Id, RawAnswer>,
+    /// The snapshot id, for prompt and rejection provenance and the result docs.
+    pub from: String,
 }
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum Interview<'a> {
     Asking(Pending<'a>),
     Complete(Completed),
+    /// A flow `stop` or `abort` ended the interview. No `Completed` exists, so
+    /// there is no API path to a plan or apply.
+    Ended(Ended),
+}
+/// How a completed interview's plan step is treated. A `dry-run` flow action
+/// rides here as [`Disposition::DryRun`]; re-derived on every walk, never
+/// persisted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Disposition {
+    #[default]
+    Proceed,
+    DryRun,
+}
+/// How a flow terminated the interview. Both write no files and run no hooks;
+/// `Abort` additionally asks the driver to remove the staged record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndKind {
+    Stop,
+    Abort,
+}
+/// The routing outcome of a completed interview. Stop/abort are not here — they
+/// are [`Interview::Ended`], handled before any [`Completed`] exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    Plan { apply: bool },
+}
+/// A stop or abort. Carries only what a driver prints; nothing a plan consumes.
+#[derive(Debug)]
+pub struct Ended {
+    /// `Abort` instructs the driver to remove the target's staged record.
+    pub kind: EndKind,
+    /// Every message reached, in interview order.
+    pub messages: Vec<String>,
+    /// The messages reached by the step that ended the interview.
+    pub last_messages: Vec<String>,
+    /// The diagnostic label of the flow node that ended the interview.
+    pub label: Option<String>,
+}
+impl Ended {
+    pub fn kind(&self) -> EndKind {
+        self.kind
+    }
+    pub fn messages(&self) -> &[String] {
+        &self.messages
+    }
+    pub fn label(&self) -> Option<&str> {
+        self.label.as_deref()
+    }
 }
 #[derive(Debug)]
 pub struct Pending<'a> {
     template: &'a Template,
-    seed: Seed,
+    seed: InterviewSeed,
     answers: Answers,
+    accepted_raw: IndexMap<Id, RawAnswer>,
     held: RawAnswers,
     skipped: Skipped,
     messages: Vec<String>,
@@ -59,12 +144,21 @@ pub struct Pending<'a> {
 #[derive(Debug)]
 pub struct Completed {
     pub answers: Answers,
+    /// The accepted EFFECTIVE RAW value per id BEFORE formatting — the submitted
+    /// raw for an answered id, or the pre-format default (incl. a snapshot seed)
+    /// for a defaulted id. An internal in-process readback seam; not serialized.
+    accepted_raw: IndexMap<Id, RawAnswer>,
     /// Every message reached, in interview order.
     pub messages: Vec<String>,
     /// The messages reached by the step that completed the interview.
     pub last_messages: Vec<String>,
     pub hooks: Vec<RenderedHook>,
     pub now: jiff::Zoned,
+    /// Whether a flow `dry-run` fired; re-derived each walk, never persisted.
+    pub disposition: Disposition,
+    /// The immutable invocation context carried from the seed, or `None` for a
+    /// context-free start (`Resolution::start`).
+    context: Option<InvocationContext>,
     skipped: Skipped,
     step_start: usize,
 }
@@ -72,6 +166,26 @@ pub struct Completed {
 /// number of messages reached before it was skipped.
 type Skipped = IndexMap<Id, usize>;
 impl Completed {
+    /// The accepted effective raw values (pre-format) per id, including the
+    /// snapshot-seeded defaults the interview applied.
+    pub fn accepted_raw(&self) -> &IndexMap<Id, RawAnswer> {
+        &self.accepted_raw
+    }
+    pub fn disposition(&self) -> Disposition {
+        self.disposition
+    }
+    /// The immutable invocation context this interview carried, or `None` for a
+    /// context-free start.
+    pub fn context(&self) -> Option<&InvocationContext> {
+        self.context.as_ref()
+    }
+    /// The one policy seam: how a completed interview's plan step is treated.
+    pub fn step(&self) -> Step {
+        match self.disposition {
+            Disposition::Proceed => Step::Plan { apply: true },
+            Disposition::DryRun => Step::Plan { apply: false },
+        }
+    }
     /// Adds the warning for each answer in `unused` whose question was
     /// skipped, at the position the question was skipped.
     pub(crate) fn warn_unused(&mut self, unused: &RawAnswers) {
@@ -94,6 +208,13 @@ pub fn skipped_warning(id: &Id) -> String {
 pub struct RenderedHook {
     pub program: RenderedProgram,
     pub cwd: Option<String>,
+    /// Opt-in result identity, carried from the hook node so the plan and apply
+    /// can record this hook's result. `None` for a hook exactly as before.
+    pub id: Option<crate::template::Id>,
+    pub capture: crate::template::Capture,
+    pub allow_failure: bool,
+    pub parse_json: bool,
+    pub status_id: Option<crate::template::Id>,
 }
 #[derive(Debug, Clone)]
 pub enum RenderedProgram {
@@ -136,6 +257,11 @@ fn render_hook(
     Ok(RenderedHook {
         program,
         cwd: hook.command.cwd.as_ref().map(render("cwd")).transpose()?,
+        id: hook.id.clone(),
+        capture: hook.capture,
+        allow_failure: hook.allow_failure,
+        parse_json: hook.parse_json,
+        status_id: hook.status_id.clone(),
     })
 }
 /// Renders a hook once, or once per item of its `each`.
@@ -160,9 +286,10 @@ pub(crate) fn render_hooks(
 #[derive(Debug, Default)]
 pub struct Batch {
     pub items: Vec<Item>,
-    /// Errors for questions in this batch whose answer, held from an earlier
-    /// document, failed validation when the question was reached.
+    /// Recoverable errors for configured defaults and for answers held from an
+    /// earlier document that failed validation when their question was reached.
     pub errors: Rejections,
+    default_sources: IndexMap<Id, PreparedDefaultSource>,
 }
 #[derive(Debug)]
 pub enum Item {
@@ -179,6 +306,29 @@ pub struct Prompt {
     pub default: Option<Answer>,
     pub options: Vec<String>,
     pub constraints: Constraints,
+}
+#[derive(Debug)]
+struct PreparedPrompt {
+    prompt: Prompt,
+    default_source: Option<PreparedDefaultSource>,
+    configured_rejection: Option<Rejection>,
+}
+#[derive(Debug, Clone)]
+struct PreparedDefault {
+    answer: Answer,
+    source: PreparedDefaultSource,
+}
+#[derive(Debug, Clone)]
+enum PreparedDefaultSource {
+    Template {
+        expression: Option<String>,
+    },
+    Configured(ConfiguredDefaultOrigin),
+    Seed,
+    /// A snapshot-seeded default, naming the snapshot it came from.
+    Snapshot {
+        from: String,
+    },
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptKind {
@@ -223,25 +373,33 @@ pub struct EvalError {
     pub field: &'static str,
     pub message: String,
     pub expression: Option<String>,
+    pub config_key: Option<String>,
 }
 /// The `field` of an [`EvalError`] in a configured default.
 pub const CONFIGURED_DEFAULT: &str = "configured default";
-/// The configuration key that holds the configured default of `id`.
-fn configuration_key(id: &Id) -> String {
-    format!("configuration key defaults.{id}")
+/// Generic attribution retained after the flat configured value enters the engine.
+fn configured_default_source(id: &Id) -> String {
+    format!("configured default for question \"{id}\"")
 }
 impl fmt::Display for EvalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.field == CONFIGURED_DEFAULT {
-            return write!(f, "{}: {}", configuration_key(&self.id), self.message);
+            let key = self
+                .config_key
+                .clone()
+                .unwrap_or_else(|| configured_default_source(&self.id));
+            return write!(f, "{key}: {}", self.message);
         }
-        match &self.expression {
-            Some(source) => write!(
+        match (&self.expression, self.field) {
+            (Some(source), _) => write!(
                 f,
                 "template error in {}.{} `{}`: {}",
                 self.id, self.field, source, self.message
             ),
-            None => write!(f, "{}.{}: {}", self.id, self.field, self.message),
+            (None, "default") => {
+                write!(f, "template error in {}.default: {}", self.id, self.message)
+            }
+            (None, _) => write!(f, "{}.{}: {}", self.id, self.field, self.message),
         }
     }
 }
@@ -266,6 +424,7 @@ fn eval_error(id: &Id, field: &'static str, error: impl ToString) -> EvalError {
         field,
         message: error.to_string(),
         expression: None,
+        config_key: None,
     }
 }
 /// A fault in the template expression `source` at `id`.`field`.
@@ -278,15 +437,23 @@ fn fault(id: &Id, field: &'static str, source: Option<&str>, error: impl ToStrin
 fn context(
     template: &Template,
     answers: &Answers,
-    seed: &Seed,
+    seed: &InterviewSeed,
 ) -> std::collections::BTreeMap<String, Value> {
-    context_from_answers(answers, &template.data, &seed.now)
+    let mut values = context_from_answers(answers, &template.data, &seed.now);
+    // The single context builder: a current invocation projects the seventeen
+    // reserved names; a legacy or context-free invocation projects none.
+    // Readiness, interview rendering, and planning all build the context here.
+    if let Some(context) = &seed.context {
+        context.project(&mut values);
+    }
+    values
 }
 fn has_refs(refs: &HashSet<String>, answers: &Answers, template: &Template) -> bool {
     refs.iter().all(|r| {
         template.data.keys().any(|id| id.as_str() == r)
             || answers.keys().any(|id| id.as_str() == r)
             || is_global(r)
+            || (template.reserves_context() && is_reserved(r))
     })
 }
 fn typed_ready<T: Clone + serde::de::DeserializeOwned>(
@@ -318,7 +485,7 @@ fn hook_ready(h: &crate::template::HookNode, a: &Answers, t: &Template) -> bool 
             HookProgram::Script { args, .. } => args.iter().all(ready),
         }
 }
-fn question_ready(q: &Question, a: &Answers, t: &Template, seed: &Seed) -> bool {
+fn question_ready(q: &Question, a: &Answers, t: &Template, seed: &InterviewSeed) -> bool {
     let base = tmpl_ready(&q.prompt, a, t)
         && q.description.as_ref().is_none_or(|v| tmpl_ready(v, a, t))
         && q.placeholder.as_ref().is_none_or(|v| tmpl_ready(v, a, t))
@@ -366,7 +533,7 @@ fn eval_typed<T: Clone + serde::de::DeserializeOwned>(
 ) -> Result<T, EvalError> {
     v.eval(ctx).map_err(|e| fault(id, field, v.source(), e))
 }
-fn default_ready(q: &Question, a: &Answers, t: &Template, seed: &Seed) -> bool {
+fn default_ready(q: &Question, a: &Answers, t: &Template, seed: &InterviewSeed) -> bool {
     if seed.defaults.contains_key(&q.id) {
         return true;
     }
@@ -386,13 +553,23 @@ fn render_default(
     q: &Question,
     t: &Template,
     a: &Answers,
-    seed: &Seed,
-) -> Result<Option<Answer>, EvalError> {
+    seed: &InterviewSeed,
+) -> Result<Option<PreparedDefault>, EvalError> {
     let id = &q.id;
     let kind = prompt_kind(q);
-    if let Some(raw) = seed.defaults.get(id) {
+    if let Some(entry) = seed.defaults.get(id) {
+        let (raw, source) = match entry {
+            DefaultBankEntry::Seed(raw) => (raw, PreparedDefaultSource::Seed),
+            DefaultBankEntry::Configured(value) => (
+                &value.raw,
+                PreparedDefaultSource::Configured(value.origin.clone()),
+            ),
+            DefaultBankEntry::Snapshot { raw, from } => {
+                (raw, PreparedDefaultSource::Snapshot { from: from.clone() })
+            }
+        };
         return parse_kind(id, kind, raw.0.clone())
-            .map(Some)
+            .map(|answer| Some(PreparedDefault { answer, source }))
             .map_err(|e| eval_error(id, CONFIGURED_DEFAULT, e.message));
     }
     let ctx = context(t, a, seed);
@@ -403,23 +580,47 @@ fn render_default(
             .as_ref()
             .map(|v| {
                 v.render(&ctx)
-                    .map(Answer::Text)
+                    .map(|answer| PreparedDefault {
+                        answer: Answer::Text(answer),
+                        source: PreparedDefaultSource::Template {
+                            expression: Some(v.source().into()),
+                        },
+                    })
                     .map_err(|e| fault(id, "default", Some(v.source()), e))
             })
             .transpose(),
         QuestionKind::Confirm { default } => default
             .as_ref()
-            .map(|v| eval_typed(v, &ctx, id, "default").map(Answer::Bool))
+            .map(|v| {
+                eval_typed(v, &ctx, id, "default").map(|answer| PreparedDefault {
+                    answer: Answer::Bool(answer),
+                    source: PreparedDefaultSource::Template {
+                        expression: v.source().map(str::to_owned),
+                    },
+                })
+            })
             .transpose(),
         QuestionKind::MultiSelect { default, .. } | QuestionKind::TextLoop { default, .. } => {
             default
                 .as_ref()
-                .map(|v| eval_typed(v, &ctx, id, "default").map(Answer::List))
+                .map(|v| {
+                    eval_typed(v, &ctx, id, "default").map(|answer| PreparedDefault {
+                        answer: Answer::List(answer),
+                        source: PreparedDefaultSource::Template {
+                            expression: v.source().map(str::to_owned),
+                        },
+                    })
+                })
                 .transpose()
         }
     }
 }
-fn make_prompt(q: &Question, t: &Template, a: &Answers, seed: &Seed) -> Result<Prompt, EvalError> {
+fn make_prompt(
+    q: &Question,
+    t: &Template,
+    a: &Answers,
+    seed: &InterviewSeed,
+) -> Result<PreparedPrompt, EvalError> {
     let ctx = context(t, a, seed);
     let id = &q.id;
     let title = q
@@ -482,14 +683,14 @@ fn make_prompt(q: &Question, t: &Template, a: &Answers, seed: &Seed) -> Result<P
             PromptKind::TextLoop
         }
     };
-    let default = render_default(q, t, a, seed)?;
-    Ok(Prompt {
+    let prepared = render_default(q, t, a, seed)?;
+    let mut prompt = Prompt {
         id: id.clone(),
         kind,
         title,
         description,
         placeholder,
-        default,
+        default: prepared.as_ref().map(|value| value.answer.clone()),
         options,
         constraints: Constraints {
             required,
@@ -499,6 +700,50 @@ fn make_prompt(q: &Question, t: &Template, a: &Answers, seed: &Seed) -> Result<P
             loop_min,
             loop_max,
         },
+    };
+    let default_source = prepared.as_ref().map(|value| value.source.clone());
+    let mut configured_rejection = None;
+    if let Some(prepared) = prepared
+        && let Err(rejected) =
+            validate(id, &Rules::of_prompt(&prompt, q), prepared.answer.to_json())
+    {
+        match prepared.source {
+            PreparedDefaultSource::Template { expression } => {
+                return Err(EvalError {
+                    id: id.clone(),
+                    field: "default",
+                    message: format!(
+                        "default {} is not allowed: {}",
+                        prepared.answer.to_json(),
+                        rejected.message
+                    ),
+                    expression,
+                    config_key: None,
+                });
+            }
+            PreparedDefaultSource::Configured(origin) => {
+                prompt.default = None;
+                configured_rejection = Some(rejection(
+                    id,
+                    format!(
+                        "default {} from {} is not allowed: {}",
+                        prepared.answer.to_json(),
+                        origin.description(),
+                        rejected.message
+                    ),
+                ));
+            }
+            // A snapshot-seeded default is an optional default, like a replay
+            // seed: keep it shown so the person can accept or override, and
+            // let the headless walk re-ask (exit 4) rather than writing an
+            // invalid value. It is never a hard error.
+            PreparedDefaultSource::Seed | PreparedDefaultSource::Snapshot { .. } => {}
+        }
+    }
+    Ok(PreparedPrompt {
+        prompt,
+        default_source,
+        configured_rejection,
     })
 }
 fn parse_kind(id: &Id, kind: PromptKind, value: Value) -> Result<Answer, Rejection> {
@@ -585,6 +830,81 @@ impl<'q> Rules<'q> {
             regex: q.validate.regex.as_ref(),
         }
     }
+
+    fn ready(
+        q: &'q Question,
+        answers: &Answers,
+        template: &Template,
+        seed: &InterviewSeed,
+    ) -> Result<Self, EvalError> {
+        let ctx = context(template, answers, seed);
+        let number = |field: &'static str,
+                      value: &'q Option<Typed<u32>>|
+         -> Result<Option<u32>, EvalError> {
+            value
+                .as_ref()
+                .filter(|value| typed_ready(value, answers, template))
+                .map(|value| eval_typed(value, &ctx, &q.id, field))
+                .transpose()
+        };
+        let required = typed_ready(&q.required, answers, template)
+            .then(|| eval_typed(&q.required, &ctx, &q.id, "required"))
+            .transpose()?;
+        let (options, loop_min, loop_max) = match &q.kind {
+            QuestionKind::Select { options, .. } | QuestionKind::MultiSelect { options, .. } => {
+                let options = typed_ready(options, answers, template)
+                    .then(|| eval_typed(options, &ctx, &q.id, "options"))
+                    .transpose()?;
+                (options, None, None)
+            }
+            QuestionKind::TextLoop { min, max, .. } => {
+                (None, number("loop.min", min)?, number("loop.max", max)?)
+            }
+            _ => (None, None, None),
+        };
+        Ok(Self {
+            kind: prompt_kind(q),
+            required,
+            min: number("validate.min", &q.validate.min)?,
+            max: number("validate.max", &q.validate.max)?,
+            loop_min,
+            loop_max,
+            options,
+            regex: q.validate.regex.as_ref(),
+        })
+    }
+}
+
+fn skipped_default(
+    q: &Question,
+    prepared: Option<PreparedDefault>,
+    answers: &Answers,
+    template: &Template,
+    seed: &InterviewSeed,
+) -> Result<Option<Answer>, EvalError> {
+    let Some(prepared) = prepared else {
+        return Ok(None);
+    };
+    if let PreparedDefaultSource::Template { expression } = &prepared.source
+        && let Err(rejected) = validate(
+            &q.id,
+            &Rules::ready(q, answers, template, seed)?,
+            prepared.answer.to_json(),
+        )
+    {
+        return Err(EvalError {
+            id: q.id.clone(),
+            field: "default",
+            message: format!(
+                "default {} is not allowed: {}",
+                prepared.answer.to_json(),
+                rejected.message
+            ),
+            expression: expression.clone(),
+            config_key: None,
+        });
+    }
+    Ok(Some(prepared.answer))
 }
 fn prompt_kind(q: &Question) -> PromptKind {
     match q.kind {
@@ -654,10 +974,10 @@ fn validate(id: &Id, rules: &Rules, value: Value) -> Result<Answer, Rejection> {
             return fail(format!("must have at most {}", count(n, "item", "items")));
         }
         if rules.kind == PromptKind::MultiSelect {
-            if let Some(options) = &rules.options {
-                if v.iter().any(|s| !options.contains(s)) {
-                    return fail(format!("each item must be one of: {}", options.join(", ")));
-                }
+            if let Some(options) = &rules.options
+                && v.iter().any(|s| !options.contains(s))
+            {
+                return fail(format!("each item must be one of: {}", options.join(", ")));
             }
             let mut seen = HashSet::new();
             if !v.iter().all(|s| seen.insert(s)) {
@@ -667,27 +987,270 @@ fn validate(id: &Id, rules: &Rules, value: Value) -> Result<Answer, Rejection> {
     }
     if let (Answer::Text(v), PromptKind::Select, Some(options)) =
         (&answer, rules.kind, &rules.options)
+        && !options.contains(v)
     {
-        if !options.contains(v) {
-            return fail(format!("must be one of: {}", options.join(", ")));
-        }
+        return fail(format!("must be one of: {}", options.join(", ")));
     }
     Ok(answer)
 }
+#[derive(Debug)]
+pub struct Resolution {
+    defaults: IndexMap<Id, ResolvedDefault>,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedDefault {
+    raw: RawAnswer,
+    origin: ConfiguredDefaultOrigin,
+}
+
+#[derive(Debug, Clone)]
+struct ConfiguredDefaultOrigin {
+    mapping: MappingSite,
+    preset: Option<PresetSite>,
+}
+
+#[derive(Debug, Clone)]
+struct MappingSite {
+    origin: crate::config::ConfigOrigin,
+    formal_name: String,
+    id: Id,
+}
+
+#[derive(Debug, Clone)]
+struct PresetSite {
+    origin: crate::config::ConfigOrigin,
+    name: PresetName,
+    value: Value,
+}
+
+impl ConfiguredDefaultOrigin {
+    fn description(&self) -> String {
+        let identity =
+            serde_json::to_string(&self.mapping.formal_name).expect("string is a JSON value");
+        let mapping = format!(
+            "{}: template-defaults.{}.{id}",
+            self.mapping.origin.path.display(),
+            identity,
+            id = self.mapping.id
+        );
+        match &self.preset {
+            Some(preset) => format!(
+                "{mapping} → {}: presets.\"{}\" ({})",
+                preset.origin.path.display(),
+                preset.name,
+                preset.value
+            ),
+            None => mapping,
+        }
+    }
+}
+
+impl Resolution {
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
+
+    /// The existing consuming producer entry: moves each origin-bearing
+    /// `ResolvedDefault` into the configured default bank and starts with the
+    /// pre-context legacy projection (no reserved names). Its context-aware
+    /// sibling is [`Self::start_with_context`].
+    pub fn start<'a>(
+        self,
+        template: &'a Template,
+        now: jiff::Zoned,
+    ) -> Result<Interview<'a>, EvalError> {
+        Interview::start_with_bank(
+            template,
+            InterviewSeed {
+                now,
+                defaults: self
+                    .defaults
+                    .into_iter()
+                    .map(|(id, value)| (id, DefaultBankEntry::Configured(value)))
+                    .collect(),
+                context: None,
+            },
+        )
+    }
+
+    /// Consumes the origin-bearing configured defaults and the supplied
+    /// invocation context, moving each `ResolvedDefault` into the configured
+    /// default bank. This is the configured sibling of [`Interview::start`]; it
+    /// never flattens provenance through `Seed` or `into_flat_defaults`.
+    pub fn start_with_context<'a>(
+        self,
+        template: &'a Template,
+        now: jiff::Zoned,
+        context: InvocationContext,
+    ) -> Result<Interview<'a>, EvalError> {
+        Interview::start_with_bank(
+            template,
+            InterviewSeed {
+                now,
+                defaults: self
+                    .defaults
+                    .into_iter()
+                    .map(|(id, value)| (id, DefaultBankEntry::Configured(value)))
+                    .collect(),
+                context: Some(context),
+            },
+        )
+    }
+
+    /// Start an interview with snapshot-sourced defaults layered over the
+    /// configured defaults (the generate axis, `--like`). For each question the
+    /// template defines, precedence resolves at this seam, before the bank is
+    /// built, so the single-occupant invariant holds:
+    ///
+    ///   1. a snapshot value that parses to the question's kind → a `Snapshot`
+    ///      entry, shadowing any configured entry for that id;
+    ///   2. else the configured default (this `Resolution`) → a `Configured` entry;
+    ///   3. else the template's own `default` expression (no bank entry);
+    ///   4. else the question is asked.
+    ///
+    /// A snapshot value whose kind no longer matches the question is dropped and
+    /// returned as a warning; it falls through to (2)/(3) and is never a hard
+    /// error and never forces an invalid value. A snapshot value for an id the
+    /// template no longer defines is silently ignored (ordinary template
+    /// evolution). With `seed == None` this is byte-for-byte `start_with_context`,
+    /// so the no-`--like` path and every driver's parity are unchanged.
+    pub fn start_with_seed<'a>(
+        self,
+        template: &'a Template,
+        now: jiff::Zoned,
+        context: InvocationContext,
+        seed: Option<SnapshotSeed>,
+    ) -> Result<(Interview<'a>, Vec<String>), EvalError> {
+        let Some(seed) = seed else {
+            // None ≡ start_with_context: the configured defaults enter the bank
+            // exactly as they do without a seed, and no warning is produced.
+            return self
+                .start_with_context(template, now, context)
+                .map(|interview| (interview, Vec::new()));
+        };
+        let mut defaults: IndexMap<Id, DefaultBankEntry> = self
+            .defaults
+            .into_iter()
+            .map(|(id, value)| (id, DefaultBankEntry::Configured(value)))
+            .collect();
+        let mut warnings = Vec::new();
+        for (id, raw) in seed.defaults {
+            // A snapshot value for an id the template no longer defines is
+            // ignored: templates evolve, and a seed is optional.
+            let Some(question) = question_by_id(&template.interview, &id) else {
+                continue;
+            };
+            // Only a kind-matching value becomes a default; a wrong-kind value is
+            // dropped with a warning and the id falls back to its configured or
+            // template default. The bank keeps one occupant per id: a Snapshot
+            // entry replaces the configured entry for that id in place.
+            if parse_kind(&id, prompt_kind(question), raw.0.clone()).is_ok() {
+                defaults.insert(
+                    id,
+                    DefaultBankEntry::Snapshot {
+                        raw,
+                        from: seed.from.clone(),
+                    },
+                );
+            } else {
+                warnings.push(format!(
+                    "snapshot {} default for \"{id}\" does not match the question's type; ignored",
+                    seed.from
+                ));
+            }
+        }
+        Interview::start_with_bank(
+            template,
+            InterviewSeed {
+                now,
+                defaults,
+                context: Some(context),
+            },
+        )
+        .map(|interview| (interview, warnings))
+    }
+
+    pub fn into_flat_defaults(self) -> (IndexMap<Id, RawAnswer>, Vec<String>) {
+        (
+            self.defaults
+                .into_iter()
+                .map(|(id, value)| (id, value.raw))
+                .collect(),
+            self.warnings,
+        )
+    }
+}
+
 pub fn configured_defaults(
+    formal_name: &str,
     template: &Template,
-    values: &IndexMap<Id, Value>,
-) -> Result<IndexMap<Id, RawAnswer>, EvalError> {
+    presets: &IndexMap<PresetName, ConfigEntry<Value>>,
+    mappings: &IndexMap<String, IndexMap<Id, ConfigEntry<DefaultSource>>>,
+) -> Result<Resolution, EvalError> {
     let mut defaults = IndexMap::new();
-    for (id, value) in values {
+    let mut warnings = Vec::new();
+    let Some(values) = mappings.get(formal_name) else {
+        return Ok(Resolution { defaults, warnings });
+    };
+    for (id, entry) in values {
+        let identity = serde_json::to_string(formal_name).expect("string is a JSON value");
+        let mapping = MappingSite {
+            origin: entry.origin.clone(),
+            formal_name: formal_name.into(),
+            id: id.clone(),
+        };
+        let mapping_key = format!(
+            "{}: template-defaults.{}.{id}",
+            mapping.origin.path.display(),
+            identity
+        );
         let Some(question) = question_by_id(&template.interview, id) else {
+            warnings.push(format!(
+                "{mapping_key}: question is not defined by the selected template; ignored"
+            ));
             continue;
         };
-        parse_kind(id, prompt_kind(question), value.clone())
-            .map_err(|error| eval_error(id, CONFIGURED_DEFAULT, error.message))?;
-        defaults.insert(id.clone(), RawAnswer(value.clone()));
+        let (value, preset) = match &entry.value {
+            DefaultSource::Literal(value) => (value, None),
+            DefaultSource::Ref(name) => {
+                let Some(preset) = presets.get(name) else {
+                    return Err(EvalError {
+                        id: id.clone(),
+                        field: CONFIGURED_DEFAULT,
+                        message: format!("no preset named \"{name}\""),
+                        expression: None,
+                        config_key: Some(mapping_key),
+                    });
+                };
+                (
+                    &preset.value,
+                    Some(PresetSite {
+                        origin: preset.origin.clone(),
+                        name: name.clone(),
+                        value: preset.value.clone(),
+                    }),
+                )
+            }
+        };
+        let origin = ConfiguredDefaultOrigin { mapping, preset };
+        parse_kind(id, prompt_kind(question), value.clone()).map_err(|error| EvalError {
+            id: id.clone(),
+            field: CONFIGURED_DEFAULT,
+            message: error.message,
+            expression: None,
+            config_key: Some(origin.description()),
+        })?;
+        defaults.insert(
+            id.clone(),
+            ResolvedDefault {
+                raw: RawAnswer(value.clone()),
+                origin,
+            },
+        );
     }
-    Ok(defaults)
+    Ok(Resolution { defaults, warnings })
 }
 fn question_by_id<'a>(nodes: &'a [Node], id: &Id) -> Option<&'a Question> {
     for n in nodes {
@@ -707,10 +1270,15 @@ fn skipped_descendants_ready(
     nodes: &[Node],
     answers: &Answers,
     template: &Template,
-    seed: &Seed,
+    seed: &InterviewSeed,
 ) -> bool {
     let mut available = answers.clone();
-    fn visit(nodes: &[Node], available: &mut Answers, template: &Template, seed: &Seed) -> bool {
+    fn visit(
+        nodes: &[Node],
+        available: &mut Answers,
+        template: &Template,
+        seed: &InterviewSeed,
+    ) -> bool {
         for node in nodes {
             match node {
                 Node::Question(q) => {
@@ -727,7 +1295,7 @@ fn skipped_descendants_ready(
                         return false;
                     }
                 }
-                Node::Message(_) | Node::Hook(_) => {}
+                Node::Message(_) | Node::Hook(_) | Node::Flow(_) => {}
             }
         }
         true
@@ -738,7 +1306,7 @@ fn skipped_descendants_ready(
 fn check_answer(
     template: &Template,
     answers: &Answers,
-    seed: &Seed,
+    seed: &InterviewSeed,
     prompt: &Prompt,
     raw: RawAnswer,
 ) -> Result<Answer, CheckError> {
@@ -755,7 +1323,7 @@ fn check_answer(
 fn format_answer(
     template: &Template,
     answers: &Answers,
-    seed: &Seed,
+    seed: &InterviewSeed,
     q: &Question,
     kind: PromptKind,
     answer: Answer,
@@ -801,7 +1369,7 @@ fn format_answer(
 fn same_answer(
     template: &Template,
     answers: &Answers,
-    seed: &Seed,
+    seed: &InterviewSeed,
     q: &Question,
     raw: &Value,
     recorded: &Answer,
@@ -912,6 +1480,10 @@ fn expressions(node: &Node) -> (Id, Vec<Expression<'_>>) {
             out.push(tmpl("message", &m.text));
             Id::parse("message").unwrap()
         }
+        Node::Flow(f) => {
+            out.extend(f.when.as_ref().map(|v| expr("when", v)));
+            Id::parse("flow").unwrap()
+        }
     };
     (id, out)
 }
@@ -927,6 +1499,7 @@ fn unresolved(nodes: &[Node], available: &mut HashSet<String>, t: &Template) -> 
                     !available.contains(*r)
                         && !t.data.keys().any(|d| d.as_str() == r.as_str())
                         && !is_global(r)
+                        && !(t.reserves_context() && is_reserved(r))
                 })
                 .collect();
             missing.sort();
@@ -939,10 +1512,10 @@ fn unresolved(nodes: &[Node], available: &mut HashSet<String>, t: &Template) -> 
                 ));
             }
         }
-        if let Node::Group(g) = node {
-            if let Some(error) = unresolved(&g.nodes, available, t) {
-                return Some(error);
-            }
+        if let Node::Group(g) = node
+            && let Some(error) = unresolved(&g.nodes, available, t)
+        {
+            return Some(error);
         }
         if let Node::Question(Question { id, .. })
         | Node::Computed(crate::template::Computed { id, .. }) = node
@@ -952,10 +1525,24 @@ fn unresolved(nodes: &[Node], available: &mut HashSet<String>, t: &Template) -> 
     }
     None
 }
+/// The outcome of one frame of the walk. Replaces the earlier `bool`, which
+/// was `true` for [`Walk::Complete`] and `false` for [`Walk::Blocked`].
+enum Walk {
+    /// The frame walked to its end.
+    Complete,
+    /// The walk stopped at a node that waits for an answer.
+    Blocked,
+    /// A flow `stop`/`abort` ended the interview.
+    Ended(EndKind),
+    /// A flow `{ skip: rest }` fired; the frame and every ancestor skip the
+    /// rest of their nodes.
+    SkipRest,
+}
 struct Advance<'a> {
     template: &'a Template,
-    seed: Seed,
+    seed: InterviewSeed,
     answers: Answers,
+    accepted_raw: IndexMap<Id, RawAnswer>,
     held: RawAnswers,
     skipped: Skipped,
     messages: Vec<String>,
@@ -966,12 +1553,18 @@ struct Advance<'a> {
     batch: Batch,
     /// The node that stopped the walk before its references had answers.
     blocked: Option<&'a Node>,
+    /// Raised by a fired flow `dry-run`; re-derived each walk.
+    disposition: Disposition,
+    /// Set by a fired flow `stop`/`abort`, with its label.
+    ended: Option<(EndKind, Option<String>)>,
+    /// A flow `{ skip: rest }` fired; propagates to every frame.
+    skip_rest: bool,
 }
 impl<'a> Advance<'a> {
     /// Stops the walk at `node`, which waits for an answer.
-    fn block(&mut self, node: &'a Node) -> Result<bool, EvalError> {
+    fn block(&mut self, node: &'a Node) -> Result<Walk, EvalError> {
         self.blocked = Some(node);
-        Ok(false)
+        Ok(Walk::Blocked)
     }
     /// Reaches `message` in interview order.
     fn message(&mut self, message: String) {
@@ -995,8 +1588,20 @@ impl<'a> Advance<'a> {
             self.message(skipped_warning(id));
         }
     }
-    fn walk(&mut self, nodes: &'a [Node], prefix: &str, skip: bool) -> Result<bool, EvalError> {
+    fn walk(
+        &mut self,
+        nodes: &'a [Node],
+        prefix: &str,
+        ancestor_skip: bool,
+    ) -> Result<Walk, EvalError> {
+        // A flow `{ skip: group }` raises `skip` for the rest of this frame; a
+        // `{ skip: rest }` raises `self.skip_rest`, which forces skip here and
+        // in every ancestor frame on return.
+        let mut skip = ancestor_skip;
         for (i, node) in nodes.iter().enumerate() {
+            if self.skip_rest {
+                skip = true;
+            }
             let key = format!("{prefix}/{i}");
             match node {
                 Node::Question(q) => {
@@ -1010,7 +1615,13 @@ impl<'a> Advance<'a> {
                         if !default_ready(q, &self.answers, self.template, &self.seed) {
                             return self.block(node);
                         }
-                        let default = render_default(q, self.template, &self.answers, &self.seed)?;
+                        let default = skipped_default(
+                            q,
+                            render_default(q, self.template, &self.answers, &self.seed)?,
+                            &self.answers,
+                            self.template,
+                            &self.seed,
+                        )?;
                         self.skip(q, default);
                         continue;
                     }
@@ -1029,7 +1640,8 @@ impl<'a> Advance<'a> {
                             .transpose()?
                             .unwrap_or(true);
                     if active {
-                        let prompt = make_prompt(q, self.template, &self.answers, &self.seed)?;
+                        let prepared = make_prompt(q, self.template, &self.answers, &self.seed)?;
+                        let prompt = prepared.prompt;
                         if let Some(raw) = self.held.shift_remove(&q.id) {
                             match check_answer(
                                 self.template,
@@ -1054,12 +1666,24 @@ impl<'a> Advance<'a> {
                                 Err(CheckError::Eval(e)) => return Err(e),
                             }
                         }
+                        if let Some(error) = prepared.configured_rejection {
+                            self.batch.errors.push(error);
+                        }
+                        if let Some(source) = prepared.default_source {
+                            self.batch.default_sources.insert(q.id.clone(), source);
+                        }
                         self.batch.items.push(Item::Prompt(prompt));
                     } else {
                         if !default_ready(q, &self.answers, self.template, &self.seed) {
                             return self.block(node);
                         }
-                        let default = render_default(q, self.template, &self.answers, &self.seed)?;
+                        let default = skipped_default(
+                            q,
+                            render_default(q, self.template, &self.answers, &self.seed)?,
+                            &self.answers,
+                            self.template,
+                            &self.seed,
+                        )?;
                         self.skip(q, default);
                     }
                 }
@@ -1128,8 +1752,13 @@ impl<'a> Advance<'a> {
                     {
                         return self.block(node);
                     }
-                    if !self.walk(&g.nodes, &key, !active)? {
-                        return Ok(false);
+                    match self.walk(&g.nodes, &key, !active)? {
+                        Walk::Blocked => return Ok(Walk::Blocked),
+                        Walk::Ended(kind) => return Ok(Walk::Ended(kind)),
+                        // A `{ skip: rest }` inside the group is carried on
+                        // `self.skip_rest`, which this frame observes at the top
+                        // of the next iteration.
+                        Walk::Complete | Walk::SkipRest => {}
                     }
                 }
                 Node::Hook(h) => {
@@ -1212,14 +1841,78 @@ impl<'a> Advance<'a> {
                         }
                     }
                 }
+                Node::Flow(f) => {
+                    // Same-batch readiness: a flow whose `when` references a
+                    // question still pending in this batch is not ready and
+                    // blocks, so it fires only after that answer commits.
+                    if !skip
+                        && f.when
+                            .as_ref()
+                            .is_some_and(|w| !expr_ready(w, &self.answers, self.template))
+                    {
+                        return self.block(node);
+                    }
+                    // Inert under an ancestor skip or a skip raised earlier in
+                    // this frame.
+                    if skip {
+                        continue;
+                    }
+                    let ctx = context(self.template, &self.answers, &self.seed);
+                    let active = f
+                        .when
+                        .as_ref()
+                        .map(|w| {
+                            w.eval(&ctx).map(|v| v.is_true()).map_err(|e| {
+                                fault(&Id::parse("flow").unwrap(), "when", Some(w.source()), e)
+                            })
+                        })
+                        .transpose()?
+                        .unwrap_or(true);
+                    if active {
+                        match f.action {
+                            FlowAction::Stop => {
+                                self.ended = Some((EndKind::Stop, f.label.clone()));
+                                return Ok(Walk::Ended(EndKind::Stop));
+                            }
+                            FlowAction::Abort => {
+                                self.ended = Some((EndKind::Abort, f.label.clone()));
+                                return Ok(Walk::Ended(EndKind::Abort));
+                            }
+                            // Idempotent raise: re-derived on every walk.
+                            FlowAction::DryRun => self.disposition = Disposition::DryRun,
+                            // Rest of the current group's siblings.
+                            FlowAction::Skip(SkipScope::Group) => skip = true,
+                            // Rest of the whole interview, climbing every frame.
+                            FlowAction::Skip(SkipScope::Rest) => {
+                                self.skip_rest = true;
+                                skip = true;
+                            }
+                        }
+                    }
+                }
             }
         }
-        Ok(true)
+        Ok(if self.skip_rest {
+            Walk::SkipRest
+        } else {
+            Walk::Complete
+        })
     }
 }
 fn advance(mut state: Advance<'_>) -> Result<Interview<'_>, EvalError> {
     let template = state.template;
-    let complete = state.walk(&template.interview, "", false)?;
+    let outcome = state.walk(&template.interview, "", false)?;
+    if let Walk::Ended(kind) = outcome {
+        let label = state.ended.take().and_then(|(_, label)| label);
+        return Ok(Interview::Ended(Ended {
+            kind,
+            last_messages: state.messages[state.step_start..].to_vec(),
+            messages: state.messages,
+            label,
+        }));
+    }
+    // A `{ skip: rest }` walked the whole interview in skip mode; both finish it.
+    let complete = matches!(outcome, Walk::Complete | Walk::SkipRest);
     let has_prompt = state
         .batch
         .items
@@ -1241,10 +1934,13 @@ fn advance(mut state: Advance<'_>) -> Result<Interview<'_>, EvalError> {
     if complete && !has_prompt {
         Ok(Interview::Complete(Completed {
             answers: state.answers,
+            accepted_raw: state.accepted_raw,
             last_messages: state.messages[state.step_start..].to_vec(),
             messages: state.messages,
             hooks: state.hooks,
             now: state.seed.now,
+            disposition: state.disposition,
+            context: state.seed.context,
             skipped: state.skipped,
             step_start: state.step_start,
         }))
@@ -1253,6 +1949,7 @@ fn advance(mut state: Advance<'_>) -> Result<Interview<'_>, EvalError> {
             template,
             seed: state.seed,
             answers: state.answers,
+            accepted_raw: state.accepted_raw,
             held: state.held,
             skipped: state.skipped,
             messages: state.messages,
@@ -1262,12 +1959,39 @@ fn advance(mut state: Advance<'_>) -> Result<Interview<'_>, EvalError> {
         }))
     }
 }
+/// Walks tentatively to classify a step's early-answer failures: which
+/// questions it skips, and whether a flow `stop`/`abort` ends it (which drops
+/// the early failures for every question the end prevents reaching).
+fn probe_skips(mut state: Advance<'_>) -> (Skipped, bool) {
+    let template = state.template;
+    let ended = matches!(
+        state.walk(&template.interview, "", false),
+        Ok(Walk::Ended(_))
+    );
+    (state.skipped, ended)
+}
 impl<'a> Interview<'a> {
     pub fn start(template: &'a Template, seed: Seed) -> Result<Self, EvalError> {
+        Self::start_with_bank(
+            template,
+            InterviewSeed {
+                now: seed.now,
+                defaults: seed
+                    .defaults
+                    .into_iter()
+                    .map(|(id, value)| (id, DefaultBankEntry::Seed(value)))
+                    .collect(),
+                context: Some(seed.context),
+            },
+        )
+    }
+
+    fn start_with_bank(template: &'a Template, seed: InterviewSeed) -> Result<Self, EvalError> {
         advance(Advance {
             template,
             seed,
             answers: Answers::new(),
+            accepted_raw: IndexMap::new(),
             held: RawAnswers::new(),
             skipped: Skipped::new(),
             messages: vec![],
@@ -1276,6 +2000,9 @@ impl<'a> Interview<'a> {
             visited: HashSet::new(),
             batch: Batch::default(),
             blocked: None,
+            disposition: Disposition::default(),
+            ended: None,
+            skip_rest: false,
         })
     }
 }
@@ -1385,33 +2112,68 @@ impl<'a> Pending<'a> {
             }
             held.insert(id, raw);
         }
-        let answered_early = rejections.len();
         let mut next = Answers::new();
+        let mut raw_next: IndexMap<Id, RawAnswer> = IndexMap::new();
         for item in &self.batch.items {
             let Item::Prompt(p) = item else { continue };
             let raw = held.get(&p.id).cloned();
             let carried = self.batch.errors.iter().find(|e| e.id == p.id);
+            // The submitted raw, captured before the match consumes it.
+            let raw_captured: Option<Value> = raw.as_ref().map(|r| r.0.clone());
             let checked = match (raw, carried) {
                 (Some(raw), _) => self.check_inner(&p.id, raw),
                 // A value recorded earlier that failed stays an error until
                 // a document answers its question.
                 (None, Some(error)) => Err(error.clone().into()),
                 (None, None) => match &p.default {
-                    Some(v) if self.seed.defaults.contains_key(&p.id) => self
-                        .check_inner(&p.id, RawAnswer(v.to_json()))
-                        .map_err(|e| match e {
-                            CheckError::Rejected(r) => rejection(
-                                &p.id,
-                                format!(
-                                    "default {} from {} is not allowed: {}",
-                                    v.to_json(),
-                                    configuration_key(&p.id),
-                                    r.message
-                                ),
-                            )
-                            .into(),
-                            e => e,
-                        }),
+                    Some(v)
+                        if matches!(
+                            self.batch.default_sources.get(&p.id),
+                            Some(PreparedDefaultSource::Seed)
+                        ) =>
+                    {
+                        self.check_inner(&p.id, RawAnswer(v.to_json()))
+                            .map_err(|e| match e {
+                                CheckError::Rejected(r) => rejection(
+                                    &p.id,
+                                    format!(
+                                        "default {} from {} is not allowed: {}",
+                                        v.to_json(),
+                                        configured_default_source(&p.id),
+                                        r.message
+                                    ),
+                                )
+                                .into(),
+                                e => e,
+                            })
+                    }
+                    // A snapshot-seeded default the new template rejects on a
+                    // constraint re-asks (the rejection stands, exit 4); it is
+                    // never written. The message names the snapshot it came from.
+                    Some(v)
+                        if matches!(
+                            self.batch.default_sources.get(&p.id),
+                            Some(PreparedDefaultSource::Snapshot { .. })
+                        ) =>
+                    {
+                        let from = match self.batch.default_sources.get(&p.id) {
+                            Some(PreparedDefaultSource::Snapshot { from }) => from.clone(),
+                            _ => unreachable!("matched a snapshot default source"),
+                        };
+                        self.check_inner(&p.id, RawAnswer(v.to_json()))
+                            .map_err(|e| match e {
+                                CheckError::Rejected(r) => rejection(
+                                    &p.id,
+                                    format!(
+                                        "default {} from snapshot {from} is not allowed: {}",
+                                        v.to_json(),
+                                        r.message
+                                    ),
+                                )
+                                .into(),
+                                e => e,
+                            })
+                    }
                     Some(v) => self.check_inner(&p.id, RawAnswer(v.to_json())),
                     None if !p.constraints.required => Ok(empty_answer(p.kind)),
                     None => Err(rejection(&p.id, "is required").into()),
@@ -1419,24 +2181,23 @@ impl<'a> Pending<'a> {
             };
             match checked {
                 Ok(v) => {
+                    let raw_value = raw_captured
+                        .or_else(|| p.default.as_ref().map(|d| d.to_json()))
+                        .unwrap_or_else(|| v.to_json());
+                    raw_next.insert(p.id.clone(), RawAnswer(raw_value));
                     next.insert(p.id.clone(), v);
                 }
                 Err(CheckError::Rejected(r)) => rejections.push(r),
                 Err(CheckError::Eval(e)) => return Err(AnswerError::Eval(e)),
             }
         }
-        let other_failures = rejections.len() > unless_skipped.len();
-        let batch_failed = rejections.len() > answered_early;
         let rejected = |pending, rejections| {
             Err(AnswerError::Rejected {
                 pending,
                 rejections,
             })
         };
-        // An answer that fails a constraint before its question is reached
-        // is classified from one tentative step with this document. A batch
-        // that fails cannot take the step, so each such error stands.
-        if batch_failed || (other_failures && unless_skipped.is_empty()) {
+        if unless_skipped.is_empty() && !rejections.is_empty() {
             return rejected(self, rejections);
         }
         for id in next.keys() {
@@ -1444,11 +2205,14 @@ impl<'a> Pending<'a> {
         }
         let mut answers = self.answers.clone();
         answers.extend(next);
-        let advanced = advance(Advance {
+        let mut accepted_raw = self.accepted_raw.clone();
+        accepted_raw.extend(raw_next);
+        let (probe_skipped, probe_ended) = probe_skips(Advance {
             template: self.template,
             seed: self.seed.clone(),
-            answers,
-            held,
+            answers: answers.clone(),
+            accepted_raw: accepted_raw.clone(),
+            held: held.clone(),
             skipped: self.skipped.clone(),
             step_start: self.messages.len(),
             messages: self.messages.clone(),
@@ -1456,26 +2220,43 @@ impl<'a> Pending<'a> {
             visited: self.visited.clone(),
             batch: Batch::default(),
             blocked: None,
+            disposition: Disposition::default(),
+            ended: None,
+            skip_rest: false,
         });
-        // The error stands only when the step stops with the question
-        // active or not reached. A complete interview reached and skipped
-        // it; a template fault in the step is the error instead.
-        let stands = |id: &Id| match &advanced {
-            Ok(Interview::Asking(next)) => !next.skipped.contains_key(id),
-            _ => false,
-        };
+        // The error stands only when the step stops with the question active
+        // or not reached. A complete interview reached and skipped it; a
+        // template fault in the step is the error instead. A flow stop/abort
+        // ends the step, so an early failure for a question the end prevents
+        // reaching is dropped and the stop/abort stands.
+        let stands = |id: &Id| !probe_ended && !probe_skipped.contains_key(id);
         let dropped: Vec<Id> = unless_skipped
             .into_iter()
             .filter(|id| !stands(id))
             .collect();
         rejections.retain(|r| !dropped.contains(&r.id));
-        match advanced {
-            // A rejected document never takes the step, so its fault is
-            // not reached.
-            Err(_) if !rejections.is_empty() => rejected(self, rejections),
-            Err(error) => Err(AnswerError::Eval(error)),
-            Ok(_) if !rejections.is_empty() => rejected(self, rejections),
-            Ok(next) => Ok(next),
+        if !rejections.is_empty() {
+            return rejected(self, rejections);
         }
+        // The probe is never published. Commit one fresh walk so that its
+        // messages, warnings, hooks, and template faults occur exactly once.
+        advance(Advance {
+            template: self.template,
+            seed: self.seed,
+            answers,
+            accepted_raw,
+            held,
+            skipped: self.skipped,
+            step_start: self.messages.len(),
+            messages: self.messages,
+            hooks: self.hooks,
+            visited: self.visited,
+            batch: Batch::default(),
+            blocked: None,
+            disposition: Disposition::default(),
+            ended: None,
+            skip_rest: false,
+        })
+        .map_err(AnswerError::Eval)
     }
 }

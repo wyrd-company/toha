@@ -40,7 +40,9 @@ entry has these fields:
 - `ref`: an optional Git branch, tag, or commit named by the address.
 - `commit`: the resolved commit of installed Git content, when applicable.
 - `aliases`: optional additional names.
-- `trusted`: whether Toha may run the template's hooks without `--trust`.
+- `approval`: the approved executable-surface digest. It lets Toha run the
+  template's hooks without `--trust`, but only while the installed content
+  still matches the digest.
 
 `name`, `source`, and `path` are required. For a local folder, `source` and
 `path` are usually the same absolute path. For a Git template, the install
@@ -53,7 +55,7 @@ and macOS, that path defaults to `/usr/local/share/toha/`. A folder with
 `template.yml` is discoverable even without a registry entry, but starts
 untrusted and has no managed aliases.
 
-To give the folder an alias or a system trust setting, add an entry to
+To give the folder an alias, add an entry to
 `/usr/local/share/toha/templates.yml`:
 
 ```yaml
@@ -63,13 +65,13 @@ templates:
     source: /usr/local/share/toha/note
     path: /usr/local/share/toha/note
     aliases: [ shared-note ]
-    trusted: false
 ```
 
 This example assumes `/usr/local/share/toha/note/template.yml` exists and
-contains `name: note`. Set `trusted: true` only when the administrator wants
-that template's hooks to run without a per-run trust flag. On Windows, use the
-system path under `%PROGRAMDATA%\toha\` instead.
+contains `name: note`. Add an `approval` digest only when the administrator
+wants that template's hooks to run without a per-run trust flag; the approval
+authorizes the hooks only while the installed content still matches the digest.
+On Windows, use the system path under `%PROGRAMDATA%\toha\` instead.
 
 Check system entries with:
 
@@ -84,7 +86,7 @@ the administrator's installation process.
 ## Use local aliases
 
 The local registry can add aliases to an available template. Its entries
-contain only `aliases`; they cannot add a source, path, or trust setting. For
+contain only `aliases`; they cannot add a source, path, or approval. For
 example, if the formal name `gh:example/collection#notes` is already
 available, `.templates/templates.yml` can contain:
 

@@ -1,0 +1,48 @@
+$schema: https://refinery.systems/ontology/technical-design
+relationships:
+  realizes: toha
+  implements: command-line-interface
+  related-to: architecture
+objective: >-
+  Resolve and run the bundled demo offline, from any working directory, through
+  the same interview, planning and apply interfaces as other templates.
+proposed-design:
+  high-level-overview: >-
+    The CLI resolution layer embeds docs/examples/demo at compile time and
+    materializes its files behind cli::bundled. Resolution returns a real
+    template folder and the formal identity toha-demo. Template loading,
+    interviews, protocol documents, staging and apply consume that resolution.
+  resolution: >-
+    Registry resolution runs first. An alias, short name or formal name match
+    wins; ambiguity is reported. Only NotFound for the exact token toha-demo
+    selects the bundled fallback. The short name demo does not select it.
+    Template listing presents a read-only bundled row without adding a registry
+    entry or writing templates.yml.
+  content-identity: >-
+    The content version is the lowercase SHA-256 of the embedded tree. Files
+    are ordered by root-relative path; each path and file body is framed with
+    its u64 little-endian byte length before hashing. The cache slot is
+    sources/toha-demo/<digest>. Materialization produces the complete embedded
+    tree. Its resolved selection is unnamed and carries no registry approval.
+  staged-resumption: >-
+    Staged identity records toha-demo and its content digest. Resume recognizes
+    that identity before Git-address parsing and materializes the matching
+    embedded content offline. A different embedded digest is a resolution
+    failure with instructions to stage again. Identical demo content preserves
+    the identity across binary builds. Registry entries that shadow the fallback
+    keep their own formal identity and resume through their ordinary source.
+  snapshots: >-
+    A bundled apply in a clean committed Git target follows the ordinary
+    snapshot save rules. Its snapshot records commit as null and the embedded
+    SHA-256 identity in content_digest. The content revision is distinct from a
+    Git commit revision. Snapshot replay resolves toha-demo through its bundled
+    content resolver and refuses a changed digest without a Git lookup.
+    Preview preserves files, index and snapshot refs; apply merges template
+    changes while retaining operator edits. Capture errors are reported on the
+    person, staged-agent and scripted routes.
+  boundaries: >-
+    cli::resolve owns selection; cli::bundled owns embedded bytes, digest,
+    materialization and the listing descriptor. ResolvedTemplate supplies the
+    formal name, content version and folder to the normal pipeline. The library
+    interview engine has no embedding or cache dependency. Configured defaults
+    select the exact formal identity toha-demo.

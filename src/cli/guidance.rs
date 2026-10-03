@@ -11,6 +11,9 @@ use std::path::Path;
 pub enum Progress {
     Incomplete,
     Complete,
+    /// A flow `stop`/`abort` ended the interview: no questions remain and there
+    /// is nothing to apply. The only way forward is to start over.
+    Ended,
     Unknown,
 }
 
@@ -46,11 +49,12 @@ pub fn plain_formal(formal: &str) -> &str {
 
 /// The form of a formal name that `command` accepts. `stage`, `apply`, and
 /// `templates add` read a `<TEMPLATE>` or address argument, so a folder is
-/// named by its drive path; `templates remove`, `update`, and `alias` look up
-/// the formal name as the registry stores it.
+/// named by its drive path; `templates remove`, `update`, `alias`, `trust`, and
+/// `untrust` look up the formal name as the registry stores it.
 pub fn formal_for<'a>(command: &str, formal: &'a str) -> &'a str {
     match command {
-        "templates remove" | "templates update" | "templates alias" => formal,
+        "templates remove" | "templates update" | "templates alias" | "templates trust"
+        | "templates untrust" => formal,
         _ => plain_formal(formal),
     }
 }
@@ -327,6 +331,64 @@ fn continue_answers(path: &Path) -> String {
         &[path_operand(path), placeholder("<ANSWERS>")],
     )
 }
+fn apply_dry_run(path: &Path) -> String {
+    toha("apply", &["--dry-run".to_string()], &[path_operand(path)])
+}
+
+/// The template hint line of an answers document, with the formal name quoted as
+/// JSON.
+fn answers_hint(template: &str) -> String {
+    format!(
+        "  {{\"template\": {}, \"answers\": {{ ... }}}}",
+        serde_json::to_string(template).expect("template string")
+    )
+}
+
+/// The agent instruction that follows a question batch: answer it with an
+/// answers document that names the template, through `continue PATH FILE`.
+pub fn answer_batch(path: &Path, template: &str) -> String {
+    [
+        "answer these questions with an answers document:".to_string(),
+        answers_hint(template),
+        format!(
+            "then run: {} (- reads standard input)",
+            continue_answers(path)
+        ),
+    ]
+    .join("\n")
+}
+
+/// `apply PATH` found the staged interview incomplete. It names `continue PATH
+/// FILE` for an answers document and `continue PATH` for a terminal, then
+/// `apply PATH` to write the files.
+pub fn apply_incomplete_agent(path: &Path, template: &str) -> String {
+    [
+        format!("the interview at {} has questions remaining", target(path)),
+        "answer these questions with an answers document:".to_string(),
+        answers_hint(template),
+        format!(
+            "to answer the current batch: {} (- reads standard input)",
+            continue_answers(path)
+        ),
+        format!(
+            "to answer in a terminal instead: {}",
+            continue_prompting(path)
+        ),
+        format!("then write its files: {}", apply_staged(path)),
+    ]
+    .join("\n")
+}
+
+/// `continue PATH FILE` completed the interview: the instructions name
+/// `apply PATH --dry-run` to preview and `apply PATH` to write. No batch follows.
+pub fn continue_complete(path: &Path) -> String {
+    [
+        format!("the interview at {} is complete", target(path)),
+        format!("to see the files it will write: {}", apply_dry_run(path)),
+        format!("to write them: {}", apply_staged(path)),
+    ]
+    .join("\n")
+}
 
 fn finish(path: &Path, progress: Progress) -> String {
     let apply = apply_staged(path);
@@ -335,6 +397,12 @@ fn finish(path: &Path, progress: Progress) -> String {
         Progress::Complete => format!("to finish the staged interview: {apply}"),
         Progress::Incomplete => {
             format!("to finish the staged interview: {resume}, then {apply}")
+        }
+        Progress::Ended => {
+            format!(
+                "the staged interview was ended by a flow node; to start over: {}",
+                abort(path)
+            )
         }
         Progress::Unknown => {
             format!("to finish the staged interview: {resume} if questions remain, then {apply}")
@@ -401,6 +469,9 @@ pub fn already_staged(
             remaining(path),
             format!("then write its files: {}", apply_staged(path)),
         ],
+        Progress::Ended => vec![format!(
+            "an interview for {staged} staged at {p} was ended by a flow node"
+        )],
         Progress::Unknown => vec![
             format!("an interview for {staged} is already staged at {p}"),
             finish(path, progress),
@@ -414,33 +485,20 @@ pub fn already_staged(
     lines.join("\n")
 }
 
-/// `apply` found the staged interview incomplete.
-pub fn incomplete(path: &Path) -> String {
-    [
-        format!("the interview at {} has questions remaining", target(path)),
-        remaining(path),
-        format!("then write its files: {}", apply_staged(path)),
-    ]
-    .join("\n")
-}
-
-/// `apply --answers --dry-run` left questions remaining.
-pub fn dry_run_incomplete(invocation: &Invocation, path: &Path) -> String {
-    [
-        format!(
-            "questions remain for the interview at {}; a dry run records nothing",
-            target(path)
+/// A flow `stop`/`abort` ended the interview. The notice names what did not
+/// happen, and for an abort that the staged interview was discarded.
+pub fn flow_ended(ended: &toha::Ended) -> String {
+    let (verb, tail) = match ended.kind() {
+        toha::EndKind::Stop => ("stopped", "no files were written and no hooks ran"),
+        toha::EndKind::Abort => (
+            "aborted",
+            "no files were written, no hooks ran, and the staged interview was discarded",
         ),
-        format!(
-            "to preview the files: add answers for the batch to the answers document, then {}",
-            invocation.command()
-        ),
-        format!(
-            "to record these answers: {}",
-            invocation.without_dry_run().command()
-        ),
-    ]
-    .join("\n")
+    };
+    match ended.label() {
+        Some(label) => format!("{verb}: {label} — {tail}"),
+        None => format!("{verb} — {tail}"),
+    }
 }
 
 /// `continue` found the staged interview complete.
@@ -452,24 +510,38 @@ pub fn complete(path: &Path) -> String {
     )
 }
 
-/// An answers document was given for a complete staged interview.
-pub fn complete_answers_unused(path: &Path, staged: &str) -> String {
-    let restage = Invocation::Stage {
-        template: Arg::Given(formal_for("stage", staged)),
-        path,
-        output: None,
-    };
+/// `continue PATH FILE` was given for a complete staged interview. It refuses
+/// before reading the document and names `apply PATH --dry-run` and `apply PATH`.
+pub fn complete_answers_unused(path: &Path) -> String {
     [
         format!(
             "the interview at {} is complete, so the answers document is not used",
             target(path)
         ),
-        format!("to write its files: {}", apply_staged(path)),
+        format!("to preview the files: {}", apply_dry_run(path)),
+        format!("to write them: {}", apply_staged(path)),
+    ]
+    .join("\n")
+}
+
+/// An answers document was given for a staged interview a flow node already
+/// ended. Behavior 23: a submission after a terminal interview is refused.
+pub fn ended_answers_unused(path: &Path, staged: &str, kind: toha::EndKind) -> String {
+    let restage = Invocation::Stage {
+        template: Arg::Given(formal_for("stage", staged)),
+        path,
+        output: None,
+    };
+    let verb = match kind {
+        toha::EndKind::Stop => "was stopped by a flow node",
+        toha::EndKind::Abort => "was aborted by a flow node",
+    };
+    [
         format!(
-            "to answer it again: {}, then {}",
-            abort(path),
-            restage.command()
+            "the interview at {} {verb}, so the answers document is not used",
+            target(path)
         ),
+        format!("to start over: {}, then {}", abort(path), restage.command()),
     ]
     .join("\n")
 }
@@ -520,6 +592,12 @@ pub fn explain_rejections(
             rejection
         })
         .collect()
+}
+
+/// The commands a scripted `staged` refusal lists: answer the staged interview
+/// with an answers document, write it, or discard it.
+pub fn staged_commands(path: &Path) -> Vec<String> {
+    vec![continue_answers(path), apply_staged(path), abort(path)]
 }
 
 /// `continue` without an answers document has no terminal to prompt in.
@@ -608,6 +686,19 @@ pub fn answers_without_template(
             target(path),
             apply_staged(path)
         )),
+        Some((staged, Progress::Ended)) => {
+            lines.push(format!(
+                "the staged interview at {} was ended by a flow node; to start over: {}, then {}",
+                target(path),
+                abort(path),
+                Invocation::Stage {
+                    template: Arg::Given(formal_for("stage", staged)),
+                    path,
+                    output: None,
+                }
+                .command()
+            ));
+        }
         Some((staged, _)) => {
             lines.push(format!(
                 "to answer the staged interview: {}, then {}",
@@ -631,42 +722,95 @@ pub fn answers_without_template(
     lines.join("\n")
 }
 
-/// `apply` did not run hooks of an untrusted template.
-pub fn needs_trust(invocation: &Invocation, installed: Option<&str>) -> String {
+/// `apply` did not run hooks of an untrusted template. `changed` marks a
+/// template whose stored approval no longer matches its hooks.
+pub fn needs_trust(invocation: &Invocation, installed: Option<&str>, changed: bool) -> String {
     trust_lines(
         "hooks will not run without --trust\nto run them this time: ",
         invocation,
         installed,
+        changed,
     )
 }
 
 /// `apply --dry-run` planned hooks of an untrusted template, which the same
-/// command without `--dry-run` refuses to run.
-pub fn dry_run_needs_trust(invocation: &Invocation, installed: Option<&str>) -> String {
+/// command without `--dry-run` refuses to run. `changed` marks a template
+/// whose stored approval no longer matches its hooks.
+pub fn dry_run_needs_trust(
+    invocation: &Invocation,
+    installed: Option<&str>,
+    changed: bool,
+) -> String {
     trust_lines(
         "hooks need trust; to run them: ",
         &invocation.without_dry_run(),
         installed,
+        changed,
     )
 }
 
-/// `lead` followed by the command with `--trust`, and the `templates add
-/// --trust` command for an installed template.
-fn trust_lines(lead: &str, invocation: &Invocation, installed: Option<&str>) -> String {
+/// `lead` followed by the command with `--trust`, and the `templates trust`
+/// command that approves an installed template for every run. When `changed`, a
+/// leading line states that the hooks changed since approval.
+fn trust_lines(
+    lead: &str,
+    invocation: &Invocation,
+    installed: Option<&str>,
+    changed: bool,
+) -> String {
     let mut trusted = *invocation;
     if let Invocation::Apply { trust, .. } = &mut trusted {
         *trust = true;
     }
-    let mut lines = vec![format!("{lead}{}", trusted.command())];
+    let mut lines = Vec::new();
+    if changed {
+        lines.push("hooks changed since approval".to_string());
+    }
+    lines.push(format!("{lead}{}", trusted.command()));
     if let Some(formal) = installed {
         lines.push(format!(
             "to trust {formal} for every run: {}",
             toha(
-                "templates add",
-                &["--trust".into()],
-                &[value(formal_for("templates add", formal))]
+                "templates trust",
+                &[],
+                &[value(formal_for("templates trust", formal))]
             )
         ));
+    }
+    lines.join("\n")
+}
+
+/// `templates trust` could not read the installed executable surface of
+/// `formal`, so it cannot be approved.
+pub fn surface_unreadable(formal: &str, error: &toha::ReviewError) -> String {
+    format!("cannot read the installed hooks of {formal}: {error}")
+}
+
+/// The installed hooks a `templates trust` grant approved, echoed on standard
+/// error as an audit of what was approved. Presentation only: it compares
+/// nothing and does not decide trust.
+pub fn approved_surface(surface: &toha::HookSurface) -> String {
+    let mut lines = vec!["approved surface:".to_string()];
+    for (index, view) in surface.views().iter().enumerate() {
+        // An interview hook node wraps its command in `hook`; a top-level hook
+        // is the command itself.
+        let command = view.node.get("hook").unwrap_or(&view.node);
+        let mut parts = Vec::new();
+        if let Some(script) = command.get("script").and_then(serde_json::Value::as_str) {
+            parts.push(format!("script: {script}"));
+        }
+        if let Some(run) = command.get("run") {
+            parts.push(format!("run: {run}"));
+        }
+        if let Some(args) = command.get("args") {
+            parts.push(format!("args: {args}"));
+        }
+        let detail = if parts.is_empty() {
+            command.to_string()
+        } else {
+            parts.join("  ")
+        };
+        lines.push(format!("  hook {}  {detail}", index + 1));
     }
     lines.join("\n")
 }
@@ -778,7 +922,18 @@ pub fn ambiguous(name: &str, matches: &[String], retry: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Shell, formal_for, path_value, plain_formal, word_for};
+    use super::{Shell, formal_for, path_value, plain_formal, surface_unreadable, word_for};
+
+    #[test]
+    fn surface_unreadable_names_the_template_and_the_error() {
+        let error = toha::ReviewError::Escape(std::path::PathBuf::from("/outside/x.sh"));
+        let message = surface_unreadable("acme", &error);
+        assert!(
+            message.starts_with("cannot read the installed hooks of acme:"),
+            "{message}"
+        );
+        assert!(message.contains("escapes the template root"), "{message}");
+    }
 
     #[test]
     fn each_command_gets_the_formal_name_form_it_accepts() {
@@ -786,7 +941,13 @@ mod tests {
         for command in ["stage", "apply", "templates add"] {
             assert_eq!(formal_for(command, extended), r"D:\a\template", "{command}");
         }
-        for command in ["templates remove", "templates update", "templates alias"] {
+        for command in [
+            "templates remove",
+            "templates update",
+            "templates alias",
+            "templates trust",
+            "templates untrust",
+        ] {
             assert_eq!(formal_for(command, extended), extended, "{command}");
         }
         assert_eq!(

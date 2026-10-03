@@ -1,0 +1,4 @@
+exit: 1
+error_contains:
+  - "jinja include cycle"
+  - "a.txt -> b.txt -> a.txt"

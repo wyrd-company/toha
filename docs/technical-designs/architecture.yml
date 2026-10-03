@@ -7,6 +7,21 @@ relationships:
     - config
     - template-registry
     - command-line-interface
+    - snapshot
+  related-to:
+    - bundled-demo
+    - template-defaults
+    - error-attribution
+    - confirm-flow
+    - headless-recovery
+    - jinja-context
+    - jinja-includes
+    - hook-results
+    - content-injection
+    - project-updates
+    - in-project-generators
+    - hook-review-trust
+    - installed-trust
 objective: >-
   Structure the toha crate and binary so that one pure interview engine serves
   the terminal, the JSON interview protocol, headless answers files, and crate
@@ -54,11 +69,27 @@ proposed-design:
     documents. `source` parses template addresses and fetches git templates
     with gitoxide. `registry` reads and writes `templates.yml` layers and
     resolves a template argument. `config` reads and merges configuration
-    layers. `staging` stores staged interviews. `jinja` owns the minijinja
+    layers. `staging` stores staged interviews. `snapshot` records an apply's
+    output as a git snapshot, opens a project's repository, and merges a
+    template update from a base snapshot. `jinja` owns the minijinja
     environment, the compiled value types, and the toha filters; it is
     private to the library. The binary holds argument parsing, the terminal
     prompt driver, output formatting, the exit-code mapping, and the embedded
     skills.
+
+    The `snapshot` module opens the target's repository once through gitoxide
+    (gix features: worktree-mutation, revision, sha1, status, merge) and removes
+    every configured merge and filter driver from the in-memory configuration so
+    no driver program starts during status, checkout, conversion, or merge. It
+    records a snapshot as a parentless commit under `refs/toha/snapshots/<id>`,
+    captures the applied files, and applies a template update by building a
+    candidate tree through a throwaway checkout and merging it three-way into the
+    working tree under an index lock. The update replay adapter, which drives the
+    interview engine from a base snapshot's recorded answers, is crate-private;
+    the command driver reaches it through the `drive_update`/`drive_update_resume`
+    seam, which returns the adapter's typed outcome over already-public interview
+    types. `StagedRecord` carries optional `base` and `reanswer` members for a
+    staged update. No gitoxide type appears in a public signature.
 
   template-module: >-
     `Template::load(folder: &Path) -> Result<Template, LoadError>` is the only
@@ -84,7 +115,7 @@ proposed-design:
     Typed<Vec<String>>, default: Option<Typed<Vec<String>>> }`.
     A loop exists only on text, and options exist only on the two select
     kinds, because no other variant has the field. Nodes are the sum type
-    `Node::{Question, Computed, Group, Message}`, each with an optional
+    `Node::{Question, Computed, Group, Message, Hook, Flow}`, each with an optional
     `when`. File generation rules, the ignore and static glob sets, the
     top-level hooks, and the two apply messages complete the `Template`.
 
@@ -107,8 +138,13 @@ proposed-design:
     The engine is a state machine whose states are values:
     `Interview::start(template: &Template, seed: Seed) -> Result<Interview,
     EvalError>` and
-    `enum Interview { Asking(Pending), Complete(Completed) }`. `Seed` holds the
-    configured defaults and the frozen instant that `now()` returns.
+    `enum Interview { Asking(Pending), Complete(Completed), Ended(Ended) }`. `Seed` holds
+    ordinary flat defaults, the frozen instant that `now()` returns and an
+    explicit invocation context.
+    Configured defaults enter through an origin-bearing `Resolution`; its
+    consuming start and staged-replay routes keep each winning mapping and
+    preset origin beside the value until constraints pass. Converting a
+    resolution to flat defaults is an explicit provenance-dropping operation.
     `Pending::batch(&self) -> &Batch` exposes the current batch.
     `Pending::messages_reached(&self) -> usize` counts messages reached through
     that batch in `Completed.messages` order.
@@ -118,7 +154,10 @@ proposed-design:
     evaluation failures, so the terminal driver reports an error as soon as
     a question is answered.
     `Pending::answer(self, answers: RawAnswers) -> Result<Interview,
-    AnswerError>` records a whole batch or nothing. `AnswerError::Rejected`
+    AnswerError>` records a whole document or nothing. It checks valid current
+    answers in a private tentative walk to classify known-invalid early answers
+    as active, skipped, or unresolved. The tentative walk publishes no effect;
+    an accepted document performs one fresh committed walk. `AnswerError::Rejected`
     returns the same pending state and the per-id rejections.
     `AnswerError::Eval` reports a Jinja evaluation failure without recording
     answers. `EvalError` names the node id, the prompt, description, or default
@@ -132,6 +171,32 @@ proposed-design:
     rendered question: id, kind, title, description, placeholder, default,
     options, and constraints. `Completed` holds the flat `Answers`, the
     rendered interview hooks in order, and the messages shown.
+
+  generate-axis: >-
+    The generate axis (`--like`) seeds a new application's answer defaults from a
+    snapshot of a prior application of the same source. A crate-private CLI-side
+    boundary `src/cli/like.rs` is the only code outside `snapshot` that names a
+    `Snapshot` or `Project` on this axis; it is pure and reader-only and never
+    prompts. `candidates(project, source)` reads the repository-wide snapshot set
+    through the producer reader and keeps the valid ones of the source;
+    `latest(&[Snapshot])` returns the newest; `find_required(project, source,
+    reference)` resolves an id or prefix and verifies the source;
+    `fold_submissions(...)` folds a snapshot's recorded submissions to one raw
+    default per id. Snapshot types stop at this boundary: the fold yields an
+    `IndexMap<Id, RawAnswer>` that the engine consumes as defaults. The engine
+    seam is `Resolution::start_with_seed(template, now, context, Option<seed>) ->
+    Result<(Interview, Vec<warning>), EvalError>`, a sibling of
+    `start_with_context`; with `None` it is byte-for-byte `start_with_context`, so
+    an absent seed uses the ordinary configured start. The seam is the single place generator
+    precedence is realized and the single-occupant default bank is built: it adds
+    a private `DefaultBankEntry::Snapshot { raw, from }` (mirrored by
+    `PreparedDefaultSource::Snapshot { from }`) that shadows a configured entry
+    for an id when the snapshot value matches the question's kind, drops a
+    wrong-kind value as a warning, without adding snapshot repository types to public `Seed`.
+    The `snapshot` reader exposes a repository-wide listing,
+    `Project::snapshots_all()`, the sibling of the target-scoped
+    `Project::snapshots()`. The staged
+    record carries an optional pinned snapshot id, re-read from git on resume.
 
   answers: >-
     `Answer` is `Text(String)`, `Bool(bool)`, `List(Vec<String>)`, `None`, or
@@ -148,42 +213,76 @@ proposed-design:
     prompt port. The terminal driver in the binary walks the `Batch` items,
     prints messages, asks each prompt with inquire, calls `check` after each
     answer, and submits the batch with `answer`. An empty submission ends a
-    loop prompt. The protocol driver in `protocol` converts a `Batch` into the
-    batch document and its JSON Schema, parses an answers document into
-    `RawAnswers`, and converts the engine's response into a result document.
-    `apply --answers` and crate callers use the same `answer` call with
-    answers from a document or from code.
+    loop prompt. The `protocol` module converts a `Batch` into the batch document
+    and its JSON Schema, and converts the engine's response into the result
+    documents. An external answers document reaches the engine only through the
+    private identity gate `parse_and_verify`: it parses the two-field envelope
+    `{"template", "answers"}` and compares the declared `template` with the
+    formal name the route established, by exact string equality, before it
+    yields the raw answers as a private `VerifiedSubmission`. `answer_document_once`
+    (one step, for `continue PATH FILE`) and `answer_document_headless` (the
+    scripted walk, for `apply TEMPLATE PATH --answers FILE`) consume that gate;
+    there is no public parser from external JSON to `RawAnswers`, so external
+    JSON cannot reach the engine without passing the identity comparison. The
+    in-memory crate path is separate: terminal prompting, staged replay, and
+    crate callers build `RawAnswers` directly and drive `Pending::answer` or
+    `answer_headless` without the envelope.
 
   staging: >-
-    A staged interview is stored as its inputs, not as engine internals: the
-    target path, the template formal name and resolved commit, whether the
-    argument resolved by name, the frozen
-    `now()` instant, and every accepted answers submission, in order. Resuming loads the
-    template at the recorded commit, recomputes registry trust only when the
-    argument resolved by name, starts a new interview with the same
-    `Seed`, and replays the raw submissions through `answer`. Because the
-    engine is pure, replay reaches the same pending batch as the original
-    process, in either modality. A template whose content changed so that
-    replay rejects a recorded answer fails with that rejection, and `abort`
-    clears it. `staging` writes records atomically through a temporary file
-    and rename, in the state directory resolved by the binary.
+    Staged records persist invocation inputs: the canonical target text,
+    selected formal identity and content version, originating context, frozen
+    time and ordered accepted raw submissions. Optional base, reanswer and seed
+    members describe update or generator input. Store validates the target against
+    the producer-created CanonicalTarget. Replay loads the recorded named/Git
+    version or current mutable folder, restores recorded context inside the
+    record, resolves live configured defaults and submits accepted values through
+    the shared engine. Legacy context-free records retain the legacy projection.
+    Hook trust is evaluated when applying the resulting plan; replay itself reads
+    no environment or approval. Persistence uses a temporary file and rename in
+    the state directory. Canonical storage keys precede validated legacy separator
+    keys; saving the canonical key removes the legacy key.
 
   plan-and-apply: >-
-    `Plan::build(template: &Template, completed: &Completed, target: &Path) ->
-    Result<Plan, PlanError>` renders every file and path and reads nothing but
-    the template folder and the target directory listing. A `Plan` holds
+    `Plan::build(template: &Template, completed: &Completed, target:
+    &CanonicalTarget) ->
+    Result<Plan, PlanError>` renders retained compiled file bodies and paths and
+    reads the target directory listing. It performs no target-content mutation. A `Plan` holds
     `PlannedFile { path: TargetPath, content: Content }`, where `Content` is
     `Rendered(String)` or `Copied(PathBuf)`; the conflicts with existing
-    files; the ordered hook commands, interview hooks first; and the rendered
-    apply messages. `TargetPath` is a newtype built only by a constructor that
+    files; the ordered hook commands, interview hooks first; and ready or deferred
+    apply messages. Hook-result readers defer rendering to ordered apply.
+    `TargetPath` is a newtype built only by a constructor that
     normalizes a rendered relative path and rejects `..` escapes, absolute
     paths, and any path inside `.git`, so no later code checks for them.
-    `Plan::apply(self, options: ApplyOptions, runner: &dyn HookRunner) ->
+    A `Plan` also holds `edits: Vec<PlannedEdit>`, the bounded content-injection
+    edits, where `PlannedEdit` is `Region(PlannedRegionEdit)` or
+    `JsonValue(PlannedJsonEdit)`. `Plan::build` renders each `inject` rule to an
+    edit — resolving the marker style or JSON format, rejecting a JSON-family
+    marker rule, and rejecting a duplicate region key or an overlapping typed
+    path — but reads no target bytes. Two pure resolvers,
+    `resolve_region_edit(current: Option<&[u8]>, edit) -> Result<EditResolution,
+    RegionError>` and `resolve_json_edit(current, edit) -> Result<EditResolution,
+    JsonEditError>`, each return a complete candidate file as
+    `Unchanged`, `Write(Vec<u8>)`, or `Drift { forced }` and perform no I/O; the
+    region resolver checksums its owned span with `sha2`, and the JSON resolver
+    edits the `jsonc-parser` concrete syntax tree so unrelated source is kept.
+    `Plan::mutations() -> impl Iterator<Item = FileMutation>` derives the
+    ownership view `FileMutation::{Whole, Region, JsonValue}` that the project-
+    update design consumes.
+    `Plan::apply(self, target: &CanonicalTarget, options: ApplyOptions,
+    runner: &dyn HookRunner) ->
     Result<Applied, ApplyError>` refuses to write when conflicts exist
     without `force`, returns `Applied::NeedsTrust(Plan)` without writing when
-    the plan has hooks and `options.trusted` is false, and otherwise writes
-    every file, then runs the hooks in order and stops at the first failure.
-    A dry run is `Plan::build` followed by printing the plan.
+    the plan has hooks and `options.trusted` is false, and otherwise resolves
+    every injected target in memory before the first write — starting from the
+    whole-file image when a rule supplies one, otherwise the current bytes read
+    once, and folding the target's edits in source order — so an unforced region
+    drift, a parse or path error, or a missing target leaves every file
+    unchanged. It then writes each whole file, replaces each changed injected
+    target atomically through a sibling temporary file, reports each changed
+    target once, and runs the hooks in order, stopping at the first failure.
+    A dry run is `Plan::build` followed by classifying each edit against its
+    target's current bytes and printing the plan.
 
   hook-runner: >-
     `HookRunner` is the one port in the library, with two adapters: the
@@ -212,14 +311,15 @@ proposed-design:
     library reads no environment variables. `config::load(&Dirs, cwd) ->
     Result<Config, ConfigError>` validates each layer against the embedded
     configuration schema and merges them by the rules in the configuration
-    specification.
+    specification. `ConfigEntry<T>` keeps each winning value and origin
+    together. `configured_defaults` is the sole consumer that translates those
+    entries into an origin-bearing `Resolution`; callers report its warnings
+    before consuming it through configured start or replay.
 
   outcomes-and-exit-codes: >-
-    Each command returns a domain outcome, and one exhaustive match in the
-    binary maps outcomes and errors to the exit codes in the command-line
+    Command adapters map domain outcomes and errors to the exit codes in the command-line
     specification: success 0, errors 1, usage 2, `NeedsTrust` 3, a pending
-    batch 4, and `ResolveError::Ambiguous` 5. Adding a variant fails
-    compilation until it has an exit code.
+    batch 4, and `ResolveError::Ambiguous` 5.
 
   schemas-as-source: >-
     The JSON Schemas in `docs/specifications/` are embedded with
@@ -235,8 +335,8 @@ proposed-design:
     carry `!include` into the loader; jsonschema for schema validation; globset for ignore and
     static globs; sha2 for staged file names; etcetera for platform
     directories; clap for arguments, inquire for prompts, and include_dir for
-    embedded skills, behind the `cli` feature; and dist for release
-    installers.
+    embedded skills and the bundled demo, behind the `cli` feature; and dist for
+    release installers.
 
   fixture-suite: >-
     Each fixture is a directory under `tests/fixtures/` holding a `template/`

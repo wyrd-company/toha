@@ -60,9 +60,12 @@ properties:
     A record of installed templates for each layer, holding each template's
     formal name, short name, source, ref, commit, location, aliases, and trust.
   trust: >-
-    Hooks run only for trusted templates. Trust comes from the user or system
-    template registry, or from the `--trust` flag on a single run. Trust in an
-    installed template carries over when the template is updated.
+    Hooks run only after the caller approves the template's executable surface:
+    its hook definitions and the bytes of the files they run. Approval is
+    recorded in the user or system template registry and authorizes the hooks
+    only while the installed content still matches it; the `--trust` flag
+    approves a single run. An update that changes the executable surface
+    withdraws trust until the template is approved again.
   staged-interviews: >-
     An interview in progress is saved in the user's state directory, keyed by
     its target path, so it continues in a later process.
@@ -90,6 +93,11 @@ features:
   generate-files-from-arrays: >-
     Renders one support file once for each item of an array answer or data
     value, at a templated path.
+  inject-into-existing-files: >-
+    Changes one bounded part of an existing file — a checksum-marked region in a
+    text file, or a typed value at a path in a JSON, JSONC, or JSON5 file —
+    leaving the rest unchanged, converging on repeated applies, and refusing an
+    operator's region edit without a forced overwrite.
   run-hooks: >-
     Runs commands after rendering, in interview order and then in template
     order, with the conditions of their position in the interview.
@@ -110,6 +118,29 @@ features:
   update-templates: >-
     Refreshes installed templates that follow a branch to the newest commit
     of that branch.
+  snapshot-applies: >-
+    Records the output of an apply into a git target as a snapshot — a parentless
+    commit under a Toha-owned ref — so a later update knows what it wrote. A
+    snapshot holds the rendered files and the answers that produced them;
+    snapshots list, clean without pushing, and fetch as ordinary git objects.
+  update-projects: >-
+    Re-renders a template into a project it already generated and merges the
+    difference three-way from a base snapshot, so the template's changes reach
+    the project while the operator's own edits survive and a conflict is left for
+    the operator to resolve. An update replays the recorded answers and asks only
+    what the new version needs; a baseline adopts an existing project from an
+    empty base.
+  generate-into-subpaths: >-
+    Applies one template repeatedly into subpaths of a project — "add a widget",
+    "add a module" — where `apply TEMPLATE PATH --like <SELECTOR>` pre-fills the
+    new application's answer defaults from a snapshot of an earlier application
+    of the same source. `--like` is the generate axis: it writes a fresh
+    application and only seeds defaults, never merges, and is a sibling of the
+    update axis's `--from`, never combined with it. A seeded default is still a
+    default a person or an answers document overrides; the snapshot is selected
+    repository-wide by source, so a prior application at another subpath seeds
+    the new one, and each new application saves its own snapshot so the next can
+    seed from it in turn.
   name-templates: >-
     Resolves templates by alias, short name, or formal name, and reports
     ambiguous short names with the commands to resolve them.
@@ -124,6 +155,8 @@ benefits:
     Keeps template repositories organized, because configuration, support
     material, and rendered files live in separate places.
   - Holds several templates in one repository and several versions of one template side by side.
+  - Carries a template's later changes into a project it already generated while the operator's own edits survive.
+  - Applies one template repeatedly into project subpaths, seeding each new application's answers from an earlier one.
   - >-
     Makes template logic one language, Jinja, for conditions, computed values,
     defaults, and rendering.

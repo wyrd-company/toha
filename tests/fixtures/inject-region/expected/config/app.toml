@@ -1,0 +1,6 @@
+[application]
+# >>> toha:region features >>>
+analytics_enabled = true
+analytics_sample_rate = 0.1
+# <<< toha:end features sha256:47cebf9e1ed050600bb948680fed1a4a3907d1c63c9fcd1f6064e42e32ded5e1 <<<
+name = "sample-service"

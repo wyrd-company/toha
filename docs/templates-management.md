@@ -158,5 +158,33 @@ to run on later uses, pass `--trust` when adding it:
 toha templates add gh:example/collection#notes --trust
 ```
 
-This records trust in your user registry. Read
-[Hooks and messages](/docs/toha/template-hooks) before trusting a template.
+This records approval for the template's current executable hook surface in
+your user registry. Read [Hooks and messages](/docs/toha/template-hooks) before
+trusting a template.
+
+To approve a template that is already installed in your user registry, review
+its hooks and then run:
+
+```sh
+toha templates trust daily-note
+```
+
+This approves the executable hook surface that is currently installed. It does
+not fetch content or change the installed commit. If an update changes a hook
+or an executed in-template script, the approval no longer matches. Review the
+new surface and run the same command to approve it again. You do not need to
+remove or add the template again.
+
+To revoke approval, run:
+
+```sh
+toha templates untrust daily-note
+```
+
+Revocation does not remove or update the template. It records a denial in your
+user registry, so an approval from a lower registry layer cannot make the
+template trusted again. A later `templates trust daily-note` removes that
+denial and approves the current installed surface.
+
+Both commands change only a template that is present in the user registry.
+They refuse a template supplied only by the system registry or local layer.

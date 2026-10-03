@@ -1,0 +1,9 @@
+name: inject-region
+ignore: [".keep"]
+inject:
+  - into: "config/app.toml"
+    region: features
+    content: |
+      analytics_enabled = true
+      analytics_sample_rate = 0.1
+    anchor: { after: "[application]", occurrence: only }

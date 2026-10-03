@@ -1,0 +1,5 @@
+name: include-partial-under-source-ignored
+data:
+  who: reader
+ignore:
+  - "_partial.txt"

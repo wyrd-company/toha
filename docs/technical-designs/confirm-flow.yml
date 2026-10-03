@@ -1,0 +1,48 @@
+$schema: https://refinery.systems/ontology/technical-design
+relationships:
+  realizes: toha
+  implements:
+    - template-format
+    - interview-protocol
+    - command-line-interface
+  related-to:
+    - architecture
+    - error-attribution
+    - headless-recovery
+objective: >-
+  Carry explicit interview flow actions through the shared engine and make
+  completion disposition govern every apply route.
+proposed-design:
+  high-level-overview: >-
+    Node::Flow carries an optional condition and label plus Stop, Abort, DryRun
+    or Skip action. The node has no answer id. The walk yields Asking, Complete
+    or Ended; drivers route these typed outcomes into prompting, planning or
+    termination.
+  termination: >-
+    Stop and Abort yield Ended with reached messages, optional label and the
+    termination kind. Ended carries no Completed or hooks that a plan consumes.
+    Drivers remove the target's staged record for Abort through Store::remove;
+    an absent record is a no-op and removal failure is an error. Stop retains
+    staged state. Neither outcome evaluates later defaults, writes files or
+    executes hooks.
+  dry-run: >-
+    DryRun raises a sticky disposition while the interview continues normally.
+    Completed exposes the planning disposition through step. Drivers compose
+    that disposition with the CLI dry-run flag by union. A preview computes the
+    complete plan and suppresses file writes, hooks and snapshot publication.
+    The same suppression governs direct apply, staged apply and project-update
+    adapters. A staged preview retains the record for a later apply.
+  scoped-skip: >-
+    Skip(Rest) propagates through the remaining interview; Skip(Group) applies
+    to the remaining siblings of the immediately enclosing group. Group skip
+    outside a group is a load error. Skipped questions use their default or
+    kind-specific empty answer and retain ordinary skipped-answer warnings.
+    Ancestor skip makes a flow node inert. Flow conditions obey the same
+    reference readiness and document ordering as other nodes.
+  atomicity-and-replay: >-
+    The tentative answer probe may discover flow outcomes but publishes no
+    effect. The committed walk constructs the outcome once. Staged persistence
+    stores accepted submissions; replay derives flow state from those
+    submissions rather than storing disposition separately. A submission after
+    a terminal outcome is a replay error. Ordinary confirm questions remain
+    boolean-valued interview questions.

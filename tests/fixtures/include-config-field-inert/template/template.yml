@@ -1,0 +1,3 @@
+name: include-config-field-inert
+messages:
+  after-apply: '{% include "partials/x.md" %}'

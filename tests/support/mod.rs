@@ -76,6 +76,16 @@ pub fn fixtures() -> Vec<PathBuf> {
         .unwrap()
         .map(|entry| entry.unwrap().path().canonicalize().unwrap())
         .filter(|path| path.is_dir())
+        // `update-*` fixtures drive the data-driven update harness
+        // (tests/update_fixtures.rs); `generator-*` fixtures drive the stateful
+        // generate harness (tests/generator_fixture.rs). Neither is a standard
+        // single-apply fixture.
+        .filter(|path| {
+            !path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("update-") || name.starts_with("generator-"))
+        })
         .collect();
     paths.sort();
     paths
@@ -324,3 +334,162 @@ pub const ENVIRONMENT: &[&str] = &[
     "PATH",
     "TOHA_NOW",
 ];
+
+/// Builds `RawAnswers` from a bare JSON answers map, for in-memory engine and
+/// staged-replay tests that drive `Pending::answer` / `answer_headless`
+/// directly. External-document tests use the `{"template", "answers"}` envelope
+/// through `protocol::answer_document_once` / `answer_document_headless`; this
+/// helper is the in-memory path that the removed public `parse_answers` served.
+#[allow(dead_code)]
+pub fn raw_answers(json: &str) -> Result<toha::RawAnswers, String> {
+    let value: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    value
+        .as_object()
+        .ok_or_else(|| "answers document must be a JSON object".to_string())?
+        .iter()
+        .map(|(key, value)| toha::Id::parse(key).map(|id| (id, toha::RawAnswer(value.clone()))))
+        .collect()
+}
+
+/// Projects a completed interview to a comparable value `{answers, messages,
+/// disposition?}`, for engine and staged-replay equivalence tests. The product
+/// no longer emits a `complete` document (a scripted completion is `applied` or
+/// `planned`, and an agent completion is instructions only), so this projection
+/// replaces the removed `protocol::complete_document` as a test comparison
+/// medium only. It carries no context, which is identical on both sides of a
+/// replay-equivalence comparison.
+#[allow(dead_code)]
+pub fn completed_projection(completed: &toha::Completed) -> serde_json::Value {
+    let answers: serde_json::Map<String, serde_json::Value> = completed
+        .answers
+        .iter()
+        .map(|(id, answer)| (id.to_string(), answer.to_json()))
+        .collect();
+    let mut document = serde_json::json!({
+        "answers": answers,
+        "messages": completed.last_messages,
+    });
+    if completed.disposition() == toha::Disposition::DryRun {
+        document["disposition"] = serde_json::json!("dry-run");
+    }
+    document
+}
+
+/// The formal template identity the scripted route establishes for a local
+/// folder: its canonical absolute path, the same value the route publishes as
+/// `context.template`. Envelope answers documents must copy it exactly.
+#[allow(dead_code)]
+pub fn formal_name(template_folder: &Path) -> String {
+    template_folder
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Wraps a bare answers map in the `{"template", "answers"}` envelope naming
+/// `formal`, writes it to `dir`, and returns the path, for `apply --answers`
+/// and `continue PATH FILE`.
+#[allow(dead_code)]
+pub fn envelope_file(dir: &Path, formal: &str, answers: &Path) -> PathBuf {
+    let inner: serde_json::Value = serde_json::from_slice(&fs::read(answers).unwrap()).unwrap();
+    let document = serde_json::json!({ "template": formal, "answers": inner });
+    let path = dir.join("envelope-answers.json");
+    fs::write(&path, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
+    path
+}
+
+/// The envelope text naming `formal` around a bare answers value, for stdin.
+#[allow(dead_code)]
+pub fn envelope_text(formal: &str, answers: &serde_json::Value) -> String {
+    serde_json::json!({ "template": formal, "answers": answers }).to_string()
+}
+
+/// Parses the leading JSON value from a route's standard output, ignoring any
+/// plain-text instructions an agent route appends after the batch document.
+#[allow(dead_code)]
+pub fn first_document(stdout: &[u8]) -> serde_json::Value {
+    serde_json::Deserializer::from_slice(stdout)
+        .into_iter::<serde_json::Value>()
+        .next()
+        .expect("a JSON document on standard output")
+        .expect("a valid JSON document on standard output")
+}
+
+/// The `messages` array of a result document as strings.
+#[allow(dead_code)]
+pub fn document_messages(document: &serde_json::Value) -> Vec<String> {
+    document["messages"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .map(|v| v.as_str().unwrap_or_default().to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Reconstructs the plan-line text (`<action> <path>`, `hook [..] cwd <cwd>`)
+/// from an `applied` or `planned` result document, matching the dry-run text the
+/// former plain-text output produced, so plan-line fixture expectations hold
+/// against the JSON document.
+#[allow(dead_code)]
+pub fn plan_text_from_document(document: &serde_json::Value) -> String {
+    let mut lines = Vec::new();
+    if let Some(files) = document["files"].as_array() {
+        for file in files {
+            let action = file["action"].as_str().unwrap_or_default();
+            let path = file["path"].as_str().unwrap_or_default();
+            match file["owner"].as_str() {
+                Some(owner) => lines.push(format!("{action} {path} ({owner})")),
+                None => lines.push(format!("{action} {path}")),
+            }
+        }
+    }
+    if let Some(hooks) = document["hooks"].as_array() {
+        for hook in hooks {
+            let command: Vec<String> = hook["command"]
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .map(|v| v.as_str().unwrap_or_default().to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
+            lines.push(format!(
+                "hook {command:?} cwd {}",
+                hook["cwd"].as_str().unwrap_or(".")
+            ));
+        }
+    }
+    lines.join("\n")
+}
+
+/// The decoded diagnostic text of a result document: an `error` document's
+/// `message`, plus every per-question error string of a `questions` document.
+/// Fixture `error_contains` parts match this rather than the JSON-escaped
+/// standard output.
+#[allow(dead_code)]
+pub fn diagnostic_text(document: &serde_json::Value) -> String {
+    let mut text = String::new();
+    if let Some(message) = document["message"].as_str() {
+        text.push_str(message);
+    }
+    if let Some(errors) = document["errors"].as_object() {
+        for (id, value) in errors {
+            text.push('\n');
+            text.push_str(id);
+            if let Some(items) = value.as_array() {
+                for item in items {
+                    if let Some(sentence) = item.as_str() {
+                        text.push('\n');
+                        text.push_str(sentence);
+                    }
+                }
+            }
+        }
+    }
+    text
+}

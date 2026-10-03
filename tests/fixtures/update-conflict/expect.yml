@@ -1,0 +1,17 @@
+# ---
+# relationships:
+#   exemplifies: architecture
+# ---
+# The data-driven update fixture: apply template-a, overlay the operator edits,
+# then apply template-b with --from and check the merge.
+status: applied
+# The paths the merge leaves conflicted for the operator.
+conflicted:
+  - README.md
+# The unmerged index stages the conflicted path carries (git ls-files -s).
+unmerged-stages:
+  README.md: [1, 2, 3]
+# The operator's bytes are at stage 2 of the conflicted path.
+stage-2-contains: "line-3-operator"
+# The conflicted worktree file carries diff3 markers.
+markers: true

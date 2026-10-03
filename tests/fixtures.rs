@@ -12,6 +12,7 @@ use toha::{
 };
 
 fn run(fixture: &Path, target: &Path) -> Result<Vec<String>, (u8, String)> {
+    let target = toha::staging::canonical_target(target).map_err(|error| (1, error.to_string()))?;
     let template =
         Template::load(&fixture.join("template")).map_err(|error| (1, error.to_string()))?;
     let json: serde_json::Map<String, serde_json::Value> =
@@ -25,12 +26,15 @@ fn run(fixture: &Path, target: &Path) -> Result<Vec<String>, (u8, String)> {
         Seed {
             now: support::expectation(fixture).now.parse().unwrap(),
             defaults: indexmap::IndexMap::new(),
+            context: toha::context::InvocationContext::for_target(target.clone()),
         },
     )
     .map_err(|error| (1, error.to_string()))?;
     let completed = loop {
         match interview {
             Interview::Complete(completed) => break completed,
+            // A flow stop/abort ends without a plan; report its messages, exit 0.
+            Interview::Ended(ended) => return Ok(ended.messages),
             Interview::Asking(pending) => {
                 interview =
                     pending
@@ -51,15 +55,22 @@ fn run(fixture: &Path, target: &Path) -> Result<Vec<String>, (u8, String)> {
     };
     let expect = support::expectation(fixture);
     let plan =
-        Plan::build(&template, &completed, target).map_err(|error| (1, error.to_string()))?;
+        Plan::build(&template, &completed, &target).map_err(|error| (1, error.to_string()))?;
     assert_eq!(
         plan.before_apply,
         expect.before_apply,
         "{}",
         fixture.display()
     );
+    // A result-free after-apply is rendered at plan build (`Ready`); a
+    // result-reading one is retained (`AfterHooks`) and rendered during apply, so
+    // its text is checked through the applied output, not here.
+    let plan_after_apply = plan.after_apply.as_ref().and_then(|planned| match planned {
+        toha::Planned::Ready(text) => Some(text.clone()),
+        toha::Planned::AfterHooks(_) => None,
+    });
     assert_eq!(
-        plan.after_apply,
+        plan_after_apply,
         expect.after_apply,
         "{}",
         fixture.display()
@@ -69,14 +80,21 @@ fn run(fixture: &Path, target: &Path) -> Result<Vec<String>, (u8, String)> {
         .map(RecordingRunner::fail_at)
         .unwrap_or_default();
     let result = if expect.options.dry_run {
-        Ok(Applied::Written {
-            files: vec![],
-            hooks_run: 0,
-            after_apply: None,
-        })
+        // A dry run of untrusted hooks reports a `planned` document with
+        // `trusted: false` and exit 3, the same as the scripted route.
+        if !plan.hooks.is_empty() && !expect.options.trust {
+            Err((3, String::new()))
+        } else {
+            Ok(Applied::Written {
+                files: vec![],
+                hooks_run: 0,
+                hooks: vec![],
+                after_apply: None,
+            })
+        }
     } else {
         plan.apply(
-            target,
+            &target,
             ApplyOptions {
                 force: expect.options.force,
                 trusted: expect.options.trust,
@@ -96,6 +114,194 @@ fn run(fixture: &Path, target: &Path) -> Result<Vec<String>, (u8, String)> {
         Applied::Written { .. } => Ok(completed.messages),
         Applied::NeedsTrust(_) => Err((3, "hooks will not run without --trust".into())),
     }
+}
+
+fn planning_error(folder: &Path) -> String {
+    let template = Template::load(folder).unwrap();
+    let target = tempfile::tempdir().unwrap();
+    let target = toha::staging::canonical_target(target.path()).unwrap();
+    let Interview::Complete(completed) = Interview::start(
+        &template,
+        Seed {
+            now: "2026-01-02T03:04:05+00:00[UTC]".parse().unwrap(),
+            defaults: Default::default(),
+            context: toha::context::InvocationContext::for_target(target.clone()),
+        },
+    )
+    .unwrap() else {
+        panic!("expected complete interview")
+    };
+    Plan::build(&template, &completed, &target)
+        .unwrap_err()
+        .to_string()
+}
+
+#[test]
+fn file_rule_faults_retain_support_path_field_expression_and_engine_text() {
+    let when = Path::new("tests/fixtures/err-files-when-eval/template");
+    let error = planning_error(when);
+    assert!(
+        error.starts_with(&format!(
+            "{}: template error in files[0].when `'bad' | dateformat`: ",
+            when.join("part.txt").canonicalize().unwrap().display()
+        )),
+        "{error}"
+    );
+    assert!(
+        error.contains("invalid operation: expected four digit year"),
+        "{error}"
+    );
+
+    let each = Path::new("tests/fixtures/err-each-not-array/template");
+    let error = planning_error(each);
+    assert_eq!(
+        error,
+        format!(
+            "{}: template error in files[0].each `42`: expected array",
+            each.join("part.txt").canonicalize().unwrap().display()
+        )
+    );
+
+    let folder = tempfile::tempdir().unwrap();
+    fs::create_dir(folder.path().join("template")).unwrap();
+    fs::write(folder.path().join("part.txt"), "content").unwrap();
+    fs::write(
+        folder.path().join("template.yml"),
+        "name: sample\nfiles:\n  - each: '[\"bad\"] as item'\n    source: part.txt\n    path: '{{ item | dateformat }}.txt'\n",
+    )
+    .unwrap();
+    let error = planning_error(folder.path());
+    assert!(
+        error.starts_with(&format!(
+            "{}: template error in files[0].path `{{{{ item | dateformat }}}}.txt`: ",
+            folder
+                .path()
+                .join("part.txt")
+                .canonicalize()
+                .unwrap()
+                .display()
+        )),
+        "{error}"
+    );
+    assert!(
+        error.contains("invalid operation: expected four digit year"),
+        "{error}"
+    );
+}
+
+#[test]
+fn ordinary_path_fault_names_exact_segment_and_content_fault_stays_unchanged() {
+    let folder = tempfile::tempdir().unwrap();
+    let segment = "{{ label + [] }}";
+    let source = folder
+        .path()
+        .join("template")
+        .join(segment)
+        .join("note.txt");
+    fs::create_dir_all(source.parent().unwrap()).unwrap();
+    fs::write(&source, "content").unwrap();
+    fs::write(
+        folder.path().join("template.yml"),
+        "name: sample\ndata: { label: bad }\n",
+    )
+    .unwrap();
+    let error = planning_error(folder.path());
+    assert!(
+        error.starts_with(&format!(
+            "{}: template error in path `{segment}`: ",
+            source.canonicalize().unwrap().display()
+        )),
+        "{error}"
+    );
+    assert!(
+        error.contains(
+            "invalid operation: tried to use + operator on unsupported types string and sequence"
+        ),
+        "{error}"
+    );
+
+    let content_folder = tempfile::tempdir().unwrap();
+    fs::create_dir(content_folder.path().join("template")).unwrap();
+    let content = content_folder.path().join("template/body.txt");
+    fs::write(&content, "{{ 'bad' | dateformat }}").unwrap();
+    fs::write(content_folder.path().join("template.yml"), "name: sample\n").unwrap();
+    let error = planning_error(content_folder.path());
+    assert!(
+        error.starts_with(&format!(
+            "{}: invalid operation",
+            content.canonicalize().unwrap().display()
+        )),
+        "{error}"
+    );
+    assert!(!error.contains("template error in path"), "{error}");
+}
+
+#[test]
+fn planning_fault_reports_the_same_message_through_direct_staged_and_crate_routes() {
+    let template_path = Path::new("tests/fixtures/err-files-when-eval/template")
+        .canonicalize()
+        .unwrap();
+    let target = tempfile::tempdir().unwrap();
+    let bare = target.path().join("answers.json");
+    fs::write(&bare, "{}").unwrap();
+
+    // Direct scripted route: the fault is an `error` document on standard output.
+    let direct_state = tempfile::tempdir().unwrap();
+    let answers = support::envelope_file(
+        direct_state.path(),
+        &support::formal_name(&template_path),
+        &bare,
+    );
+    let direct = support::isolated_command(direct_state.path())
+        .arg("apply")
+        .arg(support::folder_address(&template_path))
+        .arg(target.path())
+        .args(["--answers"])
+        .arg(&answers)
+        .output()
+        .unwrap();
+    assert_eq!(direct.status.code(), Some(1));
+    let direct_message = support::diagnostic_text(&support::first_document(&direct.stdout));
+
+    // Staged agent route: `stage --async` then `apply PATH` reports the fault on
+    // standard error.
+    let staged_state = tempfile::tempdir().unwrap();
+    let staged = support::isolated_command(staged_state.path())
+        .arg("stage")
+        .arg(support::folder_address(&template_path))
+        .arg(target.path())
+        .arg("--async")
+        .output()
+        .unwrap();
+    assert_eq!(staged.status.code(), Some(0));
+    let applied = support::isolated_command(staged_state.path())
+        .arg("apply")
+        .arg(target.path())
+        .output()
+        .unwrap();
+    assert_eq!(applied.status.code(), Some(1));
+    let applied_message = String::from_utf8(applied.stderr).unwrap();
+
+    let template = Template::load(&template_path).unwrap();
+    let canonical = toha::staging::canonical_target(target.path()).unwrap();
+    let Interview::Complete(completed) = Interview::start(
+        &template,
+        Seed {
+            now: "2026-01-02T03:04:05+00:00[UTC]".parse().unwrap(),
+            defaults: Default::default(),
+            context: toha::context::InvocationContext::for_target(canonical.clone()),
+        },
+    )
+    .unwrap() else {
+        panic!("expected complete interview")
+    };
+    let crate_error = Plan::build(&template, &completed, &canonical)
+        .unwrap_err()
+        .to_string();
+    // The scripted route carries the fault as the error document's message, the
+    // agent apply route on standard error; both equal the crate message.
+    assert_eq!(direct_message, crate_error);
+    assert_eq!(applied_message, format!("{crate_error}\n"));
 }
 
 #[test]
@@ -130,6 +336,33 @@ fn every_fixture_through_library() {
     }
 }
 
+/// Git cannot keep an empty directory, so one under the fixture tree exists only
+/// in the working tree that made it. Refuse it here so that a fixture never
+/// passes locally and fails on a fresh checkout.
+#[test]
+fn fixture_tree_has_no_empty_directories() {
+    fn collect(dir: &Path, empty: &mut Vec<std::path::PathBuf>) {
+        let entries: Vec<_> = fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap())
+            .collect();
+        if entries.is_empty() {
+            empty.push(dir.to_owned());
+        }
+        for entry in entries {
+            if entry.file_type().unwrap().is_dir() {
+                collect(&entry.path(), empty);
+            }
+        }
+    }
+    let mut empty = Vec::new();
+    collect(Path::new("tests/fixtures"), &mut empty);
+    assert!(
+        empty.is_empty(),
+        "Git does not keep these empty fixture directories; add a tracked file: {empty:#?}"
+    );
+}
+
 #[test]
 fn rejected_batch_keeps_answers_unrecorded() {
     let template = Template::load(Path::new("tests/fixtures/text-basic/template")).unwrap();
@@ -141,6 +374,9 @@ fn rejected_batch_keeps_answers_unrecorded() {
                 .parse()
                 .unwrap(),
             defaults: indexmap::IndexMap::new(),
+            context: toha::context::InvocationContext::for_target(
+                toha::staging::canonical_target(std::path::Path::new(".")).unwrap(),
+            ),
         },
     )
     .unwrap() else {
@@ -213,6 +449,9 @@ fn basic_example_batch_by_batch_matches_single_submission() {
     let seed = || Seed {
         now: support::expectation(fixture).now.parse().unwrap(),
         defaults: indexmap::IndexMap::new(),
+        context: toha::context::InvocationContext::for_target(
+            toha::staging::canonical_target(std::path::Path::new(".")).unwrap(),
+        ),
     };
     let Interview::Asking(single) = Interview::start(&template, seed()).unwrap() else {
         panic!()
@@ -221,6 +460,7 @@ fn basic_example_batch_by_batch_matches_single_submission() {
     let one = loop {
         match state {
             Interview::Complete(c) => break c.answers,
+            Interview::Ended(_) => panic!("unexpected flow end"),
             Interview::Asking(p) => state = p.answer(RawAnswers::new()).unwrap(),
         }
     };
@@ -228,6 +468,7 @@ fn basic_example_batch_by_batch_matches_single_submission() {
     let batches = loop {
         match state {
             Interview::Complete(c) => break c.answers,
+            Interview::Ended(_) => panic!("unexpected flow end"),
             Interview::Asking(p) => {
                 let ids: Vec<_> = p
                     .batch()
@@ -266,6 +507,9 @@ fn configured_default_replaces_question_default() {
                 .parse()
                 .unwrap(),
             defaults,
+            context: toha::context::InvocationContext::for_target(
+                toha::staging::canonical_target(std::path::Path::new(".")).unwrap(),
+            ),
         },
     )
     .unwrap() else {
@@ -304,6 +548,9 @@ fn configured_default_does_not_evaluate_question_default() {
             .parse()
             .unwrap(),
         defaults,
+        context: toha::context::InvocationContext::for_target(
+            toha::staging::canonical_target(std::path::Path::new(".")).unwrap(),
+        ),
     };
     let Interview::Asking(pending) = Interview::start(&template, seed).unwrap() else {
         panic!()
@@ -334,6 +581,9 @@ fn false_when_waits_for_all_node_references() {
         let seed = Seed {
             now: support::expectation(&fixture).now.parse().unwrap(),
             defaults: indexmap::IndexMap::new(),
+            context: toha::context::InvocationContext::for_target(
+                toha::staging::canonical_target(std::path::Path::new(".")).unwrap(),
+            ),
         };
         let Interview::Asking(first_batch) = Interview::start(&template, seed).unwrap() else {
             panic!("{name}: first batch")
@@ -385,6 +635,9 @@ fn check_preserves_format_evaluation_failure() {
     let seed = Seed {
         now: support::expectation(fixture).now.parse().unwrap(),
         defaults: indexmap::IndexMap::new(),
+        context: toha::context::InvocationContext::for_target(
+            toha::staging::canonical_target(std::path::Path::new(".")).unwrap(),
+        ),
     };
     let Interview::Asking(pending) = Interview::start(&template, seed).unwrap() else {
         panic!()
@@ -431,6 +684,9 @@ interview:
     let seed = Seed {
         now: "2026-01-02T03:04:05+00:00[UTC]".parse().unwrap(),
         defaults: indexmap::IndexMap::new(),
+        context: toha::context::InvocationContext::for_target(
+            toha::staging::canonical_target(std::path::Path::new(".")).unwrap(),
+        ),
     };
     let Interview::Asking(pending) = Interview::start(&template, seed).unwrap() else {
         panic!()

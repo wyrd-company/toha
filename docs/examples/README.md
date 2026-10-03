@@ -14,6 +14,7 @@ format. These examples are the seed for the fixture suite.
 | [basic](basic/template.yml)                     | Question types, validation, a looped text question, defaults             |
 | [branching](branching/template.yml)             | `when`, groups, computed values, options from an expression, static data |
 | [generated-files](generated-files/template.yml) | `each` file generation, ignore and static globs, messages, hooks         |
+| [includes](includes/template.yml)               | File-body `{% include %}` from root-level, `partials/`, and nested paths  |
 
 ## Hooks
 

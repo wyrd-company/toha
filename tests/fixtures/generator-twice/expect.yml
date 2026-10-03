@@ -1,0 +1,21 @@
+# The mandated in-project-generators fixture (design.md:409). One widget template
+# is applied twice into one clean git repository: first into src/widgets/alpha
+# with answers-alpha.json (recording snapshot SA), then into src/widgets/beta
+# with `--like <SA>` and answers-beta.json, so beta inherits style and with_tests
+# from SA and overrides only label. The person, scripted, agent, and crate routes
+# must all produce the expected beta tree for the same inputs.
+alpha:
+  target: src/widgets/alpha
+  answers: answers-alpha.json
+  expected: expected/alpha
+beta:
+  target: src/widgets/beta
+  answers: answers-beta.json
+  like: SA            # a >=6-char prefix of the alpha snapshot id, resolved at runtime
+  expected: expected/beta
+  seed_from: SA       # the beta result document's seed.from equals SA
+snapshots:
+  # Two snapshots, equal source, targets alpha and beta.
+  equal_source: true
+  targets: [src/widgets/alpha, src/widgets/beta]
+routes: [scripted, agent, person, crate]

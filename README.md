@@ -73,15 +73,18 @@ direct installation.
 
 ## First run
 
-From a checkout of this repository, use the
-[demo template](docs/examples/demo/template.yml):
+Toha ships a small [demo template](docs/examples/demo/template.yml) inside the
+binary. From any directory, offline, with nothing installed:
 
 ```sh
-toha apply ./docs/examples/demo ./notes
+toha apply toha-demo ./notes
 ```
 
 Answer **Note title** and **Topic**. To inspect the file plan without writing
-it, use `toha apply ./docs/examples/demo ./preview --dry-run`.
+it, use `toha apply toha-demo ./preview --dry-run`.
+
+`toha-demo` is a reserved fallback name. If you install or alias a template as
+`toha-demo`, that template resolves instead.
 
 ## Using Toha from Rust
 
@@ -91,18 +94,46 @@ Add the library without the CLI dependencies:
 cargo add toha --no-default-features
 ```
 
-From this repository checkout, drive the same interview with a JSON answers
-document:
+From this repository checkout, drive the same interview with an identity-bearing
+answers document. The document names the template it answers, which Toha compares
+by exact string equality with the formal name the caller has established before it
+evaluates any answer:
 
 ```rust
 use std::path::Path;
-use toha::{Interview, Seed, Template, protocol};
-let template = Template::load(Path::new("docs/examples/demo")).unwrap();
-let seed = Seed { now: "2026-01-01T00:00:00Z[UTC]".parse().unwrap(), defaults: Default::default() };
+use toha::{Interview, Seed, Template};
+use toha::context::{EnvironmentSnapshot, ExecutionFacts, HostFacts, InvocationContext, SelectedTemplate};
+use toha::protocol::{self, DocumentStep};
+use toha::staging::canonical_target;
+let template_root = Path::new("docs/examples/demo").canonicalize().unwrap();
+let template = Template::load(&template_root).unwrap();
+let expected = template_root.to_str().unwrap();
+let target = canonical_target(Path::new("./notes")).unwrap();
+let seed = Seed {
+    now: "2026-01-01T00:00:00Z[UTC]".parse().unwrap(),
+    defaults: Default::default(),
+    context: InvocationContext::new(
+        target,
+        SelectedTemplate::new(expected.into(), template.name.clone(), Vec::new(), None),
+        HostFacts::capture(),
+        ExecutionFacts::new(false, false),
+        EnvironmentSnapshot::Unavailable,
+    ).unwrap(),
+};
 let Interview::Asking(pending) = Interview::start(&template, seed).unwrap() else { panic!("expected questions") };
-let answers = protocol::parse_answers(r#"{"title":"Sample note","topic":"Research"}"#).unwrap();
-let Interview::Complete(done) = pending.answer(answers).unwrap() else { panic!("expected complete interview") };
+// The document must name the formal template it answers.
+let text = serde_json::json!({
+    "template": expected,
+    "answers": {"title": "Sample note", "topic": "Research"},
+}).to_string();
+let DocumentStep::Accepted { interview, .. } =
+    protocol::answer_document_once(expected, pending, &text).unwrap()
+else { panic!("the document was rejected") };
+let Interview::Complete(done) = interview else { panic!("expected complete interview") };
 assert_eq!(done.answers.len(), 2);
 ```
+
+In-memory callers that build answers directly still use `Pending::answer` with
+`RawAnswers` and the raw headless walk; the envelope is only for external JSON.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development and changes.

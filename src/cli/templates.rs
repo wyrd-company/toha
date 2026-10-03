@@ -1,4 +1,7 @@
-use crate::{Dirs, cli::guidance};
+use crate::{
+    Dirs,
+    cli::{bundled, guidance},
+};
 use clap::{Args, Subcommand};
 use std::{
     fs,
@@ -24,7 +27,7 @@ enum TemplatesCommand {
         /// Alias for the template; fails when the address holds more than one template.
         #[arg(short, long)]
         alias: Option<String>,
-        /// Record the added templates as trusted in the user registry.
+        /// Approve the added templates' current hooks in the user registry.
         #[arg(long)]
         trust: bool,
     },
@@ -64,6 +67,16 @@ enum TemplatesCommand {
         /// Alias to remove.
         #[arg(short, long, conflicts_with_all=["template", "alias"], value_name = "ALIAS")]
         remove: Option<String>,
+    },
+    /// Approve the installed hooks of a template so its apply runs them.
+    Trust {
+        /// Formal, short, or alias name of an installed template.
+        template: String,
+    },
+    /// Revoke approval of a template's hooks.
+    Untrust {
+        /// Formal, short, or alias name of an installed template.
+        template: String,
     },
 }
 #[derive(Debug)]
@@ -344,6 +357,17 @@ fn add(
     for folder in folders {
         let loaded = Template::load(&folder).map_err(CommandError::text)?;
         let name = loaded.name.clone();
+        // `--trust` approves the template's current executable surface; the
+        // digest authorizes its hooks only while the installed content matches.
+        let approval = if trust {
+            Some(
+                toha::HookSurface::of(&loaded)
+                    .map_err(CommandError::text)?
+                    .digest(),
+            )
+        } else {
+            None
+        };
         let formal = if matches!(parsed, Address::Folder(_)) {
             folder.to_string_lossy().into_owned()
         } else {
@@ -385,7 +409,8 @@ fn add(
             commit: commit.clone(),
             path,
             aliases: alias.clone().into_iter().collect(),
-            trusted: trust,
+            approval,
+            denied: false,
         };
         additions.push((formal.clone(), entry));
         names.push((formal, name));
@@ -412,7 +437,7 @@ fn add(
                 formal_name: formal.clone(),
                 entry: entry.clone(),
                 layer: Layer::User,
-                trusted: entry.trusted,
+                approval: entry.approval.clone(),
             },
         );
     }
@@ -437,6 +462,24 @@ fn add(
     install_staged(ctx, &clone.into_iter().collect::<Vec<_>>(), &next)?;
     Ok(lines)
 }
+/// Whether an entry's stored approval still matches its installed executable
+/// surface. An entry with no approval, or one whose installed template cannot
+/// be loaded or read, is not trusted.
+fn effective_trust(listed: &registry::Listed) -> bool {
+    let Some(approval) = listed.approval.as_ref() else {
+        return false;
+    };
+    let Ok(template) = Template::load(&listed.entry.path) else {
+        return false;
+    };
+    let Ok(surface) = toha::HookSurface::of(&template) else {
+        return false;
+    };
+    matches!(
+        toha::evaluate_trust(Some(approval), &surface.digest()),
+        toha::Trust::Trusted
+    )
+}
 fn list(ctx: &Context, filter: Option<Layer>, json: bool) -> Result<Vec<String>, CommandError> {
     let entries: Vec<registry::Listed> = match filter {
         None => ctx.registry.entries.values().cloned().collect(),
@@ -453,7 +496,7 @@ fn list(ctx: &Context, filter: Option<Layer>, json: bool) -> Result<Vec<String>,
                     formal_name: formal.clone(),
                     entry: entry.clone(),
                     layer,
-                    trusted: entry.trusted,
+                    approval: entry.approval.clone(),
                 })
                 .collect()
         }
@@ -484,8 +527,23 @@ fn list(ctx: &Context, filter: Option<Layer>, json: bool) -> Result<Vec<String>,
         }
         Some(Layer::Discovered) => Vec::new(),
     };
+    // D3: the unfiltered listing carries one read-only descriptor for the
+    // bundled demo, in both formats, but only when no registry entry occupies the
+    // reserved name — that is exactly when the fallback would resolve. It is
+    // presentation only: no persisted entry and no resolution source, marked
+    // `bundled` in `--json` with no registry layer, source, ref, or path, and
+    // resolution never consults it.
+    let show_bundled = filter.is_none()
+        && matches!(
+            ctx.registry.resolve(bundled::RESERVED),
+            Err(ResolveError::NotFound(_))
+        );
+    let row = bundled::listing_row();
     if json {
-        let values: Vec<_> = entries.iter().map(|e| serde_json::json!({ "formal_name": e.formal_name, "name": e.entry.name, "aliases": e.entry.aliases, "trusted": e.trusted, "layer": e.layer, "source": e.entry.source, "ref": e.entry.reference, "commit": e.entry.commit, "path": e.entry.path })).collect();
+        let mut values: Vec<_> = entries.iter().map(|e| serde_json::json!({ "formal_name": e.formal_name, "name": e.entry.name, "aliases": e.entry.aliases, "trusted": effective_trust(e), "layer": e.layer, "source": e.entry.source, "ref": e.entry.reference, "commit": e.entry.commit, "path": e.entry.path })).collect();
+        if show_bundled {
+            values.push(serde_json::json!({ "formal_name": row.formal, "name": row.short, "aliases": [], "trusted": row.trusted, "commit": bundled::commit(), "bundled": true }));
+        }
         return Ok(vec![
             serde_json::to_string(&values).map_err(CommandError::text)?,
         ]);
@@ -497,9 +555,12 @@ fn list(ctx: &Context, filter: Option<Layer>, json: bool) -> Result<Vec<String>,
             e.formal_name,
             e.entry.name,
             e.entry.aliases.join(","),
-            e.trusted
+            effective_trust(e)
         )
     }));
+    if show_bundled {
+        lines.push(format!("{}\t{}\t\t{}", row.formal, row.short, row.trusted));
+    }
     Ok(lines)
 }
 fn update(ctx: &Context, template: Option<String>) -> Result<Vec<String>, CommandError> {
@@ -521,6 +582,7 @@ fn update(ctx: &Context, template: Option<String>) -> Result<Vec<String>, Comman
     }
     let mut next = ctx.user.clone();
     let mut lines = Vec::new();
+    let mut updated = Vec::new();
     let mut fetched = std::collections::HashSet::new();
     let mut staged = Vec::new();
     for (formal, entry) in selected {
@@ -559,9 +621,30 @@ fn update(ctx: &Context, template: Option<String>) -> Result<Vec<String>, Comman
                 .set_commit(&key, commit.clone())
                 .map_err(CommandError::text)?;
             lines.push(format!("updated {key}"));
+            updated.push(key);
         }
     }
     install_staged(ctx, &staged, &next)?;
+    // Effective trust is always the live compare, so the stored approval is
+    // never rewritten here. An update that changes a template's executable
+    // surface lapses its approval; the next apply lists the change and exits 3.
+    for formal in &updated {
+        let Some(entry) = next.templates.get(formal) else {
+            continue;
+        };
+        let Some(approval) = entry.approval.as_ref() else {
+            continue;
+        };
+        let listed = registry::Listed {
+            formal_name: formal.clone(),
+            entry: entry.clone(),
+            layer: Layer::User,
+            approval: Some(approval.clone()),
+        };
+        if !effective_trust(&listed) {
+            lines.push(format!("{formal} (hooks changed; approval lapsed)"));
+        }
+    }
     Ok(lines)
 }
 fn remove(ctx: &Context, template: &str) -> Result<Vec<String>, CommandError> {
@@ -584,6 +667,51 @@ fn remove(ctx: &Context, template: &str) -> Result<Vec<String>, CommandError> {
         }
     }
     Ok(vec![format!("removed {formal}")])
+}
+/// Approve the current installed executable surface of an installed template.
+/// Reads only the installed folder — never fetches, reclones, or moves the
+/// commit — and writes the approval to the user registry alone.
+fn trust(ctx: &Context, name: &str) -> Result<Vec<String>, CommandError> {
+    let (formal, entry) = ctx.resolve_user(name)?;
+    let template = Template::load(&entry.path).map_err(CommandError::text)?;
+    let surface = toha::HookSurface::of(&template)
+        .map_err(|error| CommandError::text(guidance::surface_unreadable(&formal, &error)))?;
+    let live = surface.digest();
+    // Idempotency is defined through the one trust rule: a surface that changed
+    // since approval is not "already trusted"; the command holds no `==`. A
+    // denial (a hand-edited/legacy `trusted: false` beside a matching approval)
+    // makes the entry effectively untrusted, so the grant runs to clear it
+    // rather than reporting "already trusted".
+    if !entry.denied
+        && matches!(
+            toha::evaluate_trust(entry.approval.as_ref(), &live),
+            toha::Trust::Trusted
+        )
+    {
+        return Ok(vec![format!("already trusted {formal}")]);
+    }
+    let next = ctx
+        .user
+        .set_approval(&formal, Some(live))
+        .map_err(CommandError::text)?;
+    ctx.write(&next)?;
+    eprintln!("{}", guidance::approved_surface(&surface));
+    Ok(vec![format!("trusted {formal}")])
+}
+/// Revoke approval of an installed template's hooks. Reads nothing on disk, so
+/// it cannot fail on the installed surface; it clears the approval and persists
+/// a denial so a lower registry layer's approval cannot reappear.
+fn untrust(ctx: &Context, name: &str) -> Result<Vec<String>, CommandError> {
+    let (formal, entry) = ctx.resolve_user(name)?;
+    if entry.approval.is_none() && entry.denied {
+        return Ok(vec![format!("already untrusted {formal}")]);
+    }
+    let next = ctx
+        .user
+        .set_approval(&formal, None)
+        .map_err(CommandError::text)?;
+    ctx.write(&next)?;
+    Ok(vec![format!("untrusted {formal}")])
 }
 fn valid_alias(alias: &str) -> bool {
     !alias.is_empty()
@@ -658,6 +786,8 @@ pub fn retry(args: &TemplatesArgs) -> impl Fn(&str) -> String + use<> {
         TemplatesCommand::Update { .. } => ("templates update", None),
         TemplatesCommand::Remove { .. } => ("templates remove", None),
         TemplatesCommand::Alias { alias, .. } => ("templates alias", alias.clone()),
+        TemplatesCommand::Trust { .. } => ("templates trust", None),
+        TemplatesCommand::Untrust { .. } => ("templates untrust", None),
         TemplatesCommand::Add { .. } | TemplatesCommand::List { .. } => ("templates list", None),
     };
     move |formal| {
@@ -699,5 +829,7 @@ pub fn run(args: TemplatesArgs, dirs: Dirs, cwd: &Path) -> Result<Vec<String>, C
             alias: name,
             remove,
         } => alias(&ctx, template, name, remove),
+        TemplatesCommand::Trust { template } => trust(&ctx, &template),
+        TemplatesCommand::Untrust { template } => untrust(&ctx, &template),
     }
 }

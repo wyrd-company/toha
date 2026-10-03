@@ -6,9 +6,18 @@ use indexmap::IndexMap;
 use inquire::{Confirm, Editor, MultiSelect, Select, Text};
 use serde_json::{Value, json};
 use toha::{
-    Answer, AnswerError, CheckError, Completed, Interview, Item, Prompt, PromptKind, RawAnswer,
-    RawAnswers,
+    Answer, AnswerError, CheckError, Completed, Ended, Interview, Item, Pending, Prompt,
+    PromptKind, RawAnswer, RawAnswers,
 };
+
+/// The terminal outcome of a driven interview: a normal completion, or a flow
+/// `stop`/`abort` that ended it.
+#[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum Session {
+    Completed(Completed),
+    Ended(Ended),
+}
 
 pub(crate) trait Ask {
     fn text(&mut self, prompt: &Prompt, title: &str) -> Result<String, String>;
@@ -23,10 +32,10 @@ pub(crate) struct InquireAsk;
 impl Ask for InquireAsk {
     fn text(&mut self, prompt: &Prompt, title: &str) -> Result<String, String> {
         let mut input = Text::new(title);
-        if prompt.kind != PromptKind::TextLoop {
-            if let Some(Answer::Text(default)) = &prompt.default {
-                input = input.with_default(default);
-            }
+        if prompt.kind != PromptKind::TextLoop
+            && let Some(Answer::Text(default)) = &prompt.default
+        {
+            input = input.with_default(default);
         }
         if let Some(placeholder) = &prompt.placeholder {
             input = input.with_placeholder(placeholder);
@@ -66,10 +75,10 @@ impl Ask for InquireAsk {
 
     fn select(&mut self, prompt: &Prompt) -> Result<String, String> {
         let mut input = Select::new(&prompt.title, prompt.options.clone());
-        if let Some(Answer::Text(default)) = &prompt.default {
-            if let Some(index) = prompt.options.iter().position(|option| option == default) {
-                input = input.with_starting_cursor(index);
-            }
+        if let Some(Answer::Text(default)) = &prompt.default
+            && let Some(index) = prompt.options.iter().position(|option| option == default)
+        {
+            input = input.with_starting_cursor(index);
         }
         if let Some(description) = &prompt.description {
             input = input.with_help_message(description);
@@ -196,8 +205,43 @@ pub(crate) fn drive<'a>(
     interview: Interview<'a>,
     ask: &mut impl Ask,
     accepted: impl FnMut(IndexMap<String, Value>) -> Result<(), String>,
-) -> Result<Completed, String> {
+) -> Result<Session, String> {
     drive_to(interview, ask, accepted, &mut std::io::stdout())
+}
+
+/// Prompt one pending batch, validating each answer against the batch and
+/// re-asking on rejection, and return the accepted raw submission. The staged
+/// update person route uses this and drives the next batch through the update
+/// adapter, so that a batch the recorded answers cover is not re-prompted.
+pub(crate) fn prompt_batch(
+    pending: &Pending<'_>,
+    ask: &mut impl Ask,
+) -> Result<RawAnswers, String> {
+    let mut submission = RawAnswers::new();
+    for item in &pending.batch().items {
+        match item {
+            Item::Message(message) => println!("{message}"),
+            Item::Prompt(prompt) => {
+                if let Some(error) = pending.batch().errors.iter().find(|e| e.id == prompt.id) {
+                    print_error(&error.to_string())?;
+                }
+                loop {
+                    let value = ask_value(ask, prompt)?;
+                    match pending.check(&prompt.id, RawAnswer(value.clone())) {
+                        Ok(_) => {
+                            submission.insert(prompt.id.clone(), RawAnswer(value));
+                            break;
+                        }
+                        Err(CheckError::Rejected(rejection)) => {
+                            print_error(&rejection.to_string())?
+                        }
+                        Err(CheckError::Eval(error)) => return Err(error.to_string()),
+                    }
+                }
+            }
+        }
+    }
+    Ok(submission)
 }
 
 fn drive_to<'a>(
@@ -205,7 +249,7 @@ fn drive_to<'a>(
     ask: &mut impl Ask,
     mut accepted: impl FnMut(IndexMap<String, Value>) -> Result<(), String>,
     output: &mut impl std::io::Write,
-) -> Result<Completed, String> {
+) -> Result<Session, String> {
     let mut reached_before = 0;
     loop {
         let pending = match interview {
@@ -213,7 +257,13 @@ fn drive_to<'a>(
                 for message in completed.messages.iter().skip(reached_before) {
                     writeln!(output, "{message}").map_err(|e| e.to_string())?;
                 }
-                return Ok(completed);
+                return Ok(Session::Completed(completed));
+            }
+            Interview::Ended(ended) => {
+                for message in ended.messages.iter().skip(reached_before) {
+                    writeln!(output, "{message}").map_err(|e| e.to_string())?;
+                }
+                return Ok(Session::Ended(ended));
             }
             Interview::Asking(pending) => pending,
         };
@@ -276,6 +326,7 @@ mod tests {
     };
     use toha::{
         ApplyOptions, Plan, Seed, Template,
+        config::{ConfigEntry, ConfigLayer, ConfigOrigin, DefaultSource},
         hook::RecordingRunner,
         protocol::{self, Headless},
         staging::StagedRecord,
@@ -373,9 +424,80 @@ mod tests {
             Seed {
                 now: "2026-01-02T03:04:05+00:00[UTC]".parse().unwrap(),
                 defaults: Default::default(),
+                context: toha::context::InvocationContext::for_target(
+                    crate::staging::canonical_target(std::path::Path::new(".")).unwrap(),
+                ),
             },
         )
         .unwrap()
+    }
+    /// Drives to a completion, panicking on a flow end. Used by the tests that
+    /// exercise ordinary interviews with no flow node.
+    fn driven<'a>(
+        interview: Interview<'a>,
+        ask: &mut impl Ask,
+        accepted: impl FnMut(IndexMap<String, Value>) -> Result<(), String>,
+    ) -> Result<Completed, String> {
+        match drive(interview, ask, accepted) {
+            Ok(Session::Completed(completed)) => Ok(completed),
+            Ok(Session::Ended(_)) => panic!("unexpected flow end"),
+            Err(error) => Err(error),
+        }
+    }
+
+    #[test]
+    fn terminal_answer_replaces_a_constraint_invalid_configured_default() {
+        let (_folder, template) = template(
+            "name: sample\ninterview: [{ id: mode, type: select, prompt: Mode?, options: [fast, slow] }]\n",
+        );
+        let id = toha::Id::parse("mode").unwrap();
+        let mappings = [(
+            "sample".into(),
+            [(
+                id,
+                ConfigEntry {
+                    value: DefaultSource::Literal(json!("medium")),
+                    origin: ConfigOrigin {
+                        layer: ConfigLayer::User,
+                        path: "user.yml".into(),
+                    },
+                },
+            )]
+            .into(),
+        )]
+        .into();
+        let resolution = toha::interview::configured_defaults(
+            "sample",
+            &template,
+            &Default::default(),
+            &mappings,
+        )
+        .unwrap();
+        let interview = resolution
+            .start_with_context(
+                &template,
+                "2026-01-02T03:04:05+00:00[UTC]".parse().unwrap(),
+                toha::context::InvocationContext::for_target(
+                    crate::staging::canonical_target(std::path::Path::new(".")).unwrap(),
+                ),
+            )
+            .unwrap();
+        let mut script = Script::new(json!({"mode": "fast"}));
+        let mut records = Vec::new();
+        let completed = driven(interview, &mut script, |raw| {
+            records.push(raw);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(script.asked, ["mode"]);
+        assert_eq!(
+            completed.answers[&toha::Id::parse("mode").unwrap()].to_json(),
+            json!("fast")
+        );
+        assert_eq!(
+            records,
+            [indexmap::indexmap! { "mode".into() => json!("fast") }]
+        );
     }
 
     #[test]
@@ -386,7 +508,7 @@ mod tests {
         let mut script = Script::new(json!({}));
         script.text_responses = VecDeque::from(["x".into(), "ok".into()]);
         let mut records = Vec::new();
-        let completed = drive(start(&template), &mut script, |raw| {
+        let completed = driven(start(&template), &mut script, |raw| {
             records.push(raw);
             Ok(())
         })
@@ -410,7 +532,7 @@ mod tests {
             ));
             let mut script = Script::new(json!({}));
             script.text_responses = responses.into_iter().map(str::to_owned).collect();
-            let completed = drive(start(&template), &mut script, |_| Ok(())).unwrap();
+            let completed = driven(start(&template), &mut script, |_| Ok(())).unwrap();
             assert_eq!(script.attempts, wanted_attempts);
             assert_eq!(
                 completed.answers[&toha::Id::parse("items").unwrap()],
@@ -427,7 +549,7 @@ mod tests {
         let mut script = Script::new(json!({}));
         script.text_responses = VecDeque::from(["".into(), "".into()]);
         let mut records = Vec::new();
-        let completed = drive(start(&template), &mut script, |raw| {
+        let completed = driven(start(&template), &mut script, |raw| {
             records.push(raw);
             Ok(())
         })
@@ -466,21 +588,28 @@ mod tests {
             "tests/fixtures/early-answers/template",
         ))
         .unwrap();
-        let saved = StagedRecord {
-            target: std::path::PathBuf::from("/tmp/sample-target"),
-            template: "/tmp/sample-template".into(),
-            commit: String::new(),
-            named: false,
-            now: "2026-01-02T03:04:05+00:00[UTC]".into(),
-            submissions: vec![IndexMap::from([
+        let target =
+            crate::staging::canonical_target(std::path::Path::new("/tmp/sample-target")).unwrap();
+        let saved = StagedRecord::new(
+            &target,
+            "/tmp/sample-template".into(),
+            String::new(),
+            false,
+            "2026-01-02T03:04:05+00:00[UTC]".into(),
+            vec![IndexMap::from([
                 ("name".into(), json!("Alpha")),
                 ("enabled".into(), json!(false)),
                 ("mode".into(), json!("slow")),
             ])],
-        };
+        );
         let mut script =
             Script::new(json!({"label": "First", "code": "abc", "flavor": "slow-rich"}));
-        let completed = drive(saved.replay(&template).unwrap(), &mut script, |_| Ok(())).unwrap();
+        let completed = driven(
+            saved.replay(&template, &target).unwrap(),
+            &mut script,
+            |_| Ok(()),
+        )
+        .unwrap();
         assert_eq!(script.asked, ["label", "code", "flavor", "items", "extras"]);
         assert_eq!(
             completed.answers[&toha::Id::parse("enabled").unwrap()],
@@ -511,15 +640,17 @@ mod tests {
         let mut script = Script::new(json!({"first":"Ada", "second":"yes"}));
         drive_to(start(&template), &mut script, |_| Ok(()), &mut full_output).unwrap();
 
-        let saved = StagedRecord {
-            target: std::path::PathBuf::from("/tmp/sample-target"),
-            template: "/tmp/sample-template".into(),
-            commit: String::new(),
-            named: false,
-            now: "2026-01-02T03:04:05+00:00[UTC]".into(),
-            submissions: vec![IndexMap::from([("first".into(), json!("Ada"))])],
-        };
-        let resumed = saved.replay(&template).unwrap();
+        let target =
+            crate::staging::canonical_target(std::path::Path::new("/tmp/sample-target")).unwrap();
+        let saved = StagedRecord::new(
+            &target,
+            "/tmp/sample-template".into(),
+            String::new(),
+            false,
+            "2026-01-02T03:04:05+00:00[UTC]".into(),
+            vec![IndexMap::from([("first".into(), json!("Ada"))])],
+        );
+        let resumed = saved.replay(&template, &target).unwrap();
         let Interview::Asking(pending) = &resumed else {
             panic!("expected remaining batch")
         };
@@ -538,6 +669,43 @@ mod tests {
     }
 
     #[test]
+    fn terminal_drives_a_flow_stop_and_abort_to_session_ended_with_messages() {
+        // The terminal route is the one users see. Drive a stop and an abort to
+        // `Session::Ended`, asserting the kind and that the message reached
+        // after the last prompt is written. Kills the mutants that print no
+        // ended messages or return `Err` instead of `Session::Ended`.
+        for (action, kind) in [
+            ("stop", toha::EndKind::Stop),
+            ("abort", toha::EndKind::Abort),
+        ] {
+            // The message references `proceed`, so it is not ready in the first
+            // batch; it is reached only in the step that answers `proceed` and
+            // fires the flow — after the last prompt — so the `Session::Ended`
+            // branch is what writes it.
+            let (_folder, template) = template(&format!(
+                "name: sample\ninterview:\n  - {{ id: proceed, type: confirm, prompt: Ready? }}\n  - message: \"at the {action} gate ({{{{ proceed }}}})\"\n  - flow: {action}\n    when: \"not proceed\"\n    label: declined\n"
+            ));
+            let mut output = Vec::new();
+            let mut script = Script::new(json!({ "proceed": false }));
+            let session = drive_to(start(&template), &mut script, |_| Ok(()), &mut output).unwrap();
+            match session {
+                Session::Ended(ended) => {
+                    assert_eq!(ended.kind(), kind, "{action}");
+                    assert_eq!(ended.label(), Some("declined"), "{action}");
+                }
+                Session::Completed(_) => panic!("{action}: expected Session::Ended"),
+            }
+            // This text can only have been written by the `Session::Ended`
+            // branch, since the message blocked the first batch.
+            let written = String::from_utf8(output).unwrap();
+            assert!(
+                written.contains(&format!("at the {action} gate")),
+                "{action}: the ended message was not written; got: {written:?}"
+            );
+        }
+    }
+
+    #[test]
     fn success_fixtures_match_headless_answers_records_and_trees() {
         for fixture in support::fixtures() {
             let expect = support::expectation(&fixture);
@@ -549,13 +717,17 @@ mod tests {
             let document: Value =
                 serde_json::from_str(&fs::read_to_string(fixture.join("answers.json")).unwrap())
                     .unwrap();
+            let output_dir = tempfile::tempdir().unwrap();
+            support::copy_tree(&fixture.join("existing"), output_dir.path());
+            let output_canonical = crate::staging::canonical_target(output_dir.path()).unwrap();
             let seed = Seed {
                 now: expect.now.parse().unwrap(),
                 defaults: Default::default(),
+                context: toha::context::InvocationContext::for_target(output_canonical.clone()),
             };
             let mut script = Script::new(document);
             let mut submissions = Vec::new();
-            let completed = drive(
+            let completed = driven(
                 Interview::start(&template, seed.clone()).unwrap(),
                 &mut script,
                 |raw| {
@@ -583,25 +755,31 @@ mod tests {
                 panic!("{name}: headless pending")
             };
             assert_eq!(completed.answers, headless.answers, "{name}");
-            let staged = |submissions| StagedRecord {
-                target: std::path::PathBuf::from("/tmp/sample-target"),
-                template: "/tmp/sample-template".into(),
-                commit: String::new(),
-                named: false,
-                now: expect.now.clone(),
-                submissions,
+            let target =
+                crate::staging::canonical_target(std::path::Path::new("/tmp/sample-target"))
+                    .unwrap();
+            let staged = |submissions| {
+                StagedRecord::new(
+                    &target,
+                    "/tmp/sample-template".into(),
+                    String::new(),
+                    false,
+                    expect.now.clone(),
+                    submissions,
+                )
             };
-            let replayed = |submissions| match staged(submissions).replay(&template).unwrap() {
-                Interview::Complete(completed) => completed.answers,
-                Interview::Asking(_) => panic!("{name}: replay incomplete"),
-            };
+            let replayed =
+                |submissions| match staged(submissions).replay(&template, &target).unwrap() {
+                    Interview::Complete(completed) => completed.answers,
+                    Interview::Asking(_) => panic!("{name}: replay incomplete"),
+                    Interview::Ended(_) => panic!("{name}: replay ended"),
+                };
             assert_eq!(replayed(submissions), replayed(accepted), "{name}");
-            let target = tempfile::tempdir().unwrap();
-            support::copy_tree(&fixture.join("existing"), target.path());
-            let plan = Plan::build(&template, &completed, target.path()).unwrap();
+            let canonical = output_canonical.clone();
+            let plan = Plan::build(&template, &completed, &canonical).unwrap();
             if !expect.options.dry_run {
                 plan.apply(
-                    target.path(),
+                    &canonical,
                     ApplyOptions {
                         force: expect.options.force,
                         trusted: expect.options.trust,
@@ -611,7 +789,7 @@ mod tests {
                 .unwrap();
             }
             if fixture.join("expected").exists() {
-                support::assert_tree(target.path(), &fixture.join("expected"), &fixture);
+                support::assert_tree(output_dir.path(), &fixture.join("expected"), &fixture);
             }
         }
     }

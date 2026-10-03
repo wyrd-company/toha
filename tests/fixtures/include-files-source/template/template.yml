@@ -1,0 +1,10 @@
+name: include-files-source
+ignore: [".gitkeep"]
+data:
+  modules:
+    - alpha
+    - beta
+files:
+  - each: modules as item
+    source: parts/module.rs.j2
+    path: "src/{{ item }}.rs"

@@ -1,0 +1,4 @@
+exit: 1
+error_contains:
+  - "jinja include candidates not found"
+  - "one.txt, two.txt"

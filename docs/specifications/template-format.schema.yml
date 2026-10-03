@@ -30,6 +30,10 @@ properties:
     type: array
     items:
       $ref: "#/$defs/file-rule"
+  inject:
+    type: array
+    items:
+      $ref: "#/$defs/inject-rule"
   ignore:
     $ref: "#/$defs/globs"
   static:
@@ -85,6 +89,16 @@ $defs:
     description: "`<expression> as <name>`."
     type: string
     pattern: '^.+ as [a-z_][a-z0-9_]*$'
+  capture:
+    description: The hook streams piped to Toha so they can be read.
+    type: array
+    minItems: 1
+    uniqueItems: true
+    items:
+      enum: [ stdout, stderr ]
+  parse:
+    description: How a captured hook stream is parsed for reading.
+    enum: [ json ]
   nodes:
     type: array
     items:
@@ -96,6 +110,7 @@ $defs:
       - $ref: "#/$defs/group"
       - $ref: "#/$defs/hook-node"
       - $ref: "#/$defs/message-node"
+      - $ref: "#/$defs/flow-node"
   question:
     type: object
     additionalProperties: false
@@ -192,6 +207,32 @@ $defs:
         $ref: "#/$defs/each"
       when:
         $ref: "#/$defs/when"
+      id:
+        description: >-
+          Opt-in result identity. A later hook or the after-apply message may read
+          this hook's result as `<id>.exit_code`/`.stdout`/`.stderr`, or, with
+          `parse: json`, the parsed stdout directly at `<id>`.
+        $ref: "#/$defs/identifier"
+      capture:
+        description: >-
+          The streams piped to Toha so they can be read. An uncaptured stream
+          inherits the terminal and is never read. Requires `id`.
+        $ref: "#/$defs/capture"
+      allow-failure:
+        description: >-
+          Tolerate a nonzero exit code (a signal stays fatal). Requires an `id`
+          whose result is read.
+        type: boolean
+      parse:
+        description: >-
+          Parse the captured stdout so the value is read directly at `<id>`.
+          Requires `id` and `capture: [stdout]`.
+        $ref: "#/$defs/parse"
+      status-id:
+        description: >-
+          For a `parse: json` hook, the name carrying `{exit_code, stdout, stderr,
+          parsed}`. Requires `parse: json`.
+        $ref: "#/$defs/identifier"
   hook-node:
     type: object
     additionalProperties: false
@@ -219,6 +260,16 @@ $defs:
             $ref: "#/$defs/template"
           each:
             $ref: "#/$defs/each"
+          id:
+            $ref: "#/$defs/identifier"
+          capture:
+            $ref: "#/$defs/capture"
+          allow-failure:
+            type: boolean
+          parse:
+            $ref: "#/$defs/parse"
+          status-id:
+            $ref: "#/$defs/identifier"
       when:
         $ref: "#/$defs/when"
   message-node:
@@ -228,6 +279,37 @@ $defs:
     properties:
       message:
         $ref: "#/$defs/template"
+      when:
+        $ref: "#/$defs/when"
+  flow-node:
+    description: >-
+      A control node that steers the interview. It carries one of exactly four
+      control actions and the usual `when`/`label` siblings; it has no id and
+      records no answer. The placement of `{ skip: group }` (only inside a
+      group) is checked when the template loads, with a message that names the
+      corrective form.
+    type: object
+    additionalProperties: false
+    required: [ flow ]
+    properties:
+      flow:
+        description: >-
+          The control action: `stop`, `abort` (stop and remove the staged
+          record), `dry-run` (plan without writing), `{ skip: rest }`, or
+          `{ skip: group }`.
+        oneOf:
+          - const: stop
+          - const: abort
+          - const: dry-run
+          - type: object
+            additionalProperties: false
+            required: [ skip ]
+            properties:
+              skip:
+                enum: [ rest, group ]
+      label:
+        description: A diagnostic name reported when the action fires.
+        type: string
       when:
         $ref: "#/$defs/when"
   file-rule:
@@ -245,3 +327,84 @@ $defs:
         $ref: "#/$defs/template"
       when:
         $ref: "#/$defs/when"
+  region-key:
+    description: A region name unique per target.
+    type: string
+    pattern: '^[a-z0-9_-]+$'
+  inject-rule:
+    description: >-
+      Changes one bounded part of an existing target: a visible checksum-marked
+      region in a non-JSON text file, or a typed value at a path in a JSON,
+      JSONC, or JSON5 file.
+    type: object
+    additionalProperties: false
+    required: [ into ]
+    oneOf:
+      - required: [ region ]
+        properties:
+          content: true
+          source: true
+        oneOf:
+          - required: [ content ]
+          - required: [ source ]
+      - required: [ struct ]
+    properties:
+      into:
+        description: Target path relative to the target directory.
+        $ref: "#/$defs/template"
+      when:
+        $ref: "#/$defs/when"
+      create:
+        description: Create the target when it does not exist.
+        type: boolean
+      region:
+        $ref: "#/$defs/region-key"
+      content:
+        description: Inline region body; a template.
+        $ref: "#/$defs/template"
+      source:
+        description: Support file whose rendered body is the region body.
+        type: string
+      marker:
+        description: >-
+          Explicit comment style for the region markers, overriding inference
+          from the target extension. A string is a line-comment prefix; an
+          object is a block comment.
+        oneOf:
+          - type: string
+          - type: object
+            additionalProperties: false
+            required: [ open, close ]
+            properties:
+              open:
+                type: string
+              close:
+                type: string
+      anchor:
+        description: Where the region is first placed when its markers do not exist.
+        type: object
+        additionalProperties: false
+        required: [ after ]
+        properties:
+          after:
+            description: The line to place the region after; a template.
+            $ref: "#/$defs/template"
+          occurrence:
+            description: Which matching line to use when more than one matches.
+            enum: [ only, first, last ]
+      struct:
+        description: A typed value at a parsed path in a JSON-family target.
+        type: object
+        additionalProperties: false
+        required: [ path, value ]
+        properties:
+          path:
+            description: >-
+              Dot-separated object keys and bracketed array indexes, such as
+              `routes[0].name`. A backslash escapes `.`, `[`, `]`, and `\` in a
+              key. The path begins with a key.
+            type: string
+          value:
+            description: >-
+              A JSON-compatible value. String leaves are templates; every other
+              JSON type is kept.

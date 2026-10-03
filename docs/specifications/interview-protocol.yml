@@ -4,10 +4,38 @@ relationships:
     - toha
 description: >-
   Defines the documents toha exchanges with a script or agent that answers an
-  interview across several processes, and the answers file accepted by headless
-  runs. `docs/specifications/interview-protocol.schema.yml` is the
-  machine-readable definition of the question batch, the answers document, and
-  the result document.
+  interview across several processes, and the identity-bearing answers document
+  callers submit. `docs/specifications/interview-protocol.schema.yml` is the
+  machine-readable definition of the answers-document envelope, the question
+  batch, and the result documents (`questions`, `applied`, `planned`, `error`,
+  and `ended`).
+
+  Answers-document envelope. Every external answers document has exactly two
+  top-level members: `template`, the formal name of the template it answers,
+  and `answers`, the answers keyed by question id. Toha compares the declared
+  `template` with the formal name the route has already established, by exact
+  string equality, before it evaluates any answer; it never trims, case-folds,
+  canonicalizes, resolves, fetches, or trust-checks the declared value. A
+  document authored for another template cannot be accepted because question
+  identifiers happen to match. A bare answer map, without the envelope, is
+  invalid; the diagnostic shows the required wrapper and the expected identity.
+  The envelope carries no target or commit, so one document answers another
+  target or another resolved commit of the same formal identity. In-memory crate
+  callers still build `RawAnswers` directly and drive `Pending::answer` or the
+  raw headless walk without the envelope.
+
+  Result documents. The scripted route (`apply TEMPLATE PATH --answers FILE`)
+  writes exactly one JSON result document on standard output for every outcome —
+  standard error still carries any configuration diagnostics and an uncaptured
+  hook's stream:
+  `questions` (exit 4), `ended` (exit 0), `applied` (exit 0), `planned` (exit 0,
+  or exit 3 when hooks are untrusted on a plain apply; updates preview at exit 0), or `error` (exit 1, or exit 5 for an
+  ambiguous template). An `applied` document lists each written path with its
+  action, the messages, and the hooks that ran; a `planned` document lists each
+  planned path with its action, the messages, the planned hooks, and whether
+  they are trusted; an `error` document carries a `kind`, a `message`, and the
+  commands that finish, discard, or retry the request when there are any. There
+  is no `complete` document.
 
   Batches. `stage --async` and `continue` emit a question batch. A batch holds
   every pending question from the interview position up to, and not including,
@@ -17,12 +45,13 @@ description: >-
   evaluated as soon as their references are answered, so a batch never holds
   them.
 
-  Messages. Each batch and complete result carries a `messages` array: the
-  messages reached by the step that produced it, in interview order. A step
-  is the start of the interview or the submission of one accepted answers
-  document. Each entry is a string: the rendered text of a message node, or a
-  warning from toha, which starts with `warning: `. A result for a rejected
-  document holds the batch it answered, with that batch's messages.
+  Messages. The `questions`, `applied`, `planned`, and `ended` documents carry a
+  `messages` array: the messages reached by the step that produced the document,
+  in interview order. A step is the start of the interview or the submission of
+  one accepted answers document. Each entry is a string: the rendered text of a
+  message node, or a warning from toha, which starts with `warning: `. A result
+  for a rejected document holds the batch it answered, with that batch's
+  messages. An `error` document carries no `messages` array.
 
   Question schema. A batch carries a JSON Schema 2020-12 object schema in
   `schema`. Each pending question is one property keyed by its id. `prompt` is
@@ -42,19 +71,23 @@ description: >-
   its options in `anyOf: [{enum: [...]}, {type: null}]` instead of `enum`, so
   the enum lists only the options.
 
-  Answers. An answers document is a JSON object keyed by question id. `continue`
-  reads it from a file or from standard input. Answers for questions outside
-  the current batch are held and applied when their questions are reached; a
-  question whose held answer is applied does not appear in a batch, and its
-  answer appears in the complete result. Toha validates a held answer when the
+  Answers. The `answers` member of an answers document is a JSON object keyed by
+  question id, wrapped in the identity envelope described above. `continue PATH
+  FILE` reads the document from a file or from standard input. Answers for
+  questions outside the current batch are held and applied when their questions
+  are reached; a question whose held answer is applied does not appear in a
+  batch, and its answer is part of the completed answers. Toha validates a held
+  answer when the
   document is submitted, against each constraint of its question that does
   not depend on other answers: the answer type, a literal `required`, literal
   `options`, `validate.regex`, and literal `validate` and `loop` bounds. A
-  failure is decided by applying the document in one tentative step: it
-  rejects the document when that step stops with the question active or not
-  reached, or when the batch the document answers fails; it is dropped when
-  the step skips the question; and a template fault in the step is the error
-  instead. It checks the remaining constraints when the question is
+  failure is decided by applying the valid current answers in one effect-free
+  tentative step. It rejects the document when that step leaves the question
+  active or unresolved, and drops the failure only when the step proves the
+  question skipped. Another current answer failure does not prevent that
+  classification, but a failed current answer is unavailable to the tentative
+  step. A rejected tentative step publishes no answer, message, warning, hook,
+  skip marker, or template fault. It checks the remaining constraints when the question is
   reached. When a held
   answer fails then, the question is part of that batch, and its error starts
   with `value recorded earlier is not allowed:`. That error stays on the
@@ -78,15 +111,20 @@ description: >-
   of any other question `null`; a question left out of a document for its
   batch takes its default, or that empty answer when it has none, except a
   question with an error for a value recorded earlier. A configured default
-  is validated as an answer when its question takes it; when it fails, the
-  error names the configuration key: `default <JSON value> from configuration
-  key defaults.<id> is not allowed:` followed by the failed constraint. Toha
+  carries its winning mapping origin, and its winning preset origin when it is
+  a reference, until constraints pass. A constraint failure removes the
+  default from the question, adds a recoverable error of the form `default
+  <JSON value> from <mapping> [→ <preset>] is not allowed: <constraint>`, and
+  lets an explicit answer replace it. Missing presets and answer-kind
+  mismatches are fatal and produce no partial configured resolution. Toha
   validates each answer and applies its `format` expression before it records
   the answer.
 
-  Context. Each batch and result document carries `context`: the canonical
-  absolute target path, the formal name of the template, and the resolved
-  commit of a git template, or `null` for a local folder.
+  Context. The `questions`, `applied`, `planned`, and `ended` documents carry
+  `context`: the canonical absolute target path, the formal name of the template,
+  and the resolved commit of a git template, or `null` for a local folder. An
+  `error` document carries `context` only once the route has established a target
+  and template.
 
   Results. `continue` emits a result document. When every answer is accepted
   and questions remain, the result holds the next batch. When answers fail
@@ -98,31 +136,45 @@ description: >-
   `is required`, `is not a question in this template`, or `is already
   answered with "draft"`. A next batch holds
   errors only for held answers that failed when their questions were
-  reached. When the interview is complete, the
-  result has `status: complete`, holds the full flat answers object, and
-  holds the messages of the step that completed the interview.
-  `continue` without an answers argument on a complete interview emits that
-  complete result.
+  reached. When `continue PATH FILE` completes the interview it writes the
+  completion instructions only, naming `apply PATH --dry-run` and `apply PATH`,
+  and exits 0; there is no complete result document. `continue PATH FILE` on an
+  interview that is already complete or ended refuses before reading the
+  document.
+
+  Flow control. A flow node in the interview can end or steer the run. When a
+  flow `stop` or `abort` fires, every headless route — `stage --async`,
+  `continue`, and `apply --answers` — emits a result with `status: ended`, a
+  `kind` of `stop` or `abort`, the optional flow `label`, and the messages of
+  that step. Both write no files and run no hooks; an `abort` additionally
+  removes the target's staged record, so a later `continue` or `apply` finds
+  nothing staged. A submission to an interview a flow node already ended is the
+  terminal-replay refusal. A flow `dry-run` completes
+  the interview normally but adds `disposition: dry-run` to the complete
+  result and suppresses the apply, the same effect as `apply --dry-run`, with
+  which it composes. An ordinary completion omits `disposition`. A flow
+  `{ skip: rest }` or `{ skip: group }` skips the questions in its scope, which
+  take their skipped answers as under a false `when`.
 
   Modality. The modality is chosen by each call. `continue` with an answers
   file, or `-` for standard input, answers the current batch. `continue`
   without an answers argument prompts in the terminal for every remaining
-  question, and needs a terminal only while questions remain. `apply` on an
-  incomplete staged interview prompts in the same way when a terminal is
-  available, then applies. An interview
-  started in one modality continues in either.
+  question, and needs a terminal only while questions remain. `apply TEMPLATE
+  PATH` prompts the remaining questions in a terminal (the person route);
+  `apply PATH` reports the current batch with instructions and never prompts
+  (the agent route). An interview started in one modality continues in either.
 
-  Headless answers files. `apply` accepts an answers document with
-  `--answers`, for a new interview or for the interview staged at the target
-  for the same template. Toha submits the document as one answers document,
-  as `continue` does, so the same document records the same answers and
-  reports the same errors through either command. It then answers each
-  remaining batch from configured defaults, then from the question `default`.
-  When the document is rejected, or a required question has no answer, or a
-  question has an error for a value recorded earlier, the run stops, stages
-  the interview, and emits the batch that holds the question with its
-  errors. With `--dry-run`, the run emits that batch and leaves the staged
-  state unchanged.
+  Headless answers files. The scripted route `apply TEMPLATE PATH --answers
+  FILE` is one shot. It never stages, refuses with a `staged` error document
+  when an interview is staged at the path (before reading the document), and
+  writes exactly one JSON result document for every outcome. It submits the
+  envelope as one document, then answers each remaining batch from configured
+  defaults and the question `default`. When the document is rejected, or a
+  required question has no answer, or a held answer fails when its question is
+  reached, it reports a `questions` document with per-id errors (a missing
+  required question carries `is required`) and exit 4. A completed run reports
+  `applied` (or `planned` under `--dry-run` or a flow dry-run). It leaves the
+  staged and target bytes unchanged on any document or identity failure.
 
   Staged state. A staged interview is stored in the user state directory:
   `$XDG_STATE_HOME/toha/staged/` on Linux, with `~/.local/state` in place of
@@ -130,14 +182,68 @@ description: >-
   `~/Library/Application Support/toha/staged/` on macOS; and
   `%LOCALAPPDATA%\toha\staged\` on Windows. The file name is the
   lowercase hexadecimal SHA-256 of the canonical absolute target path with a
-  `.json` suffix. The staged record holds the target path, the formal name and
+  `.json` suffix. The canonical path has no redundant trailing separator; a
+  filesystem root keeps its required separator. Storage, protocol, planning,
+  and apply use the same constructed target identity. A separator-keyed legacy
+  record is accepted only when its stored target canonicalizes to that identity.
+  Its next successful save writes the canonical key before removing the legacy
+  key. Successful apply removes both canonical and legacy keys. Abort removes
+  both keys by target identity without requiring either stored record to be
+  readable. The staged record holds the target path, the formal name and
   resolved commit of the template, whether the argument resolved by name, the
   instant that `now()` returns for this
-  interview, and every accepted answers submission, in order. Resuming replays
-  those submissions, so the interview position is derived, not stored.
+  interview, and every accepted answers submission, in order. A record also
+  carries a versioned invocation context: either the current form, holding the
+  short name, aliases, source, host facts, execution facts, and the environment
+  snapshot (unavailable, or the five captured optional values), or the legacy
+  form. A record written before the context existed, or by the legacy
+  constructor, has no context field and decodes as legacy; a legacy record
+  stays byte-compatible with a pre-context record and injects none of the
+  reserved variables on replay. The wire never duplicates the target or formal
+  name and holds no environment map or grant token; the captured strings are
+  plaintext in the existing staged JSON under the existing state-directory and
+  process-umask behavior. Each per-call input modality is unchanged. Resuming
+  replays those submissions, so the interview position is derived, not stored.
   `apply <TEMPLATE> <PATH>` resumes the staged interview when `<TEMPLATE>`
   resolves to the formal name the record holds, and refuses otherwise. A
   staged record without the name-resolution field treats it as false.
+
+
+  Staged updates. A staged update carries two more members: `base`, the id of
+  the snapshot the update merges from, or the reserved marker `@baseline` for an
+  update from an empty base; and `reanswer`, whether the update re-asks every
+  recorded answer. The marker begins with `@`, which a snapshot id never
+  contains, so it is unambiguous. A record without a `base` is a plain interview.
+  A staged update replays the base snapshot's recorded answers through the
+  update replay adapter and asks only what the new version needs; resuming
+  replays the staged submissions the same way, so its position is derived, not
+  stored. `continue` answers the next batch; `apply <PATH>` resumes a completed
+  staged update and merges it from the base.
+
+
+  Update results. A scripted update reports an `applied` or `planned` document with a
+  `merge` member — each changed path with its action (`added`, `updated`,
+  `merged`, `deleted`, `conflicted`, `not-previewed`), the kind of any conflict,
+  and the paths left conflicted — and, when it saved one, a `snapshot` member
+  naming the id. A scripted re-render equal to the base reports an `already-current`
+  document and writes nothing. An untrusted scripted update reports `planned` with
+  `trusted: false` and writes nothing, as a dry run does.
+
+  Person and completed staged-agent updates print the human-readable completion
+  specified by command-line-interface, with no JSON result document.
+
+  Generator seed. When an application is seeded from a snapshot with `--like`
+  (the generate axis), its `questions` and `applied` documents carry
+  an optional `seed` member, `{ "from": "<snapshot id>" }`, naming the snapshot
+  whose recorded answers pre-filled the defaults; the member holds no answer
+  values and is absent when `--like` did not seed. The staged record carries the
+  same pinned snapshot id in an optional `seed` field (distinct from the update
+  axis's `base` and never set together with it), re-read from git on resume so a
+  newer same-source snapshot does not change the seed. A seeded default enters
+  the interview as an ordinary default: a route answer overrides it, and a
+  seeded value the new template version rejects on a constraint is re-asked or
+  returned as a remaining question, never written. A `--like` selector that
+  cannot be honoured reports an `error` document of the `snapshot` kind.
 format: json-schema
 validation-criteria: >-
   Every batch and result document that toha emits validates against

@@ -75,25 +75,25 @@ pub fn parse(arg: &str, hosts: &Hosts, cwd: &Path, home: &Path) -> Result<Addres
             path,
         });
     }
-    if let Some((prefix, rest)) = arg.split_once(':') {
-        if let Some(base) = hosts.get(prefix) {
-            let (repo, reference, path) = split_git(rest)?;
-            if !repo.contains('/') {
-                return Err(SourceError::Address(
-                    "host address requires owner/repository".into(),
-                ));
-            }
-            return Ok(Address::Git {
-                repo: format!("{}/{}", base.trim_end_matches('/'), repo),
-                reference,
-                path,
-            });
+    if let Some((prefix, rest)) = arg.split_once(':')
+        && let Some(base) = hosts.get(prefix)
+    {
+        let (repo, reference, path) = split_git(rest)?;
+        if !repo.contains('/') {
+            return Err(SourceError::Address(
+                "host address requires owner/repository".into(),
+            ));
         }
+        return Ok(Address::Git {
+            repo: format!("{}/{}", base.trim_end_matches('/'), repo),
+            reference,
+            path,
+        });
     }
     let drive = arg.as_bytes().get(0..3).is_some_and(|v| {
         v[0].is_ascii_alphabetic() && v[1] == b':' && matches!(v[2], b'/' | b'\\')
     });
-    if arg.starts_with('.') || arg.starts_with('/') || arg.starts_with('~') || drive {
+    if arg.starts_with('.') || Path::new(arg).is_absolute() || arg.starts_with('~') || drive {
         let value = if arg == "~" {
             home.to_path_buf()
         } else if let Some(rest) = arg.strip_prefix("~/") {
@@ -417,12 +417,13 @@ mod tests {
         ));
         let canonical = folder.canonicalize().unwrap();
         let parsed = parse(canonical.to_str().unwrap(), &hosts, cwd, cwd).unwrap();
-        if cfg!(windows) {
-            assert!(matches!(parsed, Address::Name(name) if name == canonical.to_string_lossy()));
+        assert!(matches!(parsed, Address::Folder(path) if path == canonical));
+        let names: &[&str] = if cfg!(windows) {
+            &["C:relative"]
         } else {
-            assert!(matches!(parsed, Address::Folder(path) if path == canonical));
-        }
-        for name in [r"\\?\C:\sample", r"\\server\share", "C:relative"] {
+            &[r"\\?\C:\sample", r"\\server\share", "C:relative"]
+        };
+        for &name in names {
             assert_eq!(
                 parse(name, &hosts, cwd, cwd).unwrap(),
                 Address::Name(name.into())

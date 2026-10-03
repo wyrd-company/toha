@@ -39,25 +39,82 @@ commands:
         kind: option
         value-optional: true
         description: >-
-          Emit the first question batch instead of prompting. Writes to the
-          given file, or to standard output when no file is given.
+          Emit the first question batch instead of prompting (the agent route).
+          With a file, writes the batch to the file and the instructions to
+          standard output; without a file, writes the batch and the instructions
+          to standard output.
         value:
           type: path
+      - name: trust
+        flags: [ --trust ]
+        kind: flag
+        description: >-
+          Capture the trusted environment values (user, hostname, editor, shell,
+          visual) this staged interview's templates reference. The grant is
+          discovered before any batch and carries through every later batch and
+          the apply.
+      - name: from
+        flags: [ --from ]
+        kind: option
+        conflicts-with: [ baseline ]
+        description: >-
+          Stage an update from a base snapshot: replay its recorded answers and
+          ask only what the new version needs. The person route prompts; the
+          agent route (with --async) reports the batch. The value is a snapshot
+          id.
+        value:
+          type: string
+      - name: baseline
+        flags: [ --baseline ]
+        kind: flag
+        description: Stage an update from an empty base.
+      - name: reanswer
+        flags: [ --reanswer ]
+        kind: flag
+        requires: [ from ]
+        description: Re-ask every recorded answer instead of replaying it.
+      - name: like
+        flags: [ --like ]
+        kind: option
+        conflicts-with: [ from, baseline ]
+        description: >-
+          Seed this application's answer defaults from a snapshot of a prior
+          application of the same source (the generate axis). The optional value
+          is `latest`, a snapshot id or a prefix of at least six characters, or
+          omitted to pick from a list (the person route only; a bare --like is a
+          usage error on the agent route). The snapshot is selected
+          repository-wide and filtered by source identity; the staged record
+          pins the chosen snapshot id and re-reads it on resume.
+        value:
+          type: string
+          required: false
     output:
       modes:
         - name: human-readable
-          description: Interactive prompts and messages.
+          description: >-
+            The person route: interactive prompts and messages, then the dry-run
+            plan and apply instructions at completion.
           machine-readable: false
-        - name: question-batch
-          description: The interview protocol batch selected by --async.
+        - name: batch-and-instructions
+          description: >-
+            The agent route selected by --async: the interview protocol batch
+            followed by plain-text instructions (with a file argument, the batch
+            is written to the file and only the instructions to standard output).
           machine-readable: true
       exit-codes:
         - code: 0
-          meaning: The interview is complete and staged.
+          meaning: >-
+            The interview is complete and staged, or a flow stop/abort ended it
+            (with `--async`, the `ended` result document is emitted; an abort
+            leaves nothing staged).
         - code: 1
           meaning: >-
             The template failed to load, or an interview is already staged at
             the path; the message names the commands that finish or replace it.
+            Or a `--like` selector could not be honoured while staging (it is
+            resolved and pinned at stage time) — unknown, ambiguous, wrong-source,
+            no snapshot of the source, or a target not in git with an explicit
+            selector — reported as an `error` document of kind `snapshot`.
         - code: 2
           meaning: Invalid command line.
         - code: 4
@@ -80,33 +137,48 @@ commands:
         position: 1
         required: false
         description: >-
-          Answers document for the current batch; `-` reads standard input.
-          When absent, toha prompts in the terminal for every remaining
-          question, or emits the complete result document when none remain.
+          Identity-bearing answers document for the current batch, wrapping the
+          answers in `{"template": <formal>, "answers": {...}}`; `-` reads
+          standard input (the agent route). When absent, toha prompts in the
+          terminal for every remaining question (the person route) and shows the
+          dry-run plan at completion.
         value:
           type: path
     output:
       modes:
         - name: human-readable
-          description: Interactive prompts and messages, when no answers document is given.
-          machine-readable: false
-        - name: result
           description: >-
-            The interview protocol result document, when an answers document is
-            given or the interview is complete.
+            The person route (no answers document): interactive prompts and
+            messages, then the dry-run plan and apply instructions at completion.
+          machine-readable: false
+        - name: batch-and-instructions
+          description: >-
+            The agent route (with an answers document): the next question-batch
+            document followed by plain-text instructions while questions remain,
+            or the completion instructions only when the interview completes.
           machine-readable: true
       exit-codes:
         - code: 0
-          meaning: The interview is complete.
+          meaning: >-
+            With an answers document the interview completed and only the
+            completion instructions (naming `apply PATH --dry-run` and `apply
+            PATH`) were written; without one, prompting completed and the dry-run
+            plan was shown. A flow stop/abort also ended it: with an answers
+            document the `ended` result document carries the `kind`; an abort
+            leaves nothing staged. There is no complete result document.
         - code: 1
           meaning: >-
             No interview is staged at the path, or an answers document was given
-            for a complete interview; the message names the commands that fit.
-            Or the staged record does not replay against its template; the
-            message states that the staged interview cannot be resumed and why,
-            and names `abort` followed by `stage`. Or an expression in the
-            template failed to evaluate while answering; the message starts
-            with `template error in` and names the field and the expression.
+            for a complete interview, or for an interview a flow node already
+            ended; the message names the commands that fit. Or the staged record
+            does not replay against its template; the message states that the
+            staged interview cannot be resumed and why, and names `abort`
+            followed by `stage`. Or an expression in the template failed to
+            evaluate while answering; the message starts with `template error
+            in` and names the field and the expression. Or the staged record
+            pinned a `--like` snapshot that is now missing or invalid when it is
+            re-read from git on resume; the staged interview cannot be resumed and
+            an `error` document of kind `snapshot` is reported.
         - code: 4
           meaning: Questions remain or answers were rejected; the result holds the batch.
   - name: apply
@@ -119,10 +191,11 @@ commands:
         position: 0
         required: false
         description: >-
-          Template to interview when no interview is staged at the path. When
-          given, the command runs `stage` and then applies. When an interview
-          for the same template is staged at the path, the command applies it
-          as `apply <PATH>` does.
+          Template to interview (the person route, `apply TEMPLATE PATH`): it
+          prompts the remaining questions in a terminal and applies, resuming an
+          interview of the same template staged at the path. With `--answers` the
+          same command is the scripted route (below). `apply PATH` without a
+          template is the agent route, which never prompts.
         value:
           type: string
       - name: path
@@ -148,44 +221,229 @@ commands:
         flags: [ -A, --answers ]
         kind: option
         description: >-
-          Answers document for a new interview, or for the staged interview of
-          the named template; `-` reads standard input.
+          Identity-bearing answers document for the scripted route `apply
+          TEMPLATE PATH --answers FILE`, wrapping the answers in `{"template":
+          <formal>, "answers": {...}}`; `-` reads standard input. One shot: it
+          never stages and refuses, before reading the document, when an
+          interview is staged at the path.
         value:
           type: path
+      - name: from
+        flags: [ --from ]
+        kind: option
+        conflicts-with: [ baseline ]
+        description: >-
+          Update the project from a base snapshot: re-render the template,
+          replay the snapshot's recorded answers, ask only what the new version
+          needs, and merge the difference three-way into the target so the
+          operator's edits survive. The value is a snapshot id. Refuses a dirty
+          target, a snapshot taken for another target, and a template whose
+          source is not the snapshot's.
+        value:
+          type: string
+      - name: baseline
+        flags: [ --baseline ]
+        kind: flag
+        description: >-
+          Update from an empty base: merge the whole render into the target,
+          three-way against nothing, adopting an existing project and recording
+          its first snapshot.
+      - name: reanswer
+        flags: [ --reanswer ]
+        kind: flag
+        requires: [ from ]
+        description: Re-ask every recorded answer instead of replaying it.
+      - name: like
+        flags: [ --like ]
+        kind: option
+        conflicts-with: [ from, baseline ]
+        description: >-
+          Seed this application's answer defaults from a snapshot of a prior
+          application of the same source (the generate axis), pre-filling the new
+          application's defaults without merging. The optional value is `latest`,
+          a snapshot id or a prefix of at least six characters, or omitted to
+          pick from a list (the person route only; a bare --like is a usage error
+          on the script and agent routes). The snapshot is selected
+          repository-wide and filtered by source identity. A seeded `applied` or
+          `questions` document carries a `seed` member naming the snapshot.
+        value:
+          type: string
+          required: false
     output:
       modes:
         - name: human-readable
           description: >-
-            Prompts, messages, each written path as its file is written, and
-            then hook output.
+            The person route (`apply TEMPLATE PATH`) and the applied agent route
+            (`apply PATH` on a complete interview): prompts and messages as
+            needed, each written path as its file is written, then hook output.
+            Updates (--from or --baseline) print template and target, merge actions
+            and conflict kinds, messages, allowed hook failures, snapshot outcome,
+            preview or already-current notices, and conflict resolution guidance.
+            They emit no JSON completion document.
           machine-readable: false
-        - name: question-batch
+        - name: batch-and-instructions
           description: >-
-            The interview protocol batch on standard output, with exit code 4,
-            when the interview is incomplete and no terminal can prompt for it. The commands that answer the
-            remaining questions are named on standard error.
+            The agent route `apply PATH` on an incomplete interview: the current
+            question-batch document followed by plain-text instructions, with
+            exit code 4. It never prompts, with or without a terminal.
+          machine-readable: true
+        - name: result
+          description: >-
+            The scripted route `apply TEMPLATE PATH --answers FILE`: exactly one
+            JSON result document on standard output for every outcome — `applied`,
+            `planned`, `questions`, `error`, or `ended` — and nothing else. An
+            uncaptured hook's stdout is forwarded to standard error so the result
+            document stays alone on standard output. A plain apply's `applied`
+            document carries a `snapshot` member; an update (`--from` or
+            `--baseline`) carries a `snapshot` and a `merge` member, and reports
+            `already-current` when the re-render equals the base.
           machine-readable: true
       exit-codes:
         - code: 0
           meaning: >-
-            Files were written and every hook succeeded, or the dry run
-            completed; after a dry run of untrusted hooks, standard error
-            names the command with `--trust` that runs them.
+            Files were written and every hook succeeded (the scripted route emits
+            the `applied` document; the person and agent routes print the file
+            lines), or a dry run completed (the scripted route emits the `planned`
+            document; other routes print the plan). An untrusted project update
+            previews without writing and exits 0; scripted updates emit planned
+            with trusted: false, while person and staged-agent updates print
+            completion prose and trust guidance on standard output. A flow stop/abort ended the
+            run or a flow dry-run showed the plan: the scripted route emits the
+            `ended` or `planned` document and other routes print a one-line notice
+            on standard error; nothing is written and an abort removes the staged
+            record.
         - code: 1
           meaning: >-
             A file conflict, render failure, or hook failure; no interview is
             staged at the path; an interview for another template is staged at
-            the path; an answers document was given for a complete interview;
-            or the staged record does not replay against its template, and the
-            message names `abort` followed by `stage`.
+            the path; the scripted route found an interview already staged (an
+            `error` document of kind `staged`); a flow abort could not remove the
+            staged record; the staged record does not replay against its
+            template, and the message names `abort` followed by `stage`; or a
+            `--like` selector could not be honoured — unknown, ambiguous,
+            wrong-source, no snapshot of the source, or a target not in git with
+            an explicit selector — reported as an `error` document of kind
+            `snapshot`. The scripted route reports every failure as an `error`
+            result document; the person and agent routes report on standard
+            error.
+        - code: 2
+          meaning: >-
+            Invalid command line: a bare `--like` without a selector on the
+            script or agent route (a selector is required off the person route),
+            or `--like` combined with `--from` or `--baseline`.
         - code: 3
-          meaning: The template has hooks and is not trusted; a dry run was printed.
+          meaning: >-
+            A plain application (without --from or --baseline) has hooks and is
+            not trusted. The scripted route emits a
+            `planned` document with `trusted: false`; the person and agent routes
+            print the plan and name the `--trust` command on standard error.
         - code: 4
           meaning: >-
-            The interview is incomplete and no terminal can prompt for it;
-            standard output holds the question batch.
+            The interview is incomplete: `apply PATH` (the agent route) reports
+            the current batch with instructions without prompting, and the
+            scripted route emits a `questions` document.
         - code: 5
-          meaning: The template name is ambiguous.
+          meaning: >-
+            The template name is ambiguous; the scripted route emits an `error`
+            document of kind `ambiguous` listing the matches.
+  - name: init
+    summary: Configure a repository to fetch update snapshots from a remote.
+    mode: non-interactive
+    positional-arguments:
+      - name: path
+        position: 0
+        required: false
+        description: Target directory; the current directory by default.
+        value:
+          type: directory
+    options:
+      - name: remote
+        flags: [ --remote ]
+        kind: option
+        description: The remote to add the snapshot fetch refspec to; `origin` by default.
+        value:
+          type: string
+    output:
+      modes:
+        - name: human-readable
+          description: A line stating the fetch refspec was added, or already present.
+          machine-readable: false
+      exit-codes:
+        - code: 0
+          meaning: The fetch refspec is present.
+        - code: 1
+          meaning: The target is not inside a git repository, or the remote does not exist.
+  - name: snapshots
+    summary: List or remove the update snapshots of a target.
+    mode: non-interactive
+    subcommands:
+      - name: list
+        summary: List the target's snapshots, newest first, marking a likely base.
+        positional-arguments:
+          - name: path
+            position: 0
+            required: false
+            description: Target directory; the current directory by default.
+            value:
+              type: directory
+        options:
+          - name: json
+            flags: [ --json ]
+            kind: flag
+            description: Write one JSON document instead of a human-readable list.
+        output:
+          modes:
+            - name: human-readable
+              description: One line per snapshot, newest first, marking a likely base.
+              machine-readable: false
+            - name: result
+              description: >-
+                With --json, the `snapshots list` document validated against
+                `#/$defs/list` in `docs/specifications/snapshot.schema.yml`.
+              machine-readable: true
+          exit-codes:
+            - code: 0
+              meaning: The snapshots were listed.
+            - code: 1
+              meaning: The target is not inside a git repository.
+      - name: clean
+        summary: Remove snapshots named in a JSON document (the script and agent route).
+        positional-arguments:
+          - name: path
+            position: 0
+            required: false
+            description: Target directory; the current directory by default.
+            value:
+              type: directory
+        options:
+          - name: remove
+            flags: [ --remove ]
+            kind: option
+            description: >-
+              A JSON document `{ "remove": ["<id>", ...] }` naming the exact
+              snapshots to remove; `-` reads standard input. Removes the refs in
+              process and reports the `git push --delete` commands; it never
+              pushes.
+            value:
+              type: path
+          - name: force
+            flags: [ --force ]
+            kind: flag
+            description: Allow removing every snapshot of a source.
+        output:
+          modes:
+            - name: result
+              description: >-
+                The `snapshots clean` document validated against `#/$defs/clean`
+                in `docs/specifications/snapshot.schema.yml`.
+              machine-readable: true
+          exit-codes:
+            - code: 0
+              meaning: The named snapshots were removed or reported not found.
+            - code: 1
+              meaning: >-
+                The target is not inside a git repository, the document is
+                malformed, or `--remove` was not given.
   - name: abort
     summary: Delete the staged interview for a target directory.
     mode: non-interactive
@@ -224,7 +482,7 @@ commands:
           - name: trust
             flags: [ --trust ]
             kind: flag
-            description: Record the added templates as trusted in the user registry.
+            description: Approve the added templates' current hooks in the user registry.
         output:
           exit-codes:
             - code: 0
@@ -337,6 +595,48 @@ commands:
               meaning: The alias was added or removed.
             - code: 1
               meaning: The alias is in use, or the alias to remove does not exist.
+            - code: 5
+              meaning: The template name is ambiguous.
+      - name: trust
+        summary: Approve the installed hooks of a template so its apply runs them.
+        mode: non-interactive
+        positional-arguments:
+          - name: template
+            position: 0
+            required: true
+            description: Formal, short, or alias name of an installed template.
+            value:
+              type: string
+        output:
+          exit-codes:
+            - code: 0
+              meaning: Trust was granted, or was already granted.
+            - code: 1
+              meaning: >-
+                The template is not in the user registry, or its installed executable surface is
+                missing, unreadable, or escapes the template folder.
+            - code: 2
+              meaning: Invalid command line.
+            - code: 5
+              meaning: The template name is ambiguous.
+      - name: untrust
+        summary: Revoke approval of a template's hooks.
+        mode: non-interactive
+        positional-arguments:
+          - name: template
+            position: 0
+            required: true
+            description: Formal, short, or alias name of an installed template.
+            value:
+              type: string
+        output:
+          exit-codes:
+            - code: 0
+              meaning: Trust was revoked, or was already absent.
+            - code: 1
+              meaning: The template is not in the user registry.
+            - code: 2
+              meaning: Invalid command line.
             - code: 5
               meaning: The template name is ambiguous.
   - name: skills

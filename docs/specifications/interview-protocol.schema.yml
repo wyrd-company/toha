@@ -5,10 +5,18 @@
 $schema: https://json-schema.org/draft/2020-12/schema
 $id: https://wyrd.foo/toha/schemas/interview-protocol
 title: Toha Interview Protocol
-description: Documents exchanged by `stage --async`, `continue`, and `--answers`.
+description: >-
+  The answers document callers submit, and the result documents toha emits. The
+  question batch, the scripted result documents (applied, planned, error), and
+  the flow-ended document are the `oneOf` a route writes to standard output; the
+  answers document is the input a caller supplies.
 oneOf:
   - $ref: "#/$defs/batch"
-  - $ref: "#/$defs/complete"
+  - $ref: "#/$defs/ended"
+  - $ref: "#/$defs/applied"
+  - $ref: "#/$defs/planned"
+  - $ref: "#/$defs/already_current"
+  - $ref: "#/$defs/error"
 $defs:
   identifier:
     type: string
@@ -18,13 +26,30 @@ $defs:
     type: object
     propertyNames:
       $ref: "#/$defs/identifier"
+  answers-document:
+    description: >-
+      The external answers document a caller submits. It names the template it
+      answers, which toha compares by exact string equality with the formal
+      template the route established before it evaluates any answer.
+    type: object
+    additionalProperties: false
+    required: [ template, answers ]
+    properties:
+      template:
+        description: Exact formal template name copied from context.template.
+        type: string
+        minLength: 1
+      answers:
+        $ref: "#/$defs/answers"
   context:
     type: object
     additionalProperties: false
     required: [ target, template, commit ]
     properties:
       target:
-        description: Canonical absolute target path.
+        description: >-
+          Canonical absolute target path, without a redundant trailing
+          separator except when the path is a filesystem root.
         type: string
       template:
         description: Formal name of the template.
@@ -39,6 +64,92 @@ $defs:
     type: array
     items:
       type: string
+  action:
+    description: >-
+      How a planned or written path is produced: `create` a new whole file,
+      `overwrite` an existing one, refuse it as a `conflict` in a dry run, or
+      `inject`/`update` a region or value of a target.
+    enum: [ create, overwrite, conflict, inject, update ]
+  snapshot_outcome:
+    description: >-
+      What the apply did about its snapshot: the `id` it saved, the reason it
+      `skipped` the save, or a capture `error` after the files were written.
+    type: object
+    additionalProperties: false
+    properties:
+      id:
+        type: string
+      skipped:
+        enum: [ not-git, no-commit, dirty, nothing-changed, dry-run ]
+      error:
+        type: string
+    oneOf:
+      - required: [ id ]
+      - required: [ skipped ]
+      - required: [ error ]
+  seed:
+    description: >-
+      Present only when `--like` seeded this interview's answer defaults from a
+      snapshot of a prior application of the same source. `from` is that
+      snapshot's id; the member carries no answer values.
+    type: object
+    additionalProperties: false
+    required: [ from ]
+    properties:
+      from:
+        type: string
+  merge_action:
+    description: >-
+      How an update's merge changed a path: it `added` a new file, `updated` or
+      `merged` an owned file, `deleted` one the template no longer produces,
+      left a `conflicted` path for the operator, or `not-previewed` a hook path
+      in a dry run.
+    enum: [ added, updated, merged, deleted, conflicted, not-previewed ]
+  conflict_kind:
+    description: The kind of a merge conflict a `conflicted` change carries.
+    enum: [ content, add-add, modify-delete, file-directory, binary, driver ]
+  merge:
+    description: >-
+      The result of an update's three-way merge from the base: each changed path
+      with its action (and, for a conflict, its kind), and the paths left
+      conflicted for the operator to resolve.
+    type: object
+    additionalProperties: false
+    required: [ changes, conflicted ]
+    properties:
+      changes:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          required: [ path, action ]
+          properties:
+            path:
+              type: string
+            action:
+              $ref: "#/$defs/merge_action"
+            conflict:
+              $ref: "#/$defs/conflict_kind"
+      conflicted:
+        type: array
+        items:
+          type: string
+  already_current:
+    description: >-
+      An update whose re-render equals the base snapshot: nothing is written and
+      no new snapshot is saved. `snapshot` names the base it is already at.
+    type: object
+    additionalProperties: false
+    required: [ protocol, status, context ]
+    properties:
+      protocol:
+        const: 1
+      status:
+        const: already-current
+      context:
+        $ref: "#/$defs/context"
+      snapshot:
+        $ref: "#/$defs/snapshot_outcome"
   batch:
     type: object
     additionalProperties: false
@@ -62,8 +173,10 @@ $defs:
       errors:
         description: >-
           Validation errors keyed by question id: for the answers of a rejected
-          document, or for held answers that failed when their questions were
-          reached. Each error is a sentence that states the failed constraint.
+          document, for held answers that failed when their questions were
+          reached, for a recoverable configured default, and, on the scripted
+          route, `is required` for a required question the document left
+          unanswered. Each error is a sentence that states the failed constraint.
         type: object
         propertyNames:
           $ref: "#/$defs/identifier"
@@ -71,18 +184,159 @@ $defs:
           type: array
           items:
             type: string
-  complete:
+      seed:
+        $ref: "#/$defs/seed"
+  applied:
+    description: >-
+      The scripted route wrote the files and ran the hooks. Each written path
+      carries its action; each hook that ran carries its id, exit code, and
+      success. Captured hook streams never appear here.
     type: object
     additionalProperties: false
-    required: [ protocol, status, context, answers, messages ]
+    required: [ protocol, status, context, files, messages, hooks, snapshot ]
     properties:
       protocol:
         const: 1
       status:
-        const: complete
+        const: applied
       context:
         $ref: "#/$defs/context"
-      answers:
-        $ref: "#/$defs/answers"
+      files:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          required: [ path, action ]
+          properties:
+            path:
+              type: string
+            action:
+              $ref: "#/$defs/action"
+      messages:
+        $ref: "#/$defs/messages"
+      hooks:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          required: [ id, exit_code, success ]
+          properties:
+            id:
+              type: [ string, "null" ]
+            exit_code:
+              type: [ integer, "null" ]
+            success:
+              type: boolean
+      snapshot:
+        $ref: "#/$defs/snapshot_outcome"
+      merge:
+        $ref: "#/$defs/merge"
+      seed:
+        $ref: "#/$defs/seed"
+  planned:
+    description: >-
+      The scripted route planned the files and hooks and wrote nothing (a CLI or
+      flow dry run, or untrusted hooks). Each planned path carries its action and
+      the region or JSON path an edit governs; each planned hook carries its
+      rendered argument vector and cwd. `trusted` states whether the hooks would
+      run.
+    type: object
+    additionalProperties: false
+    required: [ protocol, status, context, files, messages, hooks, trusted ]
+    properties:
+      protocol:
+        const: 1
+      status:
+        const: planned
+      context:
+        $ref: "#/$defs/context"
+      files:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          required: [ path, action ]
+          properties:
+            path:
+              type: string
+            action:
+              $ref: "#/$defs/action"
+            owner:
+              description: The region key or JSON path an edit governs.
+              type: string
+      messages:
+        $ref: "#/$defs/messages"
+      hooks:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          required: [ command, cwd ]
+          properties:
+            command:
+              type: array
+              items:
+                type: string
+            cwd:
+              type: string
+      trusted:
+        type: boolean
+      merge:
+        $ref: "#/$defs/merge"
+  error:
+    description: >-
+      The scripted route refused the request or a step failed. `kind` names the
+      failure class, `message` states it, and `commands` lists the commands that
+      finish, discard, or retry the request when there are any. `context` is
+      present once the route established a target and template.
+    type: object
+    additionalProperties: false
+    required: [ protocol, status, kind, message ]
+    properties:
+      protocol:
+        const: 1
+      status:
+        const: error
+      kind:
+        enum:
+          - input
+          - document
+          - identity
+          - staged
+          - source
+          - replay
+          - conflict
+          - render
+          - hook
+          - ambiguous
+          - snapshot
+      message:
+        type: string
+      commands:
+        type: array
+        items:
+          type: string
+      context:
+        $ref: "#/$defs/context"
+  ended:
+    description: >-
+      A flow `stop` or `abort` ended the interview. No files were written and no
+      hooks ran; an `abort` additionally removed the target's staged record.
+    type: object
+    additionalProperties: false
+    required: [ protocol, status, context, kind, messages ]
+    properties:
+      protocol:
+        const: 1
+      status:
+        const: ended
+      context:
+        $ref: "#/$defs/context"
+      kind:
+        description: Whether the flow node stopped the run or also discarded the staged record.
+        enum: [ stop, abort ]
+      label:
+        description: The diagnostic label of the flow node that ended the interview.
+        type: string
       messages:
         $ref: "#/$defs/messages"

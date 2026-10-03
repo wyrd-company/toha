@@ -1,0 +1,50 @@
+$schema: https://refinery.systems/ontology/technical-design
+relationships:
+  realizes: toha
+  implements: config
+  related-to:
+    - architecture
+    - error-attribution
+objective: >-
+  Resolve reusable configured values for one selected template while retaining
+  the exact source of each winning default through interview validation.
+proposed-design:
+  high-level-overview: >-
+    Configuration owns a named preset store and mappings from a template formal
+    name and question id to a literal or preset reference. configured_defaults
+    projects those mappings into one origin-bearing Resolution. The interview
+    engine consumes the resolved entries without knowing configuration layers,
+    template selection or preset lookup.
+  parsed-values: >-
+    PresetName, formal names and Id occupy separate namespaces. DefaultSource
+    distinguishes Ref(PresetName) from Literal at parsing. A bare value remains
+    literal even when it spells a preset name. Presets contain only string,
+    boolean or string-array literals; references occur only in mappings and
+    resolve one hop into the fully merged store. ConfigEntry couples each value
+    with its ConfigOrigin, including the exact file and layer.
+  merging-and-selection: >-
+    System, user and local layers merge presets per name and mappings per
+    (formal name, question id), with local over user over system. Replacement
+    moves value and origin together while preserving sibling entries. Mapping
+    selection compares the resolved formal name by exact equality. Canonical
+    folder identities, normalized Git addresses and the bundled toha-demo
+    identity use the same selection rule. Aliases and short names are caller
+    selectors, not mapping identities.
+  resolution: >-
+    The resolver processes mappings for questions defined by the selected
+    template. Unknown mapped ids produce attributed warnings. Other template
+    mappings and unreferenced presets do not undergo question-kind validation.
+    Missing references and wrong-kind values are fatal attributed errors. A
+    reference error leads with the mapping site; a referenced value-kind error
+    also names the winning preset file, entry and value.
+  provenance: >-
+    Resolution privately retains each raw value and its mapping and optional
+    preset origins. Its consuming start, context-bearing start and staged replay
+    routes move those entries into the configured default bank. A constraint
+    rejection remains recoverable and names that provenance. Warnings are
+    exposed before consumption. into_flat_defaults is the explicit operation
+    that returns raw values and warnings while discarding provenance.
+  resumption: >-
+    Stage records accepted submissions and selected identity. Resume reads live
+    configuration and resolves it for the recorded formal name. Defaults are
+    not frozen into the record. Explicit submissions override defaults.

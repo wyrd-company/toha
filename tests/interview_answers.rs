@@ -6,13 +6,24 @@
 mod support;
 
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+};
+use toha::config::{ConfigEntry, ConfigLayer, ConfigOrigin, DefaultSource, PresetName};
 use toha::{AnswerError, Interview, Seed, Template, protocol};
 
+fn ctx() -> toha::context::InvocationContext {
+    toha::context::InvocationContext::for_target(
+        toha::staging::canonical_target(std::path::Path::new(".")).unwrap(),
+    )
+}
 fn seed() -> Seed {
     Seed {
         now: "2026-01-02T03:04:05+00:00[UTC]".parse().unwrap(),
         defaults: Default::default(),
+        context: ctx(),
     }
 }
 
@@ -29,7 +40,7 @@ fn first_batch_errors(template: &Template, document: Value) -> BTreeMap<String, 
     let Interview::Asking(pending) = Interview::start(template, seed()).unwrap() else {
         panic!("expected questions")
     };
-    let raw = protocol::parse_answers(&document.to_string()).unwrap();
+    let raw = support::raw_answers(&document.to_string()).unwrap();
     match pending.answer(raw) {
         Ok(_) => BTreeMap::new(),
         Err(AnswerError::Rejected { rejections, .. }) => {
@@ -189,8 +200,31 @@ fn rejected_continue_reports_the_sentence_in_the_batch() {
     );
 }
 
+/// The leading JSON value of standard output, or `None` when it does not begin
+/// with one (a completing continue writes instructions only; a template fault
+/// writes to standard error).
+fn leading_document(stdout: &[u8]) -> Option<Value> {
+    serde_json::Deserializer::from_slice(stdout)
+        .into_iter::<Value>()
+        .next()
+        .and_then(Result::ok)
+}
+
+/// Feeds `answers` to `continue PATH -` inside the identity envelope naming the
+/// staged template. Returns the batch document (accepted-with-questions or a
+/// rejection) when the interview still asks; on completion the agent route
+/// writes instructions only, so the completed answers and last-step messages
+/// are recovered by replaying the saved record.
 fn continue_with(state: &Path, target: &Path, answers: Value) -> (i32, Value) {
     use std::io::Write;
+    let canonical = toha::staging::canonical_target(target).unwrap();
+    let store = toha::staging::Store::new(support::staged_dir(state));
+    let formal = store
+        .load(&canonical)
+        .unwrap()
+        .expect("a staged record")
+        .template;
+    let envelope = json!({ "template": formal, "answers": answers });
     let mut child = support::isolated_command(state)
         .args(["continue", target.to_str().unwrap(), "-"])
         .stdin(std::process::Stdio::piped())
@@ -202,12 +236,24 @@ fn continue_with(state: &Path, target: &Path, answers: Value) -> (i32, Value) {
         .stdin
         .take()
         .unwrap()
-        .write_all(answers.to_string().as_bytes())
+        .write_all(envelope.to_string().as_bytes())
         .unwrap();
     let output = child.wait_with_output().unwrap();
-    let document = serde_json::from_slice(&output.stdout)
-        .unwrap_or_else(|_| json!({"stderr": String::from_utf8_lossy(&output.stderr)}));
-    (output.status.code().unwrap(), document)
+    let code = output.status.code().unwrap();
+    if let Some(document) = leading_document(&output.stdout) {
+        return (code, document);
+    }
+    if code == 0 {
+        let record = store.load(&canonical).unwrap().expect("a staged record");
+        let template = Template::load(Path::new(&record.template)).unwrap();
+        if let Interview::Complete(completed) = record.replay(&template, &canonical).unwrap() {
+            return (0, support::completed_projection(&completed));
+        }
+    }
+    (
+        code,
+        json!({ "stderr": String::from_utf8_lossy(&output.stderr) }),
+    )
 }
 
 fn early_template() -> std::path::PathBuf {
@@ -227,7 +273,7 @@ fn stage(state: &Path, target: &Path, template: &Path) -> Value {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(4));
-    serde_json::from_slice(&output.stdout).unwrap()
+    support::first_document(&output.stdout)
 }
 
 fn questions(document: &Value) -> Vec<String> {
@@ -289,8 +335,15 @@ fn basic_example_early_boolean_and_select_are_not_asked_again() {
     assert_eq!(document["answers"]["status"], json!("final"));
 }
 
+fn apply_agent(state: &Path, target: &Path) -> std::process::Output {
+    support::isolated_command(state)
+        .args(["apply", target.to_str().unwrap()])
+        .output()
+        .unwrap()
+}
+
 #[test]
-fn headless_apply_does_not_ask_answers_held_from_continue() {
+fn agent_apply_does_not_ask_answers_held_from_continue() {
     let state = tempfile::tempdir().unwrap();
     let target = tempfile::tempdir().unwrap();
     stage(state.path(), target.path(), &early_template());
@@ -300,31 +353,22 @@ fn headless_apply_does_not_ask_answers_held_from_continue() {
         json!({"name": "Alpha", "enabled": false, "mode": "slow"}),
     );
     assert_eq!(code, 4);
-    let answers = state.path().join("answers.json");
-    fs::write(&answers, "{}").unwrap();
-    let apply = |answers: &Path| {
-        support::isolated_command(state.path())
-            .arg("apply")
-            .arg(support::folder_address(&early_template()))
-            .args([target.path().to_str().unwrap(), "--answers"])
-            .arg(answers)
-            .output()
-            .unwrap()
-    };
-    let output = apply(&answers);
+    // `apply PATH` on an incomplete staged interview emits the remaining batch
+    // and never re-asks the answers held from continue.
+    let output = apply_agent(state.path(), target.path());
     assert_eq!(output.status.code(), Some(4));
-    let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let document = support::first_document(&output.stdout);
     assert_eq!(
         questions(&document),
         ["code", "extras", "flavor", "items", "label"]
     );
-    fs::write(
-        &answers,
-        json!({"label": "First", "code": "abc", "flavor": "slow-rich", "items": ["x"], "extras": []})
-            .to_string(),
-    )
-    .unwrap();
-    let output = apply(&answers);
+    let (code, _) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"label": "First", "code": "abc", "flavor": "slow-rich", "items": ["x"], "extras": []}),
+    );
+    assert_eq!(code, 0);
+    let output = apply_agent(state.path(), target.path());
     assert_eq!(
         output.status.code(),
         Some(0),
@@ -338,7 +382,7 @@ fn headless_apply_does_not_ask_answers_held_from_continue() {
 }
 
 #[test]
-fn headless_answer_replaces_an_answer_held_from_continue() {
+fn continue_replaces_an_answer_held_from_continue() {
     let state = tempfile::tempdir().unwrap();
     let target = tempfile::tempdir().unwrap();
     stage(state.path(), target.path(), &early_template());
@@ -348,20 +392,13 @@ fn headless_answer_replaces_an_answer_held_from_continue() {
         json!({"name": "Alpha", "flavor": "slow-plain"}),
     );
     assert_eq!(code, 4);
-    let answers = state.path().join("answers.json");
-    fs::write(
-        &answers,
-        json!({"label": "First", "mode": "slow", "flavor": "slow-rich", "items": [], "extras": []})
-            .to_string(),
-    )
-    .unwrap();
-    let output = support::isolated_command(state.path())
-        .arg("apply")
-        .arg(support::folder_address(&early_template()))
-        .args([target.path().to_str().unwrap(), "--answers"])
-        .arg(&answers)
-        .output()
-        .unwrap();
+    let (code, _) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"label": "First", "mode": "slow", "flavor": "slow-rich", "items": [], "extras": []}),
+    );
+    assert_eq!(code, 0);
+    let output = apply_agent(state.path(), target.path());
     assert_eq!(
         output.status.code(),
         Some(0),
@@ -505,26 +542,22 @@ fn headless_apply_stops_at_an_early_answer_that_fails_when_reached() {
         json!({"name": "Alpha", "flavor": "odd"}),
     );
     assert_eq!(code, 4);
-    let answers = state.path().join("answers.json");
-    fs::write(
-        &answers,
-        json!({"label": "First", "mode": "fast", "items": [], "extras": []}).to_string(),
-    )
-    .unwrap();
-    let output = support::isolated_command(state.path())
-        .arg("apply")
-        .arg(support::folder_address(&early_template()))
-        .args([target.path().to_str().unwrap(), "--answers"])
-        .arg(&answers)
-        .output()
-        .unwrap();
+    let (code, _) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"label": "First", "mode": "fast", "items": [], "extras": []}),
+    );
+    assert_eq!(code, 4);
+    // `apply PATH` replays to the held answer, stops with its origin error, and
+    // writes nothing.
+    let output = apply_agent(state.path(), target.path());
     assert_eq!(
         output.status.code(),
         Some(4),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let document = support::first_document(&output.stdout);
     assert_eq!(questions(&document), ["flavor"]);
     assert_eq!(
         document["errors"],
@@ -562,10 +595,11 @@ fn unanswered_list_questions_are_empty_lists_and_others_are_null() {
         "name: sample\ninterview:\n  - { id: flag, type: confirm, prompt: F? }\n  - { id: picks, type: multiselect, prompt: P?, options: [a], when: flag }\n  - { id: lines, type: text, prompt: L?, loop: { max: 2 }, when: flag }\n  - { id: more, type: text, prompt: M?, loop: { max: 2 } }\n  - { id: others, type: multiselect, prompt: O?, options: [a] }\n  - { id: word, type: text, prompt: W? }\n  - { id: skipped, type: text, prompt: S?, when: flag }\n",
     );
     let mut interview = Interview::start(&template, seed()).unwrap();
-    let mut document = protocol::parse_answers(r#"{"flag": false, "others": null}"#).unwrap();
+    let mut document = support::raw_answers(r#"{"flag": false, "others": null}"#).unwrap();
     let completed = loop {
         match interview {
             Interview::Complete(completed) => break completed,
+            Interview::Ended(_) => panic!("unexpected flow end"),
             Interview::Asking(pending) => {
                 interview = pending.answer(std::mem::take(&mut document)).unwrap()
             }
@@ -604,7 +638,7 @@ fn template_fault_names_the_field_and_the_expression() {
     let Interview::Asking(pending) = Interview::start(&template, seed()).unwrap() else {
         panic!()
     };
-    let raw = protocol::parse_answers(r#"{"word": null}"#).unwrap();
+    let raw = support::raw_answers(r#"{"word": null}"#).unwrap();
     let Err(AnswerError::Eval(error)) = pending.answer(raw) else {
         panic!("expected a template fault")
     };
@@ -628,163 +662,8 @@ fn placeholder_is_a_schema_example() {
     assert!(properties["label"].get("examples").is_none(), "{result}");
 }
 
-fn staged_submissions(state: &Path, target: &Path) -> Vec<Value> {
-    let store = toha::staging::Store::new(support::staged_dir(state));
-    store
-        .load(&toha::staging::canonical_target(target).unwrap())
-        .unwrap()
-        .map(|record| {
-            record
-                .submissions
-                .into_iter()
-                .map(|s| serde_json::to_value(s).unwrap())
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// The exit code, batch questions, messages, errors, and recorded
-/// submissions after one answers document, with the target path as `<P>`.
-fn outcome(code: i32, document: &Value, state: &Path, target: &Path) -> Value {
-    let outcome = json!({
-        "code": code,
-        "questions": document["schema"]["properties"]
-            .as_object()
-            .map(|p| { let mut k: Vec<_> = p.keys().cloned().collect(); k.sort(); k }),
-        "messages": document.get("messages"),
-        "errors": document.get("errors"),
-        "answers": document.get("answers"),
-        "submissions": staged_submissions(state, target),
-    });
-    normalized(outcome, target.to_str().unwrap())
-}
-
-/// `value` with `path` written as `<P>` inside each string. Strings are
-/// rewritten before JSON escaping, so a Windows path matches.
-fn normalized(value: Value, path: &str) -> Value {
-    match value {
-        Value::String(s) => Value::String(s.replace(path, "<P>")),
-        Value::Array(items) => items.into_iter().map(|v| normalized(v, path)).collect(),
-        Value::Object(map) => map
-            .into_iter()
-            .map(|(k, v)| (k, normalized(v, path)))
-            .collect(),
-        other => other,
-    }
-}
-
 /// A template whose second question is skipped unless the first is `fancy`.
 const SKIPS: &str = "name: skips\ninterview:\n  - { id: kind, type: select, prompt: Kind?, options: [plain, fancy], required: true }\n  - { id: style, type: text, prompt: Style?, when: \"kind == 'fancy'\", format: value | lower }\n  - { id: title, type: text, prompt: Title?, required: true }\n  - { id: extra, type: text, prompt: 'Extra for {{ title }}?', required: true }\n";
-
-/// Asserts that `document`, after the `prior` documents through `continue`,
-/// has the same outcome through `apply --answers` and `continue`.
-fn same_outcome_through_apply_and_continue(template: &Path, prior: &[Value], document: &Value) {
-    let staged = |state: &Path, target: &Path| {
-        stage(state, target, template);
-        for earlier in prior {
-            let (code, result) = continue_with(state, target, earlier.clone());
-            assert!(result.get("errors").is_none(), "{earlier}: {result}");
-            assert!(code == 4 || code == 0, "{earlier}: {result}");
-        }
-    };
-    let state = tempfile::tempdir().unwrap();
-    let target = tempfile::tempdir().unwrap();
-    staged(state.path(), target.path());
-    let (code, result) = continue_with(state.path(), target.path(), document.clone());
-    let mut through_continue = outcome(code, &result, state.path(), target.path());
-
-    let state = tempfile::tempdir().unwrap();
-    let target = tempfile::tempdir().unwrap();
-    staged(state.path(), target.path());
-    let answers = state.path().join("answers.json");
-    fs::write(&answers, document.to_string()).unwrap();
-    let output = support::isolated_command(state.path())
-        .arg("apply")
-        .arg(support::folder_address(template))
-        .args([target.path().to_str().unwrap(), "--answers"])
-        .arg(&answers)
-        .output()
-        .unwrap();
-    let result: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
-    let mut through_apply = outcome(
-        output.status.code().unwrap(),
-        &result,
-        state.path(),
-        target.path(),
-    );
-    // A headless run also answers the next batch from defaults and states
-    // which required questions the document leaves unanswered; `continue`
-    // states that only for the batch it answers. Neither is compared.
-    for outcome in [&mut through_apply, &mut through_continue] {
-        if let Some(errors) = outcome["errors"].as_object_mut() {
-            errors.retain(|id, e| document.get(id).is_some() || e != &json!(["is required"]));
-            if errors.is_empty() {
-                outcome["errors"] = Value::Null;
-            }
-        }
-    }
-    assert_eq!(through_apply, through_continue, "{prior:?} then {document}");
-}
-
-#[test]
-fn one_answers_document_has_the_same_outcome_through_apply_and_continue() {
-    let documents = [
-        json!({"name": "Alpha", "code": "ABC"}),
-        json!({"name": "Alpha", "code": "abc"}),
-        json!({"name": "Alpha", "label": "First", "enabled": false, "mode": "fast",
-            "code": "abc", "flavor": "odd", "items": ["x"], "extras": ["one"]}),
-    ];
-    for document in documents {
-        same_outcome_through_apply_and_continue(&early_template(), &[], &document);
-    }
-    let (folder, _template) = inline(SKIPS);
-    let skips = folder.path();
-    let plain = json!({"kind": "plain"});
-    let cases = [
-        // An answer equal to the recorded answer is ignored.
-        (
-            vec![plain.clone()],
-            json!({"kind": "plain", "title": "First"}),
-        ),
-        // An answer that differs from the recorded answer rejects the document.
-        (
-            vec![plain.clone()],
-            json!({"kind": "fancy", "title": "First"}),
-        ),
-        // A held answer whose question is skipped is not used.
-        (vec![], json!({"kind": "plain", "style": "Bold"})),
-        // An answer for a question skipped earlier is not used.
-        (
-            vec![plain.clone()],
-            json!({"style": "Bold", "title": "First"}),
-        ),
-    ];
-    for (prior, document) in cases {
-        same_outcome_through_apply_and_continue(skips, &prior, &document);
-    }
-    // A held answer that fails a constraint is not an error when this
-    // document skips its question, and is one when the question stays active.
-    for document in [
-        json!({"kind": "plain", "style": 1}),
-        json!({"kind": "fancy", "style": 1}),
-    ] {
-        same_outcome_through_apply_and_continue(skips, &[], &document);
-    }
-    // A repeated answer is compared after format, which need not be a fixed
-    // point.
-    let (folder, _template) = inline(SUFFIX);
-    let prior = [json!({"word": "a"})];
-    for document in [json!({"word": "ax"}), json!({"word": "a"})] {
-        same_outcome_through_apply_and_continue(folder.path(), &prior, &document);
-    }
-    // Warnings follow interview order, before a message reached after them.
-    let (folder, _template) = inline(ORDERED);
-    same_outcome_through_apply_and_continue(
-        folder.path(),
-        &[json!({"flag": false})],
-        &json!({"alpha": "a", "zeta": "z", "mid": "m"}),
-    );
-}
 
 /// A template whose `format` appends to the answer.
 const SUFFIX: &str = "name: suffix\ninterview:\n  - { id: word, type: text, prompt: Word?, format: \"value ~ 'x'\" }\n  - { id: next, type: text, prompt: 'Next after {{ word }}?', required: true }\n";
@@ -831,11 +710,11 @@ fn repeated_list_answer_is_compared_in_order() {
     let Interview::Asking(pending) = Interview::start(&template, seed()).unwrap() else {
         panic!()
     };
-    let raw = protocol::parse_answers(r#"{"picks": ["a", "b"]}"#).unwrap();
+    let raw = support::raw_answers(r#"{"picks": ["a", "b"]}"#).unwrap();
     let Interview::Asking(pending) = pending.answer(raw).unwrap() else {
         panic!()
     };
-    let raw = protocol::parse_answers(r#"{"picks": ["b", "a"]}"#).unwrap();
+    let raw = support::raw_answers(r#"{"picks": ["b", "a"]}"#).unwrap();
     let Err(AnswerError::Rejected { rejections, .. }) = pending.answer(raw) else {
         panic!("expected a rejection")
     };
@@ -853,11 +732,11 @@ fn format_fault_on_a_repeated_answer_is_a_template_error() {
     let Interview::Asking(pending) = Interview::start(&template, seed()).unwrap() else {
         panic!()
     };
-    let raw = protocol::parse_answers(r#"{"word": "a"}"#).unwrap();
+    let raw = support::raw_answers(r#"{"word": "a"}"#).unwrap();
     let Interview::Asking(pending) = pending.answer(raw).unwrap() else {
         panic!()
     };
-    let raw = protocol::parse_answers(r#"{"word": "b"}"#).unwrap();
+    let raw = support::raw_answers(r#"{"word": "b"}"#).unwrap();
     let Err(AnswerError::Eval(error)) = pending.answer(raw) else {
         panic!("expected a template error")
     };
@@ -924,7 +803,7 @@ fn warnings_for_an_interview_complete_at_start_follow_interview_order() {
     let (_folder, template) = inline(
         "name: sample\ninterview:\n  - { id: zeta, type: text, prompt: Z?, when: 'false' }\n  - message: Hello\n  - { id: alpha, type: text, prompt: A?, when: 'false' }\n",
     );
-    let document = protocol::parse_answers(r#"{"alpha": "a", "zeta": "z"}"#).unwrap();
+    let document = support::raw_answers(r#"{"alpha": "a", "zeta": "z"}"#).unwrap();
     let Ok(protocol::Headless::Completed { completed, .. }) = protocol::answer_headless(
         &template,
         Interview::start(&template, seed()).unwrap(),
@@ -1044,7 +923,7 @@ fn headless_answer_for_a_question_skipped_at_start_is_a_warning() {
     let (_folder, template) = inline(
         "name: sample\ninterview:\n  - { id: never, type: text, prompt: N?, when: 'false' }\n",
     );
-    let document = protocol::parse_answers(r#"{"never": "x"}"#).unwrap();
+    let document = support::raw_answers(r#"{"never": "x"}"#).unwrap();
     let Ok(protocol::Headless::Completed { completed, .. }) = protocol::answer_headless(
         &template,
         Interview::start(&template, seed()).unwrap(),
@@ -1111,23 +990,264 @@ fn rejected_document_keeps_the_error_of_an_answer_recorded_earlier() {
     assert_eq!(result["answers"]["flavor"], json!("fast-rich"));
 }
 
-fn configured(values: Value) -> indexmap::IndexMap<toha::Id, Value> {
-    values
+fn configured(
+    values: Value,
+) -> indexmap::IndexMap<String, indexmap::IndexMap<toha::Id, ConfigEntry<DefaultSource>>> {
+    let values = values
         .as_object()
         .unwrap()
         .iter()
-        .map(|(id, value)| (toha::Id::parse(id).unwrap(), value.clone()))
-        .collect()
+        .map(|(id, value)| {
+            (
+                toha::Id::parse(id).unwrap(),
+                ConfigEntry {
+                    value: DefaultSource::Literal(value.clone()),
+                    origin: ConfigOrigin {
+                        layer: ConfigLayer::User,
+                        path: PathBuf::from("user.yml"),
+                    },
+                },
+            )
+        })
+        .collect();
+    [("sample".into(), values)].into()
+}
+
+fn sourced<T>(value: T, layer: ConfigLayer, path: &str) -> ConfigEntry<T> {
+    ConfigEntry {
+        value,
+        origin: ConfigOrigin {
+            layer,
+            path: PathBuf::from(path),
+        },
+    }
 }
 
 #[test]
-fn invalid_configured_default_names_its_configuration_key() {
-    let template = Template::load(&early_template()).unwrap();
-    let error = toha::interview::configured_defaults(&template, &configured(json!({"enabled": 3})))
-        .unwrap_err();
+fn configured_defaults_require_an_explicit_identity_mapping() {
+    let (_first_folder, first) = inline(
+        "name: first\ninterview:\n  - { id: email, type: text, prompt: Email? }\n  - { id: license, type: text, prompt: License? }\n",
+    );
+    let (_second_folder, second) =
+        inline("name: second\ninterview: [{ id: contact, type: text, prompt: Contact? }]\n");
+    let preset_name = PresetName::parse("primary_contact").unwrap();
+    let presets = [(
+        preset_name.clone(),
+        sourced(
+            json!("contact@example.invalid"),
+            ConfigLayer::User,
+            "user.yml",
+        ),
+    )]
+    .into();
+    let mappings = [
+        (
+            "first-template".into(),
+            [
+                (
+                    toha::Id::parse("email").unwrap(),
+                    sourced(
+                        DefaultSource::Ref(preset_name.clone()),
+                        ConfigLayer::User,
+                        "user.yml",
+                    ),
+                ),
+                (
+                    toha::Id::parse("license").unwrap(),
+                    sourced(
+                        DefaultSource::Literal(json!("primary_contact")),
+                        ConfigLayer::User,
+                        "user.yml",
+                    ),
+                ),
+                (
+                    toha::Id::parse("removed_question").unwrap(),
+                    sourced(
+                        DefaultSource::Ref(PresetName::parse("missing_value").unwrap()),
+                        ConfigLayer::Local,
+                        "local.yml",
+                    ),
+                ),
+            ]
+            .into(),
+        ),
+        (
+            "second-template".into(),
+            [(
+                toha::Id::parse("contact").unwrap(),
+                sourced(
+                    DefaultSource::Ref(preset_name),
+                    ConfigLayer::User,
+                    "user.yml",
+                ),
+            )]
+            .into(),
+        ),
+    ]
+    .into();
+
+    let first_resolution =
+        toha::interview::configured_defaults("first-template", &first, &presets, &mappings)
+            .unwrap();
+    let (first_defaults, first_warnings) = first_resolution.into_flat_defaults();
+    assert_eq!(
+        first_defaults[&toha::Id::parse("email").unwrap()].0,
+        json!("contact@example.invalid")
+    );
+    assert_eq!(
+        first_defaults[&toha::Id::parse("license").unwrap()].0,
+        json!("primary_contact")
+    );
+    assert_eq!(
+        first_warnings,
+        [
+            "local.yml: template-defaults.\"first-template\".removed_question: question is not defined by the selected template; ignored"
+        ]
+    );
+
+    let second_resolution =
+        toha::interview::configured_defaults("second-template", &second, &presets, &mappings)
+            .unwrap();
+    let (second_defaults, _) = second_resolution.into_flat_defaults();
+    assert_eq!(
+        second_defaults[&toha::Id::parse("contact").unwrap()].0,
+        json!("contact@example.invalid")
+    );
+
+    let unmapped =
+        toha::interview::configured_defaults("first", &first, &presets, &mappings).unwrap();
+    assert!(unmapped.warnings().is_empty());
+    assert!(unmapped.into_flat_defaults().0.is_empty());
+}
+
+#[test]
+fn configured_default_errors_name_mapping_and_preset_origins() {
+    let (_folder, template) =
+        inline("name: sample\ninterview: [{ id: enabled, type: confirm, prompt: Enabled? }]\n");
+    let missing_mapping = [(
+        "sample".into(),
+        [(
+            toha::Id::parse("enabled").unwrap(),
+            sourced(
+                DefaultSource::Ref(PresetName::parse("missing_value").unwrap()),
+                ConfigLayer::Local,
+                "local.yml",
+            ),
+        )]
+        .into(),
+    )]
+    .into();
+    let error = toha::interview::configured_defaults(
+        "sample",
+        &template,
+        &Default::default(),
+        &missing_mapping,
+    )
+    .unwrap_err();
     assert_eq!(
         error.to_string(),
-        "configuration key defaults.enabled: must be true or false"
+        "local.yml: template-defaults.\"sample\".enabled: no preset named \"missing_value\""
+    );
+
+    let preset_name = PresetName::parse("enabled_value").unwrap();
+    let presets = [(
+        preset_name.clone(),
+        sourced(json!("yes"), ConfigLayer::System, "system.yml"),
+    )]
+    .into();
+    let referenced_mapping = [(
+        "sample".into(),
+        [(
+            toha::Id::parse("enabled").unwrap(),
+            sourced(
+                DefaultSource::Ref(preset_name),
+                ConfigLayer::User,
+                "user.yml",
+            ),
+        )]
+        .into(),
+    )]
+    .into();
+    let error =
+        toha::interview::configured_defaults("sample", &template, &presets, &referenced_mapping)
+            .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "user.yml: template-defaults.\"sample\".enabled → system.yml: presets.\"enabled_value\" (\"yes\"): must be true or false"
+    );
+
+    let unused_bad_preset = [(
+        PresetName::parse("unused_value").unwrap(),
+        sourced(json!(42), ConfigLayer::System, "system.yml"),
+    )]
+    .into();
+    let other_identity = [(
+        "other-template".into(),
+        [(
+            toha::Id::parse("enabled").unwrap(),
+            sourced(
+                DefaultSource::Ref(PresetName::parse("missing_value").unwrap()),
+                ConfigLayer::User,
+                "user.yml",
+            ),
+        )]
+        .into(),
+    )]
+    .into();
+    let resolution = toha::interview::configured_defaults(
+        "sample",
+        &template,
+        &unused_bad_preset,
+        &other_identity,
+    )
+    .unwrap();
+    assert!(resolution.into_flat_defaults().0.is_empty());
+}
+
+#[test]
+fn configured_default_diagnostics_escape_the_formal_name() {
+    let (_folder, template) = inline("name: sample\ninterview: []\n");
+    let mappings = [(
+        "sample\"quoted".into(),
+        [(
+            toha::Id::parse("removed_question").unwrap(),
+            sourced(
+                DefaultSource::Literal(json!("unused")),
+                ConfigLayer::User,
+                "user.yml",
+            ),
+        )]
+        .into(),
+    )]
+    .into();
+    let resolution = toha::interview::configured_defaults(
+        "sample\"quoted",
+        &template,
+        &Default::default(),
+        &mappings,
+    )
+    .unwrap();
+    assert_eq!(
+        resolution.warnings(),
+        [
+            "user.yml: template-defaults.\"sample\\\"quoted\".removed_question: question is not defined by the selected template; ignored"
+        ]
+    );
+}
+
+#[test]
+fn invalid_configured_default_names_its_source() {
+    let template = Template::load(&early_template()).unwrap();
+    let error = toha::interview::configured_defaults(
+        "sample",
+        &template,
+        &Default::default(),
+        &configured(json!({"enabled": 3})),
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "user.yml: template-defaults.\"sample\".enabled: must be true or false"
     );
     let (_folder, template) =
         inline("name: sample\ninterview: [{ id: word, type: text, prompt: W? }]\n");
@@ -1138,30 +1258,34 @@ fn invalid_configured_default_names_its_configuration_key() {
     let error = Interview::start(&template, seed).unwrap_err();
     assert_eq!(
         error.to_string(),
-        "configuration key defaults.word: must be a string"
+        "configured default for question \"word\": must be a string"
     );
 }
 
 #[test]
 fn configured_default_that_fails_a_constraint_is_attributed_to_configuration() {
     let template = Template::load(&early_template()).unwrap();
-    let seed = Seed {
-        defaults: toha::interview::configured_defaults(
-            &template,
-            &configured(json!({"mode": "medium"})),
-        )
-        .unwrap(),
-        ..seed()
-    };
-    let Interview::Asking(pending) = Interview::start(&template, seed).unwrap() else {
+    let resolution = toha::interview::configured_defaults(
+        "sample",
+        &template,
+        &Default::default(),
+        &configured(json!({"mode": "medium"})),
+    )
+    .unwrap();
+    let Interview::Asking(pending) = resolution
+        .start_with_context(&template, seed().now, ctx())
+        .unwrap()
+    else {
         panic!("expected questions")
     };
-    let raw = protocol::parse_answers(r#"{"name": "Alpha", "label": "First"}"#).unwrap();
+    let raw = support::raw_answers(r#"{"name": "Alpha", "label": "First"}"#).unwrap();
     let Interview::Asking(pending) = pending.answer(raw).unwrap() else {
         panic!("expected questions")
     };
-    let Err(AnswerError::Rejected { rejections, .. }) =
-        pending.answer(protocol::parse_answers("{}").unwrap())
+    let Err(AnswerError::Rejected {
+        pending,
+        rejections,
+    }) = pending.answer(support::raw_answers("{}").unwrap())
     else {
         panic!("expected a rejection")
     };
@@ -1169,9 +1293,131 @@ fn configured_default_that_fails_a_constraint_is_attributed_to_configuration() {
     assert_eq!(
         messages,
         [
-            "mode: default \"medium\" from configuration key defaults.mode is not allowed: must be one of: fast, slow"
+            "mode: default \"medium\" from user.yml: template-defaults.\"sample\".mode is not allowed: must be one of: fast, slow"
         ]
     );
+
+    let next = pending
+        .answer(support::raw_answers(r#"{"mode":"fast"}"#).unwrap())
+        .unwrap();
+    assert!(matches!(
+        next,
+        Interview::Asking(_) | Interview::Complete(_)
+    ));
+}
+
+#[test]
+fn flattening_configured_defaults_explicitly_drops_their_source() {
+    let template = Template::load(&early_template()).unwrap();
+    let resolution = toha::interview::configured_defaults(
+        "sample",
+        &template,
+        &Default::default(),
+        &configured(json!({"mode": "medium"})),
+    )
+    .unwrap();
+    let (defaults, _) = resolution.into_flat_defaults();
+    let Interview::Asking(pending) =
+        Interview::start(&template, Seed { defaults, ..seed() }).unwrap()
+    else {
+        panic!("expected questions")
+    };
+    let Interview::Asking(pending) = pending
+        .answer(support::raw_answers(r#"{"name":"Alpha","label":"First"}"#).unwrap())
+        .unwrap()
+    else {
+        panic!("expected questions")
+    };
+    let Err(AnswerError::Rejected { rejections, .. }) =
+        pending.answer(support::raw_answers("{}").unwrap())
+    else {
+        panic!("expected a rejection")
+    };
+    assert_eq!(
+        rejections[0].to_string(),
+        "mode: default \"medium\" from configured default for question \"mode\" is not allowed: must be one of: fast, slow"
+    );
+}
+
+#[test]
+fn referenced_configured_constraint_error_keeps_mapping_preset_and_value() {
+    let (_folder, template) = inline(
+        "name: sample\ninterview: [{ id: mode, type: select, prompt: Mode?, options: [fast, slow] }]\n",
+    );
+    let name = PresetName::parse("display_mode").unwrap();
+    let presets = [(
+        name.clone(),
+        sourced(json!("medium"), ConfigLayer::System, "system.yml"),
+    )]
+    .into();
+    let mappings = [(
+        "sample".into(),
+        [(
+            toha::Id::parse("mode").unwrap(),
+            sourced(DefaultSource::Ref(name), ConfigLayer::Local, "local.yml"),
+        )]
+        .into(),
+    )]
+    .into();
+    let resolution =
+        toha::interview::configured_defaults("sample", &template, &presets, &mappings).unwrap();
+    let Interview::Asking(pending) = resolution
+        .start_with_context(&template, seed().now, ctx())
+        .unwrap()
+    else {
+        panic!("expected prompt")
+    };
+    assert_eq!(
+        pending.batch().errors[0].to_string(),
+        "mode: default \"medium\" from local.yml: template-defaults.\"sample\".mode → system.yml: presets.\"display_mode\" (\"medium\") is not allowed: must be one of: fast, slow"
+    );
+}
+
+#[test]
+fn every_template_default_form_fails_constraints_as_a_template_fault() {
+    let cases = [
+        (
+            "{ id: labels, type: multiselect, prompt: Labels?, options: [alpha], default: [unknown] }",
+            "template error in labels.default: default [\"unknown\"] is not allowed: each item must be one of: alpha",
+        ),
+        (
+            "{ id: labels, type: multiselect, prompt: Labels?, options: [alpha], default: \"['unknown']\" }",
+            "template error in labels.default `['unknown']`: default [\"unknown\"] is not allowed: each item must be one of: alpha",
+        ),
+        (
+            "{ id: label, type: text, prompt: Label?, default: x, validate: { min: 2 } }",
+            "template error in label.default `x`: default \"x\" is not allowed: must be at least 2 characters",
+        ),
+    ];
+    for (question, expected) in cases {
+        let (_folder, template) = inline(&format!("name: sample\ninterview: [{question}]\n"));
+        assert_eq!(
+            Interview::start(&template, seed()).unwrap_err().to_string(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn skipped_template_default_checks_ready_rules_without_rendering_presentation() {
+    let (_folder, template) = inline(
+        "name: sample\ndata: { skip_all: true }\ninterview:\n  - group: hidden\n    when: not skip_all\n    nodes:\n      - { id: label, type: text, prompt: \"{{ 'bad' | dateformat }}\", default: x, validate: { min: 2 } }\n",
+    );
+    let error = Interview::start(&template, seed()).unwrap_err().to_string();
+    assert_eq!(
+        error,
+        "template error in label.default `x`: default \"x\" is not allowed: must be at least 2 characters"
+    );
+
+    let (_folder, template) = inline(
+        "name: sample\ndata: { skip_all: true }\ninterview:\n  - { id: length, type: text, prompt: Length? }\n  - group: hidden\n    when: not skip_all\n    nodes:\n      - { id: label, type: text, prompt: \"{{ 'bad' | dateformat }}\", default: x, validate: { min: \"length | int + 2\" } }\n",
+    );
+    let Interview::Asking(pending) = Interview::start(&template, seed()).unwrap() else {
+        panic!("the unavailable dynamic constraint must not block the first batch")
+    };
+    assert!(pending.batch().items.iter().any(
+        |item| matches!(item, toha::Item::Prompt(prompt) if prompt.id.to_string() == "length")
+    ));
 }
 
 #[test]
@@ -1218,7 +1464,7 @@ fn unknown_id_for_an_interview_complete_before_any_submission_is_an_error() {
     // headless document is never submitted; its ids are checked at completion.
     let (_folder, template) =
         inline("name: sample\ninterview:\n  - { id: fixed, computed: '1' }\n");
-    let document = protocol::parse_answers(r#"{"other": "x"}"#).unwrap();
+    let document = support::raw_answers(r#"{"other": "x"}"#).unwrap();
     let error = match protocol::answer_headless(
         &template,
         Interview::start(&template, seed()).unwrap(),
@@ -1254,6 +1500,96 @@ fn template_fault_after_a_skipped_invalid_answer_is_the_error() {
         "{stderr}"
     );
     assert!(!stderr.contains("style"), "{stderr}");
+    assert_eq!(submissions(state.path(), target.path()), 0);
+
+    let (code, result) = continue_with(
+        state.path(),
+        target.path(),
+        json!({
+            "kind": "plain",
+            "boom": false,
+            "style": 1,
+            "title": "good",
+            "deep": "good",
+            "last": "done"
+        }),
+    );
+    assert_eq!(code, 0, "{result}");
+    assert_eq!(
+        result["messages"],
+        json!([
+            "warning: answer for \"style\" was not used: the question was skipped",
+            "fine"
+        ])
+    );
+    assert_eq!(submissions(state.path(), target.path()), 1);
+}
+
+#[test]
+fn rejected_probe_leaks_no_message_or_hook_before_the_corrected_document() {
+    let (_folder, template) = inline(
+        "name: sample\ninterview:\n  - { id: kind, type: select, prompt: Kind?, options: [plain, fancy], required: true }\n  - { id: style, type: text, prompt: Style?, when: \"kind == 'fancy'\", validate: { regex: '^[a-z]+$' } }\n  - message: once\n  - { hook: { run: [tool] } }\n  - { id: title, type: text, prompt: Title?, required: true, validate: { regex: '^[a-z]+$' } }\n  - { id: last, type: text, prompt: Last?, required: true }\n",
+    );
+    let Interview::Asking(pending) = Interview::start(&template, seed()).unwrap() else {
+        panic!("expected questions")
+    };
+    let Err(AnswerError::Rejected {
+        pending,
+        rejections,
+    }) =
+        pending.answer(support::raw_answers(r#"{"kind":"plain","style":1,"title":"NO"}"#).unwrap())
+    else {
+        panic!("expected rejection")
+    };
+    assert_eq!(
+        rejections
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ["title: must match ^[a-z]+$"]
+    );
+
+    let Interview::Complete(completed) = pending
+        .answer(
+            support::raw_answers(r#"{"kind":"plain","style":1,"title":"good","last":"done"}"#)
+                .unwrap(),
+        )
+        .unwrap()
+    else {
+        panic!("expected completion")
+    };
+    assert_eq!(
+        completed.messages,
+        [
+            "warning: answer for \"style\" was not used: the question was skipped",
+            "once"
+        ]
+    );
+    assert_eq!(completed.hooks.len(), 1);
+}
+
+#[test]
+fn rejected_probe_does_not_publish_a_template_fault() {
+    let (_folder, template) = inline(CLASSIFY);
+    let Interview::Asking(pending) = Interview::start(&template, seed()).unwrap() else {
+        panic!("expected questions")
+    };
+    let error = pending
+        .answer(
+            support::raw_answers(r#"{"kind":"fancy","boom":true,"style":1,"title":"good"}"#)
+                .unwrap(),
+        )
+        .unwrap_err();
+    let AnswerError::Rejected { rejections, .. } = error else {
+        panic!("the document rejection must suppress the speculative template fault: {error:?}")
+    };
+    assert_eq!(
+        rejections
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ["style: must be a string"]
+    );
 }
 
 #[test]
@@ -1269,6 +1605,7 @@ fn skipped_invalid_answer_is_dropped_beside_another_failing_answer() {
     );
     assert_eq!(code, 4, "{result}");
     assert_eq!(result["errors"], json!({"title": ["must match ^[a-z]+$"]}));
+    assert_eq!(result["messages"], json!([]), "{result}");
     // The other failure is not an early answer: an unknown id.
     let (code, result) = continue_with(
         state.path(),
@@ -1290,26 +1627,84 @@ fn skipped_invalid_answer_is_dropped_beside_another_failing_answer() {
         result["errors"],
         json!({"style": ["must be a string"], "title": ["must match ^[a-z]+$"]})
     );
+    let (code, result) = continue_with(
+        state.path(),
+        target.path(),
+        json!({"kind": "unknown", "style": 1, "title": "NO"}),
+    );
+    assert_eq!(code, 4, "{result}");
+    assert_eq!(
+        result["errors"],
+        json!({
+            "kind": ["must be one of: plain, fancy"],
+            "style": ["must be a string"],
+            "title": ["must match ^[a-z]+$"]
+        })
+    );
     assert_eq!(submissions(state.path(), target.path()), 0);
 }
 
 #[test]
-fn early_answer_classification_matrix_is_the_same_through_apply_and_continue() {
-    let (folder, _template) = inline(CLASSIFY);
-    for kind in ["plain", "fancy"] {
-        for target in ["style", "deep"] {
-            for value in [json!("ok"), json!(1)] {
-                for other in [None, Some("good"), Some("NO")] {
-                    for boom in [false, true] {
-                        let mut document = json!({"kind": kind, "boom": boom});
-                        document[target] = value.clone();
-                        if let Some(title) = other {
-                            document["title"] = json!(title);
-                        }
-                        same_outcome_through_apply_and_continue(folder.path(), &[], &document);
-                    }
-                }
-            }
-        }
-    }
+fn a_snapshot_seeded_id_is_prepared_exactly_once_with_a_single_occupant() {
+    // Behavior 11 (duplicate preparation / single occupancy): for an id that has
+    // BOTH a configured default and a snapshot-seeded value, the engine prepares
+    // the id EXACTLY ONCE — one prompt in the batch (an ordered Vec where a
+    // duplicate IS representable), carrying the single surviving occupant (the
+    // snapshot's value). This observes occupancy at the preparation boundary, not
+    // which value wins in a keyed JSON property.
+    //
+    // Sole-kill: src/interview.rs the prompt-push site, when the default source is
+    // Snapshot, pushes the prompt twice (duplicate preparation); the batch then
+    // holds two `style` prompts and the exactly-once assertion fails.
+    use indexmap::IndexMap;
+    use toha::interview::{SnapshotSeed, configured_defaults};
+    use toha::{Id, Interview, Item, RawAnswer};
+
+    let (_folder, template) = inline(
+        "name: sample\ninterview:\n  - { id: name, type: text, prompt: N?, required: true }\n  - { id: style, type: select, prompt: S?, options: [card, panel], default: card }\n",
+    );
+    // A configured default for `style` (card) AND a snapshot seed (panel).
+    let mappings = configured(json!({ "style": "card" }));
+    let presets: IndexMap<PresetName, ConfigEntry<Value>> = IndexMap::new();
+    let resolution = configured_defaults("sample", &template, &presets, &mappings).unwrap();
+    let now = seed().now;
+    let mut defaults: IndexMap<Id, RawAnswer> = IndexMap::new();
+    defaults.insert(Id::parse("style").unwrap(), RawAnswer(json!("panel")));
+    let snap_seed = SnapshotSeed {
+        defaults,
+        from: "01J9Z4K7QX6M2V8R0T5B3N1P9D".to_owned(),
+    };
+    let Interview::Asking(pending) = resolution
+        .start_with_seed(&template, now, ctx(), Some(snap_seed))
+        .unwrap()
+        .0
+    else {
+        panic!("expected questions");
+    };
+    // Exactly one prepared prompt for `style` — not two (no duplicate occupancy).
+    let style_prompts = pending
+        .batch()
+        .items
+        .iter()
+        .filter(|item| matches!(item, Item::Prompt(p) if p.id == Id::parse("style").unwrap()))
+        .count();
+    assert_eq!(
+        style_prompts, 1,
+        "the seeded+configured id is prepared exactly once (single occupant)"
+    );
+    // That single occupant is the snapshot's value (panel), not the configured card.
+    let style_default = pending
+        .batch()
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Prompt(p) if p.id == Id::parse("style").unwrap() => p.default.as_ref(),
+            _ => None,
+        })
+        .expect("style has a prepared default");
+    assert_eq!(
+        style_default.to_json(),
+        json!("panel"),
+        "the single occupant is the snapshot value"
+    );
 }

@@ -13,7 +13,8 @@ description: >-
   with a configured or built-in host prefix followed by `:` is a git shorthand
   address; a value that starts with `.`, `/`, or `~`, or a Windows drive prefix
   (`<letter>:\` or `<letter>:/`), is a local folder; any other value is an alias,
-  then a short name, then a formal name of an installed template. Windows
+  then a short name, then a formal name of an installed template, and finally
+  the reserved bundled name `toha-demo`. Windows
   extended (`\\?\...`) and UNC (`\\server\share`) values are read as names.
   A git address has the form
   `<repository>[@<ref>][#<path>]`, where `<ref>` is a tag, branch, or commit and
@@ -28,74 +29,192 @@ description: >-
   template from its recorded formal name as a filesystem path, independently
   of `<TEMPLATE>` argument classification.
 
+  Bundled demo. `toha-demo` is a reserved fallback name. A fresh install can
+  preview, apply, stage, continue, and resume it by name from any directory,
+  offline, with no registry entry, cache, network, or git. Registry resolution
+  always wins: `toha-demo` reaches the bundled demo only when no alias, short
+  name, or formal name resolves it, so installing or aliasing a template as
+  `toha-demo` shadows the bundled demo and narrows no supported use. The bundled
+  demo is untrusted and has no hooks. Its content version is the commit of a
+  staged interview, so a toha upgrade that leaves the demo unchanged still
+  resumes; an upgrade that changes it reports that the demo changed and names
+  staging it again. The unfiltered `templates list` shows the bundled demo as
+  one read-only row when no registry entry occupies the name.
+
   Short names. A short name that matches more than one installed template is
   ambiguous. A command given an ambiguous short name fails with exit code 5
-  and lists the formal name of every match with the same command naming that
-  formal name and a `templates alias` command for each. `templates add` reports every short name the new templates share with
+  and names the formal name of every match with the same command naming that
+  formal name and a `templates alias` command for each; the scripted route
+  (`apply TEMPLATE PATH --answers FILE`) carries those commands in the
+  `commands` of its `error` document, and every other route names them on
+  standard error. `templates add` reports every short name the new templates share with
   installed templates, with the same `templates alias` commands, and completes
   the add.
 
-  Trust. The hooks of a template run when the template is trusted in the user
-  or system template registry or when `--trust` is given. Templates from a local
-  templates path and templates given by address or folder to `stage` or
-  `apply` are trusted only through `--trust`. When the template has hooks and
-  is not trusted, `apply` performs a dry run, lists the hooks, states that
-  `--trust` is required, names the same command with `--trust`, and exits with
-  code 3. For a template resolved by name from the user or system template
-  registry, it also names `templates add --trust` with the formal name.
-  `apply --dry-run` of a template with hooks that is not trusted prints the
-  plan, then names on standard error the same command with `--trust` and
-  without `--dry-run`, and `templates add --trust` as `apply` does, and exits
-  with code 0. The dry run of a trusted template, or of a template without
+  Environment trust. The five `toha_env_` Jinja values — user, host name,
+  editor, shell, and visual — are read from the environment only under trust,
+  and captured together or not at all. `stage` analyzes every Jinja surface
+  before it asks a question: without `--trust` it records the values as
+  unavailable when nothing references them, and when a reference exists it
+  refuses before any capture, seed, interview, render, submission, or staged
+  write, naming `stage --trust`. `stage --trust` captures all five once, even
+  when no reference exists yet, and the recorded snapshot carries through every
+  later batch. `continue` has no trust flag and performs no environment read: it
+  replays the recorded snapshot. A direct `apply` with a template grants the
+  same access through `--trust` or a current matching registry approval;
+  `apply --trust` on a staged interview controls hook execution only and does
+  not change the recorded environment snapshot.
+
+  Trust. The hooks of a template run when the caller has approved the
+  template's current executable surface in the user or system template
+  registry, or when `--trust` is given. Approval is a digest of the template's
+  hook nodes and the bytes of every executed in-tree file, and authorizes the
+  hooks only while that digest equals the installed content, so an update that
+  changes any hook or script no longer matches and the template is untrusted
+  until it is approved again. Templates from a local templates path and
+  templates given by address or folder to `stage` or `apply` are trusted only
+  through `--trust`. The following reporting rules cover plain applications
+  without `--from` or `--baseline`. When the template has hooks and is not trusted, `apply`
+  exits with code 3. On the person and agent routes it performs a dry run,
+  lists the hooks, states that `--trust` is required, and names the same
+  command with `--trust`; when an approval exists but no longer matches, the
+  listing marks the hooks changed since approval. The scripted route
+  (`apply TEMPLATE PATH --answers FILE`) instead emits a `planned` result
+  document with `trusted: false` and the planned hooks as its single
+  standard-output document; the one-document guarantee is on standard output
+  only, and configuration diagnostics still reach standard error. A hook that
+  reads an earlier hook's result is listed in source form,
+  with `{{ id.field }}` placeholders where the result will go, because the result
+  is not known until the hook runs; a dry run reads no result and runs no hook.
+  Toha never prints a stream a template captures. For a template resolved by name from the user or system template
+  registry, the person and agent routes also name `templates trust` with the
+  formal name. On the person and agent routes, `apply --dry-run` of a template
+  with hooks that is not trusted prints the plan, then names on standard error
+  the same command with `--trust` and without `--dry-run`, and `templates
+  trust` as `apply` does, and exits with code 0. The scripted route reports the
+  trust state and chooses its exit independently: the `planned` document's
+  `trusted` field is true only under a trust grant — `--trust` or a matching
+  registry approval — whether or not the template has hooks, and the exit is 3
+  only when the template has hooks and is not trusted, otherwise 0. So an
+  untrusted template with hooks is `trusted: false` at exit 3 whether or not
+  `--dry-run` is given; an untrusted template without hooks is `trusted: false`
+  at exit 0; and a trusted template is `trusted: true` at exit 0. On the person
+  and agent routes, the dry run of a trusted template, or of a template without
   hooks, names neither.
+  Untrusted project updates preview without writing and exit with code 0. The
+  person and completed staged-agent routes show completion prose and hook-trust
+  guidance on standard output; the scripted route emits its `planned` JSON
+  document with `trusted: false`.
+
+  `templates trust <name>` approves the current
+  executable surface of an installed template, reading the installed folder
+  only and never fetching or changing the commit, and echoes the approved hooks
+  on standard error; `templates untrust <name>` revokes that approval, reads
+  nothing on disk, and records a denial so an approval from a lower registry
+  layer cannot reappear. Both write the user registry only, refuse a name that
+  is not in the user registry with exit code 1, and are idempotent: a grant
+  whose surface already matches reports it and writes nothing, as a revoke of an
+  already-untrusted template does.
 
   Updates. `templates update` fetches every installed git template, or the
   one named, whose address has no ref or names a branch, and moves it to the
   newest commit of that branch. A template pinned to a tag or a commit is left
-  unchanged. The formal name, aliases, and trust of an updated template are
-  unchanged.
+  unchanged. The formal name and aliases of an updated template are unchanged,
+  and its approval continues to authorize the hooks only while the executable
+  surface is unchanged; an update that changes the executable surface makes the
+  template untrusted until it is approved again. `templates trust <name>`
+  re-approves the currently installed surface without fetching, so an update
+  that lapsed approval is recovered without re-adding the template.
 
-  Staged interviews. `apply <PATH>` on an incomplete staged interview prompts
-  in the terminal for the remaining questions, records each accepted batch in
-  the staged record, and applies the complete interview; with `--dry-run` it
-  records nothing. Without a terminal on standard input and standard output,
-  it emits the batch, names the commands that answer it on standard error, and
-  exits with code 4. A `<TEMPLATE>` argument names the template of a staged
-  interview when it resolves to the formal name that the staged record holds.
-  `apply <TEMPLATE> <PATH>` with an interview for that template staged at the
-  path runs as `apply <PATH>`. With `--answers`, the document answers the
-  staged interview as it answers a new headless run, and a complete result is
-  applied. `stage <TEMPLATE> <PATH>` with an interview for
-  that template staged at the path fails and names `continue` for an
-  incomplete interview, `apply` for a complete one, and `abort` followed by
-  the same `stage` command to start again. `stage` or `apply` with a
-  `<TEMPLATE>` whose formal name differs from the staged one fails, names both
-  templates, and names `abort` followed by the same command to replace the
-  staged interview and the `continue` and `apply` commands that finish it.
-  `continue <PATH>` on a complete interview emits the complete result
-  document, names `apply <PATH>` on standard error, and exits with code 0; an
-  answers document for a complete interview fails and names `apply`.
-  `continue`, `apply <PATH>`, and `abort` with no interview staged at the path
-  name `stage` and `apply` with a `<TEMPLATE>`. `continue` and `apply` on a
-  staged record that no longer replays against its template fail with exit
-  code 1, state that the staged interview cannot be resumed and why, and name
-  `abort` followed by `stage` to start the interview over.
+  Staged interviews. Each caller kind has its own route, and the route alone
+  fixes the input and output modality. `apply <PATH>` is the agent route: it
+  applies a complete staged interview, or, for an incomplete one, reports the
+  current batch with instructions naming `continue <PATH> <ANSWERS>`,
+  `continue <PATH>`, and `apply <PATH>`, and exits with code 4 — it never
+  prompts, with or without a terminal. `apply <TEMPLATE> <PATH>` is the person
+  route: with an interview for that template staged at the path (or a fresh
+  interview) it prompts the remaining questions in a terminal, records each
+  accepted batch, and applies at completion; with `--dry-run` it records and
+  writes nothing; without a terminal it refuses and names the agent route.
+  `apply <TEMPLATE> <PATH> --answers <FILE>` is the scripted route: one shot,
+  one JSON result document on standard output for every outcome — standard
+  error still carries any configuration diagnostics and an uncaptured hook's
+  stream — never staged, and it refuses with
+  a `staged` error document — before reading the document — when an interview is
+  staged at the path. `stage <TEMPLATE> <PATH>` with an interview for that
+  template staged at the path fails and names `continue` for an incomplete
+  interview, `apply` for a complete one, and `abort` followed by the same
+  `stage` command to start again. `stage` or `apply` with a `<TEMPLATE>` whose
+  formal name differs from the staged one fails, names both templates, and names
+  `abort` followed by the same command to replace the staged interview and the
+  `continue` and `apply` commands that finish it. `continue <PATH>` on a
+  complete interview shows the dry-run plan and the apply instructions on
+  standard output and exits with code 0; `continue <PATH> <FILE>` on a complete
+  or ended interview refuses before reading the document and names
+  `apply <PATH> --dry-run` and `apply <PATH>`. `continue`, `apply <PATH>`, and
+  `abort` with no interview staged at the path name `stage` and `apply` with a
+  `<TEMPLATE>`. `continue` and `apply` on a staged record that no longer replays
+  against its template fail with exit code 1, state that the staged interview
+  cannot be resumed and why, and name `abort` followed by `stage` to start the
+  interview over.
+
+  Flow control. When a template's flow node ends the run, no files are written
+  and no hooks run, and the command exits with code 0. On the person and agent
+  routes a one-line notice that names the action and any `label` is printed on
+  standard error. A flow `abort`
+  additionally removes the staged record, as the `abort` command does; a run
+  with nothing staged still stops cleanly. The agent headless routes — `stage
+  --async` and `continue` with an answers document — emit the machine-readable
+  `ended` result document with its `kind` on standard output alongside that
+  notice, so an agent tells a stop or abort from a completion. The scripted
+  route (`apply TEMPLATE PATH --answers FILE`) emits only that `ended`
+  document — one JSON document, with no separate notice. An
+  interactive terminal run prints only the notice. A flow `dry-run` shows the
+  plan and writes nothing, the same as `--dry-run`, and the two compose:
+  setting either, or both, applies nothing. A failed abort removal exits with
+  code 1. An answers document submitted to a staged interview a flow node
+  already ended is refused with code 1, which names starting over.
 
   Refusals. When a command refuses a valid request made at the wrong time or
-  in the wrong form, and nothing is faulty, the message names the command or
-  commands that do what the caller meant. A named command is built from the
+  in the wrong form, and nothing is faulty, it names the command or
+  commands that do what the caller meant: the person and agent routes name them
+  in the standard-error message, and the scripted route carries them in the
+  `commands` of its `error` result document. A named command is built from the
   parsed request in canonical form: options first in long form, then `--` when
   an operand starts with `-`, then the operands. `stage` places `--async`
   after its operands unless they follow `--`.
 
   Overwriting. `apply` writes no file over an existing file unless `--force` is
   given. When any target file exists and `--force` is absent, `apply` writes
-  nothing, lists the conflicting paths on standard error one per line after
-  `conflicting files:`, and names the same command with `--force`.
+  nothing and exits with code 1. On the person and agent routes it lists the
+  conflicting paths on standard error one per line after `conflicting files:`
+  and names the same command with `--force`; the scripted route reports an
+  `error` result document of kind `conflict` whose `message` lists those paths.
 
-  `apply` prints each target path on standard output when it writes the
-  file, so every path precedes the output of the hooks. Printed target paths
-  use `/` separators on every platform.
+  On the person and agent routes, `apply` prints each target path on standard
+  output when it writes the file, so every path precedes the output of the
+  hooks. The scripted route lists each written path, with its action, in the
+  `applied` result document instead. Written target paths, and the paths in a
+  result document, use `/` separators on every platform.
+
+  Injection. A template `inject` rule changes one bounded part of an existing
+  file rather than replacing it, so an injected target that already exists is not
+  a conflict. On the person and agent routes, `apply` prints each changed
+  injected target once, like a written file; an injection that changes nothing
+  prints nothing. `apply --dry-run`
+  reports `inject <path> (<owner>)` for a region or value it would place and
+  `update <path> (<owner>)` for one it would change, where `<owner>` is the
+  region key or the typed path; an unchanged injection is not reported. The
+  scripted route lists each changed injected target in the `applied` document,
+  and each planned injection with its `inject` or `update` action and owner in
+  the `planned` document. An
+  operator edit inside a region's owned bytes is drift: `apply` writes nothing
+  and exits with code 1; on the person and agent routes it reports each drifted
+  region as `<path> (<region>)` on standard error and names the same command
+  with `--force`, while the scripted route reports an `error` document of kind
+  `conflict`. `--force` replaces only a drifted region; a changed owned JSON
+  value converges without it, and `--force` never creates a target, repairs
+  malformed input, or makes an invalid path valid.
 
   Environment. `toha --help` lists every environment variable that toha
   reads in an `Environment:` section after its options. `TOHA_CONFIG` and
@@ -130,9 +249,13 @@ description: >-
   not read: the user data, cache, and state directories are under
   `~/Library`. Windows reads no XDG variable. When neither `HOME` nor
   `USERPROFILE` counts, or on Windows when `APPDATA`, `LOCALAPPDATA`, or
-  `PROGRAMDATA` does not count, toha writes an error on standard error and
-  exits with code 1; the error for a missing home directory names `HOME` and
-  `USERPROFILE`. `TOHA_CONFIG` and
+  `PROGRAMDATA` does not count, a command that reads them writes an error on
+  standard error and exits with code 1; the error for a missing home directory
+  names `HOME` and `USERPROFILE`. `--version` and `--help`, at the top level and
+  for every command, resolve no directory and so exit with code 0 regardless of
+  these variables. `skills list` and `skills view` read neither configuration nor
+  state, resolve no directory, and so exit with code 0 regardless of these
+  variables. `TOHA_CONFIG` and
   `TOHA_USER_CONFIG` name files and may be relative to the current directory;
   an empty value counts as unset.
 
@@ -145,6 +268,85 @@ description: >-
   `0.1.1-alpha.0.3`. With no reachable tag, or no commit, the version starts
   from `0.0.0-alpha.0`. A build uses the package version when no repository
   has the package root as its work tree, or when tagver fails.
+
+
+  Snapshots. An apply into a git target records its output as a snapshot when the
+  target is inside a repository with a commit, was clean before the apply, and
+  the apply changed a captured path; otherwise it applies as before and the
+  `applied` document's `snapshot` member names why it saved none (`not-git`,
+  `no-commit`, `dirty`, `nothing-changed`, or `dry-run`). A genuine failure to
+  open the repository — as opposed to the target simply not being inside one — is
+  named as a warning on standard error before the apply proceeds and saves no
+  snapshot; the apply, its exit code, and its result document are otherwise
+  unchanged. `snapshots list` shows
+  a target's snapshots, newest first, and marks the one most likely to be a base.
+  `snapshots clean` removes snapshots named in a `{ "remove": [...] }` document
+  and reports the `git push --delete` commands to remove them from a remote; it
+  never pushes. `init` adds a fetch refspec to an existing remote so a clone can
+  fetch a project's snapshots.
+
+
+  Project updates. `apply --from <snapshot>` re-renders the template, replays the
+  snapshot's recorded answers, asks only what the new version needs, and merges
+  the difference three-way into the target, so the template's changes arrive
+  while the operator's own edits survive; a conflict is written with markers and
+  left for the operator. `apply --baseline` merges the whole render from an empty
+  base, adopting an existing project. An update refuses a dirty target, a
+  snapshot taken for another target, and a `<TEMPLATE>` whose source is not the
+  snapshot's. At a terminal a one-shot update prompts what it cannot settle from
+  the recorded answers; `--answers` supplies overrides; `--reanswer` re-asks
+  every answer. An agent stages an update with `stage --from`/`--baseline` and
+  drives it through `continue` and `apply PATH`, which resume through the update
+  replay adapter and merge from the base. A scripted update reports `applied` or
+  `planned` with a `merge` member and, when it saved one, a `snapshot` member,
+  or `already-current` when the re-render equals the base; an untrusted scripted update
+  reports `planned` with `trusted: false` and writes nothing.
+
+  Human-readable update completion. The person route and completed staged-agent
+  route print `Template: <formal name>` and `Target: <path>`, followed by one
+  line per merge change: `Added`, `Updated`, `Merged`, `Deleted`, `Conflicted`
+  (with the conflict kind), or `Not previewed`, then the repository-relative
+  path. They show interview and apply messages and allowed hook failures with
+  their id or ordinal and exit status. A written update prints `Saved snapshot
+  <id>`; a preview prints `Preview only; no changes written.` and `No snapshot
+  saved: preview.`; an unchanged render prints `Already current.` and `No
+  snapshot saved: already current.`. An untrusted preview names `--trust` after
+  hook review. Written conflicts end with `Resolve conflicts in these files
+  before committing.`. These routes emit no JSON completion document. Remaining
+  question batches keep their agent protocol output. The scripted `--answers`
+  route emits its JSON result document.
+
+  In-project generators. `apply <TEMPLATE> <PATH> --like <SELECTOR>` and `stage
+  <TEMPLATE> <PATH> --like <SELECTOR>` apply the template into a fresh subpath
+  and pre-fill that new application's answer defaults from a snapshot of an
+  earlier application of the same source. `--like` is the generate axis, a
+  sibling of the update axis's `--from`/`--baseline`, never an overload: it
+  writes a fresh application and only seeds defaults, never merges, and is
+  mutually exclusive with `--from` and `--baseline` (combining them is a usage
+  error, exit code 2). The selector is `latest` (the newest snapshot of the
+  template's source), a snapshot id or a prefix of at least six characters that
+  matches exactly one snapshot of that source, or, on the person route only, an
+  omitted value that lists the source's applications to pick from. The snapshot
+  is selected repository-wide and filtered by source identity — the formal name
+  without its `@reference` — so an earlier application at a different subpath
+  seeds the new one and a foreign source is refused. Each seeded default is a
+  default, not a submitted answer: a person accepts or overrides it, `--answers`
+  overrides it, and a seeded value the new template version rejects on a
+  constraint is re-asked (person) or returned as a remaining question (exit code
+  4), never written. Per answer id the precedence is a route answer, then a
+  kind-matching snapshot value, then a configured preset or template default,
+  then the template's own default, then the question is asked; a snapshot value
+  whose kind no longer matches is dropped with a warning. A `--like` apply into
+  a clean git subpath still saves its own snapshot, so a third application can
+  seed from the second. An agent stages with `stage --like` and drives
+  `continue`/`apply PATH`, which re-read the exact pinned snapshot so a newer
+  same-source snapshot added meanwhile does not change the seed. A seeded
+  `applied` or `questions` document carries an optional `seed` member naming the
+  snapshot it seeded from; it holds no answer values. `--like` with no snapshot
+  of the source (for `latest` or an explicit reference), an unknown, ambiguous,
+  or wrong-source selector, or a target not in git with an explicit selector
+  fails with an `error` document of kind `snapshot` at exit code 1; a bare
+  `--like` on the script or agent route is a usage error at exit code 2.
 format: cli
 validation-criteria: >-
   A conforming command line matches

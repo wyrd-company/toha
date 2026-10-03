@@ -1,0 +1,865 @@
+// ---
+// relationships:
+//   implements: architecture
+// ---
+//! The snapshot record: its identifier, its `snapshot.json` model, and the
+//! read boundary that refuses a malformed or forged snapshot before any render.
+//!
+//! Everything here is pure: it turns bytes and a ref identity into a validated
+//! [`Snapshot`], or a [`SnapshotError`] that names what failed without ever
+//! quoting an answer value or a file's content. The git-level checks a snapshot
+//! also needs (parentless commit, tree shape, entry kinds) belong to the
+//! repository seam, which calls [`Snapshot::validate`] once it has listed the
+//! files under `files/`.
+
+use std::collections::BTreeSet;
+use std::fmt;
+use std::str::FromStr;
+
+use gix::objs::tree::EntryKind;
+use indexmap::IndexMap;
+use serde::{Deserialize, Serialize};
+
+use crate::plan::TargetPath;
+
+/// The document format version this build writes and is the only one it reads.
+const SNAPSHOT_FORMAT: u32 = 1;
+
+/// The ref namespace that holds every snapshot.
+pub(crate) const SNAPSHOT_REF_PREFIX: &str = "refs/toha/snapshots/";
+
+// ---------------------------------------------------------------------------
+// SnapshotId — a ULID
+// ---------------------------------------------------------------------------
+
+/// A snapshot identifier: a 128-bit ULID rendered as 26 Crockford base32
+/// characters, unique across clones, ordered by creation time, never changed.
+///
+/// Commands accept any unique prefix of at least six characters
+/// ([`SnapshotId::parse_prefix`]); a full id round-trips through [`Display`] and
+/// [`FromStr`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SnapshotId(u128);
+
+/// Crockford base32 alphabet: the digits without `I`, `L`, `O`, and `U`.
+const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+/// The rendered length of a ULID.
+const ULID_LEN: usize = 26;
+
+/// The shortest accepted prefix.
+const MIN_PREFIX: usize = 6;
+
+impl SnapshotId {
+    /// Build an id from a 48-bit millisecond timestamp and 80 bits of entropy,
+    /// as the ULID specification lays them out. The runtime supplies real time
+    /// and randomness; tests supply fixed bytes for a deterministic id.
+    pub fn from_parts(timestamp_ms: u64, entropy: [u8; 10]) -> Self {
+        let ts = u128::from(timestamp_ms & 0x0000_FFFF_FFFF_FFFF);
+        let mut rand = 0u128;
+        for byte in entropy {
+            rand = (rand << 8) | u128::from(byte);
+        }
+        Self((ts << 80) | rand)
+    }
+
+    /// The canonical prefix that matches at least this id, normalised to
+    /// Crockford's canonical characters (uppercase, `I`/`L`→`1`, `O`→`0`), or an
+    /// error when the text is not a usable prefix.
+    ///
+    /// A prefix must be between six and twenty-six characters and hold only
+    /// Crockford digits; this rejects the accidental short or mistyped input a
+    /// refusal would otherwise blame on the snapshot store.
+    pub fn parse_prefix(text: &str) -> Result<String, SnapshotError> {
+        let trimmed = text.trim();
+        if trimmed.len() < MIN_PREFIX || trimmed.len() > ULID_LEN {
+            return Err(SnapshotError::Prefix(trimmed.to_owned()));
+        }
+        let mut out = String::with_capacity(trimmed.len());
+        for ch in trimmed.chars() {
+            out.push(char::from(
+                canonical_digit(ch).ok_or_else(|| SnapshotError::Prefix(trimmed.to_owned()))?,
+            ));
+        }
+        Ok(out)
+    }
+
+    /// Whether the id's rendering begins with an already-normalised `prefix`
+    /// from [`SnapshotId::parse_prefix`].
+    pub fn has_prefix(&self, prefix: &str) -> bool {
+        self.to_string().starts_with(prefix)
+    }
+
+    /// Generate a fresh id from the current time and system entropy. Used at the
+    /// runtime edge when a capture saves a new snapshot; tests use
+    /// [`SnapshotId::from_parts`] for a deterministic id.
+    pub fn generate() -> Self {
+        let millis = jiff::Timestamp::now().as_millisecond().max(0) as u64;
+        let mut entropy = [0u8; 10];
+        getrandom::fill(&mut entropy).expect("system entropy");
+        Self::from_parts(millis, entropy)
+    }
+}
+
+/// Map one input character to its canonical Crockford digit, folding case and
+/// the accepted `I`/`L`/`O` aliases, or `None` when it is not a digit.
+fn canonical_digit(ch: char) -> Option<u8> {
+    let upper = ch.to_ascii_uppercase();
+    match upper {
+        'I' | 'L' => Some(b'1'),
+        'O' => Some(b'0'),
+        _ if CROCKFORD.contains(&(upper as u8)) => Some(upper as u8),
+        _ => None,
+    }
+}
+
+/// Map one input character to its 5-bit value.
+fn digit_value(ch: char) -> Option<u32> {
+    let canon = canonical_digit(ch)?;
+    CROCKFORD.iter().position(|&d| d == canon).map(|p| p as u32)
+}
+
+impl fmt::Display for SnapshotId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut buf = [0u8; ULID_LEN];
+        let mut value = self.0;
+        for slot in buf.iter_mut().rev() {
+            *slot = CROCKFORD[(value & 0x1f) as usize];
+            value >>= 5;
+        }
+        // Safety: every byte is an ASCII character from CROCKFORD.
+        f.write_str(std::str::from_utf8(&buf).expect("crockford is ascii"))
+    }
+}
+
+impl FromStr for SnapshotId {
+    type Err = SnapshotError;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        if text.len() != ULID_LEN {
+            return Err(SnapshotError::Id(text.to_owned()));
+        }
+        let mut value: u128 = 0;
+        for ch in text.chars() {
+            let digit = digit_value(ch).ok_or_else(|| SnapshotError::Id(text.to_owned()))?;
+            value = (value << 5) | u128::from(digit);
+        }
+        // Twenty-six base32 digits carry 130 bits; the top two bits must be zero
+        // for the value to be a 128-bit ULID.
+        let first = digit_value(text.chars().next().expect("length checked")).expect("valid digit");
+        if first > 7 {
+            return Err(SnapshotError::Id(text.to_owned()));
+        }
+        Ok(Self(value))
+    }
+}
+
+impl Serialize for SnapshotId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for SnapshotId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        text.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Supporting value types
+// ---------------------------------------------------------------------------
+
+/// A repository-relative path: the forward-slash form git reports, `.` for the
+/// repository root. It is always relative, never enters `.git`, and never
+/// escapes the repository with `..`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RepoPath(String);
+
+impl RepoPath {
+    /// The repository root.
+    pub fn root() -> Self {
+        Self(".".to_owned())
+    }
+
+    /// Parse a repository-relative path. `.` and the empty string both name the
+    /// root. Any other value must be a clean relative path.
+    pub fn parse(text: &str) -> Result<Self, SnapshotError> {
+        if text.is_empty() || text == "." {
+            return Ok(Self::root());
+        }
+        // A non-root repo path obeys the same rules a target path does.
+        TargetPath::parse(text).map_err(|message| SnapshotError::Path {
+            path: text.to_owned(),
+            message,
+        })?;
+        Ok(Self(text.replace('\\', "/")))
+    }
+
+    /// Whether this path names the repository root.
+    pub fn is_root(&self) -> bool {
+        self.0 == "."
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for RepoPath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// A resolved 40-hex git commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitId(String);
+
+impl CommitId {
+    /// Parse a lowercase 40-hex commit id.
+    pub fn parse(text: &str) -> Result<Self, SnapshotError> {
+        let ok = text.len() == 40 && text.bytes().all(|b| b.is_ascii_hexdigit());
+        if ok {
+            Ok(Self(text.to_ascii_lowercase()))
+        } else {
+            Err(SnapshotError::Commit(text.to_owned()))
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// A lowercase SHA-256 content identity, distinct from a Git object id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContentDigest(String);
+
+impl ContentDigest {
+    pub fn parse(text: &str) -> Result<Self, SnapshotError> {
+        if text.len() == 64
+            && text
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            Ok(Self(text.to_owned()))
+        } else {
+            Err(SnapshotError::ContentDigest(text.to_owned()))
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// The template revision a snapshot was built at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Revision {
+    /// A git-addressed template resolved to this commit.
+    Commit(CommitId),
+    /// Content-addressed template bytes; never a Git object id.
+    Content(ContentDigest),
+    /// A folder template, which has no commit.
+    Unversioned,
+}
+
+/// A repository `HEAD` point recorded with the snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectPoint {
+    commit: CommitId,
+    branch: Option<String>,
+}
+
+impl ProjectPoint {
+    /// A `HEAD` point at `commit`, on `branch` (or detached when `None`).
+    pub fn new(commit: CommitId, branch: Option<String>) -> Self {
+        Self { commit, branch }
+    }
+
+    pub fn commit(&self) -> &CommitId {
+        &self.commit
+    }
+
+    /// The branch name, or `None` on a detached `HEAD`.
+    pub fn branch(&self) -> Option<&str> {
+        self.branch.as_deref()
+    }
+}
+
+/// The instant every render of a project uses, frozen at the first snapshot so a
+/// template that renders a date stays byte-stable across updates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrozenNow(jiff::Zoned);
+
+impl FrozenNow {
+    /// Wrap a zoned instant.
+    pub fn new(instant: jiff::Zoned) -> Self {
+        Self(instant)
+    }
+
+    pub fn parse(text: &str) -> Result<Self, SnapshotError> {
+        text.parse::<jiff::Zoned>()
+            .map(Self)
+            .map_err(|_| SnapshotError::Instant(text.to_owned()))
+    }
+
+    pub fn get(&self) -> &jiff::Zoned {
+        &self.0
+    }
+}
+
+impl fmt::Display for FrozenNow {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// When a snapshot was saved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Timestamp(jiff::Timestamp);
+
+impl Timestamp {
+    /// The current instant, for a snapshot's `created` at the runtime edge.
+    pub fn now() -> Self {
+        Self(jiff::Timestamp::now())
+    }
+
+    pub fn parse(text: &str) -> Result<Self, SnapshotError> {
+        text.parse::<jiff::Timestamp>()
+            .map(Self)
+            .map_err(|_| SnapshotError::Instant(text.to_owned()))
+    }
+
+    pub fn get(&self) -> jiff::Timestamp {
+        self.0
+    }
+}
+
+impl fmt::Display for Timestamp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// What Toha owns at one captured path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Origin {
+    /// A whole file Toha owns.
+    Toha,
+    /// A file Toha edits inside, owning the listed region keys and JSON paths.
+    Edit {
+        regions: Vec<String>,
+        values: Vec<String>,
+    },
+    /// A file a hook created or changed.
+    Hook,
+}
+
+/// One entry in a snapshot's `paths`: a captured file and what Toha owns there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathOwnership {
+    path: TargetPath,
+    origin: Origin,
+}
+
+impl PathOwnership {
+    /// A captured path with its ownership.
+    pub fn new(path: TargetPath, origin: Origin) -> Self {
+        Self { path, origin }
+    }
+
+    pub fn path(&self) -> &TargetPath {
+        &self.path
+    }
+
+    pub fn origin(&self) -> &Origin {
+        &self.origin
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The wire model — snapshot.json exactly, unknown members denied
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DocWire {
+    snapshot: u32,
+    id: String,
+    template: String,
+    source: String,
+    commit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    content_digest: Option<String>,
+    target: String,
+    created: String,
+    generated: String,
+    project: ProjectWire,
+    built_from: Option<String>,
+    submissions: Vec<IndexMap<String, serde_json::Value>>,
+    paths: IndexMap<String, PathWire>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectWire {
+    commit: String,
+    branch: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PathWire {
+    origin: OriginWire,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    regions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    values: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum OriginWire {
+    Toha,
+    Edit,
+    Hook,
+}
+
+// ---------------------------------------------------------------------------
+// The validated snapshot
+// ---------------------------------------------------------------------------
+
+/// A snapshot's validated `snapshot.json`, independent of its git ref.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnapshotDoc {
+    id: SnapshotId,
+    template: String,
+    source: String,
+    revision: Revision,
+    target: RepoPath,
+    created: Timestamp,
+    generated: FrozenNow,
+    project: ProjectPoint,
+    built_from: Option<SnapshotId>,
+    submissions: Vec<IndexMap<String, serde_json::Value>>,
+    paths: Vec<PathOwnership>,
+}
+
+impl SnapshotDoc {
+    /// Assemble a snapshot document from its parts. `source` is derived from the
+    /// template's formal name. `paths` must equal the set of files the capture
+    /// puts under `files/`; the caller keeps that agreement.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        id: SnapshotId,
+        template: String,
+        revision: Revision,
+        target: RepoPath,
+        created: Timestamp,
+        generated: FrozenNow,
+        project: ProjectPoint,
+        built_from: Option<SnapshotId>,
+        submissions: Vec<IndexMap<String, serde_json::Value>>,
+        paths: Vec<PathOwnership>,
+    ) -> Self {
+        let source = strip_reference(&template).to_owned();
+        Self {
+            id,
+            template,
+            source,
+            revision,
+            target,
+            created,
+            generated,
+            project,
+            built_from,
+            submissions,
+            paths,
+        }
+    }
+
+    pub fn id(&self) -> &SnapshotId {
+        &self.id
+    }
+
+    pub fn target(&self) -> &RepoPath {
+        &self.target
+    }
+
+    /// Every captured path and its ownership.
+    pub fn paths(&self) -> &[PathOwnership] {
+        &self.paths
+    }
+
+    /// Serialise to the canonical `snapshot.json` bytes. The read boundary
+    /// ([`Snapshot::validate`]) accepts exactly what this writes.
+    pub fn to_json_bytes(&self) -> Vec<u8> {
+        let wire = DocWire {
+            snapshot: SNAPSHOT_FORMAT,
+            id: self.id.to_string(),
+            template: self.template.clone(),
+            source: self.source.clone(),
+            commit: match &self.revision {
+                Revision::Commit(commit) => Some(commit.as_str().to_owned()),
+                Revision::Content(_) | Revision::Unversioned => None,
+            },
+            content_digest: match &self.revision {
+                Revision::Content(digest) => Some(digest.as_str().to_owned()),
+                _ => None,
+            },
+            target: self.target.to_string(),
+            created: self.created.to_string(),
+            generated: self.generated.to_string(),
+            project: ProjectWire {
+                commit: self.project.commit.as_str().to_owned(),
+                branch: self.project.branch.clone(),
+            },
+            built_from: self.built_from.map(|id| id.to_string()),
+            submissions: self.submissions.clone(),
+            paths: self
+                .paths
+                .iter()
+                .map(|entry| (entry.path.to_string(), PathWire::from(entry.origin.clone())))
+                .collect(),
+        };
+        let mut bytes = serde_json::to_vec_pretty(&wire).expect("snapshot serialises");
+        bytes.push(b'\n');
+        bytes
+    }
+}
+
+impl From<Origin> for PathWire {
+    fn from(origin: Origin) -> Self {
+        match origin {
+            Origin::Toha => PathWire {
+                origin: OriginWire::Toha,
+                regions: Vec::new(),
+                values: Vec::new(),
+            },
+            Origin::Hook => PathWire {
+                origin: OriginWire::Hook,
+                regions: Vec::new(),
+                values: Vec::new(),
+            },
+            Origin::Edit { regions, values } => PathWire {
+                origin: OriginWire::Edit,
+                regions,
+                values,
+            },
+        }
+    }
+}
+
+/// A validated snapshot: its document plus the id proven equal to its ref.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Snapshot {
+    doc: SnapshotDoc,
+}
+
+impl Snapshot {
+    /// Validate a snapshot at the read boundary.
+    ///
+    /// `ref_id` is the id parsed from the ref name; `bytes` is the raw
+    /// `snapshot.json`; `files` is the exact set of paths under `files/` the
+    /// repository seam listed. A snapshot fetched from a teammate is data that
+    /// can be refused, never instructions, so every check that fails refuses the
+    /// whole snapshot.
+    pub fn validate(
+        ref_id: SnapshotId,
+        bytes: &[u8],
+        files: &BTreeSet<String>,
+    ) -> Result<Self, SnapshotError> {
+        let wire: DocWire = serde_json::from_slice(bytes).map_err(SnapshotError::Json)?;
+
+        if wire.snapshot != SNAPSHOT_FORMAT {
+            return Err(SnapshotError::Format(wire.snapshot));
+        }
+
+        let id: SnapshotId = wire.id.parse()?;
+        if id != ref_id {
+            return Err(SnapshotError::IdRefMismatch {
+                declared: id,
+                r#ref: ref_id,
+            });
+        }
+
+        if wire.source != strip_reference(&wire.template) {
+            return Err(SnapshotError::Source {
+                template: wire.template.clone(),
+                declared: wire.source.clone(),
+            });
+        }
+
+        let revision = match (wire.commit.as_deref(), wire.content_digest.as_deref()) {
+            (Some(_), Some(_)) => return Err(SnapshotError::ConflictingRevision),
+            (Some(text), None) => Revision::Commit(CommitId::parse(text)?),
+            (None, Some(text)) => Revision::Content(ContentDigest::parse(text)?),
+            (None, None) => Revision::Unversioned,
+        };
+
+        let target = RepoPath::parse(&wire.target)?;
+        let created = Timestamp::parse(&wire.created)?;
+        let generated = FrozenNow::parse(&wire.generated)?;
+        let project = ProjectPoint {
+            commit: CommitId::parse(&wire.project.commit)?,
+            branch: wire.project.branch,
+        };
+        let built_from = match wire.built_from {
+            None => None,
+            Some(text) => Some(text.parse()?),
+        };
+
+        let mut paths = Vec::with_capacity(wire.paths.len());
+        let mut keys = BTreeSet::new();
+        for (raw, entry) in wire.paths {
+            let path = TargetPath::parse(&raw).map_err(|message| SnapshotError::Path {
+                path: raw.clone(),
+                message,
+            })?;
+            let origin = validate_origin(&raw, entry)?;
+            keys.insert(raw);
+            paths.push(PathOwnership { path, origin });
+        }
+
+        if &keys != files {
+            return Err(SnapshotError::PathsFilesMismatch);
+        }
+
+        Ok(Self {
+            doc: SnapshotDoc {
+                id,
+                template: wire.template,
+                source: wire.source,
+                revision,
+                target,
+                created,
+                generated,
+                project,
+                built_from,
+                submissions: wire.submissions,
+                paths,
+            },
+        })
+    }
+
+    pub fn id(&self) -> &SnapshotId {
+        &self.doc.id
+    }
+
+    pub fn template(&self) -> &str {
+        &self.doc.template
+    }
+
+    pub fn source(&self) -> &str {
+        &self.doc.source
+    }
+
+    pub fn revision(&self) -> &Revision {
+        &self.doc.revision
+    }
+
+    pub fn target(&self) -> &RepoPath {
+        &self.doc.target
+    }
+
+    pub fn created(&self) -> Timestamp {
+        self.doc.created
+    }
+
+    pub fn generated(&self) -> &FrozenNow {
+        &self.doc.generated
+    }
+
+    pub fn project(&self) -> &ProjectPoint {
+        &self.doc.project
+    }
+
+    pub fn built_from(&self) -> Option<&SnapshotId> {
+        self.doc.built_from.as_ref()
+    }
+
+    pub fn submissions(&self) -> &[IndexMap<String, serde_json::Value>] {
+        &self.doc.submissions
+    }
+
+    /// Every captured path and what Toha owns there.
+    pub fn paths(&self) -> &[PathOwnership] {
+        &self.doc.paths
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Saving to git — the commit, tree, and ref boundary
+// ---------------------------------------------------------------------------
+
+/// One captured file bound for `files/`: its target-relative path, its git entry
+/// kind (regular, executable, or symlink), and the blob id already written.
+pub(crate) struct CapturedBlob {
+    pub path: TargetPath,
+    pub kind: EntryKind,
+    pub oid: gix::ObjectId,
+}
+
+/// Build the snapshot's tree (`snapshot.json` plus, unless empty, `files/`),
+/// write it, and create the parentless commit under
+/// `refs/toha/snapshots/<id>`. The ref is created only if it does not already
+/// exist, so a snapshot is immutable once saved.
+pub(crate) fn save(
+    repo: &gix::Repository,
+    doc: &SnapshotDoc,
+    blobs: &[CapturedBlob],
+) -> Result<SnapshotId, SnapshotError> {
+    let empty = gix::ObjectId::empty_tree(repo.object_hash());
+
+    let files_tree = if blobs.is_empty() {
+        None
+    } else {
+        let mut editor = repo.edit_tree(empty).map_err(git_error)?;
+        for blob in blobs {
+            editor
+                .upsert(blob.path.to_string().as_str(), blob.kind, blob.oid)
+                .map_err(git_error)?;
+        }
+        Some(editor.write().map_err(git_error)?.detach())
+    };
+
+    let json_oid = repo
+        .write_blob(doc.to_json_bytes())
+        .map_err(git_error)?
+        .detach();
+    let mut top = repo.edit_tree(empty).map_err(git_error)?;
+    top.upsert("snapshot.json", EntryKind::Blob, json_oid)
+        .map_err(git_error)?;
+    if let Some(files_tree) = files_tree {
+        top.upsert("files", EntryKind::Tree, files_tree)
+            .map_err(git_error)?;
+    }
+    let top_tree = top.write().map_err(git_error)?.detach();
+
+    let signature = gix::actor::Signature {
+        name: "Toha".into(),
+        email: "toha@example.invalid".into(),
+        time: gix::date::Time::now_utc(),
+    };
+    let mut author_buf = gix::date::parse::TimeBuf::default();
+    let mut committer_buf = gix::date::parse::TimeBuf::default();
+    let refname = format!("{SNAPSHOT_REF_PREFIX}{}", doc.id);
+    repo.commit_as(
+        signature.to_ref(&mut committer_buf),
+        signature.to_ref(&mut author_buf),
+        refname.as_str(),
+        format!("toha snapshot {}\n", doc.id),
+        top_tree,
+        Vec::<gix::ObjectId>::new(),
+    )
+    .map_err(git_error)?;
+    Ok(doc.id)
+}
+
+fn git_error(err: impl std::fmt::Display) -> SnapshotError {
+    SnapshotError::Git(err.to_string())
+}
+
+/// The source identity of a formal name: everything before its first `@`.
+fn strip_reference(template: &str) -> &str {
+    template
+        .split_once('@')
+        .map_or(template, |(source, _)| source)
+}
+
+/// The source identity of a template's formal name: the formal name without its
+/// `@reference`. Two applications of the same source across template versions
+/// share this identity, so a generator seeds one from another; a foreign source
+/// does not. The canonical single source of truth for the generate axis's
+/// source-vs-formal-name comparison.
+pub fn source_identity(formal_name: &str) -> &str {
+    strip_reference(formal_name)
+}
+
+/// Turn a wire path entry into a validated [`Origin`], refusing region or value
+/// lists on an origin that cannot own them.
+fn validate_origin(path: &str, entry: PathWire) -> Result<Origin, SnapshotError> {
+    match entry.origin {
+        OriginWire::Toha | OriginWire::Hook
+            if !entry.regions.is_empty() || !entry.values.is_empty() =>
+        {
+            Err(SnapshotError::Ownership {
+                path: path.to_owned(),
+            })
+        }
+        OriginWire::Toha => Ok(Origin::Toha),
+        OriginWire::Hook => Ok(Origin::Hook),
+        OriginWire::Edit => Ok(Origin::Edit {
+            regions: entry.regions,
+            values: entry.values,
+        }),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+/// A refusal to read a snapshot. Every variant names the snapshot or the path it
+/// concerns and never quotes an answer value or a file's content.
+#[derive(Debug, thiserror::Error)]
+pub enum SnapshotError {
+    #[error("snapshot id is not a valid ULID: {0}")]
+    Id(String),
+    #[error("snapshot prefix must be 6 to 26 Crockford characters: {0}")]
+    Prefix(String),
+    #[error("snapshot.json is not valid JSON: {0}")]
+    Json(#[source] serde_json::Error),
+    #[error("unsupported snapshot format version: {0}")]
+    Format(u32),
+    #[error("snapshot id {declared} does not match its ref {ref}")]
+    IdRefMismatch {
+        declared: SnapshotId,
+        r#ref: SnapshotId,
+    },
+    #[error("snapshot source {declared} does not match template {template}")]
+    Source { template: String, declared: String },
+    #[error("invalid commit in snapshot: {0}")]
+    Commit(String),
+    #[error("invalid content digest in snapshot: {0}")]
+    ContentDigest(String),
+    #[error("snapshot cannot carry both a commit and a content digest")]
+    ConflictingRevision,
+    #[error("invalid instant in snapshot: {0}")]
+    Instant(String),
+    #[error("invalid snapshot path {path}: {message}")]
+    Path { path: String, message: String },
+    #[error("snapshot path {path} carries ownership its origin cannot hold")]
+    Ownership { path: String },
+    #[error("snapshot paths do not equal the files under files/")]
+    PathsFilesMismatch,
+    #[error("snapshot commit has a parent")]
+    HasParent,
+    #[error("snapshot tree is missing snapshot.json")]
+    MissingSnapshotJson,
+    #[error("snapshot.json is not a regular file")]
+    SnapshotJsonNotBlob,
+    #[error("snapshot files/ is not a tree")]
+    FilesNotTree,
+    #[error("snapshot tree has an unexpected entry: {0}")]
+    ExtraTreeEntry(String),
+    #[error("snapshot files/ contains a non-regular entry: {0}")]
+    BadFileEntry(String),
+    #[error("unknown snapshot: {0}")]
+    Unknown(String),
+    #[error("ambiguous snapshot prefix {prefix} matches {matches:?}")]
+    Ambiguous {
+        prefix: String,
+        matches: Vec<String>,
+    },
+    #[error("cannot read snapshot from git: {0}")]
+    Git(String),
+    #[error("removing every snapshot of {name} needs --force")]
+    WholeSource { name: String },
+}
+
+#[cfg(test)]
+mod tests;

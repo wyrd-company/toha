@@ -10,6 +10,16 @@ fn run(root: &TempDir, args: &[&str]) -> std::process::Output {
         .output()
         .unwrap()
 }
+/// The persisted registry entries in a `templates list --json` array, excluding
+/// the presentation-only bundled demo descriptor (D3) that the unfiltered
+/// listing carries. Registry-behavior assertions count these, not the row.
+fn registry_entries(json: &serde_json::Value) -> Vec<&serde_json::Value> {
+    json.as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry.get("bundled") != Some(&serde_json::Value::Bool(true)))
+        .collect()
+}
 fn git(root: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .args(args)
@@ -62,7 +72,7 @@ fn add_list_alias_remove_and_shared_clone() {
     assert_exit(&first, 0);
     let list = assert_exit(&run(&root, &["templates", "list", "--json"]), 0);
     let json: serde_json::Value = serde_json::from_str(&list).unwrap();
-    assert_eq!(json.as_array().unwrap().len(), 2);
+    assert_eq!(registry_entries(&json).len(), 2);
     let first_name = format!("{url}#one");
     let second_name = format!("{url}#two");
     assert_exit(&run(&root, &["templates", "alias", &first_name, "mine"]), 0);
@@ -75,7 +85,7 @@ fn add_list_alias_remove_and_shared_clone() {
     assert_exit(&run(&root, &["templates", "remove", &first_name]), 0);
     let list = assert_exit(&run(&root, &["templates", "list", "--json"]), 0);
     let json: serde_json::Value = serde_json::from_str(&list).unwrap();
-    assert_eq!(json.as_array().unwrap().len(), 1);
+    assert_eq!(registry_entries(&json).len(), 1);
     assert_exit(&run(&root, &["templates", "remove", &second_name]), 0);
     assert_exit(&run(&root, &["templates", "remove", &second_name]), 1);
 }
@@ -126,7 +136,7 @@ fn readd_sparse_entry_persists_alias_and_trust() {
         serde_norway::from_str(&fs::read_to_string(&registry_path).unwrap()).unwrap();
     let entry = sparse["templates"][&address].as_object_mut().unwrap();
     entry.remove("aliases");
-    entry.remove("trusted");
+    entry.remove("approval");
     fs::write(&registry_path, serde_norway::to_string(&sparse).unwrap()).unwrap();
     assert_exit(
         &run(
@@ -141,7 +151,13 @@ fn readd_sparse_entry_persists_alias_and_trust() {
         written["templates"][&address]["aliases"],
         serde_json::json!(["kept"])
     );
-    assert_eq!(written["templates"][&address]["trusted"], true);
+    // Re-adding with --trust persists an approval digest for the template.
+    assert!(
+        written["templates"][&address]["approval"]
+            .as_str()
+            .is_some_and(|digest| digest.starts_with("sha256:")),
+        "{written}"
+    );
 }
 #[test]
 fn add_rejects_multiple_with_alias_and_bad_template() {
@@ -149,13 +165,13 @@ fn add_rejects_multiple_with_alias_and_bad_template() {
     let url = repo(&root);
     assert_exit(&run(&root, &["templates", "add", &url, "-a", "single"]), 1);
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&assert_exit(
-            &run(&root, &["templates", "list", "--json"]),
-            0
-        ))
-        .unwrap()
-        .as_array()
-        .unwrap()
+        registry_entries(
+            &serde_json::from_str::<serde_json::Value>(&assert_exit(
+                &run(&root, &["templates", "list", "--json"]),
+                0
+            ))
+            .unwrap()
+        )
         .len(),
         0
     );
@@ -265,13 +281,9 @@ fn pinned_tag_and_commit_do_not_move() {
     assert_exit(&run(&root, &["templates", "update"]), 0);
     let output = assert_exit(&run(&root, &["templates", "list", "--json"]), 0);
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
-    assert_eq!(json.as_array().unwrap().len(), 2);
-    assert!(
-        json.as_array()
-            .unwrap()
-            .iter()
-            .all(|e| e["commit"] == commit)
-    );
+    let entries = registry_entries(&json);
+    assert_eq!(entries.len(), 2);
+    assert!(entries.iter().all(|e| e["commit"] == commit));
 }
 #[test]
 fn configured_file_host_shorthand_installs_and_round_trips() {
@@ -350,7 +362,7 @@ fn layer_lists_and_local_aliases_of_discovered_templates() {
         0,
     ))
     .unwrap();
-    assert_eq!(merged.as_array().unwrap().len(), 2);
+    assert_eq!(registry_entries(&merged).len(), 2);
     assert!(
         merged
             .as_array()
@@ -597,6 +609,26 @@ fn update_two_dotted_install_keys() {
     }
 }
 
+/// The argv after `toha` in a suggested command line (a stderr suggestion or a
+/// scripted error document's `commands` entry).
+fn argv(command: &str) -> Vec<String> {
+    let mut words =
+        support::shell_words(&command[command.find("toha ").expect("a toha command")..]);
+    assert_eq!(words.remove(0), "toha");
+    words
+}
+
+/// Rewrites `root/answers.json` as the identity envelope naming `formal` around
+/// an empty answers object, so a scripted apply of that formal passes the
+/// identity boundary and reaches the plan.
+fn envelope(root: &TempDir, formal: &str) {
+    fs::write(
+        root.path().join("answers.json"),
+        support::envelope_text(formal, &serde_json::json!({})),
+    )
+    .unwrap();
+}
+
 fn assert_stderr_names(output: &std::process::Output, commands: &[String]) {
     let stderr = String::from_utf8_lossy(&output.stderr);
     for command in commands {
@@ -718,22 +750,51 @@ fn suggested_commands_for_folder_templates_are_accepted() {
         String::from_utf8_lossy(&output.stderr).into_owned()
     };
 
+    // The agent stage route names the disambiguation on stderr; the named
+    // command is accepted.
     let ambiguous = stderr(&["stage", "same", "staged", "--async"], 5);
     rerun(support::suggested(&ambiguous, "to use "), 0);
 
-    let ambiguous = stderr(&["apply", "--answers", "answers.json", "same", "out"], 5);
-    rerun(support::suggested(&ambiguous, "to use "), 3);
+    // The scripted apply route reports an ambiguous name as an error document on
+    // standard output whose `commands` name the disambiguated apply per template.
+    // Running one with the identity envelope reaches the untrusted-hooks planned
+    // document (exit 3, trusted: false).
+    let output = run(
+        &root,
+        &["apply", "--answers", "answers.json", "same", "out"],
+    );
+    assert_exit(&output, 5);
+    let named = argv(
+        support::first_document(&output.stdout)["commands"][0]
+            .as_str()
+            .unwrap(),
+    );
+    envelope(&root, &support::formal_name(Path::new(&named[3])));
+    let disambiguated = run(&root, &named.iter().map(String::as_str).collect::<Vec<_>>());
+    let planned = support::first_document(&assert_exit(&disambiguated, 3).into_bytes());
+    assert_eq!(planned["status"], "planned");
+    assert_eq!(planned["trusted"], serde_json::json!(false));
 
+    // The templates alias route names the disambiguation on stderr; the named
+    // command and a chosen alias are accepted.
     let ambiguous = stderr(&["templates", "alias", "same", "picked"], 5);
     rerun(support::suggested(&ambiguous, "to use "), 0);
     let mut alias = support::suggested(&ambiguous, "an alias: ");
+    let chosen_formal = alias[2].clone();
     *alias.last_mut().unwrap() = "chosen".into();
     rerun(alias, 0);
-    let hooks = stderr(
+
+    // Applying the chosen alias with the identity envelope reaches the same
+    // untrusted-hooks planned document. The scripted route reports trust
+    // structurally as trusted: false rather than naming a trust command.
+    envelope(&root, &chosen_formal);
+    let hooks = run(
+        &root,
         &["apply", "--answers", "answers.json", "chosen", "named"],
-        3,
     );
-    rerun(support::suggested(&hooks, "to trust "), 0);
+    let planned = support::first_document(&assert_exit(&hooks, 3).into_bytes());
+    assert_eq!(planned["status"], "planned");
+    assert_eq!(planned["trusted"], serde_json::json!(false));
 
     let ambiguous = stderr(&["templates", "remove", "same"], 5);
     rerun(support::suggested(&ambiguous, "to use "), 0);

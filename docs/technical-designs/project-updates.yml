@@ -1,0 +1,120 @@
+$schema: https://refinery.systems/ontology/technical-design
+relationships:
+  realizes: toha
+  implements:
+    - snapshot
+    - command-line-interface
+    - interview-protocol
+  related-to:
+    - architecture
+    - content-injection
+    - in-project-generators
+    - confirm-flow
+objective: >-
+  Capture applied template output and merge template changes into a project
+  while preserving operator edits and Git conflict resolution.
+proposed-design:
+  high-level-overview: >-
+    snapshot::Project opens the containing repository and supplies validated
+    readers, capture and merge operations. An update adapter drives the shared
+    interview from recorded raw submissions. One candidate-tree builder composes
+    rendering, ownership transitions and capture. Gitoxide merges whole-repository
+    trees in process and a guarded working-tree/index transaction writes results.
+  repository-boundary: >-
+    Discovery starts at the target's closest existing ancestor and validates the
+    target relative to the canonical working tree. OS components convert to
+    slash-separated RepoPath values at that boundary. The in-memory Git
+    configuration removes configured clean, smudge, process and merge drivers
+    before status, checkout, conversion or merge. Built-in line-ending and
+    working-tree-encoding conversion remains active. No Git driver subprocess
+    runs and repository configuration is unchanged by these operations.
+  snapshot-storage: >-
+    A ULID identifies a parentless commit under refs/toha/snapshots/<id>. The
+    tree contains snapshot.json and the captured files subtree, omitted when
+    empty. The record stores selected template/source/version, repository-relative
+    target, creation and frozen render instants, project commit and branch,
+    optional base, raw accepted submissions and per-path ownership. The snapshot
+    specification and native schema define its exact wire. Reading validates
+    parent count, tree shape, record identity, supported format, source derivation,
+    paths, entry kinds and equality of recorded paths with captured entries.
+  capture: >-
+    Ordinary apply captures when the target was clean in a committed repository
+    and apply changed a path. Updates and baseline capture unless already current;
+    previews publish no snapshot. Capture includes every plan mutation, including
+    unchanged owned targets, and hook changes under the target. It retains file
+    mode and symlink contents without following links. Untracked ignored files,
+    gitlinks, submodule contents and outside-target files are excluded; tracked
+    files remain eligible despite ignore rules. Outside-target hook changes are
+    reported. Content uses Git built-in stored-form conversions only.
+  ownership-transitions: >-
+    Whole ownership replaces the entire captured file; removed whole targets
+    disappear from the template side. Hook-owned paths carry forward from the
+    base unless the new plan owns or changes them. Edit ownership retains region
+    keys and JSON paths. The builder retracts uncovered regions and JSON values
+    before applying new intent, removing array elements from highest index down.
+    A new whole mutation covers all old ownership; a region covers the same key;
+    a JSON value covers values at or below its path. Retracting the last owned
+    identity still captures the retracted image as edit with empty ownership
+    lists, so that change participates in the merge. A path whose base snapshot
+    already records edit with empty ownership lists is released and omitted
+    from both base and candidate template trees, preserving the operator file.
+    Update never removes an edit-owned file.
+  answer-replay: >-
+    The crate-private adapter queues recorded raw values per id in submission
+    order, including loop values. Verified route overrides replace queued values.
+    Each pending batch consumes its next usable values; rejected values become
+    unanswered with retained rejections. Person routes prompt, scripts report
+    questions and agents save a stage carrying base and accepted submissions.
+    Reanswer sends every batch to the route with recorded defaults. Resume
+    reconstructs queues from the base, replays accepted staged submissions and
+    removes consumed values exactly once. Update preserves the base's frozen
+    generated instant and records values actually submitted.
+  candidate-and-preview: >-
+    Real updates check out HEAD into a temporary directory, apply ownership
+    retractions and the new plan through a destination adapter, run trusted hooks
+    there and capture the candidate. Planning retains the real project target
+    for invocation facts. Preview uses the same builder on in-memory HEAD images
+    with hooks suppressed and hook-owned bytes carried forward; those outputs
+    are marked not previewed. CLI dry-run and interview DryRun both select this
+    path. Preview changes no project file, index, snapshot ref or staged record.
+    Identical version, submissions and captured tree produce already-current
+    without a retained candidate; unversioned folders compare the tree.
+  merge: >-
+    Base is HEAD with the target replaced by the selected snapshot's files,
+    excluding released paths; ours is HEAD; theirs substitutes candidate files.
+    Baseline uses an empty base target. Rename detection is off. Operator-only
+    paths remain ours. Git line merging combines disjoint changes and reports
+    overlaps. Driver-attributed paths keep operator content and conflict stages.
+    Clean results are staged. Text conflicts receive diff3 markers and stages
+    1/2/3; binary, add/add, modify/delete, file/directory and driver conflicts keep
+    operator files with corresponding stages. Paths and index entries outside the
+    target remain intact. Toha creates neither a commit nor Git merge state.
+  transaction-and-cleanup: >-
+    Preconditions require a clean target and a matching valid source/target base.
+    Candidate construction follows the trust gate. Merge checks occupied
+    untracked paths before locking. Under the index lock, HEAD, index checksum,
+    target cleanliness and occupied paths are checked again. Each replacement
+    verifies current HEAD bytes or absence immediately before writing. Failure
+    rolls back only paths still holding this invocation's output and preserves
+    concurrent edits, then releases its lock and removes its candidate ref.
+    Unsuccessful exits after capture remove only the exact new ref if its commit
+    still matches; base refs, other locks and replaced refs remain untouched.
+    Cleanup failure retains the original error and names the remaining ref or
+    paths. After transaction commit, reporting failure retains the result and
+    snapshot. Recovery guidance is target-scoped.
+  completion-output: >-
+    The candidate apply retains interview and apply messages and hook outcomes
+    through merge_apply_reported. The CLI formats person and completed
+    staged-agent updates as prose naming template, target, merge actions,
+    conflicts and snapshot outcome. Scripted updates retain JSON results.
+    Remaining-question batches retain their protocol. Preview, already-current,
+    trust and conflict guidance follow the command-line-interface contract.
+  selection-and-housekeeping: >-
+    Snapshot listing is target-scoped and marks one likely base per source using
+    project ancestry, then content agreement when ancestry finds none. A mark is
+    advisory. Person routes choose a base; scripted and agent update routes name
+    one or baseline explicitly. Cleaning removes selected refs, guards the final
+    snapshot of each source unless forced and prints remote-delete commands.
+    Init adds the snapshot fetch refspec to the selected existing remote without
+    fetching or altering push settings. Snapshot reader APIs expose domain values
+    rather than Gitoxide types.

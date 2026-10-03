@@ -25,13 +25,14 @@ Hide
 Type 'unset NO_COLOR; export LANG=C.UTF-8 TERM=xterm-256color COLORTERM=truecolor LS_COLORS="di=01;34:ex=01;32"' Enter
 Type 'export PATH="$PWD/target/debug:$PATH"' Enter
 Type 'export PS1="demo> "' Enter
-Type 'DEMO_ROOT=$(mktemp -d); cp -R docs/examples/demo "$DEMO_ROOT/template"; cd "$DEMO_ROOT"' Enter
-Type 'export XDG_STATE_HOME="$DEMO_ROOT/state"' Enter
+Type 'DEMO_ROOT=$(mktemp -d); cd "$DEMO_ROOT"' Enter
+Type 'export HOME="$DEMO_ROOT/home" XDG_CONFIG_HOME="$DEMO_ROOT/config" XDG_DATA_HOME="$DEMO_ROOT/data" XDG_CACHE_HOME="$DEMO_ROOT/cache" XDG_STATE_HOME="$DEMO_ROOT/state"' Enter
+Type 'mkdir -p "$HOME"' Enter
 Type 'clear' Enter
 Show
 
 Sleep 700ms
-Type 'toha apply ./template ./notes' Enter
+Type 'toha apply toha-demo ./notes' Enter
 Sleep 800ms
 Type 'Sample note' Enter
 Sleep 400ms
@@ -42,7 +43,7 @@ Sleep 2000ms
 Type 'cat notes/note.txt' Enter
 Sleep 6000ms
 
-Type "toha stage ./template ./notes2 --async | jq '{status, schema: .schema}'" Enter
+Type "toha stage toha-demo ./notes2 --async | jq '{status, schema: .schema}'" Enter
 Sleep 8700ms
 Type "echo '"
 Type '{"title":"Agent note","topic":"Research"}'

@@ -4,10 +4,47 @@ use indexmap::IndexMap;
 use serde::Deserialize;
 use serde_json::Value;
 use std::{
-    fs,
+    fmt, fs,
     path::{Path, PathBuf},
     sync::LazyLock,
 };
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PresetName(String);
+impl PresetName {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        Id::parse(value).map(|_| Self(value.into()))
+    }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+impl fmt::Display for PresetName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+#[derive(Debug, Clone, PartialEq)]
+pub enum DefaultSource {
+    Ref(PresetName),
+    Literal(Value),
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigLayer {
+    System,
+    User,
+    Local,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigOrigin {
+    pub layer: ConfigLayer,
+    pub path: PathBuf,
+}
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConfigEntry<T> {
+    pub value: T,
+    pub origin: ConfigOrigin,
+}
 
 #[derive(Debug, Clone)]
 pub struct ConfigPaths {
@@ -23,7 +60,8 @@ pub struct ConfigPaths {
 pub struct Config {
     pub templates_paths: Vec<PathBuf>,
     pub local_templates_paths: Vec<PathBuf>,
-    pub defaults: IndexMap<Id, Value>,
+    pub presets: IndexMap<PresetName, ConfigEntry<Value>>,
+    pub template_defaults: IndexMap<String, IndexMap<Id, ConfigEntry<DefaultSource>>>,
     pub hosts: IndexMap<String, String>,
     pub local_config_name: String,
 }
@@ -48,7 +86,8 @@ pub enum ConfigError {
 #[serde(rename_all = "kebab-case")]
 struct Layer {
     templates_paths: Option<Vec<String>>,
-    defaults: Option<IndexMap<String, Value>>,
+    presets: Option<IndexMap<String, Value>>,
+    template_defaults: Option<IndexMap<String, IndexMap<String, Value>>>,
     hosts: Option<IndexMap<String, String>>,
     local_config_name: Option<String>,
 }
@@ -71,6 +110,12 @@ fn read(path: &Path, definition: &str) -> Result<Layer, ConfigError> {
         path: path.into(),
         message: e.to_string(),
     })?;
+    if value.get("defaults").is_some() {
+        return Err(ConfigError::Parse {
+            path: path.into(),
+            message: "`defaults:` is no longer supported; preserve each value under a named `presets:` entry and add an explicit `template-defaults:` mapping keyed by the template formal name (for example, `title: { preset: default_title }`)".into(),
+        });
+    }
     let mut schema = SCHEMA.clone();
     schema["$ref"] = Value::String(format!("#/$defs/{definition}"));
     let validator = jsonschema::options()
@@ -148,21 +193,63 @@ pub fn load(dirs: &ConfigPaths, cwd: &Path) -> Result<Config, ConfigError> {
             &dirs.home,
         ))
         .collect();
-    let mut defaults = IndexMap::new();
-    for (layer, file) in [
-        (&system, &dirs.system_config),
-        (&user, &dirs.user_config),
-        (&local, &local_file),
+    let mut presets = IndexMap::new();
+    let mut template_defaults: IndexMap<String, IndexMap<Id, ConfigEntry<DefaultSource>>> =
+        IndexMap::new();
+    for (layer, file, layer_name) in [
+        (&system, &dirs.system_config, ConfigLayer::System),
+        (&user, &dirs.user_config, ConfigLayer::User),
+        (&local, &local_file, ConfigLayer::Local),
     ] {
-        if let Some(values) = &layer.defaults {
+        let origin = ConfigOrigin {
+            layer: layer_name,
+            path: file.clone(),
+        };
+        if let Some(values) = &layer.presets {
             for (key, value) in values {
-                defaults.insert(
-                    Id::parse(key).map_err(|message| ConfigError::Parse {
+                presets.insert(
+                    PresetName::parse(key).map_err(|message| ConfigError::Parse {
                         path: file.clone(),
                         message,
                     })?,
-                    value.clone(),
+                    ConfigEntry {
+                        value: value.clone(),
+                        origin: origin.clone(),
+                    },
                 );
+            }
+        }
+        if let Some(identities) = &layer.template_defaults {
+            for (formal_name, values) in identities {
+                let merged = template_defaults.entry(formal_name.clone()).or_default();
+                for (key, value) in values {
+                    let id = Id::parse(key).map_err(|message| ConfigError::Parse {
+                        path: file.clone(),
+                        message,
+                    })?;
+                    let source = match value {
+                        Value::Object(object) => {
+                            let name = object
+                                .get("preset")
+                                .and_then(Value::as_str)
+                                .expect("schema validates preset references");
+                            DefaultSource::Ref(PresetName::parse(name).map_err(|message| {
+                                ConfigError::Parse {
+                                    path: file.clone(),
+                                    message,
+                                }
+                            })?)
+                        }
+                        literal => DefaultSource::Literal(literal.clone()),
+                    };
+                    merged.insert(
+                        id,
+                        ConfigEntry {
+                            value: source,
+                            origin: origin.clone(),
+                        },
+                    );
+                }
             }
         }
     }
@@ -181,7 +268,8 @@ pub fn load(dirs: &ConfigPaths, cwd: &Path) -> Result<Config, ConfigError> {
     Ok(Config {
         templates_paths,
         local_templates_paths: local_paths.clone(),
-        defaults,
+        presets,
+        template_defaults,
         hosts,
         local_config_name,
     })
@@ -198,11 +286,11 @@ mod tests {
         }
         let system = base.join("system/config.yml");
         let user = base.join("user/config.yml");
-        fs::write(&system, "templates-paths: [system-templates]\ndefaults: { answer: system }\nhosts: { gh: 'https://system.invalid' }\nlocal-config-name: project.yml\n").unwrap();
-        fs::write(&user, "templates-paths: [~/shared]\ndefaults: { answer: user }\nhosts: { gh: 'https://user.invalid' }\n").unwrap();
+        fs::write(&system, "templates-paths: [system-templates]\npresets: { shared_value: system, system_value: retained }\ntemplate-defaults: { example-template: { answer: { preset: shared_value }, system_answer: system } }\nhosts: { gh: 'https://system.invalid' }\nlocal-config-name: project.yml\n").unwrap();
+        fs::write(&user, "templates-paths: [~/shared]\npresets: { shared_value: user }\ntemplate-defaults: { example-template: { answer: user } }\nhosts: { gh: 'https://user.invalid' }\n").unwrap();
         fs::write(
             base.join("project/project.yml"),
-            "templates-paths: [local-templates]\ndefaults: { answer: local }\n",
+            "templates-paths: [local-templates]\npresets: { shared_value: local }\ntemplate-defaults: { example-template: { answer: local } }\n",
         )
         .unwrap();
         let dirs = ConfigPaths {
@@ -224,7 +312,27 @@ mod tests {
                 base.join("system/system-templates")
             ]
         );
-        assert_eq!(config.defaults[&Id::parse("answer").unwrap()], "local");
+        let shared = &config.presets[&PresetName::parse("shared_value").unwrap()];
+        assert_eq!(shared.value, "local");
+        assert_eq!(shared.origin.layer, ConfigLayer::Local);
+        assert_eq!(shared.origin.path, base.join("project/project.yml"));
+        assert_eq!(
+            config.presets[&PresetName::parse("system_value").unwrap()]
+                .origin
+                .layer,
+            ConfigLayer::System
+        );
+        let mapping = &config.template_defaults["example-template"];
+        let answer = &mapping[&Id::parse("answer").unwrap()];
+        assert_eq!(
+            answer.value,
+            DefaultSource::Literal(Value::String("local".into()))
+        );
+        assert_eq!(answer.origin.layer, ConfigLayer::Local);
+        assert_eq!(
+            mapping[&Id::parse("system_answer").unwrap()].origin.layer,
+            ConfigLayer::System
+        );
         assert_eq!(config.hosts["gh"], "https://user.invalid");
     }
     #[test]
@@ -244,5 +352,49 @@ mod tests {
         let error = load(&dirs, root.path()).unwrap_err();
         assert!(error.to_string().contains(local.to_str().unwrap()));
         assert!(matches!(error, ConfigError::Schema { .. }));
+    }
+
+    #[test]
+    fn legacy_defaults_are_refused_with_conversion_guidance() {
+        let root = tempfile::tempdir().unwrap();
+        let user = root.path().join("user.yml");
+        fs::write(&user, "defaults: { answer: kept }\n").unwrap();
+        let dirs = ConfigPaths {
+            system_config: root.path().join("missing-system"),
+            user_config: user.clone(),
+            local_config_override: Some(root.path().join("missing-local")),
+            system_data: root.path().join("system"),
+            user_data: root.path().join("user"),
+            cache: root.path().join("cache"),
+            home: root.path().join("home"),
+        };
+        let error = load(&dirs, root.path()).unwrap_err().to_string();
+        assert!(error.starts_with(user.to_str().unwrap()), "{error}");
+        assert!(error.contains("`presets:`"), "{error}");
+        assert!(error.contains("`template-defaults:`"), "{error}");
+    }
+
+    #[test]
+    fn preset_store_rejects_reference_objects() {
+        let root = tempfile::tempdir().unwrap();
+        let user = root.path().join("user.yml");
+        fs::write(
+            &user,
+            "presets: { first_value: { preset: second_value } }\n",
+        )
+        .unwrap();
+        let dirs = ConfigPaths {
+            system_config: root.path().join("missing-system"),
+            user_config: user,
+            local_config_override: Some(root.path().join("missing-local")),
+            system_data: root.path().join("system"),
+            user_data: root.path().join("user"),
+            cache: root.path().join("cache"),
+            home: root.path().join("home"),
+        };
+        assert!(matches!(
+            load(&dirs, root.path()),
+            Err(ConfigError::Schema { .. })
+        ));
     }
 }

@@ -1,0 +1,6 @@
+name: app
+interview:
+  - id: name
+    type: text
+    prompt: Name
+    required: true

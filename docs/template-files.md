@@ -92,5 +92,22 @@ An empty list also produces no files. The item name after `as` must be a
 lowercase Jinja identifier and cannot match a data key, question id, or
 computed id.
 
-For commands to run after writing files, continue with
+If file generation cannot evaluate a value, the error names the source file,
+the exact field, and the authored value. For example:
+
+<!-- rumdl-disable MD013 -->
+
+```text
+/templates/sample/part.txt: template error in files[0].path `{{ item.name }}.txt`: item has no attribute named name
+```
+
+<!-- rumdl-enable MD013 -->
+
+The fields are `files[i].when`, `files[i].each`, and `files[i].path`. A fault
+in a normal source-tree path uses `path` and shows only the path segment that
+failed. A file-content fault continues to name the source file.
+
+To change part of a file that already exists instead of writing a whole file,
+see [Injecting into existing files](/docs/toha/template-injection). For commands
+to run after writing files, continue with
 [Hooks and messages](/docs/toha/template-hooks).

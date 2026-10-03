@@ -1,0 +1,6 @@
+{
+  "name": "sample-app",
+  "scripts": {
+    "start": "node index.js"
+  }
+}

@@ -1,0 +1,62 @@
+$schema: https://refinery.systems/ontology/technical-design
+relationships:
+  realizes: toha
+  implements: template-format
+  related-to:
+    - architecture
+    - hook-review-trust
+    - jinja-context
+objective: >-
+  Make opt-in hook outputs available to ordered apply-time readers while keeping
+  planning, interviews, trust checks and staged replay free of live results.
+proposed-design:
+  high-level-overview: >-
+    Template loading resolves producer ids and reader surfaces. Planning retains
+    result-dependent hook fields and the after-apply message as opaque Deferred
+    values. Apply interleaves rendering, execution, failure handling, decoding
+    and recording in a private result table that lasts one apply.
+  producer-and-reader-analysis: >-
+    Hook id and optional status-id share the authored id namespace and exact
+    reserved-name rules. A producer with each cannot declare id. Readers are
+    later top-level hook when, arguments, cwd and messages.after-apply. Program
+    selection, script path and each are eager; interview hooks may produce but
+    never read results. Files, paths, injection, interview fields and
+    before-apply do not read results. Load verifies ordering, supported fields
+    and capture/read correspondence; self, forward and unavailable reads fail.
+    Capturing a stream requires a reader, and a stream reader requires capture.
+  deferred-plan: >-
+    Planned hook steps are ready or deferred over one retained plan-time context.
+    The eager executable and each determine listed invocations. Preview displays
+    source conditions and result placeholders rather than executing producers.
+    Deferred steps count at the hook trust gate. Apply resolves each deferred
+    step immediately before execution and checks its resulting cwd for symlinks.
+    after-apply renders after the last successful hook. Stop and abort do not
+    produce a plan; preview and replay do not produce results.
+  capture-and-failure: >-
+    HookRunner keeps its run interface. Only declared streams are piped; others
+    inherit stdio. The failure gate precedes decoding: untolerated nonzero exits,
+    signals and start failures stop apply. allow-failure tolerates a numeric
+    nonzero exit only and requires a read result. Captured bytes decode as strict
+    UTF-8 and all trailing carriage returns and newlines are removed. Invalid
+    bytes fail with index, id and position rather than captured content. Plain
+    results bind exit_code, stdout and stderr; a producer that did not run binds
+    all three to none. Uncaptured streams are none and empty capture is an empty
+    string.
+  json-results: >-
+    parse: json requires id and stdout capture and binds parsed stdout directly
+    at the id as a JSON value. Strings remain data. An optional status-id binds
+    exit_code, stdout, stderr and parsed; it is required when the producer may
+    not run or permits failure. A skipped producer binds the value to none and
+    parsed false. Successful empty or malformed JSON is fatal; tolerated nonzero
+    malformed JSON binds none with parsed false while metadata retains the raw
+    decoded stream. Valid JSON null is none with parsed true. Numeric conversion
+    follows serde_json without arbitrary_precision. Output faults distinguish
+    invalid UTF-8, empty output and JSON line/column errors without bytes.
+  name-access-and-lifetime: >-
+    Direct dot access to metadata-style fields on a JSON producer is a load
+    error naming status-id and bracket-key access. The AST guard distinguishes
+    direct GetAttr from GetItem; aliases, loop variables and non-variable roots
+    use ordinary JSON-key semantics. Result values remain local to apply and are
+    excluded from staged records, reports and diagnostic Debug or Display.
+    Canonical parsed hook-node hashing covers id, capture, allow-failure, parse
+    and status-id. Executable-file references remain identified by hook review.
