@@ -1,0 +1,15 @@
+[package]
+name = "monty-hooks-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+monty = "=1.0.0"
+monty-fs = "=1.0.0"
+monty-types = "=1.0.0"
+
+[dev-dependencies]
+tempfile = "3"
