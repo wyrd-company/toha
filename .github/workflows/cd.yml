@@ -95,12 +95,20 @@ jobs:
           go-version: '1.26'
       - name: Install cargo-zigbuild
         if: matrix.system == 'linux'
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@183e4297cca2404691e9380e1307288dced5c82a # v2
         with:
           tool: cargo-zigbuild@0.23.4
       - name: Install Zig
         if: matrix.system == 'linux'
-        run: python3 -m pip install ziglang==0.14.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          zig_venv="$RUNNER_TEMP/toha-zig"
+          python3 -m venv "$zig_venv"
+          "$zig_venv/bin/python" -m pip install --require-hashes --only-binary=:all: \
+            -r scripts/release/zig-requirements.txt
+          "$zig_venv/bin/python" -c 'import pathlib, ziglang; print(pathlib.Path(ziglang.__file__).parent)' \
+            >> "$GITHUB_PATH"
       - name: Build locked release binary
         shell: bash
         run: |
@@ -111,6 +119,12 @@ jobs:
           else
             cargo build --release --locked --target '${{ matrix.target }}'
           fi
+      - name: Verify Linux ELF compatibility
+        if: matrix.system == 'linux'
+        shell: bash
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: python3 scripts/release/verify-linux-elf.py "target/$RELEASE_TARGET/release/toha"
       - name: Assemble archive and Linux packages
         shell: bash
         env:

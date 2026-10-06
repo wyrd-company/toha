@@ -15,6 +15,12 @@ Install `actionlint` for GitHub workflow validation, `ryl` for YAML validation,
 and `intentional` for release intents. Install `vhs` when editing the terminal
 demo.
 
+Linux release builds require `cargo-zigbuild` 0.23.4 and Zig 0.14.1. Install
+`cargo-zigbuild` with `cargo install --locked cargo-zigbuild --version 0.23.4`
+and put the Zig executable on `PATH`. The CD workflow installs Zig from
+[`scripts/release/zig-requirements.txt`](scripts/release/zig-requirements.txt)
+in a Python virtual environment with wheel hash verification.
+
 ```sh
 task build
 task test

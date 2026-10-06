@@ -336,3 +336,231 @@ fn manifest_contract_rejects_artifacts_from_another_run() {
         );
     }
 }
+
+const ELF_GATE: &str = include_str!("../scripts/release/verify-linux-elf.py");
+
+fn elf_gate(workflow: &Value, script: &str, inspection: &str) -> Result<(), String> {
+    let step = named_step(workflow, "build", "Verify Linux ELF compatibility");
+    if step["if"] != "matrix.system == 'linux'" {
+        return Err("ELF gate must run for both Linux targets".into());
+    }
+    for target in workflow["jobs"]["build"]["strategy"]["matrix"]["include"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|target| target["system"] == "linux")
+    {
+        let fixture = fixture();
+        let root = fixture.path();
+        fs::write(root.join("scripts/release/verify-linux-elf.py"), script).unwrap();
+        fs::write(root.join("inspection"), inspection).unwrap();
+        executable(
+            &root.join("bin/readelf"),
+            "#!/bin/bash\nset -euo pipefail\n[[ \"$*\" == \"--wide --version-info --dynamic target/$RELEASE_TARGET/release/toha\" ]]\ncat inspection\n",
+        );
+        let target = target["target"].as_str().unwrap();
+        let declared_target = step["env"]["RELEASE_TARGET"]
+            .as_str()
+            .unwrap()
+            .replace("${{ matrix.target }}", target);
+        let output = shell(
+            root,
+            step["run"].as_str().unwrap(),
+            &[("RELEASE_TARGET", &declared_target)],
+        )?;
+        if !output.contains(&format!("target/{target}/release/toha: GLIBC <= 2.17")) {
+            return Err(format!("ELF gate did not verify {target}"));
+        }
+    }
+    Ok(())
+}
+
+const GOOD_ELF: &str = "  (NEEDED) Shared library: [libc.so.6]\n  (NEEDED) Shared library: [libm.so.6]\n  Name: GLIBC_2.2.5\n  Name: GLIBC_2.17\n";
+
+#[test]
+fn elf_gate_checks_both_linux_targets_and_rejects_host_dependencies() {
+    let workflow = workflow();
+    elf_gate(&workflow, ELF_GATE, GOOD_ELF).unwrap();
+    let error = elf_gate(
+        &workflow,
+        ELF_GATE,
+        &GOOD_ELF.replace("GLIBC_2.17", "GLIBC_2.18"),
+    )
+    .unwrap_err();
+    assert!(error.contains("GLIBC floor exceeds 2.17"), "{error}");
+    for dependency in ["libcurl.so.4", "libz.so.1", "libssl.so.3", "libcrypto.so.3"] {
+        let bad = format!("{GOOD_ELF}  (NEEDED) Shared library: [{dependency}]\n");
+        let error = elf_gate(&workflow, ELF_GATE, &bad).unwrap_err();
+        assert!(
+            error.contains("Unexpected dynamic dependencies") && error.contains(dependency),
+            "{error}"
+        );
+    }
+    for (bad, assertion) in [
+        (
+            "  (NEEDED) Shared library: [libc.so.6]\n".to_owned(),
+            "No GLIBC version requirements found",
+        ),
+        (
+            GOOD_ELF.replace("GLIBC_2.17", "GLIBC_ABI_DT_RELR"),
+            "GLIBC floor exceeds 2.17",
+        ),
+        (
+            GOOD_ELF.replace("  (NEEDED) Shared library: [libc.so.6]\n", ""),
+            "Missing libc dynamic dependency",
+        ),
+    ] {
+        let error = elf_gate(&workflow, ELF_GATE, &bad).unwrap_err();
+        assert!(error.contains(assertion), "{error}");
+    }
+}
+
+#[test]
+fn elf_gate_mutations_expose_each_compatibility_guard() {
+    let workflow = workflow();
+    for (guard, bad) in [
+        (
+            "if not versions:",
+            "  (NEEDED) Shared library: [libc.so.6]\n".to_owned(),
+        ),
+        (
+            "if (\n        not re.fullmatch(r\"[0-9]+(?:\\.[0-9]+)+\", version)\n        or tuple(map(int, version.split(\".\"))) > (2, 17)\n    ):",
+            GOOD_ELF.replace("GLIBC_2.17", "GLIBC_2.18"),
+        ),
+        (
+            "if \"libc.so.6\" not in needed:",
+            GOOD_ELF.replace("  (NEEDED) Shared library: [libc.so.6]\n", ""),
+        ),
+        (
+            "if unexpected:",
+            format!("{GOOD_ELF}  (NEEDED) Shared library: [libcurl.so.4]\n"),
+        ),
+    ] {
+        assert!(ELF_GATE.contains(guard), "missing mutation site: {guard}");
+        let mutated = ELF_GATE.replace(guard, "if False:");
+        elf_gate(&workflow, &mutated, &bad).unwrap();
+    }
+    let mut narrowed = workflow.clone();
+    let step = narrowed["jobs"]["build"]["steps"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|step| step["name"] == "Verify Linux ELF compatibility")
+        .unwrap();
+    step["if"] = "matrix.target == 'x86_64-unknown-linux-gnu'".into();
+    assert!(
+        elf_gate(&narrowed, ELF_GATE, GOOD_ELF)
+            .unwrap_err()
+            .contains("both Linux targets")
+    );
+}
+
+fn zig_install_contract(workflow: &Value) -> Result<(), String> {
+    let action = named_step(workflow, "build", "Install cargo-zigbuild")["uses"]
+        .as_str()
+        .unwrap();
+    let revision = action.strip_prefix("taiki-e/install-action@").unwrap();
+    if revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("cargo-zigbuild installer must use an immutable action revision".into());
+    }
+    let fixture = fixture();
+    let root = fixture.path();
+    fs::write(
+        root.join("scripts/release/zig-requirements.txt"),
+        include_str!("../scripts/release/zig-requirements.txt"),
+    )
+    .unwrap();
+    executable(
+        &root.join("bin/python3"),
+        "#!/bin/bash\nset -euo pipefail\n[[ $1 == -m && $2 == venv ]]\nmkdir -p \"$3/bin\"\nprintf '%s\\n' \"$*\" > venv-invocation\ncp venv-python \"$3/bin/python\"\n",
+    );
+    executable(
+        &root.join("venv-python"),
+        "#!/bin/bash\nset -euo pipefail\nif [[ $1 == -m && $2 == pip && $3 == install ]]; then\n  printf '%s\\n' \"$0\" \"$*\" > pip-invocation\nelif [[ $1 == -c ]]; then\n  printf '%s/ziglang\\n' \"$PWD\"\nelse\n  exit 1\nfi\n",
+    );
+    fs::create_dir(root.join("ziglang")).unwrap();
+    executable(
+        &root.join("ziglang/zig"),
+        "#!/bin/bash\necho 'fixture Zig'\n",
+    );
+    let runner_temp = root.join("runner-temp");
+    let github_path = root.join("github-path");
+    shell(
+        root,
+        named_step(workflow, "build", "Install Zig")["run"]
+            .as_str()
+            .unwrap(),
+        &[
+            ("RUNNER_TEMP", runner_temp.to_str().unwrap()),
+            ("GITHUB_PATH", github_path.to_str().unwrap()),
+        ],
+    )?;
+    let invocation =
+        fs::read_to_string(root.join("pip-invocation")).map_err(|err| err.to_string())?;
+    if !invocation.contains("/runner-temp/toha-zig/bin/python\n") {
+        return Err("Zig must install in an isolated venv".into());
+    }
+    let arguments: Vec<_> = invocation
+        .lines()
+        .nth(1)
+        .unwrap()
+        .split_whitespace()
+        .collect();
+    if !arguments.contains(&"--require-hashes")
+        || !arguments
+            .windows(2)
+            .any(|pair| pair == ["-r", "scripts/release/zig-requirements.txt"])
+    {
+        return Err("Zig must install with hash-locked requirements".into());
+    }
+    let path = fs::read_to_string(github_path).unwrap();
+    if !Path::new(path.trim()).join("zig").is_file() {
+        return Err("Zig executable directory must reach later workflow steps".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn zig_install_uses_immutable_tools_and_an_isolated_hash_check() {
+    zig_install_contract(&workflow()).unwrap();
+}
+
+#[test]
+fn zig_install_mutations_expose_mutable_action_and_unchecked_wheel() {
+    let workflow = workflow();
+    for (name, mutation, expected) in [
+        (
+            "Install cargo-zigbuild",
+            "mutable-action",
+            "immutable action revision",
+        ),
+        ("Install Zig", "unchecked-wheel", "hash-locked requirements"),
+        ("Install Zig", "global-pip", "workflow shell failed"),
+        ("Install Zig", "missing-path", "Zig executable directory"),
+    ] {
+        let mut workflow = workflow.clone();
+        let step = workflow["jobs"]["build"]["steps"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|step| step["name"] == name)
+            .unwrap();
+        if mutation == "mutable-action" {
+            step["uses"] = "taiki-e/install-action@v2".into();
+        } else {
+            let script = step["run"].as_str().unwrap();
+            step["run"] = match mutation {
+                "unchecked-wheel" => script.replace("--require-hashes", ""),
+                "global-pip" => script.replace("\"$zig_venv/bin/python\" -m pip", "python3 -m pip"),
+                "missing-path" => {
+                    script.replace(">> \"$GITHUB_PATH\"", "> /dev/null; touch \"$GITHUB_PATH\"")
+                }
+                _ => unreachable!(),
+            }
+            .into();
+        }
+        let error = zig_install_contract(&workflow).unwrap_err();
+        assert!(error.contains(expected), "{mutation}: {error}");
+    }
+}
+
