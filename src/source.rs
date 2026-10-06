@@ -1,6 +1,9 @@
 //! Template addresses and immutable Git fetches.
+use base64::Engine;
+use gix::bstr::ByteSlice;
 use indexmap::IndexMap;
 use std::{
+    io::Write,
     path::{Path, PathBuf},
     sync::atomic::AtomicBool,
 };
@@ -311,7 +314,58 @@ pub fn fetch(address: &Address, dest: &Path) -> Result<Fetched, SourceError> {
     } else {
         None
     };
-    let mut clone = gix::prepare_clone(repo.as_str(), dest).map_err(|e| git_error(e, repo))?;
+    let mut native_roots = None;
+    let mut clone = gix::prepare_clone(repo.as_str(), dest)
+        .map_err(|e| git_error(e, repo))?
+        .configure_connection(move |connection| {
+            // System curl backends already use platform trust. Bundled rustls
+            // needs a CA bundle when Git has not supplied one.
+            if !curl::Version::get()
+                .ssl_version()
+                .is_some_and(|backend| backend.starts_with("rustls"))
+            {
+                return Ok(());
+            }
+            let url = connection.transport_mut().to_url().into_owned();
+            let remote = connection.remote();
+            let Some(mut options) = remote
+                .repo()
+                .transport_options(url.as_bstr(), remote.name().map(gix::remote::Name::as_bstr))?
+            else {
+                return Ok(());
+            };
+            if let Some(http) = options
+                .downcast_mut::<gix::protocol::transport::client::blocking_io::http::Options>()
+                && http.ssl_ca_info.is_none()
+                && http.ssl_verify
+            {
+                if native_roots.is_none() {
+                    let loaded = rustls_native_certs::load_native_certs();
+                    if loaded.certs.is_empty() {
+                        // Plain HTTP does not require CA roots. With no bundle,
+                        // curl still verifies and rejects an untrusted TLS peer.
+                        connection.set_transport_options(options);
+                        return Ok(());
+                    }
+                    let mut bundle = tempfile::NamedTempFile::new()?;
+                    for cert in loaded.certs {
+                        writeln!(bundle, "-----BEGIN CERTIFICATE-----")?;
+                        let encoded =
+                            base64::engine::general_purpose::STANDARD.encode(cert.as_ref());
+                        for line in encoded.as_bytes().chunks(64) {
+                            bundle.write_all(line)?;
+                            bundle.write_all(b"\n")?;
+                        }
+                        writeln!(bundle, "-----END CERTIFICATE-----")?;
+                    }
+                    bundle.flush()?;
+                    native_roots = Some(bundle);
+                }
+                http.ssl_ca_info = Some(native_roots.as_ref().unwrap().path().to_owned());
+            }
+            connection.set_transport_options(options);
+            Ok(())
+        });
     if let Some(reference) = reference {
         clone = if kind == RefKind::Commit {
             clone

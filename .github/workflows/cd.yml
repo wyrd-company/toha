@@ -93,20 +93,38 @@ jobs:
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: '1.26'
-      - name: Install cross
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        uses: taiki-e/install-action@v2
+      - name: Install cargo-zigbuild
+        if: matrix.system == 'linux'
+        uses: taiki-e/install-action@183e4297cca2404691e9380e1307288dced5c82a # v2
         with:
-          tool: cross@0.2.5
+          tool: cargo-zigbuild@0.23.4
+      - name: Install Zig
+        if: matrix.system == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          zig_venv="$RUNNER_TEMP/toha-zig"
+          python3 -m venv "$zig_venv"
+          "$zig_venv/bin/python" -m pip install --require-hashes --only-binary=:all: \
+            -r scripts/release/zig-requirements.txt
+          "$zig_venv/bin/python" -c 'import pathlib, ziglang; print(pathlib.Path(ziglang.__file__).parent)' \
+            >> "$GITHUB_PATH"
       - name: Build locked release binary
         shell: bash
         run: |
           set -euo pipefail
-          if [[ '${{ matrix.target }}' == aarch64-unknown-linux-gnu ]]; then
-            cross build --release --locked --target '${{ matrix.target }}'
+          if [[ '${{ matrix.system }}' == linux ]]; then
+            LIBCURL_NO_PKG_CONFIG=1 LIBZ_SYS_STATIC=1 \
+              cargo zigbuild --release --locked --target '${{ matrix.target }}.2.17'
           else
             cargo build --release --locked --target '${{ matrix.target }}'
           fi
+      - name: Verify Linux ELF compatibility
+        if: matrix.system == 'linux'
+        shell: bash
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: python3 scripts/release/verify-linux-elf.py "target/$RELEASE_TARGET/release/toha"
       - name: Assemble archive and Linux packages
         shell: bash
         env:
@@ -143,6 +161,18 @@ jobs:
                 --target "dist/toha_${version}_linux_${RELEASE_ARCH}.$format"
             done
           fi
+      - name: Verify archived Linux binary on older distributions
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -nE 's/^version = "([^"]+)"/\1/p' Cargo.toml | head -1)"
+          mkdir compatibility
+          tar -xzf "dist/toha_${version}_linux_x86_64.tar.gz" -C compatibility
+          for image in ubuntu:22.04 rockylinux:9; do
+            docker run --rm -v "$PWD/compatibility:/release:ro" "$image" \
+              /release/toha --version
+          done
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: toha-${{ matrix.system }}-${{ matrix.arch }}

@@ -1,3 +1,7 @@
+// ---
+// relationships:
+//   implements: architecture
+// ---
 //! A local smart-HTTP Git endpoint over TLS exercises the real HTTPS transport.
 #[allow(dead_code)]
 mod support;
@@ -38,12 +42,24 @@ fn git(cwd: &Path, args: &[&str]) {
     checked(cmd);
 }
 fn serve(mut stream: StreamOwned<ServerConnection, std::net::TcpStream>, root: &Path) {
+    if serve_http(&mut stream, root) {
+        // rustls rejects TCP EOF without the TLS close_notify alert, even after a
+        // complete HTTP response. OpenSSL can accept that truncated shutdown.
+        stream.conn.send_close_notify();
+        stream.flush().unwrap();
+    }
+}
+
+fn serve_http(stream: &mut (impl Read + Write), root: &Path) -> bool {
     let mut request = Vec::new();
     let header_end = loop {
         let mut chunk = [0; 8192];
-        let size = stream.read(&mut chunk).unwrap();
+        let size = match stream.read(&mut chunk) {
+            Ok(size) => size,
+            Err(_) => return false, // An untrusted TLS client closes before HTTP.
+        };
         if size == 0 {
-            return;
+            return false;
         }
         request.extend_from_slice(&chunk[..size]);
         if let Some(pos) = request.windows(4).position(|v| v == b"\r\n\r\n") {
@@ -141,13 +157,106 @@ fn serve(mut stream: StreamOwned<ServerConnection, std::net::TcpStream>, root: &
     stream.write_all(response.as_bytes()).unwrap();
     stream.write_all(body).unwrap();
     stream.flush().unwrap();
+    true
 }
-// The local TLS endpoint depends on the host certificate verifier. Hosted
-// runners close the connection during TLS setup before any HTTP request.
-// Run explicitly with `task test:network` when the local verifier trusts it.
 #[test]
-#[ignore = "local TLS trust differs across hosted runners; run task test:network"]
 fn fetches_https_git_repository() {
+    run_https_fixture(Trust::Explicit);
+}
+
+#[test]
+fn fetches_https_git_repository_with_platform_trust() {
+    if !bundled_rustls() {
+        return; // System curl already supplies its platform verifier.
+    }
+    run_https_fixture(Trust::Platform);
+}
+
+#[test]
+fn rejects_https_git_repository_with_untrusted_platform_certificate() {
+    if !bundled_rustls() {
+        return;
+    }
+    run_https_fixture(Trust::Untrusted);
+}
+
+#[test]
+fn explicit_git_ca_overrides_platform_trust() {
+    run_https_fixture(Trust::GitConfig);
+}
+
+#[test]
+fn fetches_http_git_repository_without_ca_certificates() {
+    run_https_fixture(Trust::Http);
+}
+
+#[test]
+fn rejects_https_git_repository_without_ca_certificates() {
+    run_https_fixture(Trust::NoRoots);
+}
+
+#[test]
+fn preserves_explicit_git_ssl_verification_setting() {
+    run_https_fixture(Trust::VerificationDisabled);
+}
+
+fn bundled_rustls() -> bool {
+    curl::Version::get()
+        .ssl_version()
+        .is_some_and(|backend| backend.starts_with("rustls"))
+}
+
+#[derive(Clone, Copy)]
+enum Trust {
+    Explicit,
+    Platform,
+    Untrusted,
+    GitConfig,
+    Http,
+    NoRoots,
+    VerificationDisabled,
+}
+
+fn configure_trust(command: &mut Command, root: &Path, trust: Trust) {
+    command
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", root.join("fixture.gitconfig"))
+        .env_remove("GIT_CONFIG_COUNT")
+        .env_remove("GIT_SSL_NO_VERIFY")
+        .env_remove("GIT_SSL_CAINFO")
+        .env_remove("CURL_CA_BUNDLE")
+        .env("SSL_CERT_DIR", root.join("empty-certs"))
+        .env("NO_PROXY", "localhost,127.0.0.1")
+        .env("no_proxy", "localhost,127.0.0.1");
+    let cert = root.join("cert.pem");
+    let untrusted = root.join("untrusted.pem");
+    match trust {
+        Trust::Explicit => {
+            command
+                .env("GIT_SSL_CAINFO", cert)
+                .env("SSL_CERT_FILE", untrusted);
+        }
+        Trust::Platform => {
+            command.env("SSL_CERT_FILE", cert);
+        }
+        Trust::Untrusted => {
+            command.env("SSL_CERT_FILE", untrusted);
+        }
+        Trust::GitConfig => {
+            command.env("SSL_CERT_FILE", untrusted);
+        }
+        Trust::Http | Trust::NoRoots => {
+            command.env("SSL_CERT_FILE", root.join("empty.pem"));
+        }
+        Trust::VerificationDisabled => {
+            command
+                .env("SSL_CERT_FILE", root.join("empty.pem"))
+                .env("GIT_SSL_NO_VERIFY", "1");
+        }
+    }
+}
+
+fn run_https_fixture(trust: Trust) {
     let root = TempDir::new().unwrap();
     let source = root.path().join("source");
     fs::create_dir(&source).unwrap();
@@ -182,8 +291,38 @@ fn fetches_https_git_repository() {
         "/CN=localhost",
         "-addext",
         "subjectAltName=DNS:localhost",
+        "-addext",
+        "basicConstraints=critical,CA:FALSE",
     ]);
     checked(openssl);
+    let mut unrelated = Command::new("openssl");
+    unrelated.args([
+        "req",
+        "-x509",
+        "-newkey",
+        "rsa:2048",
+        "-nodes",
+        "-days",
+        "1",
+        "-subj",
+        "/CN=unrelated",
+        "-keyout",
+        root.path().join("untrusted.key").to_str().unwrap(),
+        "-out",
+        root.path().join("untrusted.pem").to_str().unwrap(),
+    ]);
+    checked(unrelated);
+    fs::create_dir(root.path().join("empty-certs")).unwrap();
+    fs::write(root.path().join("empty.pem"), "").unwrap();
+    let git_config = if matches!(trust, Trust::GitConfig) {
+        format!(
+            "[http]\nsslCAInfo = {}\n",
+            cert.to_string_lossy().replace('\\', "/")
+        )
+    } else {
+        String::new()
+    };
+    fs::write(root.path().join("fixture.gitconfig"), git_config).unwrap();
     let mut convert = Command::new("openssl");
     convert.args(["x509", "-in", cert.to_str().unwrap(), "-outform", "DER"]);
     let cert_der = checked(convert);
@@ -198,6 +337,23 @@ fn fetches_https_git_repository() {
         "DER",
     ]);
     let key_der = checked(convert);
+    // OpenSSL accepts the old CA-as-server fixture, but rustls rejects it with
+    // CaUsedAsEndEntity. Validate the certificate with the stricter verifier.
+    let mut roots = rustls::RootCertStore::empty();
+    let certificate = CertificateDer::from(cert_der.clone());
+    roots.add(certificate.clone()).unwrap();
+    let verifier = rustls::client::WebPkiServerVerifier::builder(Arc::new(roots))
+        .build()
+        .unwrap();
+    rustls::client::danger::ServerCertVerifier::verify_server_cert(
+        &*verifier,
+        &certificate,
+        &[],
+        &rustls::pki_types::ServerName::try_from("localhost").unwrap(),
+        &[],
+        rustls::pki_types::UnixTime::now(),
+    )
+    .expect("the fixture certificate must be valid for rustls as well as OpenSSL");
     let config = ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(
@@ -215,8 +371,15 @@ fn fetches_https_git_repository() {
         while !flag.load(Ordering::Relaxed) {
             match listener.accept() {
                 Ok((socket, _)) => {
-                    let conn = ServerConnection::new(Arc::new(config.clone())).unwrap();
-                    serve(StreamOwned::new(conn, socket), &root_path);
+                    // Accepted sockets inherit nonblocking mode on some platforms.
+                    socket.set_nonblocking(false).unwrap();
+                    if matches!(trust, Trust::Http) {
+                        let mut socket = socket;
+                        serve_http(&mut socket, &root_path);
+                    } else {
+                        let conn = ServerConnection::new(Arc::new(config.clone())).unwrap();
+                        serve(StreamOwned::new(conn, socket), &root_path);
+                    }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     thread::sleep(std::time::Duration::from_millis(10))
@@ -225,55 +388,79 @@ fn fetches_https_git_repository() {
             }
         }
     });
-    // The CA is provided only to this test process; no real user Git config is used.
-    let address = Address::Git {
-        repo: format!("https://localhost:{port}/remote.git"),
-        reference: None,
-        path: None,
+    // Run the crate API in a child so all transport configuration is scoped to
+    // that process, with the same isolation as the command drivers.
+    let mut worker = Command::new(std::env::current_exe().unwrap());
+    support::isolate(&mut worker, root.path());
+    configure_trust(&mut worker, root.path(), trust);
+    let scheme = if matches!(trust, Trust::Http) {
+        "http"
+    } else {
+        "https"
     };
-    // gix reads its own Git configuration. A local environment override supplies the CA.
-    unsafe {
-        for (key, path) in [
-            ("HOME", root.path().join("home")),
-            ("USERPROFILE", root.path().join("home")),
-            ("APPDATA", root.path().join("data")),
-            ("LOCALAPPDATA", root.path().to_path_buf()),
-            ("PROGRAMDATA", root.path().join("system")),
-            ("XDG_CONFIG_HOME", root.path().join("config")),
-            ("XDG_DATA_HOME", root.path().join("data")),
-            ("XDG_CACHE_HOME", root.path().join("cache")),
-            ("XDG_STATE_HOME", root.path().to_path_buf()),
-            (
-                "TOHA_USER_CONFIG",
-                root.path().join("config/toha/config.yml"),
-            ),
-            ("TOHA_CONFIG", root.path().join("config/local.yml")),
-        ] {
-            std::env::set_var(key, path);
-        }
-        std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
-        std::env::set_var("GIT_SSL_CAINFO", &cert);
-        std::env::set_var("CURL_CA_BUNDLE", &cert);
-    }
-    let fetched = fetch(&address, &root.path().join("fetched"));
-    let token = "sample-secret";
-    let url = format!("https://user:{token}@localhost:{port}/remote.git");
-    let add = support::isolated_command(root.path())
-        .args(["templates", "add", &url])
-        .current_dir(root.path())
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_SSL_CAINFO", &cert)
-        .env("CURL_CA_BUNDLE", &cert)
+    let fetched = worker
+        .args(["--ignored", "--exact", "https_fetch_worker", "--nocapture"])
+        .env("TOHA_HTTPS_FIXTURE_ROOT", root.path())
+        .env(
+            "TOHA_HTTPS_EXPECT_SUCCESS",
+            if matches!(trust, Trust::Untrusted | Trust::NoRoots) {
+                "false"
+            } else {
+                "true"
+            },
+        )
+        .env(
+            "TOHA_HTTPS_FIXTURE_URL",
+            format!("{scheme}://localhost:{port}/remote.git"),
+        )
         .output()
         .unwrap();
+    let token = "sample-secret";
+    let url = if matches!(trust, Trust::Http) {
+        format!("http://localhost:{port}/remote.git")
+    } else {
+        format!("https://user:{token}@localhost:{port}/remote.git")
+    };
+    let mut command = support::isolated_command(root.path());
+    configure_trust(&mut command, root.path(), trust);
+    let add = command
+        .args(["templates", "add", &url])
+        .current_dir(root.path())
+        .output()
+        .unwrap();
+
+    let mut command = support::isolated_command(root.path());
+    configure_trust(&mut command, root.path(), trust);
+    let failed = command
+        .args(["templates", "add", &format!("{url}@absent")])
+        .current_dir(root.path())
+        .output()
+        .unwrap();
+    stop.store(true, Ordering::Relaxed);
+    server.join().unwrap();
+    assert!(
+        fetched.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&fetched.stdout),
+        String::from_utf8_lossy(&fetched.stderr)
+    );
+    if matches!(trust, Trust::Untrusted | Trust::NoRoots) {
+        assert!(
+            !add.status.success(),
+            "an untrusted server certificate must fail"
+        );
+        assert!(!root.path().join("fetched/template.yml").exists());
+        return;
+    }
     assert!(
         add.status.success(),
         "{}",
         String::from_utf8_lossy(&add.stderr)
     );
-    let registry = fs::read_to_string(root.path().join("data/toha/templates.yml")).unwrap();
+    let registry =
+        fs::read_to_string(support::user_data_dir(root.path()).join("templates.yml")).unwrap();
     assert!(!registry.contains(token));
-    let installs = fs::read_dir(root.path().join("data/toha/repos")).unwrap();
+    let installs = fs::read_dir(support::user_data_dir(root.path()).join("repos")).unwrap();
     for install in installs {
         assert!(
             !install
@@ -283,40 +470,30 @@ fn fetches_https_git_repository() {
                 .contains(token)
         );
     }
-    let failed = support::isolated_command(root.path())
-        .args(["templates", "add", &format!("{url}@absent")])
-        .current_dir(root.path())
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_SSL_CAINFO", &cert)
-        .env("CURL_CA_BUNDLE", &cert)
-        .output()
-        .unwrap();
     assert!(!failed.status.success());
     assert!(!String::from_utf8_lossy(&failed.stderr).contains(token));
-    unsafe {
-        for key in [
-            "HOME",
-            "USERPROFILE",
-            "APPDATA",
-            "LOCALAPPDATA",
-            "PROGRAMDATA",
-            "XDG_CONFIG_HOME",
-            "XDG_DATA_HOME",
-            "XDG_CACHE_HOME",
-            "XDG_STATE_HOME",
-            "TOHA_USER_CONFIG",
-            "TOHA_CONFIG",
-            "GIT_CONFIG_NOSYSTEM",
-            "GIT_SSL_CAINFO",
-            "CURL_CA_BUNDLE",
-        ] {
-            std::env::remove_var(key);
-        }
+    assert!(root.path().join("fetched/template.yml").is_file());
+}
+
+#[test]
+#[ignore = "subprocess helper for fetches_https_git_repository"]
+fn https_fetch_worker() {
+    let Some(root) = std::env::var_os("TOHA_HTTPS_FIXTURE_ROOT") else {
+        return;
+    };
+    let root = std::path::PathBuf::from(root);
+    let address = Address::Git {
+        repo: std::env::var("TOHA_HTTPS_FIXTURE_URL").unwrap(),
+        reference: None,
+        path: None,
+    };
+    let result = fetch(&address, &root.join("fetched"));
+    if std::env::var("TOHA_HTTPS_EXPECT_SUCCESS").as_deref() == Ok("false") {
+        assert!(result.is_err(), "an untrusted server certificate must fail");
+        return;
     }
-    stop.store(true, Ordering::Relaxed);
-    server.join().unwrap();
-    let fetched = fetched.unwrap();
+    let fetched = result.unwrap();
     assert_eq!(fetched.reference_kind, RefKind::DefaultBranch);
     assert_eq!(fetched.commit.len(), 40);
-    assert!(root.path().join("fetched/template.yml").is_file());
+    assert!(root.join("fetched/template.yml").is_file());
 }

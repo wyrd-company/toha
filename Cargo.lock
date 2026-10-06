@@ -3915,7 +3915,9 @@ name = "toha"
 version = "0.2.0"
 dependencies = [
  "assert_cmd",
+ "base64",
  "clap",
+ "curl",
  "expectrl",
  "getrandom 0.3.4",
  "gix 0.87.1",
@@ -3932,6 +3934,7 @@ dependencies = [
  "regex",
  "rustix",
  "rustls",
+ "rustls-native-certs",
  "serde",
  "serde_json",
  "serde_norway",
