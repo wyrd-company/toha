@@ -48,6 +48,9 @@ tempfile = "3"
 gix = { version = "0.87.1", default-features = false, features = ["blocking-network-client", "blocking-http-transport-curl-rustls", "worktree-mutation", "revision", "sha1", "status", "merge"] }
 include_dir = { version = "0.7.4", optional = true }
 rustix = { version = "1", features = ["process", "system"] }
+curl = { version = "0.4.50", default-features = false }
+rustls-native-certs = "0.8.4"
+base64 = "0.22"
 
 [build-dependencies]
 tagver = "0.1.4"

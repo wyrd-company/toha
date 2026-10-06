@@ -45,7 +45,10 @@ fn serve(mut stream: StreamOwned<ServerConnection, std::net::TcpStream>, root: &
     let mut request = Vec::new();
     let header_end = loop {
         let mut chunk = [0; 8192];
-        let size = stream.read(&mut chunk).unwrap();
+        let size = match stream.read(&mut chunk) {
+            Ok(size) => size,
+            Err(_) => return, // An untrusted TLS client closes before HTTP.
+        };
         if size == 0 {
             return;
         }
@@ -151,6 +154,76 @@ fn serve(mut stream: StreamOwned<ServerConnection, std::net::TcpStream>, root: &
 }
 #[test]
 fn fetches_https_git_repository() {
+    run_https_fixture(Trust::Explicit);
+}
+
+#[test]
+fn fetches_https_git_repository_with_platform_trust() {
+    if !bundled_rustls() {
+        return; // System curl already supplies its platform verifier.
+    }
+    run_https_fixture(Trust::Platform);
+}
+
+#[test]
+fn rejects_https_git_repository_with_untrusted_platform_certificate() {
+    if !bundled_rustls() {
+        return;
+    }
+    run_https_fixture(Trust::Untrusted);
+}
+
+#[test]
+fn explicit_git_ca_overrides_platform_trust() {
+    run_https_fixture(Trust::GitConfig);
+}
+
+fn bundled_rustls() -> bool {
+    curl::Version::get()
+        .ssl_version()
+        .is_some_and(|backend| backend.starts_with("rustls"))
+}
+
+#[derive(Clone, Copy)]
+enum Trust {
+    Explicit,
+    Platform,
+    Untrusted,
+    GitConfig,
+}
+
+fn configure_trust(command: &mut Command, root: &Path, trust: Trust) {
+    command
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", root.join("fixture.gitconfig"))
+        .env_remove("GIT_CONFIG_COUNT")
+        .env_remove("GIT_SSL_NO_VERIFY")
+        .env_remove("GIT_SSL_CAINFO")
+        .env_remove("CURL_CA_BUNDLE")
+        .env("SSL_CERT_DIR", root.join("empty-certs"))
+        .env("NO_PROXY", "localhost,127.0.0.1")
+        .env("no_proxy", "localhost,127.0.0.1");
+    let cert = root.join("cert.pem");
+    let untrusted = root.join("untrusted.pem");
+    match trust {
+        Trust::Explicit => {
+            command
+                .env("GIT_SSL_CAINFO", cert)
+                .env("SSL_CERT_FILE", untrusted);
+        }
+        Trust::Platform => {
+            command.env("SSL_CERT_FILE", cert);
+        }
+        Trust::Untrusted => {
+            command.env("SSL_CERT_FILE", untrusted);
+        }
+        Trust::GitConfig => {
+            command.env("SSL_CERT_FILE", untrusted);
+        }
+    }
+}
+
+fn run_https_fixture(trust: Trust) {
     let root = TempDir::new().unwrap();
     let source = root.path().join("source");
     fs::create_dir(&source).unwrap();
@@ -189,6 +262,33 @@ fn fetches_https_git_repository() {
         "basicConstraints=critical,CA:FALSE",
     ]);
     checked(openssl);
+    let mut unrelated = Command::new("openssl");
+    unrelated.args([
+        "req",
+        "-x509",
+        "-newkey",
+        "rsa:2048",
+        "-nodes",
+        "-days",
+        "1",
+        "-subj",
+        "/CN=unrelated",
+        "-keyout",
+        root.path().join("untrusted.key").to_str().unwrap(),
+        "-out",
+        root.path().join("untrusted.pem").to_str().unwrap(),
+    ]);
+    checked(unrelated);
+    fs::create_dir(root.path().join("empty-certs")).unwrap();
+    let git_config = if matches!(trust, Trust::GitConfig) {
+        format!(
+            "[http]\nsslCAInfo = {}\n",
+            cert.to_string_lossy().replace('\\', "/")
+        )
+    } else {
+        String::new()
+    };
+    fs::write(root.path().join("fixture.gitconfig"), git_config).unwrap();
     let mut convert = Command::new("openssl");
     convert.args(["x509", "-in", cert.to_str().unwrap(), "-outform", "DER"]);
     let cert_der = checked(convert);
@@ -253,44 +353,39 @@ fn fetches_https_git_repository() {
     // that process, with the same isolation as the command drivers.
     let mut worker = Command::new(std::env::current_exe().unwrap());
     support::isolate(&mut worker, root.path());
+    configure_trust(&mut worker, root.path(), trust);
     let fetched = worker
         .args(["--ignored", "--exact", "https_fetch_worker", "--nocapture"])
         .env("TOHA_HTTPS_FIXTURE_ROOT", root.path())
         .env(
+            "TOHA_HTTPS_EXPECT_SUCCESS",
+            if matches!(trust, Trust::Untrusted) {
+                "false"
+            } else {
+                "true"
+            },
+        )
+        .env(
             "TOHA_HTTPS_FIXTURE_URL",
             format!("https://localhost:{port}/remote.git"),
         )
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", root.path().join("empty.gitconfig"))
-        .env("GIT_SSL_CAINFO", &cert)
-        .env("CURL_CA_BUNDLE", &cert)
-        .env("NO_PROXY", "localhost,127.0.0.1")
-        .env("no_proxy", "localhost,127.0.0.1")
         .output()
         .unwrap();
     let token = "sample-secret";
     let url = format!("https://user:{token}@localhost:{port}/remote.git");
-    let add = support::isolated_command(root.path())
+    let mut command = support::isolated_command(root.path());
+    configure_trust(&mut command, root.path(), trust);
+    let add = command
         .args(["templates", "add", &url])
         .current_dir(root.path())
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", root.path().join("empty.gitconfig"))
-        .env("NO_PROXY", "localhost,127.0.0.1")
-        .env("no_proxy", "localhost,127.0.0.1")
-        .env("GIT_SSL_CAINFO", &cert)
-        .env("CURL_CA_BUNDLE", &cert)
         .output()
         .unwrap();
 
-    let failed = support::isolated_command(root.path())
+    let mut command = support::isolated_command(root.path());
+    configure_trust(&mut command, root.path(), trust);
+    let failed = command
         .args(["templates", "add", &format!("{url}@absent")])
         .current_dir(root.path())
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", root.path().join("empty.gitconfig"))
-        .env("NO_PROXY", "localhost,127.0.0.1")
-        .env("no_proxy", "localhost,127.0.0.1")
-        .env("GIT_SSL_CAINFO", &cert)
-        .env("CURL_CA_BUNDLE", &cert)
         .output()
         .unwrap();
     stop.store(true, Ordering::Relaxed);
@@ -301,6 +396,14 @@ fn fetches_https_git_repository() {
         String::from_utf8_lossy(&fetched.stdout),
         String::from_utf8_lossy(&fetched.stderr)
     );
+    if matches!(trust, Trust::Untrusted) {
+        assert!(
+            !add.status.success(),
+            "an untrusted server certificate must fail"
+        );
+        assert!(!root.path().join("fetched/template.yml").exists());
+        return;
+    }
     assert!(
         add.status.success(),
         "{}",
@@ -336,7 +439,12 @@ fn https_fetch_worker() {
         reference: None,
         path: None,
     };
-    let fetched = fetch(&address, &root.join("fetched")).unwrap();
+    let result = fetch(&address, &root.join("fetched"));
+    if std::env::var("TOHA_HTTPS_EXPECT_SUCCESS").as_deref() == Ok("false") {
+        assert!(result.is_err(), "an untrusted server certificate must fail");
+        return;
+    }
+    let fetched = result.unwrap();
     assert_eq!(fetched.reference_kind, RefKind::DefaultBranch);
     assert_eq!(fetched.commit.len(), 40);
     assert!(root.join("fetched/template.yml").is_file());
