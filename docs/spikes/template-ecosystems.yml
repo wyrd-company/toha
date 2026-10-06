@@ -1,0 +1,316 @@
+$schema: https://refinery.systems/ontology/spike
+objective:
+  - |
+    Find which template ecosystems other than Toha have templates that Toha
+    callers could use, and which of them are worth any effort.
+  - |
+    Find whether Toha can convert a template from such an ecosystem into a Toha
+    template that produces the same files (conversion).
+  - |
+    Find whether Toha can read such a template as it is, each time it is used
+    (direct consumption).
+  - |
+    For each approach, find what is preserved, what needs translation, and what
+    Toha cannot support faithfully: questions and answers, defaults, conditions,
+    file and path rendering, hooks, support files, and source resolution.
+background:
+  current-design: |
+    A Toha template is a folder with `template.yml` and a source subdirectory.
+    Toha renders file bodies, path segments, and many `template.yml` fields
+    with minijinja. The environment registers Toha's case filters, `toyaml`,
+    `tojson`, `now()`, and `dateformat`, and uses the default (lenient)
+    undefined behaviour. Python-style methods on strings and maps are not
+    registered.
+
+    One pure interview engine serves every driver. Questions are `text`,
+    `multiline`, `confirm`, `select`, and `multiselect`, with `when`,
+    `validate` (`min`, `max`, `regex`), `format`, computed values, groups, and
+    flow nodes. A skipped question takes its `default`. A file or directory
+    whose rendered name is empty is not generated.
+
+    Hooks are argument vectors run without a shell, after all files are
+    written, and only under trust. Each apply records a snapshot of the
+    rendered files and the raw answers. An update merges three-way from the
+    base snapshot.
+  problems:
+    - |
+      Authors and teams already own templates for other tools. Rewriting each
+      one by hand is a cost that keeps them from adopting Toha.
+    - |
+      The other tools have semantics that Toha does not have, such as Python
+      plug-ins, hooks that run before files are written, and secret answers.
+      It is not known how much real templates depend on them.
+ideas:
+  - |
+    Conversion: a converter reads a foreign template once and writes a Toha
+    template plus a report of what it could not carry. The author owns the
+    result.
+  - |
+    Direct consumption: a second template loader in Toha parses the foreign
+    format into the same domain types at load time, each time the template is
+    used.
+  - |
+    For Cookiecutter, keep file bodies unchanged: bind a computed object named
+    `cookiecutter` after the last question, so that `{{ cookiecutter.x }}`
+    still resolves in bodies, paths, and hook sources.
+environment:
+  location: |
+    Worktree `/workspaces/worktrees/toha/task1121-template-ecosystems`, branch
+    `1121/template-ecosystems`. Throwaway code (minijinja probe, corpus runner,
+    prototype converters, and the `pycompat` engine patch) is kept outside the
+    repository in `/workspaces/kanban/artifacts/toha/1121/`.
+  tools:
+    - Toha 0.2.0 built from `main`, and a throwaway copy of it with minijinja-contrib `pycompat` enabled.
+    - |
+      A Rust probe that uses minijinja 2.24 with the same features and
+      environment settings as `src/jinja.rs`, with and without `pycompat`.
+    - |
+      Cookiecutter 2.7.1 and Copier 9.18.2 through `uv run`, with
+      `copier-templates-extensions`, `jinja2-time`, and
+      `jinja2-ansible-filters`, to make the reference output of each template.
+    - Python scripts that feed the probe, compare its output byte for byte with the reference output, and convert templates.
+    - GitHub API and code search through `gh`, for stars, releases, and corpus counts.
+  resources:
+    - https://github.com/cookiecutter/cookiecutter (local clone at `/workspaces/references/toha/cookiecutter`)
+    - https://github.com/copier-org/copier (local clone at `/workspaces/references/toha/copier`)
+    - https://github.com/cruft/cruft (local clone at `/workspaces/references/toha/cruft`)
+    - https://github.com/Keats/kickstart and https://github.com/hay-kot/scaffold (local clones)
+    - https://docs.rs/minijinja-contrib/latest/minijinja_contrib/pycompat/
+    - |
+      Sample templates: cookiecutter/cookiecutter-django,
+      audreyfeldroy/cookiecutter-pypackage,
+      drivendataorg/cookiecutter-data-science, ionelmc/cookiecutter-pylibrary,
+      simonw/click-app, pawamoy/copier-uv, superlinear-ai/substrate,
+      NLeSC/python-template, Tecnativa/doodba-copier-template. Thirteen Copier
+      and eight Cookiecutter templates were also surveyed for feature use.
+  credentials:
+    - None. Only public repositories were read.
+findings:
+  ecosystem-shortlist:
+    rating: GREEN
+    notes: |
+      **Observed.** Only Cookiecutter and Copier are candidates. Both are
+      declarative and use Jinja, like Toha.
+
+      | Ecosystem | Engine | Corpus on GitHub | Verdict |
+      |---|---|---|---|
+      | Cookiecutter | Jinja2 | ~10,400 `cookiecutter.json`; 25.1k stars | candidate |
+      | Copier | Jinja2 | ~1,800 `copier.yml`; 3.6k stars | candidate |
+      | Backstage templates | Nunjucks | ~7,000 entities | payloads are mostly Cookiecutter-compatible; steps do not convert |
+      | kickstart, moon | Tera | under 100 public | plausible, too small |
+      | cargo-generate | Liquid and Rhai | ~950 | needs syntax translation; Rhai hooks do not convert |
+      | scaffold, boilerplate, boilr, giter8, ffizer, `dotnet new` | Go template, StringTemplate, Handlebars, literal replacement | small | partial |
+      | Yeoman, Nx, Angular schematics, Plop, Hygen, projen, PyScaffold | code | large | not possible: a template is a program |
+      | degit, GitHub template repositories | none | n/a | no questions to convert |
+
+      Corpus counts come from GitHub code search, which is partial and noisy.
+  jinja-body-compatibility:
+    verdict: 92% of render surfaces render; 238 of 247 comparable files are byte-identical
+    measurements:
+      templates: 9
+      render-surfaces: 532
+      render-ok-stock: 483
+      render-ok-pycompat: 489
+      files-compared: 247
+      files-byte-identical: 238
+      differences-from-hooks: 8
+      differences-from-python-extension: 1
+    notes: |
+      **Observed.** The probe rendered every file body, templated path segment,
+      and hook source of 9 templates, with each template's own render context.
+
+      | Template | Kind | Stock | `pycompat` |
+      |---|---|---|---|
+      | cookiecutter-pypackage | Cookiecutter | 34/36 | 34/36 |
+      | cookiecutter-django | Cookiecutter | 188/196 | 190/196 |
+      | cookiecutter-data-science | Cookiecutter (own CLI) | 33/34 | 33/34 |
+      | cookiecutter-pylibrary | Cookiecutter | 50/55 | 50/55 |
+      | click-app | Cookiecutter | 12/12 | 12/12 |
+      | copier-uv | Copier | 47/63 | 47/63 |
+      | substrate | Copier | 33/37 | 36/37 |
+      | NLeSC python-template | Copier | 56/66 | 57/66 |
+      | doodba | Copier | 30/33 | 30/33 |
+
+      Causes of failure:
+
+      - Cookiecutter's `{% now %}` tag: 9 surfaces in 4 templates. It converts
+        to `now() | dateformat(...)`.
+      - Filters that Toha does not have: `python_comment` (a template-local
+        extension, 13), `strftime` (8), `to_nice_yaml` (Ansible filters, 4
+        templates), `jsonify` (3), `wordwrap` (1).
+      - Python methods (`.lower()`, `.replace()`, `.split()`, `.rstrip()`,
+        `.count()`). `pycompat` supplies all of them except `str.rsplit` and
+        `dict.update`.
+      - Includes of files that the shallow clone did not contain (a vendored
+        submodule): 2.
+
+      All 9 byte differences have a known cause. 8 are files that the
+      cookiecutter-django post-generation hook changes (secrets, `uv add`,
+      pre-commit edits). 1 (copier-uv) uses a global from a Python extension
+      that was not loaded. minijinja rendered it as an empty string and gave no
+      error.
+
+      The probe checks the engine only. It does not check Toha's load-time
+      rules, such as the unknown-identifier check and literal-only includes.
+  python-methods-required:
+    rating: RED
+    notes: |
+      **Observed.** Stock Toha cannot apply any of the three converted
+      templates. Each fails at load or interview time on a Python method in a
+      default: `'-'.join(app_name.lower().split())` (click-app),
+      `project_url.rstrip('/')` (substrate), or an unknown filter (pylibrary).
+      With minijinja-contrib `pycompat` enabled, all three apply. This one
+      change is the precondition for either approach. Every Toha template would
+      gain these methods.
+  conversion-end-to-end:
+    rating: GREEN
+    notes: |
+      **Observed.** Two prototype converters, about 200 lines each, wrote a
+      `template.yml` and a conversion report. Toha with `pycompat` applied each
+      result through the scripted answers route.
+
+      | Template | Output against the original tool |
+      |---|---|
+      | click-app (Cookiecutter, 6 variables, no hooks) | identical tree |
+      | cookiecutter-pylibrary (45 variables, a Python post-generation hook, 2 Python extensions) | identical, except `.cookiecutterrc` (written by a custom extension) and the hook-made `.tox/`; 1 hand edit removed `wordwrap` |
+      | substrate (Copier, 15 questions, 5 validators, `when`, labelled choices, a conditional directory) | identical, except Copier's answers file |
+
+      The mappings that worked:
+
+      - The `cookiecutter` computed object keeps Cookiecutter file bodies,
+        paths, and hook sources unchanged. Defaults that refer to
+        `cookiecutter.x` are rewritten to `x`, because the object does not
+        exist yet at question time.
+      - Cookiecutter `__x` (rendered private variables) and Copier
+        `when: false` (hidden computed values) become questions with
+        `when: false` and a template default.
+      - Copier `when` becomes Toha `when`. Copier and Toha both skip a path
+        whose rendered name is empty.
+      - A Cookiecutter Python hook becomes a top-level hook
+        `run: [python3, -c, <hook source>]`. Toha renders each `run` argument,
+        so the Jinja inside the hook still renders.
+      - Copier files without the `.jinja` suffix become `static`. Files with
+        the suffix are renamed.
+      - Three of the five substrate validators become `required: true`, and two
+        become `validate.regex`. Their custom messages are lost.
+  snapshots-with-hooks:
+    verdict: confirmed working for a hook that deletes files
+    measurements:
+      planned-files: 46
+      deleted-by-hook: 8
+      written-by-hook-and-captured: 1
+    notes: |
+      **Observed.** For converted pylibrary, the snapshot recorded the state
+      after the hook ran. The 8 planned files that the hook deleted were not in
+      it. The file that the hook generated
+      (`.github/workflows/github-actions.yml`) was in it. `apply --from` with no
+      template change previewed no changes. After a template change and an
+      operator edit to the same file (`README.rst`), a trusted update kept
+      both. The hook-deleted files that were checked (`setup.py`,
+      `tbump.toml`) stayed deleted.
+
+      The preview before the first apply listed all 46 files, including the 8
+      that the hook then deleted.
+  project-directory-layout:
+    rating: YELLOW
+    notes: |
+      **Observed.** Cookiecutter writes a new project directory inside the
+      output directory. A Toha target is usually the project root. When the
+      converted template kept the project directory, the hook's `git init`
+      made a nested repository inside the Toha target. When the converter made
+      the project directory the source root, the problem did not occur.
+      With that layout, Toha does not reproduce the rendered name of the
+      project directory, which comes from an answer such as `repo_name`.
+  feature-mapping:
+    rating: YELLOW
+    notes: |
+      **Observed in source and in the sampled templates.**
+
+      | Feature | Cookiecutter | Copier | Toha |
+      |---|---|---|---|
+      | Text, boolean, choice questions | yes | yes | preserved |
+      | Defaults from earlier answers | yes | yes | preserved, with `pycompat` |
+      | Conditional questions | none | `when` | preserved |
+      | Hidden computed values | `__x` | `when: false` | preserved |
+      | Multiselect | override only | `multiselect` (3 of 13) | preserved |
+      | Integer and float answers | converted to strings | typed | translated with `format` |
+      | Structured answers | dict variables | `yaml`, `json` types (3 of 13) | lost: no structured question |
+      | Choice labels | `__prompts__` dict | dict `choices` (7 of 13) | lost: options are values only |
+      | Validators | in a `pre_gen_project` hook | Jinja `validator` with a message (9 of 13) | common shapes become `required` or `validate.regex`; messages and other logic are lost |
+      | Secret answers | none | `secret: true` (1 of 13, 7 questions) | lost, and unsafe: snapshots record raw answers |
+      | Conditional files | hooks delete files (5 of 8) | empty rendered name | Copier: preserved. Cookiecutter: the hook still deletes, after the plan is shown |
+      | Veto before files are written | `pre_gen_project` | none | lost: hooks run after files are written |
+      | Hook before the interview | `pre_prompt` | none | lost |
+      | Commands after generation | hook scripts (7 of 8 have hooks; 4 run git, uv, docker, tox, or gh) | `_tasks` (3 of 13) | translated to `python3 -c` or `sh -c`; trust is required; uses the host interpreter |
+      | Migrations between template versions | none | `_migrations` (2 of 13) | lost |
+      | Messages | none | `_message_before_copy` and `_message_after_copy` (4 of 13) | translated to `messages`; update-only messages are lost |
+      | Keep existing files | `--skip-if-file-exists` | `_skip_if_exists` (6 of 13) | not mapped; Toha updates merge operator edits three-way |
+      | Python Jinja extensions | `_extensions` (3 of 8) | `_jinja_extensions` (3 of 13) | lost: not portable outside Python |
+      | `import`, `from`, `extends` | rare | 5 of 13, in the larger templates | lost: Toha does not offer them |
+      | `include` | rare | common | preserved for literal targets only |
+      | Updates | cruft: re-render the old commit, then `git apply -3` | regenerate and merge three-way | a converted template uses Toha snapshots |
+      | Sources | `gh:`, git, zip, `--directory` | git, `gh:`, tags | Toha sources; not tested |
+  approach-comparison:
+    rating: YELLOW
+    notes: |
+      **Interpretation of the findings above.**
+
+      | Concern | Conversion | Direct consumption |
+      |---|---|---|
+      | One interview engine | The output is an ordinary Toha template | A second loader makes the same domain types |
+      | Plan before apply | Holds for Copier. Cookiecutter hook deletions make the plan list files that do not land | Same |
+      | Error attribution | Errors name the converted `template.yml` | Errors must name foreign fields, such as `copier.yml` `validator`; this is new work |
+      | Upstream template changes | Do not flow; the author converts again | Flow through Toha sources and updates |
+      | Residue (validators, hooks, extensions) | A person or an agent fixes it once, from the report | Must be resolved or refused at every load |
+      | Change in the other tool's format | Breaks only new conversions | Breaks users at apply time; Toha's contract follows Cookiecutter 2.x and Copier 9.x |
+      | Dependencies | minijinja-contrib (`pycompat`; same author as minijinja, Apache-2.0) | Same |
+      | Licensing | Toha reads formats only. A converted template is a derived work under the template's own license | Toha reads formats only |
+      | Trust | Converted hooks and tasks need Toha trust; Cookiecutter runs hooks without asking | Same |
+      | Effort | Small | Large: two loaders, error attribution, a compatibility policy, and fixtures for each format |
+  silent-empty-render:
+    rating: YELLOW
+    notes: |
+      **Observed at engine level; not tested in Toha.** A global from a Python
+      extension that was not loaded rendered as an empty string, with no error.
+      It is not known whether Toha's load-time identifier check rejects such a
+      reference in a converted template.
+conclusion: |
+  Only Cookiecutter and Copier are worth either approach. They are declarative,
+  they use Jinja, and they hold most of the public declarative templates.
+
+  **Conversion is viable.** Three real templates, converted by prototypes,
+  rendered the same trees through Toha as through their own tools. Toha's
+  snapshots and updates worked on a converted template whose hook deletes
+  files. The precondition is minijinja `pycompat` in Toha's environment.
+  Without it, all three templates fail. The residue is known and reportable:
+  validator messages, choice labels, structured answers, secret answers,
+  Python extensions, `import` and `extends`, and Cookiecutter hooks that delete
+  files after the plan is shown.
+
+  **Direct consumption is technically viable but not recommended.** It has the
+  same gaps as conversion. It also puts two external formats inside Toha's
+  contract and error attribution. Their changes would then break users at
+  apply time, not authors at conversion time.
+
+  These Toha contract changes need a separate decision:
+
+  1. Python-compatible string and map methods in every Jinja surface
+     (`pycompat`). This widens the template contract.
+  2. Optional extra filters: `wordwrap` (minijinja-contrib), and an alias of
+     `toyaml` for Ansible's `to_nice_yaml`.
+  3. Optional, for higher Copier fidelity: expression validators with
+     messages, labelled options, secret questions that snapshots do not
+     record, and structured answer types.
+  4. Not recommended: hooks before files are written, `import` and `extends`,
+     and Copier migrations. Each is a large contract change for a small share
+     of templates.
+
+  The sample is 9 templates for the engine probe and 3 end to end, chosen by
+  stars and feature coverage, not at random. Most answers were defaults, so
+  other answers would exercise other branches.
+next-steps:
+  - Decide whether to enable minijinja `pycompat` in Toha's Jinja environment; if yes, add it with fixtures that use Python string methods.
+  - Decide whether to build an author-facing converter. If yes, start with Copier, which writes a Toha template plus a conversion report.
+  - Add Cookiecutter conversion after Copier, including help for rewriting hooks that delete files as conditional paths.
+  - Test whether Toha's load-time identifier check rejects a reference to a global from a missing extension in a converted template.
+  - Keep direct consumption out of scope unless users ask to follow upstream Copier templates through Toha updates.
