@@ -96,7 +96,8 @@ acceptance. Each step names the tool that owns it; see
 6. Build the host Linux x86_64 package with the same steps the CD build job runs:
 
    ```sh
-   cargo build --release --locked --target x86_64-unknown-linux-gnu
+   LIBCURL_NO_PKG_CONFIG=1 LIBZ_SYS_STATIC=1 \
+     cargo zigbuild --release --locked --target x86_64-unknown-linux-gnu.2.17
    mkdir -p stage dist
    cp target/x86_64-unknown-linux-gnu/release/toha LICENSE README.md stage/
    tar -C stage -czf dist/toha_<version>_linux_x86_64.tar.gz .
