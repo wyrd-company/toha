@@ -9,11 +9,12 @@ mod support;
 
 use std::{
     fs,
-    net::{TcpListener, TcpStream},
+    io::{BufRead, Write},
+    net::TcpListener,
     path::Path,
     process::{Child, Command, Stdio},
+    sync::mpsc,
     thread,
-    time::Duration,
 };
 use tempfile::TempDir;
 use toha::source::{Address, RefKind, fetch};
@@ -28,11 +29,14 @@ fn checked(command: &mut Command) -> Vec<u8> {
     output.stdout
 }
 
-struct Server(Child);
+struct Server(Child, Option<thread::JoinHandle<()>>);
 impl Drop for Server {
     fn drop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
+        if let Some(log) = self.1.take() {
+            log.join().unwrap();
+        }
     }
 }
 
@@ -95,30 +99,33 @@ fn fetches_ssh_git_repository_with_key_authentication() {
     let log_path = root.join("sshd.log");
     let sshd = std::env::var_os("TOHA_TEST_SSHD").unwrap_or_else(|| "/usr/sbin/sshd".into());
     drop(listener);
-    let mut server = Server(
-        Command::new(sshd)
-            .args(["-D", "-e", "-f"])
-            .arg(&config)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(fs::File::create(&log_path).unwrap())
-            .spawn()
-            .unwrap(),
-    );
-    // Startup polling is confined to this test fixture, with no product timeout.
-    let mut ready = false;
-    for _ in 0..100 {
-        if server.0.try_wait().unwrap().is_some() {
-            break;
+    let mut child = Command::new(sshd)
+        .args(["-D", "-e", "-f"])
+        .arg(&config)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let mut log = fs::File::create(&log_path).unwrap();
+    let (ready, started) = mpsc::channel();
+    let drain = thread::spawn(move || {
+        let mut ready = Some(ready);
+        for line in std::io::BufReader::new(stderr).lines() {
+            let line = line.unwrap();
+            writeln!(log, "{line}").unwrap();
+            if line.starts_with("Server listening on ")
+                && let Some(ready) = ready.take()
+            {
+                let _ = ready.send(());
+            }
         }
-        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
-            ready = true;
-            break;
-        }
-        thread::sleep(Duration::from_millis(20));
-    }
+    });
+    let server = Server(child, Some(drain));
+    // The server reports readiness after bind; EOF reports a startup failure.
     assert!(
-        ready,
+        started.recv().is_ok(),
         "sshd did not start: {}",
         fs::read_to_string(&log_path).unwrap()
     );
@@ -167,6 +174,7 @@ fn fetches_ssh_git_repository_with_key_authentication() {
             );
         }
     }
+    drop(server);
     let log = fs::read_to_string(&log_path).unwrap();
     assert!(log.contains("Accepted publickey"), "{log}");
     assert!(log.contains("Failed publickey"), "{log}");
