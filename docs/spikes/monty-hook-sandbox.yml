@@ -1,0 +1,383 @@
+$schema: https://refinery.systems/ontology/spike
+title: Sandboxed hook scripts with Monty
+
+relationships:
+  # GAP-EDGE: the spike schema defines only `mitigates`, and no Toha risk
+  # artifact exists yet; `references` is the best fit for the designs these
+  # findings inform.
+  references:
+    - toha
+    - template-format
+    - hook-review-trust
+    - installed-trust
+
+objective:
+  - Can a hook written in Python and run inside Monty edit a file inside the
+    target directory when the target is the only mount?
+  - Can that hook read or write anything outside the target?
+  - Can that hook start a process by any route other than a host function
+    that Toha gates on trust?
+  - Is the Monty Python subset enough for file-editing hooks?
+  - Can a sandboxed hook run without a trust prompt?
+  - How does the authority of a Monty hook compare with the authority of a
+    process hook that the operator trusts?
+  - Can a hook use third-party Python packages?
+
+background:
+  current-design: >-
+    A hook is a program (`run`) or an in-template executable (`script`) that
+    Toha starts after it writes the planned files. It runs with the target
+    directory as its working directory and with the full authority of the
+    operator. Toha runs hooks only when the template is trusted: the operator
+    approves the executable surface (hook nodes and the bytes of executed
+    in-template files), or passes `--trust` for one run. Template files are
+    rendered into the target through the plan, which rejects any path that
+    enters `.git` and detects conflicts. The snapshot captures the planned
+    files and every file a hook changed under the target, and an update
+    carries hook-owned content forward. A real update runs trusted hooks in a
+    temporary checkout of HEAD; a dry run suppresses hooks.
+  problems:
+    - Every hook needs trust, even a hook that only edits generated text, so a
+      template that wants one small edit asks the operator to approve process
+      execution.
+    - Trust is all or nothing. A trusted hook can read the home directory and
+      credentials, use the network, and write anywhere the operator can.
+    - Monty (pydantic/monty) is a Python interpreter in Rust with no ambient
+      filesystem, environment, network, or process access. The host reaches the
+      sandbox only through mounts, an OS-call handler, and host functions.
+      Whether this is enough to drop the trust prompt is not known.
+    - Starlark (starlark-rust) and Rhai are alternatives. This spike measures
+      Monty only.
+
+ideas:
+  - >-
+    Run the hook in Monty in-process. Mount the target read-write at `/target`
+    and set the sandbox working directory to it, so relative paths behave as
+    they do for a process hook.
+  - >-
+    Expose one host function, `run(argv)`, that starts a process in the target
+    only when the template is trusted. Refuse it with an uncatchable
+    `PermissionError` otherwise.
+  - >-
+    Answer every OS call that no mount covers with Monty's no-handler error, so
+    environment variables, entropy, and paths outside the mount fail.
+  - >-
+    Refuse any path with a `.git` component in the host before the mount sees
+    the call, to match the plan's `.git` rule.
+  - >-
+    Run the hook against a staging directory that holds the rendered output,
+    before the plan, so the path rules, conflict check, and dry run apply to
+    what the hook wrote and `.git` is not in the mount. The temporary checkout
+    that a real update already uses is one such directory. Not measured.
+  - >-
+    Expose Toha's own edit operations (whole files, regions, JSON values) to
+    hooks as host functions, so each hook edit becomes a plan entry with
+    ownership instead of a raw write. Not measured.
+  - >-
+    Probe escapes by absolute path, `..`, `/proc`, rename and unlink across the
+    mount edge, `chdir`, and symlinks that already exist in the project and
+    point out of it. Probe process access by every import and builtin route
+    known to reach `os`, `subprocess`, or native code.
+
+environment:
+  location: >-
+    Branch `1032/monty-hook-sandbox` in wyrd-company/toha, crate
+    `spikes/monty-hooks` (standalone; not part of the Toha build). Run with
+    `cargo test --release -- --nocapture --test-threads=1`.
+  tools:
+    - monty 1.0.0, monty-fs 1.0.0, monty-types 1.0.0 (crates.io), in-process
+      `MontyRun::start` driven by a host loop
+    - rustc 1.98.1 (rustup stable) and rustc 1.97.1 (Homebrew)
+    - Toha 0.2.0 source (`src/plan.rs` `TargetPath`, `src/hook.rs`)
+  resources:
+    - Monty source at tag v1.1.0, cloned to /workspaces/references/monty
+      (docs/security.md, docs/filesystem.md, crates/monty-fs, crates/monty-alloc)
+    - >-
+      Fixture: a temporary root holding `secret.txt`, an empty `outside/`, and
+      `target/` with `.git/config`, `README.md`, `settings.json`, and `src/`
+    - >-
+      Source of cargo-generate 0.25.0, copier, cookiecutter 2.7.1, cruft,
+      ffizer, kickstart, hygen, plop, yeoman, tiged, Gruntwork boilerplate, and
+      hay-kot/scaffold; documentation and security advisories for dotnet new,
+      Nx, Angular schematics, Backstage, projen, and npm create
+    - >-
+      Probes: `tests/probes.rs` (13 tests over 21 escape probes and 17 process
+      probes) and `tests/subset.rs` (35-operation matrix)
+
+findings:
+  edit-inside-target:
+    verdict: confirmed working
+    measurements:
+      edit-hook-wall-ms: 1.04
+      escape-probe-wall-us-max: 194
+    notes: >-
+      Measured: a hook reads `README.md`, rewrites it with `re.sub` and
+      `str.replace`, edits `settings.json` with `json.loads`/`json.dumps`,
+      creates `src/generated/upper.txt` with `mkdir(parents=True)`, and appends
+      with `open(..., 'a')`. All four host files hold the expected bytes. Wall
+      time for compile and run is 1.04 ms (release build). The sandbox working
+      directory must be set with `MontyRun::set_cwd`; under `MontyRun` it
+      defaults to `/`, not the first mount, so relative paths miss the target.
+
+  no-access-outside-target:
+    verdict: confirmed working
+    notes: >-
+      Measured: all 21 escape probes raise and no host file outside the target
+      changes. Absolute paths (`/etc/passwd`, `/proc/self/environ`,
+      `/tmp/...`), `..` from the target root or a subdirectory, `os.listdir('/')`,
+      and `os.chdir('/')` raise `PermissionError` because no mount covers the
+      normalized path. Rename and `Path.rename` across the mount edge raise
+      `OSError` errno 18. Symlinks already in the project that point out
+      (relative `../secret.txt`, absolute, `..` as a directory, `../outside`)
+      raise `PermissionError` errno 13 for read and write. `os.getenv` and
+      `os.environ` raise `RuntimeError`. A read-only mount refuses writes with
+      errno 30. Monty has no `os.symlink`, `Path.symlink_to`, or `chmod`, so a
+      hook cannot make a link or an executable file.
+
+  no-process-without-host-function:
+    verdict: confirmed working
+    measurements:
+      process-probes: 17
+      process-probes-spawned: 0
+      trusted-run-two-spawns-ms: 2.19
+    notes: >-
+      Measured: `subprocess`, `importlib`, `builtins`, `ctypes`, `socket`, and
+      `threading` are not importable. `os.system`, `os.popen`, `os.execv`,
+      `os.fork`, `asyncio.create_subprocess_exec`, `sys.modules`, and
+      `().__class__` do not exist. `__import__` is not a builtin; it reaches the
+      host as an undeclared function call and is refused. `exec` and `eval` run
+      under the same rules. With trust, `run(argv)` starts the process in the
+      target and returns `exit_code`, `stdout`, and `stderr`. Without trust,
+      `run` ends the hook with an uncatchable `PermissionError`; a `try` around
+      it does not run its handler. Sole-kill: making the trust gate always pass
+      fails `host_run_refused_when_untrusted_and_uncatchable`; answering with a
+      catchable error instead of `abort` fails the same test.
+
+  target-mount-exposes-git:
+    rating: RED
+    notes: >-
+      Measured: a read-write mount of the target lets a hook write
+      `.git/config` (for example `core.fsmonitor`, which Git runs as a command)
+      and `.git/hooks/pre-commit`. Template files cannot reach `.git`; the plan
+      rejects such paths. A host filter that refuses any path with a `.git`
+      component blocks direct, `..`, and rename routes, but a relative symlink
+      already in the project (`vcs -> .git`) bypasses it, and the hook appends
+      to `.git/config` through `vcs/config`. Monty's own `MountMode::ReadWrite`
+      documentation states that files it writes are untrusted and the host must
+      not execute them, and names `.git/hooks`. The operator runs Git and build
+      tools in the target after Toha exits, so a read-write target mount is a
+      route from an untrusted hook to code execution. Inferred: the same holds
+      for other files that tools execute or load (`Makefile`, `package.json`
+      scripts, `.vscode/tasks.json`, an existing executable whose mode bits
+      survive an overwrite). The rating applies to a hook without trust. A
+      trusted process hook has the same access to `.git` and more.
+
+  writes-bypass-plan:
+    rating: YELLOW
+    notes: >-
+      Measured: a read-write mount writes straight to the host. Inferred from
+      the Toha source and specifications: those writes skip `TargetPath`
+      validation, conflict detection, and the dry run. The snapshot still
+      captures them as hook-owned files, as it does for a process hook, so an
+      update carries them forward. Overlay mode (`MountMode::OverlayMemory`) keeps writes in
+      memory and refuses all symlinks, which closes the symlink bypass above,
+      but monty-fs 1.0.0 has no public API to read the overlay entries after
+      the run (`OverlayState` exposes only `new`; `MountTable` does not return
+      its mounts). Harvesting overlay writes into the plan needs an upstream
+      API or a Toha-owned OS-call handler. The rating applies to a hook without
+      trust. Process hook writes also skip the plan.
+
+  memory-limit-in-process:
+    rating: RED
+    measurements:
+      max-memory-bytes: 16777216
+      stopped-by: duration limit at 500 ms
+    notes: >-
+      Measured: with `max_memory` at 16 MiB, a hook that grows a list of
+      distinct strings is stopped by the duration limit, not by `MemoryError`.
+      Monty counts memory in its global allocator (`monty-alloc`); a host that
+      does not install it as `#[global_allocator]` has no memory limit. The
+      crate is documented as published for the `monty` binary, not for direct
+      use, it counts every allocation in the process, and crossing its hard
+      limit ends the process. Upstream recommends `monty-pool`, which runs the
+      interpreter in `monty` worker subprocesses, for untrusted code; it also
+      contains stack-overflow and allocator aborts that in-process execution
+      does not (from docs; not measured). The rating applies to a hook without
+      trust. A process hook also has no memory limit, but a crash in it does
+      not end Toha.
+
+  disk-write-unbounded:
+    rating: YELLOW
+    measurements:
+      bytes-written-in-128-ms: 200000198
+    notes: >-
+      Measured: with no `write_bytes_limit` on the mount, a hook writes 200 MB
+      into the target in 128 ms. monty-fs supports a per-feed write-bytes cap;
+      Toha would have to choose a value. A process hook has no cap either.
+
+  duration-limit:
+    verdict: confirmed working
+    measurements:
+      limit-ms: 200
+      stopped-at-ms: 200.1
+    notes: >-
+      Measured: `while True: pass` stops with `TimeoutError` at the 200 ms
+      `max_feed_duration`. Any value Toha adopts is a new timeout mechanic.
+
+  authority-compared-with-process-hooks:
+    verdict: strict subset
+    notes: >-
+      Measured: a Monty hook reads and writes only the target, has no
+      environment variables, cannot import `socket`, and starts a process only
+      through `run(argv)`, which Toha refuses without trust. Its duration is
+      bounded. A process hook runs with the full authority of the operator: it
+      reads the home directory and credentials, uses the network, writes
+      anywhere the operator can, and runs until it exits. Every risk above that
+      is rated for a hook without trust (`.git`, writes outside the plan, no
+      memory limit, unbounded writes) also applies to a trusted process hook.
+      Inferred: Monty can narrow what trust grants without removing the trust
+      prompt. For example, a hook that does not call `run` could need no
+      prompt for host access outside the target, and `run` keeps the prompt.
+      Inferred, not measured (probes ran on Linux only): one hook script runs
+      on Linux, macOS, and Windows with no shell and no Python install.
+
+  third-party-code:
+    rating: YELLOW
+    notes: >-
+      Measured from the monty 1.0.0 source (`load_module` in
+      `src/bytecode/vm/mod.rs`): `import` resolves only modules that Monty
+      implements in Rust, and raises `ModuleNotFoundError` for any other name.
+      Monty has no `sys.path` and does not load modules from disk, so a hook
+      cannot use pip packages or import another `.py` file, including one in
+      the template. Each hook is one source file. The available modules are
+      `re`, `json`, `pathlib`, `os` (filesystem only), `dataclasses`,
+      `datetime`, `collections`, `itertools`, `functools`, `math`, `random`,
+      `base64`, `binascii`, `copy`, `typing`, `unicodedata`, `sys`, `time`,
+      `asyncio`, and `gc`. Toha extends a hook only through host functions it
+      writes in Rust, such as a TOML parser; a template cannot bring its own
+      libraries.
+
+  prior-art:
+    verdict: only cargo-generate and Backstage confine template code
+    notes: >-
+      Read from source and advisories. Yeoman, Hygen, Plop, Nx, projen,
+      kickstart, and `npm create` have no gate; cookiecutter and cruft run
+      hooks by default. Gated tools end every approval in a process with full
+      authority: a prompt per command (cargo-generate, dotnet new, ffizer,
+      Gruntwork boilerplate), one switch per run (cookiecutter `--accept-hooks`,
+      hay-kot/scaffold), or an allowlist of source URLs (copier). cargo-generate
+      is the closest design to Monty hooks: Rhai scripts with no ambient I/O,
+      file functions confined to a temporary copy of the template, no file-read
+      function so a hook cannot exfiltrate, and `system::command` prompted per
+      call, refused under `--silent` without `--allow-commands`, and never
+      grantable by the template. Its approved command runs through `sh -c` on
+      joined arguments, and users repeatedly ask for hooks that reach the final
+      project. Backstage moved its template language from vm2 to isolated-vm
+      to a closed interpreter after sandbox escapes. Copier's advisories show
+      that "safe" templates reached code execution through the Jinja context,
+      the YAML loader, symlinks, and `..`, and that trust keyed on a URL prefix
+      was bypassed four times. No tool binds trust to template content, has a
+      template declare its capabilities, confines an approved command, routes
+      hook effects through a reviewable plan, or records what a hook did.
+      Only copier checks trust again on update. Inferred: Toha already binds
+      trust to the bytes of the executable surface, which no other tool does.
+
+  python-subset:
+    rating: YELLOW
+    notes: >-
+      Measured (35 operations): works — `re.sub` with group references,
+      `re.findall` with `re.M`, `json` with `indent` and `sort_keys`, f-strings
+      with format specs, string methods, comprehensions, `dataclass`, classes,
+      `try`/`except FileNotFoundError`, `Path.exists`/`iterdir`/`mkdir`/`rename`/
+      `unlink`/`rmdir`/`suffix`/`stem`/`parent`, `read_bytes`/`write_bytes`,
+      `readlines`, `with open`, `datetime`, `print`, and answers passed as an
+      input dict. Missing — callable replacement in `re.sub`, `Path.glob`,
+      `Path.rglob`, `os.walk`, iterating a file object, `str.lower` as a sort
+      key, and the modules `shutil`, `tomllib`, `string`, `textwrap`, `csv`,
+      and `hashlib`. Inferred: simple text and JSON edits fit; recursive file
+      search, TOML or YAML edits that keep formatting, copying and deleting
+      trees, and setting the executable bit need host functions. Host
+      functions appear as globals, not importable modules, so Toha would
+      document its own hook API with type stubs, and Python written for
+      CPython does not run unchanged. Callable `re.sub`, file iteration,
+      `str.lower` as a key, and `glob` belong upstream.
+
+  toolchain-and-release:
+    rating: YELLOW
+    measurements:
+      new-crates-over-toha: 89
+      monty-declared-rust-version: "1.96"
+      toha-declared-rust-version: "1.88"
+    notes: >-
+      Measured: monty 1.1.0 (the latest release) does not compile on rustc
+      1.98.1 or 1.97.1 (`E0277` at `src/modules/json/string_cache.rs:98`,
+      iterating `&mut Box<[T; N]>`); the tagged source fails the same way.
+      monty 1.0.0 compiles on both. Inferred: 1.1.0 declares `rust-version`
+      1.96 but needs a newer compiler; its release notes list lint fixes for
+      Rust 1.99. 1.1.0 adds the `complex` type and fixes `bool` arithmetic,
+      octal escapes in `re`, and closure capture in `raise`, `assert`, and
+      `except`; nothing in it changes the mount, OS-call, or limit APIs. 1.0.1
+      exists on GitHub but not on crates.io. `cargo check` with rustc 1.88.0
+      passes on 1.0.0, but its declared `rust-version` is 1.96, so Toha would
+      raise its own. Raising it has no runtime effect, because Toha ships a
+      native binary; the cost falls on contributors, CI, and crates that
+      depend on the Toha library. The dependency adds 89 crate names Toha does not already use,
+      including the ruff Python parser, `cap-std`, and `stacker`. Upstream: MIT,
+      8.5k stars, releases 1.0.0 and 1.1.0 ten days apart, a security bounty
+      program, and its own security-review skill for the heap and mount code.
+
+conclusion: >-
+  The three claims hold: a Monty hook edits files inside the target mount,
+  cannot read or write outside it (including through existing symlinks), and
+  cannot start a process except through the host function, which Toha can
+  gate on trust with an uncatchable refusal. Monty hook authority is a strict
+  subset of process hook authority. The assumption that a sandboxed hook needs
+  no trust prompt does not hold for a read-write mount of the target: the
+  mount exposes `.git` and other files the operator later executes, a `.git`
+  name filter is bypassed by an existing symlink, the writes skip the plan
+  checks and the dry run, and in-process Monty has no memory limit and no crash
+  isolation. Except for crash isolation, these risks are not new; a trusted
+  process hook carries them. Two designs remain. First, keep the trust prompt
+  and offer Monty hooks as a narrower alternative to process hooks, which
+  needs the dependency and a duration limit. Second, drop the trust prompt for
+  Monty hooks that do not call `run`, which needs writes to go through the
+  plan, a worker subprocess, and new duration, memory, and write-size limits.
+  The second design follows cargo-generate, the only scaffolding tool that
+  confines hook code, and adds what it lacks: resource limits, an argv-only
+  host function, and trust bound to template content.
+  Recommendation: wait on Monty. No operator is blocked by the trust prompt,
+  and trust bound to template content already limits hooks to approved code.
+  The work every sandboxed design needs first, routing hook changes through
+  the plan and keeping hooks out of `.git`, also fixes process hooks, so it
+  goes ahead on its own. The latest Monty release does not compile on stable
+  Rust, and the language gaps that matter most to hooks (file search, callable
+  `re.sub`) belong upstream. A Toha hook API of host functions is a design of
+  its own, and is better designed once hook edits can be plan entries. The
+  decision is cheap to revisit: the probe crate retests a new release in
+  hours. Revisit when any trigger in the next steps occurs.
+
+next-steps:
+  - Decide whether Toha may run a Monty worker subprocess (a bundled `monty`
+    binary, or Toha re-executing itself as the worker through
+    `monty_proto::worker`) for memory limits and crash isolation.
+  - Decide the duration, memory, and write-size limits a sandboxed hook gets,
+    as new timeout and resource mechanics.
+  - Ask upstream for a monty-fs API that returns overlay writes and deletions
+    after a run, or measure a Toha-owned OS-call handler over a read-only
+    `cap-std` directory that stages writes into the plan.
+  - Decide whether Toha offers Monty hooks as a narrower alternative to
+    process hooks behind the same trust prompt, or only as hooks without the
+    prompt.
+  - Measure a staging-directory design, where the hook edits the rendered
+    output before the plan, against the same probes. Also measure how a hook
+    edits files that already exist in the target, which a staging directory
+    of rendered output does not hold on an ordinary apply.
+  - Measure Starlark and Rhai against the same probes; with a harvest design
+    Toha supplies every file operation itself, so the language choice is
+    independent of the sandbox boundary.
+  - "Revisit trigger: a Monty release compiles on stable Rust and adds `glob`
+    or `os.walk`. Rerun the probe crate against it."
+  - "Revisit trigger: the design that routes hook changes through the plan is
+    accepted. Measure hooks that edit only through Toha's edit operations."
+  - "Revisit trigger: an operator or template author asks for hooks that run
+    without a trust prompt."
