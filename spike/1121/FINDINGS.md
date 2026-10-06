@@ -140,6 +140,8 @@ no longer reproduced.
 | Pre-prompt hook | `pre_prompt` | none | lost |
 | Post-generation commands | hook script | `_tasks` (shell strings) | translated: `python3 -c` / `sh -c`; trust is now required; depends on the host interpreter |
 | Migrations | none | `_migrations` | lost: no Toha equivalent |
+| Messages | none | `_message_before_copy` / `_message_after_copy` (4 of 13) | translated: Toha `messages.before-apply` / `after-apply`; update-only messages lost |
+| Keep operator files | `--skip-if-file-exists` flag | `_skip_if_exists` (7 of 13) | not mapped in the spike; Toha updates merge operator edits three-way instead |
 | Python Jinja extensions | `_extensions` (3 of 8) | `_jinja_extensions` (3 of 13) | lost: not portable outside Python |
 | `{% import %}`, `{% from %}`, `{% extends %}` | rare | 6 of 13 (larger templates) | lost: Toha does not offer these |
 | `{% include %}` | rare | common | preserved for literal targets only |
