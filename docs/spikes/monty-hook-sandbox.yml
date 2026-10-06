@@ -32,7 +32,10 @@ background:
     approves the executable surface (hook nodes and the bytes of executed
     in-template files), or passes `--trust` for one run. Template files are
     rendered into the target through the plan, which rejects any path that
-    enters `.git`, detects conflicts, and records a snapshot.
+    enters `.git` and detects conflicts. The snapshot captures the planned
+    files and every file a hook changed under the target, and an update
+    carries hook-owned content forward. A real update runs trusted hooks in a
+    temporary checkout of HEAD; a dry run suppresses hooks.
   problems:
     - Every hook needs trust, even a hook that only edits generated text, so a
       template that wants one small edit asks the operator to approve process
@@ -63,8 +66,9 @@ ideas:
     the call, to match the plan's `.git` rule.
   - >-
     Run the hook against a staging directory that holds the rendered output,
-    before the plan, so the plan, conflict check, dry run, and snapshot apply
-    to what the hook wrote and `.git` is not in the mount. Not measured.
+    before the plan, so the path rules, conflict check, and dry run apply to
+    what the hook wrote and `.git` is not in the mount. The temporary checkout
+    that a real update already uses is one such directory. Not measured.
   - >-
     Probe escapes by absolute path, `..`, `/proc`, rename and unlink across the
     mount edge, `chdir`, and symlinks that already exist in the project and
@@ -87,6 +91,11 @@ environment:
     - >-
       Fixture: a temporary root holding `secret.txt`, an empty `outside/`, and
       `target/` with `.git/config`, `README.md`, `settings.json`, and `src/`
+    - >-
+      Source of cargo-generate 0.25.0, copier, cookiecutter 2.7.1, cruft,
+      ffizer, kickstart, hygen, plop, yeoman, tiged, Gruntwork boilerplate, and
+      hay-kot/scaffold; documentation and security advisories for dotnet new,
+      Nx, Angular schematics, Backstage, projen, and npm create
     - >-
       Probes: `tests/probes.rs` (13 tests over 21 escape probes and 17 process
       probes) and `tests/subset.rs` (35-operation matrix)
@@ -160,12 +169,13 @@ findings:
       trusted process hook has the same access to `.git` and more.
 
   writes-bypass-plan:
-    rating: RED
+    rating: YELLOW
     notes: >-
       Measured: a read-write mount writes straight to the host. Inferred from
-      the Toha source: those writes skip `TargetPath` validation, conflict
-      detection, the dry run, and the snapshot, so `toha update` cannot carry
-      or merge them. Overlay mode (`MountMode::OverlayMemory`) keeps writes in
+      the Toha source and specifications: those writes skip `TargetPath`
+      validation, conflict detection, and the dry run. The snapshot still
+      captures them as hook-owned files, as it does for a process hook, so an
+      update carries them forward. Overlay mode (`MountMode::OverlayMemory`) keeps writes in
       memory and refuses all symlinks, which closes the symlink bypass above,
       but monty-fs 1.0.0 has no public API to read the overlay entries after
       the run (`OverlayState` exposes only `new`; `MountTable` does not return
@@ -243,6 +253,31 @@ findings:
       writes in Rust, such as a TOML parser; a template cannot bring its own
       libraries.
 
+  prior-art:
+    verdict: only cargo-generate and Backstage confine template code
+    notes: >-
+      Read from source and advisories. Yeoman, Hygen, Plop, Nx, projen,
+      kickstart, and `npm create` have no gate; cookiecutter and cruft run
+      hooks by default. Gated tools end every approval in a process with full
+      authority: a prompt per command (cargo-generate, dotnet new, ffizer,
+      Gruntwork boilerplate), one switch per run (cookiecutter `--accept-hooks`,
+      hay-kot/scaffold), or an allowlist of source URLs (copier). cargo-generate
+      is the closest design to Monty hooks: Rhai scripts with no ambient I/O,
+      file functions confined to a temporary copy of the template, no file-read
+      function so a hook cannot exfiltrate, and `system::command` prompted per
+      call, refused under `--silent` without `--allow-commands`, and never
+      grantable by the template. Its approved command runs through `sh -c` on
+      joined arguments, and users repeatedly ask for hooks that reach the final
+      project. Backstage moved its template language from vm2 to isolated-vm
+      to a closed interpreter after sandbox escapes. Copier's advisories show
+      that "safe" templates reached code execution through the Jinja context,
+      the YAML loader, symlinks, and `..`, and that trust keyed on a URL prefix
+      was bypassed four times. No tool binds trust to template content, has a
+      template declare its capabilities, confines an approved command, routes
+      hook effects through a reviewable plan, or records what a hook did.
+      Only copier checks trust again on update. Inferred: Toha already binds
+      trust to the bytes of the executable surface, which no other tool does.
+
   python-subset:
     rating: YELLOW
     notes: >-
@@ -284,15 +319,18 @@ conclusion: >-
   subset of process hook authority. The assumption that a sandboxed hook needs
   no trust prompt does not hold for a read-write mount of the target: the
   mount exposes `.git` and other files the operator later executes, a `.git`
-  name filter is bypassed by an existing symlink, the writes skip the plan and
-  the snapshot, and in-process Monty has no memory limit and no crash
+  name filter is bypassed by an existing symlink, the writes skip the plan
+  checks and the dry run, and in-process Monty has no memory limit and no crash
   isolation. These risks are not new; a trusted process hook carries all of
   them. Two designs remain. First, keep the trust prompt and offer Monty hooks
   as a narrower alternative to process hooks, which needs only the dependency
   and a duration limit. Second, drop the trust prompt for Monty hooks that do
   not call `run`, which needs writes to go through the plan (a staging
   directory, or overlay writes harvested through an upstream monty-fs API), a
-  worker subprocess, and new duration, memory, and write-size limits.
+  worker subprocess, and new duration, memory, and write-size limits. The
+  second design follows cargo-generate, the only scaffolding tool that
+  confines hook code, and adds what it lacks: resource limits, an argv-only
+  host function, and trust bound to template content.
   Recommendation: do not adopt Monty in Toha until the toolchain blocker is
   resolved (monty 1.1.0 does not compile on stable Rust, and Monty requires a
   newer Rust than Toha supports). Then measure the staging-directory design,
@@ -312,8 +350,8 @@ next-steps:
     prompt.
   - Measure a staging-directory design, where the hook edits the rendered
     output before the plan, against the same probes. Also measure how a hook
-    edits files that already exist in the target, which the staging directory
-    does not hold.
+    edits files that already exist in the target, which a staging directory
+    of rendered output does not hold on an ordinary apply.
   - Measure Starlark and Rhai against the same probes; with a harvest design
     Toha supplies every file operation itself, so the language choice is
     independent of the sandbox boundary.
