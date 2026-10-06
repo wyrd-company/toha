@@ -42,15 +42,24 @@ fn git(cwd: &Path, args: &[&str]) {
     checked(cmd);
 }
 fn serve(mut stream: StreamOwned<ServerConnection, std::net::TcpStream>, root: &Path) {
+    if serve_http(&mut stream, root) {
+        // rustls rejects TCP EOF without the TLS close_notify alert, even after a
+        // complete HTTP response. OpenSSL can accept that truncated shutdown.
+        stream.conn.send_close_notify();
+        stream.flush().unwrap();
+    }
+}
+
+fn serve_http(stream: &mut (impl Read + Write), root: &Path) -> bool {
     let mut request = Vec::new();
     let header_end = loop {
         let mut chunk = [0; 8192];
         let size = match stream.read(&mut chunk) {
             Ok(size) => size,
-            Err(_) => return, // An untrusted TLS client closes before HTTP.
+            Err(_) => return false, // An untrusted TLS client closes before HTTP.
         };
         if size == 0 {
-            return;
+            return false;
         }
         request.extend_from_slice(&chunk[..size]);
         if let Some(pos) = request.windows(4).position(|v| v == b"\r\n\r\n") {
@@ -147,10 +156,8 @@ fn serve(mut stream: StreamOwned<ServerConnection, std::net::TcpStream>, root: &
     );
     stream.write_all(response.as_bytes()).unwrap();
     stream.write_all(body).unwrap();
-    // rustls rejects TCP EOF without the TLS close_notify alert, even after a
-    // complete HTTP response. OpenSSL can accept that truncated shutdown.
-    stream.conn.send_close_notify();
     stream.flush().unwrap();
+    true
 }
 #[test]
 fn fetches_https_git_repository() {
@@ -178,6 +185,21 @@ fn explicit_git_ca_overrides_platform_trust() {
     run_https_fixture(Trust::GitConfig);
 }
 
+#[test]
+fn fetches_http_git_repository_without_ca_certificates() {
+    run_https_fixture(Trust::Http);
+}
+
+#[test]
+fn rejects_https_git_repository_without_ca_certificates() {
+    run_https_fixture(Trust::NoRoots);
+}
+
+#[test]
+fn preserves_explicit_git_ssl_verification_setting() {
+    run_https_fixture(Trust::VerificationDisabled);
+}
+
 fn bundled_rustls() -> bool {
     curl::Version::get()
         .ssl_version()
@@ -190,6 +212,9 @@ enum Trust {
     Platform,
     Untrusted,
     GitConfig,
+    Http,
+    NoRoots,
+    VerificationDisabled,
 }
 
 fn configure_trust(command: &mut Command, root: &Path, trust: Trust) {
@@ -219,6 +244,14 @@ fn configure_trust(command: &mut Command, root: &Path, trust: Trust) {
         }
         Trust::GitConfig => {
             command.env("SSL_CERT_FILE", untrusted);
+        }
+        Trust::Http | Trust::NoRoots => {
+            command.env("SSL_CERT_FILE", root.join("empty.pem"));
+        }
+        Trust::VerificationDisabled => {
+            command
+                .env("SSL_CERT_FILE", root.join("empty.pem"))
+                .env("GIT_SSL_NO_VERIFY", "1");
         }
     }
 }
@@ -280,6 +313,7 @@ fn run_https_fixture(trust: Trust) {
     ]);
     checked(unrelated);
     fs::create_dir(root.path().join("empty-certs")).unwrap();
+    fs::write(root.path().join("empty.pem"), "").unwrap();
     let git_config = if matches!(trust, Trust::GitConfig) {
         format!(
             "[http]\nsslCAInfo = {}\n",
@@ -339,8 +373,13 @@ fn run_https_fixture(trust: Trust) {
                 Ok((socket, _)) => {
                     // Accepted sockets inherit nonblocking mode on some platforms.
                     socket.set_nonblocking(false).unwrap();
-                    let conn = ServerConnection::new(Arc::new(config.clone())).unwrap();
-                    serve(StreamOwned::new(conn, socket), &root_path);
+                    if matches!(trust, Trust::Http) {
+                        let mut socket = socket;
+                        serve_http(&mut socket, &root_path);
+                    } else {
+                        let conn = ServerConnection::new(Arc::new(config.clone())).unwrap();
+                        serve(StreamOwned::new(conn, socket), &root_path);
+                    }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     thread::sleep(std::time::Duration::from_millis(10))
@@ -354,12 +393,17 @@ fn run_https_fixture(trust: Trust) {
     let mut worker = Command::new(std::env::current_exe().unwrap());
     support::isolate(&mut worker, root.path());
     configure_trust(&mut worker, root.path(), trust);
+    let scheme = if matches!(trust, Trust::Http) {
+        "http"
+    } else {
+        "https"
+    };
     let fetched = worker
         .args(["--ignored", "--exact", "https_fetch_worker", "--nocapture"])
         .env("TOHA_HTTPS_FIXTURE_ROOT", root.path())
         .env(
             "TOHA_HTTPS_EXPECT_SUCCESS",
-            if matches!(trust, Trust::Untrusted) {
+            if matches!(trust, Trust::Untrusted | Trust::NoRoots) {
                 "false"
             } else {
                 "true"
@@ -367,12 +411,16 @@ fn run_https_fixture(trust: Trust) {
         )
         .env(
             "TOHA_HTTPS_FIXTURE_URL",
-            format!("https://localhost:{port}/remote.git"),
+            format!("{scheme}://localhost:{port}/remote.git"),
         )
         .output()
         .unwrap();
     let token = "sample-secret";
-    let url = format!("https://user:{token}@localhost:{port}/remote.git");
+    let url = if matches!(trust, Trust::Http) {
+        format!("http://localhost:{port}/remote.git")
+    } else {
+        format!("https://user:{token}@localhost:{port}/remote.git")
+    };
     let mut command = support::isolated_command(root.path());
     configure_trust(&mut command, root.path(), trust);
     let add = command
@@ -396,7 +444,7 @@ fn run_https_fixture(trust: Trust) {
         String::from_utf8_lossy(&fetched.stdout),
         String::from_utf8_lossy(&fetched.stderr)
     );
-    if matches!(trust, Trust::Untrusted) {
+    if matches!(trust, Trust::Untrusted | Trust::NoRoots) {
         assert!(
             !add.status.success(),
             "an untrusted server certificate must fail"

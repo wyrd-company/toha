@@ -328,25 +328,30 @@ pub fn fetch(address: &Address, dest: &Path) -> Result<Fetched, SourceError> {
             }
             let url = connection.transport_mut().to_url().into_owned();
             let remote = connection.remote();
-            let Some(mut options) = remote.repo().transport_options(
-                url.as_bstr(),
-                remote.name().map(gix::remote::Name::as_bstr),
-            )? else {
+            let Some(mut options) = remote
+                .repo()
+                .transport_options(url.as_bstr(), remote.name().map(gix::remote::Name::as_bstr))?
+            else {
                 return Ok(());
             };
-            if let Some(http) = options.downcast_mut::<
-                gix::protocol::transport::client::blocking_io::http::Options,
-            >() && http.ssl_ca_info.is_none() && http.ssl_verify
+            if let Some(http) = options
+                .downcast_mut::<gix::protocol::transport::client::blocking_io::http::Options>()
+                && http.ssl_ca_info.is_none()
+                && http.ssl_verify
             {
                 if native_roots.is_none() {
                     let loaded = rustls_native_certs::load_native_certs();
                     if loaded.certs.is_empty() {
-                        return Err("no platform CA certificates found; configure http.sslCAInfo or GIT_SSL_CAINFO".into());
+                        // Plain HTTP does not require CA roots. With no bundle,
+                        // curl still verifies and rejects an untrusted TLS peer.
+                        connection.set_transport_options(options);
+                        return Ok(());
                     }
                     let mut bundle = tempfile::NamedTempFile::new()?;
                     for cert in loaded.certs {
                         writeln!(bundle, "-----BEGIN CERTIFICATE-----")?;
-                        let encoded = base64::engine::general_purpose::STANDARD.encode(cert.as_ref());
+                        let encoded =
+                            base64::engine::general_purpose::STANDARD.encode(cert.as_ref());
                         for line in encoded.as_bytes().chunks(64) {
                             bundle.write_all(line)?;
                             bundle.write_all(b"\n")?;
