@@ -9,8 +9,10 @@ tasks:
   test:
     cmds: [ cargo test ]
   test:network:
-    desc: Run the local HTTPS Git transport test with the host TLS verifier
-    cmds: [ "cargo test --locked --test source_https -- --ignored" ]
+    desc: Run local HTTPS and opt-in Unix OpenSSH Git transport tests
+    cmds:
+      - cargo test --locked --test source_https fetches_https_git_repository
+      - cargo test --locked --test source_ssh fetches_ssh_git_repository_with_key_authentication -- --ignored
   lint:
     cmds: [ "cargo clippy --all-targets -- -D warnings" ]
   fmt:
@@ -25,6 +27,7 @@ tasks:
         ryl check -c .ryl.yml .github/workflows/*.yml Taskfile.yml
         .intentional/config.yml docs/docs.yml scripts/release/nfpm.yml
       - intentional check
+      - cargo test --locked --test release_contract
       - cargo publish --dry-run --locked --allow-dirty --target-dir target/publish-check
   ci:
     deps: [ fmt-check, lint, test, release:check ]
