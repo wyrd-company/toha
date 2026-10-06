@@ -12,7 +12,10 @@ tasks:
     desc: Run local HTTPS and opt-in Unix OpenSSH Git transport tests
     cmds:
       - cargo test --locked --test source_https fetches_https_git_repository
-      - cargo test --locked --test source_ssh fetches_ssh_git_repository_with_key_authentication -- --ignored
+      - cmd: cargo test --locked --test source_ssh fetches_ssh_git_repository_with_key_authentication -- --ignored
+        platforms: [ linux, darwin, freebsd, openbsd, netbsd, dragonfly, solaris, illumos, aix, android ]
+      - cmd: echo "SSH Git transport fixture is Unix-only; Windows SSH coverage is skipped."
+        platforms: [ windows ]
   lint:
     cmds: [ "cargo clippy --all-targets -- -D warnings" ]
   fmt:

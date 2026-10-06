@@ -564,3 +564,151 @@ fn zig_install_mutations_expose_mutable_action_and_unchecked_wheel() {
     }
 }
 
+fn transport_commands_contract(ci: &Value, taskfile: &Value) -> Result<(), String> {
+    for (runner, task_platform) in [
+        ("Linux", "linux"),
+        ("macOS", "darwin"),
+        ("Windows", "windows"),
+    ] {
+        for driver in ["CI", "Task"] {
+            let fixture = fixture();
+            let root = fixture.path();
+            executable(
+                &root.join("bin/cargo"),
+                "#!/bin/bash\nprintf '%s\\n' \"$*\" >> cargo-invocations\n",
+            );
+            let mut output = String::new();
+            if driver == "CI" {
+                let job = if runner == "Linux" {
+                    "test"
+                } else {
+                    "platforms"
+                };
+                for step in steps(ci, job).iter().filter(|step| {
+                    step["name"]
+                        .as_str()
+                        .is_some_and(|name| name.contains("Git transport"))
+                }) {
+                    let condition = step["if"].as_str().unwrap_or("");
+                    let enabled = match condition {
+                        "" => true,
+                        "runner.os != 'Windows'" => runner != "Windows",
+                        "runner.os == 'Windows'" => runner == "Windows",
+                        _ => {
+                            return Err(format!("unsupported CI transport condition: {condition}"));
+                        }
+                    };
+                    if enabled {
+                        output.push_str(&shell(root, step["run"].as_str().unwrap(), &[])?);
+                    }
+                }
+            } else {
+                for command in taskfile["tasks"]["test:network"]["cmds"]
+                    .as_array()
+                    .unwrap()
+                {
+                    let (script, enabled) = if let Some(script) = command.as_str() {
+                        (script, true)
+                    } else {
+                        let enabled = command["platforms"].as_array().is_none_or(|platforms| {
+                            platforms.iter().any(|platform| platform == task_platform)
+                        });
+                        (command["cmd"].as_str().unwrap(), enabled)
+                    };
+                    if enabled {
+                        output.push_str(&shell(root, script, &[])?);
+                    }
+                }
+            }
+            let invocations =
+                fs::read_to_string(root.join("cargo-invocations")).unwrap_or_default();
+            let https = invocations
+                .lines()
+                .filter(|line| line.contains("--test source_https "))
+                .count();
+            let ssh = invocations
+                .lines()
+                .filter(|line| line.contains("--test source_ssh "))
+                .count();
+            if https != 1 || ssh != usize::from(runner != "Windows") {
+                return Err(format!(
+                    "{driver} {runner} must run HTTPS and only Unix SSH checks: {invocations}"
+                ));
+            }
+            if runner == "Windows" && !output.contains("Windows SSH coverage is skipped") {
+                return Err(format!(
+                    "{driver} must report Windows SSH coverage is skipped"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn transport_commands_report_unix_ssh_coverage_and_windows_skip() {
+    let ci = serde_norway::from_str(include_str!("../.github/workflows/ci.yml")).unwrap();
+    let taskfile = serde_norway::from_str(include_str!("../Taskfile.yml")).unwrap();
+    transport_commands_contract(&ci, &taskfile).unwrap();
+}
+
+#[test]
+fn transport_command_mutations_expose_windows_ssh_false_coverage() {
+    let ci: Value = serde_norway::from_str(include_str!("../.github/workflows/ci.yml")).unwrap();
+    let taskfile: Value = serde_norway::from_str(include_str!("../Taskfile.yml")).unwrap();
+    let mut all_platforms = ci.clone();
+    for step in all_platforms["jobs"]["platforms"]["steps"]
+        .as_array_mut()
+        .unwrap()
+    {
+        if step["name"] == "Local Unix SSH Git transport check" {
+            step.as_object_mut().unwrap().remove("if");
+        }
+    }
+    assert!(
+        transport_commands_contract(&all_platforms, &taskfile)
+            .unwrap_err()
+            .contains("CI Windows")
+    );
+    let mut no_skip = ci.clone();
+    no_skip["jobs"]["platforms"]["steps"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|step| step["name"] != "SSH Git transport coverage is unavailable on Windows");
+    assert!(
+        transport_commands_contract(&no_skip, &taskfile)
+            .unwrap_err()
+            .contains("CI must report Windows SSH")
+    );
+    let mut all_platforms = taskfile.clone();
+    for command in all_platforms["tasks"]["test:network"]["cmds"]
+        .as_array_mut()
+        .unwrap()
+    {
+        if command["cmd"]
+            .as_str()
+            .is_some_and(|command| command.contains("source_ssh"))
+        {
+            command.as_object_mut().unwrap().remove("platforms");
+        }
+    }
+    assert!(
+        transport_commands_contract(&ci, &all_platforms)
+            .unwrap_err()
+            .contains("Task Windows")
+    );
+    let mut no_skip = taskfile.clone();
+    no_skip["tasks"]["test:network"]["cmds"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|command| {
+            !command["cmd"]
+                .as_str()
+                .is_some_and(|command| command.contains("Windows SSH coverage"))
+        });
+    assert!(
+        transport_commands_contract(&ci, &no_skip)
+            .unwrap_err()
+            .contains("Task must report Windows SSH")
+    );
+}
