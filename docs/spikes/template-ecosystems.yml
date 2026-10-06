@@ -50,6 +50,10 @@ ideas:
     format into the same domain types at load time, each time the template is
     used.
   - |
+    Agent port: an agent reads a template from any ecosystem and writes a Toha
+    template, guided by porting knowledge in a Toha skill. The author owns the
+    result.
+  - |
     For Cookiecutter, keep file bodies unchanged: bind a computed object named
     `cookiecutter` after the last question, so that `{{ cookiecutter.x }}`
     still resolves in bodies, paths, and hook sources.
@@ -255,18 +259,21 @@ findings:
     notes: |
       **Interpretation of the findings above.**
 
-      | Concern | Conversion | Direct consumption |
-      |---|---|---|
-      | One interview engine | The output is an ordinary Toha template | A second loader makes the same domain types |
-      | Plan before apply | Holds for Copier. Cookiecutter hook deletions make the plan list files that do not land | Same |
-      | Error attribution | Errors name the converted `template.yml` | Errors must name foreign fields, such as `copier.yml` `validator`; this is new work |
-      | Upstream template changes | Do not flow; the author converts again | Flow through Toha sources and updates |
-      | Residue (validators, hooks, extensions) | A person or an agent fixes it once, from the report | Must be resolved or refused at every load |
-      | Change in the other tool's format | Breaks only new conversions | Breaks users at apply time; Toha's contract follows Cookiecutter 2.x and Copier 9.x |
-      | Dependencies | minijinja-contrib (`pycompat`; same author as minijinja, Apache-2.0) | Same |
-      | Licensing | Toha reads formats only. A converted template is a derived work under the template's own license | Toha reads formats only |
-      | Trust | Converted hooks and tasks need Toha trust; Cookiecutter runs hooks without asking | Same |
-      | Effort | Small | Large: two loaders, error attribution, a compatibility policy, and fixtures for each format |
+      | Concern | Conversion | Direct consumption | Agent port with skill guidance |
+      |---|---|---|---|
+      | Ecosystems covered | Cookiecutter and Copier | Cookiecutter and Copier | Any, including generator-code ecosystems such as Yeoman, Nx, and Plop |
+      | Work automated | Questions, file copy, a few syntax rewrites: the parts that are mostly copying (about 92% of file bodies render unchanged) | Same as conversion, at every load | The same parts, done by the agent |
+      | Residue (validators, hooks, extensions) | Listed in a report; a person or an agent fixes it once | Must be resolved or refused at every load | Fixed by the agent while it ports |
+      | Checking the result | Comparing with the original tool needs that tool run as a separate process, which Toha application code must not do without approval | Same | The agent runs the original tool as a development tool and compares the output |
+      | One interview engine | The output is an ordinary Toha template | A second loader makes the same domain types | The output is an ordinary Toha template |
+      | Plan before apply | Holds for Copier. Cookiecutter hook deletions make the plan list files that do not land | Same | The agent can rewrite hook deletions as conditional paths |
+      | Error attribution | Errors name the converted `template.yml` | Errors must name foreign fields, such as `copier.yml` `validator`; this is new work | Errors name the ported `template.yml` |
+      | Upstream template changes | Do not flow; the author converts again | Flow through Toha sources and updates | Do not flow; the author ports the change |
+      | Change in the other tool's format | Breaks only new conversions | Breaks users at apply time; Toha's contract follows Cookiecutter 2.x and Copier 9.x | Toha's contract is not affected; the guidance may need an update |
+      | Dependencies | minijinja-contrib (`pycompat`; same author as minijinja, Apache-2.0) | Same | None; `pycompat` lowers the number of edits |
+      | Licensing | Toha reads formats only. A converted template is a derived work under the template's own license | Toha reads formats only | A ported template is a derived work under the template's own license |
+      | Trust | Converted hooks and tasks need Toha trust; Cookiecutter runs hooks without asking | Same | Same as conversion |
+      | Effort | Maintained code for two formats, with fixtures and tests | Large: two loaders, error attribution, a compatibility policy, and fixtures for each format | Guidance documents in a skill |
   silent-empty-render:
     rating: YELLOW
     notes: |
@@ -275,27 +282,42 @@ findings:
       It is not known whether Toha's load-time identifier check rejects such a
       reference in a converted template.
 conclusion: |
-  Only Cookiecutter and Copier are worth either approach. They are declarative,
-  they use Jinja, and they hold most of the public declarative templates.
+  A conversion feature is not worth building, and neither is direct
+  consumption. Porting guidance for agents, in a Toha skill, is the better use
+  of resources.
 
-  **Conversion is viable.** Three real templates, converted by prototypes,
-  rendered the same trees through Toha as through their own tools. Toha's
-  snapshots and updates worked on a converted template whose hook deletes
-  files. The precondition is minijinja `pycompat` in Toha's environment.
-  Without it, all three templates fail. The residue is known and reportable:
-  validator messages, choice labels, structured answers, secret answers,
-  Python extensions, `import` and `extends`, and Cookiecutter hooks that delete
-  files after the plan is shown.
+  Only Cookiecutter and Copier could be converted or consumed. They are
+  declarative, they use Jinja, and they hold most of the public declarative
+  templates. Conversion of them is technically viable: three real templates,
+  converted by prototypes, rendered the same trees through Toha as through
+  their own tools, and Toha's snapshots and updates worked on a converted
+  template whose hook deletes files. Direct consumption has the same gaps and
+  also puts two external formats inside Toha's contract and error attribution.
 
-  **Direct consumption is technically viable but not recommended.** It has the
-  same gaps as conversion. It also puts two external formats inside Toha's
-  contract and error attribution. Their changes would then break users at
-  apply time, not authors at conversion time.
+  Neither approach removes the need for agent porting. Templates from Yeoman,
+  Nx, Plop, and the other generator-code ecosystems can only be ported by an
+  agent or a person. A converter would be a second path that covers two
+  ecosystems. It automates only the parts that are mostly copying, which an
+  agent also does well. The hard residue is the same for every path: validator
+  messages, choice labels, structured answers, secret answers, Python
+  extensions, `import` and `extends`, and Cookiecutter hooks that delete files
+  after the plan is shown. A converter can only report that residue; an agent
+  can resolve it, and can compare its result with the original tool's output.
 
-  These Toha contract changes need a separate decision:
+  Porting guidance can carry what this spike found: the feature mapping table,
+  the `cookiecutter` computed object that keeps file bodies unchanged, the
+  project-directory layout, the rewrite of hook deletions as conditional
+  paths, the risk of secret answers in snapshots, and the check against the
+  original tool's output. It can cover any ecosystem, including those whose
+  templates are programs.
+
+  These Toha contract changes need a separate decision. They apply to any
+  porting path:
 
   1. Python-compatible string and map methods in every Jinja surface
-     (`pycompat`). This widens the template contract.
+     (`pycompat`). Without them, a port must rewrite every Python method call
+     into Toha filters, and all three end-to-end templates failed on stock
+     Toha. This widens the template contract.
   2. Optional extra filters: `wordwrap` (minijinja-contrib), and an alias of
      `toyaml` for Ansible's `to_nice_yaml`.
   3. Optional, for higher Copier fidelity: expression validators with
@@ -307,10 +329,10 @@ conclusion: |
 
   The sample is 9 templates for the engine probe and 3 end to end, chosen by
   stars and feature coverage, not at random. Most answers were defaults, so
-  other answers would exercise other branches.
+  other answers would exercise other branches. The findings show that porting
+  works, not how often a template ports without manual fixes.
 next-steps:
+  - Add porting guidance for agents, as references in the `toha-templates` skill or as a new skill. Cover Cookiecutter and Copier with the mapping from this spike, and give general guidance for generator-code ecosystems such as Yeoman.
   - Decide whether to enable minijinja `pycompat` in Toha's Jinja environment; if yes, add it with fixtures that use Python string methods.
-  - Decide whether to build an author-facing converter. If yes, start with Copier, which writes a Toha template plus a conversion report.
-  - Add Cookiecutter conversion after Copier, including help for rewriting hooks that delete files as conditional paths.
-  - Test whether Toha's load-time identifier check rejects a reference to a global from a missing extension in a converted template.
-  - Keep direct consumption out of scope unless users ask to follow upstream Copier templates through Toha updates.
+  - Test whether Toha's load-time identifier check rejects a reference to a global from a missing extension in a ported template.
+  - Reconsider a converter only if a bulk migration of many templates, or repeatable conversion without an agent, is needed.
