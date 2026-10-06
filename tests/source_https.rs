@@ -327,7 +327,10 @@ fn fetches_https_git_repository() {
 #[test]
 #[ignore = "subprocess helper for fetches_https_git_repository"]
 fn https_fetch_worker() {
-    let root = std::path::PathBuf::from(std::env::var_os("TOHA_HTTPS_FIXTURE_ROOT").unwrap());
+    let Some(root) = std::env::var_os("TOHA_HTTPS_FIXTURE_ROOT") else {
+        return;
+    };
+    let root = std::path::PathBuf::from(root);
     let address = Address::Git {
         repo: std::env::var("TOHA_HTTPS_FIXTURE_URL").unwrap(),
         reference: None,

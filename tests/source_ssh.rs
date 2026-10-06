@@ -183,7 +183,10 @@ fn fetches_ssh_git_repository_with_key_authentication() {
 #[test]
 #[ignore = "subprocess helper for fetches_ssh_git_repository_with_key_authentication"]
 fn ssh_fetch_worker() {
-    let root = std::path::PathBuf::from(std::env::var_os("TOHA_SSH_FIXTURE_ROOT").unwrap());
+    let Some(root) = std::env::var_os("TOHA_SSH_FIXTURE_ROOT") else {
+        return;
+    };
+    let root = std::path::PathBuf::from(root);
     let key = std::env::var("TOHA_SSH_FIXTURE_KEY").unwrap();
     let address = Address::Git {
         repo: std::env::var("TOHA_SSH_FIXTURE_URL").unwrap(),
