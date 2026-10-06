@@ -1,3 +1,7 @@
+// ---
+// relationships:
+//   implements: architecture
+// ---
 //! A local smart-HTTP Git endpoint over TLS exercises the real HTTPS transport.
 #[allow(dead_code)]
 mod support;
@@ -140,13 +144,12 @@ fn serve(mut stream: StreamOwned<ServerConnection, std::net::TcpStream>, root: &
     );
     stream.write_all(response.as_bytes()).unwrap();
     stream.write_all(body).unwrap();
+    // rustls rejects TCP EOF without the TLS close_notify alert, even after a
+    // complete HTTP response. OpenSSL can accept that truncated shutdown.
+    stream.conn.send_close_notify();
     stream.flush().unwrap();
 }
-// The local TLS endpoint depends on the host certificate verifier. Hosted
-// runners close the connection during TLS setup before any HTTP request.
-// Run explicitly with `task test:network` when the local verifier trusts it.
 #[test]
-#[ignore = "local TLS trust differs across hosted runners; run task test:network"]
 fn fetches_https_git_repository() {
     let root = TempDir::new().unwrap();
     let source = root.path().join("source");
@@ -182,6 +185,8 @@ fn fetches_https_git_repository() {
         "/CN=localhost",
         "-addext",
         "subjectAltName=DNS:localhost",
+        "-addext",
+        "basicConstraints=critical,CA:FALSE",
     ]);
     checked(openssl);
     let mut convert = Command::new("openssl");
@@ -198,6 +203,23 @@ fn fetches_https_git_repository() {
         "DER",
     ]);
     let key_der = checked(convert);
+    // OpenSSL accepts the old CA-as-server fixture, but rustls rejects it with
+    // CaUsedAsEndEntity. Validate the certificate with the stricter verifier.
+    let mut roots = rustls::RootCertStore::empty();
+    let certificate = CertificateDer::from(cert_der.clone());
+    roots.add(certificate.clone()).unwrap();
+    let verifier = rustls::client::WebPkiServerVerifier::builder(Arc::new(roots))
+        .build()
+        .unwrap();
+    rustls::client::danger::ServerCertVerifier::verify_server_cert(
+        &*verifier,
+        &certificate,
+        &[],
+        &rustls::pki_types::ServerName::try_from("localhost").unwrap(),
+        &[],
+        rustls::pki_types::UnixTime::now(),
+    )
+    .expect("the fixture certificate must be valid for rustls as well as OpenSSL");
     let config = ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(
@@ -215,6 +237,8 @@ fn fetches_https_git_repository() {
         while !flag.load(Ordering::Relaxed) {
             match listener.accept() {
                 Ok((socket, _)) => {
+                    // Accepted sockets inherit nonblocking mode on some platforms.
+                    socket.set_nonblocking(false).unwrap();
                     let conn = ServerConnection::new(Arc::new(config.clone())).unwrap();
                     serve(StreamOwned::new(conn, socket), &root_path);
                 }
@@ -225,55 +249,67 @@ fn fetches_https_git_repository() {
             }
         }
     });
-    // The CA is provided only to this test process; no real user Git config is used.
-    let address = Address::Git {
-        repo: format!("https://localhost:{port}/remote.git"),
-        reference: None,
-        path: None,
-    };
-    // gix reads its own Git configuration. A local environment override supplies the CA.
-    unsafe {
-        for (key, path) in [
-            ("HOME", root.path().join("home")),
-            ("USERPROFILE", root.path().join("home")),
-            ("APPDATA", root.path().join("data")),
-            ("LOCALAPPDATA", root.path().to_path_buf()),
-            ("PROGRAMDATA", root.path().join("system")),
-            ("XDG_CONFIG_HOME", root.path().join("config")),
-            ("XDG_DATA_HOME", root.path().join("data")),
-            ("XDG_CACHE_HOME", root.path().join("cache")),
-            ("XDG_STATE_HOME", root.path().to_path_buf()),
-            (
-                "TOHA_USER_CONFIG",
-                root.path().join("config/toha/config.yml"),
-            ),
-            ("TOHA_CONFIG", root.path().join("config/local.yml")),
-        ] {
-            std::env::set_var(key, path);
-        }
-        std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
-        std::env::set_var("GIT_SSL_CAINFO", &cert);
-        std::env::set_var("CURL_CA_BUNDLE", &cert);
-    }
-    let fetched = fetch(&address, &root.path().join("fetched"));
+    // Run the crate API in a child so all transport configuration is scoped to
+    // that process, with the same isolation as the command drivers.
+    let mut worker = Command::new(std::env::current_exe().unwrap());
+    support::isolate(&mut worker, root.path());
+    let fetched = worker
+        .args(["--ignored", "--exact", "https_fetch_worker", "--nocapture"])
+        .env("TOHA_HTTPS_FIXTURE_ROOT", root.path())
+        .env(
+            "TOHA_HTTPS_FIXTURE_URL",
+            format!("https://localhost:{port}/remote.git"),
+        )
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", root.path().join("empty.gitconfig"))
+        .env("GIT_SSL_CAINFO", &cert)
+        .env("CURL_CA_BUNDLE", &cert)
+        .env("NO_PROXY", "localhost,127.0.0.1")
+        .env("no_proxy", "localhost,127.0.0.1")
+        .output()
+        .unwrap();
     let token = "sample-secret";
     let url = format!("https://user:{token}@localhost:{port}/remote.git");
     let add = support::isolated_command(root.path())
         .args(["templates", "add", &url])
         .current_dir(root.path())
         .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", root.path().join("empty.gitconfig"))
+        .env("NO_PROXY", "localhost,127.0.0.1")
+        .env("no_proxy", "localhost,127.0.0.1")
         .env("GIT_SSL_CAINFO", &cert)
         .env("CURL_CA_BUNDLE", &cert)
         .output()
         .unwrap();
+
+    let failed = support::isolated_command(root.path())
+        .args(["templates", "add", &format!("{url}@absent")])
+        .current_dir(root.path())
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", root.path().join("empty.gitconfig"))
+        .env("NO_PROXY", "localhost,127.0.0.1")
+        .env("no_proxy", "localhost,127.0.0.1")
+        .env("GIT_SSL_CAINFO", &cert)
+        .env("CURL_CA_BUNDLE", &cert)
+        .output()
+        .unwrap();
+    stop.store(true, Ordering::Relaxed);
+    server.join().unwrap();
+    assert!(
+        fetched.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&fetched.stdout),
+        String::from_utf8_lossy(&fetched.stderr)
+    );
     assert!(
         add.status.success(),
         "{}",
         String::from_utf8_lossy(&add.stderr)
     );
-    let registry = fs::read_to_string(root.path().join("data/toha/templates.yml")).unwrap();
+    let registry =
+        fs::read_to_string(support::user_data_dir(root.path()).join("templates.yml")).unwrap();
     assert!(!registry.contains(token));
-    let installs = fs::read_dir(root.path().join("data/toha/repos")).unwrap();
+    let installs = fs::read_dir(support::user_data_dir(root.path()).join("repos")).unwrap();
     for install in installs {
         assert!(
             !install
@@ -283,40 +319,22 @@ fn fetches_https_git_repository() {
                 .contains(token)
         );
     }
-    let failed = support::isolated_command(root.path())
-        .args(["templates", "add", &format!("{url}@absent")])
-        .current_dir(root.path())
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_SSL_CAINFO", &cert)
-        .env("CURL_CA_BUNDLE", &cert)
-        .output()
-        .unwrap();
     assert!(!failed.status.success());
     assert!(!String::from_utf8_lossy(&failed.stderr).contains(token));
-    unsafe {
-        for key in [
-            "HOME",
-            "USERPROFILE",
-            "APPDATA",
-            "LOCALAPPDATA",
-            "PROGRAMDATA",
-            "XDG_CONFIG_HOME",
-            "XDG_DATA_HOME",
-            "XDG_CACHE_HOME",
-            "XDG_STATE_HOME",
-            "TOHA_USER_CONFIG",
-            "TOHA_CONFIG",
-            "GIT_CONFIG_NOSYSTEM",
-            "GIT_SSL_CAINFO",
-            "CURL_CA_BUNDLE",
-        ] {
-            std::env::remove_var(key);
-        }
-    }
-    stop.store(true, Ordering::Relaxed);
-    server.join().unwrap();
-    let fetched = fetched.unwrap();
+    assert!(root.path().join("fetched/template.yml").is_file());
+}
+
+#[test]
+#[ignore = "subprocess helper for fetches_https_git_repository"]
+fn https_fetch_worker() {
+    let root = std::path::PathBuf::from(std::env::var_os("TOHA_HTTPS_FIXTURE_ROOT").unwrap());
+    let address = Address::Git {
+        repo: std::env::var("TOHA_HTTPS_FIXTURE_URL").unwrap(),
+        reference: None,
+        path: None,
+    };
+    let fetched = fetch(&address, &root.join("fetched")).unwrap();
     assert_eq!(fetched.reference_kind, RefKind::DefaultBranch);
     assert_eq!(fetched.commit.len(), 40);
-    assert!(root.path().join("fetched/template.yml").is_file());
+    assert!(root.join("fetched/template.yml").is_file());
 }
