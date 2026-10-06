@@ -156,16 +156,22 @@ findings:
 
       The probe checks the engine only. It does not check Toha's load-time
       rules, such as the unknown-identifier check and literal-only includes.
-  python-methods-required:
-    rating: RED
+  python-method-syntax:
+    verdict: method calls fail on stock Toha; the same operations work as filters
     notes: |
       **Observed.** Stock Toha cannot apply any of the three converted
-      templates. Each fails at load or interview time on a Python method in a
-      default: `'-'.join(app_name.lower().split())` (click-app),
-      `project_url.rstrip('/')` (substrate), or an unknown filter (pylibrary).
-      With minijinja-contrib `pycompat` enabled, all three apply. This one
-      change is the precondition for either approach. Every Toha template would
-      gain these methods.
+      templates as they are. Two fail on a Python method call in a default:
+      `'-'.join(app_name.lower().split())` (click-app) and
+      `project_url.rstrip('/')` (substrate). The third fails on an unknown
+      filter, `wordwrap` (pylibrary). With minijinja-contrib `pycompat`
+      enabled, all three apply.
+
+      The gap is syntax, not capability. Stock Toha renders the filter forms
+      of the same operations: `app_name | lower | split | join('-')`,
+      `| upper`, `| replace(...)`, `| trim('/')`, and Toha's own case filters
+      such as `| kebab`. A port rewrites each method call as a filter. Of the
+      methods seen in the sample, only `str.rsplit` and `dict.update` have no
+      direct filter form; both were rare.
   conversion-end-to-end:
     rating: GREEN
     notes: |
@@ -233,7 +239,7 @@ findings:
       | Feature | Cookiecutter | Copier | Toha |
       |---|---|---|---|
       | Text, boolean, choice questions | yes | yes | preserved |
-      | Defaults from earlier answers | yes | yes | preserved, with `pycompat` |
+      | Defaults from earlier answers | yes | yes | preserved; Python method calls become filters |
       | Conditional questions | none | `when` | preserved |
       | Hidden computed values | `__x` | `when: false` | preserved |
       | Multiselect | override only | `multiselect` (3 of 13) | preserved |
@@ -270,7 +276,7 @@ findings:
       | Error attribution | Errors name the converted `template.yml` | Errors must name foreign fields, such as `copier.yml` `validator`; this is new work | Errors name the ported `template.yml` |
       | Upstream template changes | Do not flow; the author converts again | Flow through Toha sources and updates | Do not flow; the author ports the change |
       | Change in the other tool's format | Breaks only new conversions | Breaks users at apply time; Toha's contract follows Cookiecutter 2.x and Copier 9.x | Toha's contract is not affected; the guidance may need an update |
-      | Dependencies | minijinja-contrib (`pycompat`; same author as minijinja, Apache-2.0) | Same | None; `pycompat` lowers the number of edits |
+      | Dependencies | None, if method calls are rewritten as filters | Same | None |
       | Licensing | Toha reads formats only. A converted template is a derived work under the template's own license | Toha reads formats only | A ported template is a derived work under the template's own license |
       | Trust | Converted hooks and tasks need Toha trust; Cookiecutter runs hooks without asking | Same | Same as conversion |
       | Effort | Maintained code for two formats, with fixtures and tests | Large: two loaders, error attribution, a compatibility policy, and fixtures for each format | Guidance documents in a skill |
@@ -308,22 +314,22 @@ conclusion: |
   the `cookiecutter` computed object that keeps file bodies unchanged, the
   project-directory layout, the rewrite of hook deletions as conditional
   paths, the risk of secret answers in snapshots, and the check against the
-  original tool's output. It can cover any ecosystem, including those whose
-  templates are programs.
+  original tool's output, and the rewrite of Python method calls as filters.
+  It can cover any ecosystem, including those whose templates are programs.
 
-  These Toha contract changes need a separate decision. They apply to any
-  porting path:
+  Toha's Jinja environment stays as it is: Python-style method calls are a
+  porting rewrite, not an engine feature, because Toha's filters already cover
+  the same operations.
 
-  1. Python-compatible string and map methods in every Jinja surface
-     (`pycompat`). Without them, a port must rewrite every Python method call
-     into Toha filters, and all three end-to-end templates failed on stock
-     Toha. This widens the template contract.
-  2. Optional extra filters: `wordwrap` (minijinja-contrib), and an alias of
+  These Toha contract changes would raise fidelity for some ports. Each needs
+  a separate decision:
+
+  1. Optional extra filters: `wordwrap` (minijinja-contrib), and an alias of
      `toyaml` for Ansible's `to_nice_yaml`.
-  3. Optional, for higher Copier fidelity: expression validators with
+  2. Optional, for higher Copier fidelity: expression validators with
      messages, labelled options, secret questions that snapshots do not
      record, and structured answer types.
-  4. Not recommended: hooks before files are written, `import` and `extends`,
+  3. Not recommended: hooks before files are written, `import` and `extends`,
      and Copier migrations. Each is a large contract change for a small share
      of templates.
 
@@ -332,7 +338,6 @@ conclusion: |
   other answers would exercise other branches. The findings show that porting
   works, not how often a template ports without manual fixes.
 next-steps:
-  - Add porting guidance for agents, as references in the `toha-templates` skill or as a new skill. Cover Cookiecutter and Copier with the mapping from this spike, and give general guidance for generator-code ecosystems such as Yeoman.
-  - Decide whether to enable minijinja `pycompat` in Toha's Jinja environment; if yes, add it with fixtures that use Python string methods.
+  - Add porting guidance for agents, as references in the `toha-templates` skill or as a new skill. Cover Cookiecutter and Copier with the mapping from this spike, including the rewrite of Python method calls as filters, and give general guidance for generator-code ecosystems such as Yeoman.
   - Test whether Toha's load-time identifier check rejects a reference to a global from a missing extension in a ported template.
   - Reconsider a converter only if a bulk migration of many templates, or repeatable conversion without an agent, is needed.
