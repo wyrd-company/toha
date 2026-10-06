@@ -70,6 +70,10 @@ ideas:
     what the hook wrote and `.git` is not in the mount. The temporary checkout
     that a real update already uses is one such directory. Not measured.
   - >-
+    Expose Toha's own edit operations (whole files, regions, JSON values) to
+    hooks as host functions, so each hook edit becomes a plan entry with
+    ownership instead of a raw write. Not measured.
+  - >-
     Probe escapes by absolute path, `..`, `/proc`, rename and unlink across the
     mount edge, `chdir`, and symlinks that already exist in the project and
     point out of it. Probe process access by every import and builtin route
@@ -291,8 +295,12 @@ findings:
       `Path.rglob`, `os.walk`, iterating a file object, `str.lower` as a sort
       key, and the modules `shutil`, `tomllib`, `string`, `textwrap`, `csv`,
       and `hashlib`. Inferred: simple text and JSON edits fit; recursive file
-      search, TOML or YAML edits, and copying trees need host functions or
-      hand-written helpers.
+      search, TOML or YAML edits that keep formatting, copying and deleting
+      trees, and setting the executable bit need host functions. Host
+      functions appear as globals, not importable modules, so Toha would
+      document its own hook API with type stubs, and Python written for
+      CPython does not run unchanged. Callable `re.sub`, file iteration,
+      `str.lower` as a key, and `glob` belong upstream.
 
   toolchain-and-release:
     rating: YELLOW
@@ -304,9 +312,16 @@ findings:
       Measured: monty 1.1.0 (the latest release) does not compile on rustc
       1.98.1 or 1.97.1 (`E0277` at `src/modules/json/string_cache.rs:98`,
       iterating `&mut Box<[T; N]>`); the tagged source fails the same way.
-      monty 1.0.0 compiles on both. `cargo check` with rustc 1.88.0 also passes
-      on 1.0.0, but its declared `rust-version` is 1.96, so Toha would raise
-      its own. The dependency adds 89 crate names Toha does not already use,
+      monty 1.0.0 compiles on both. Inferred: 1.1.0 declares `rust-version`
+      1.96 but needs a newer compiler; its release notes list lint fixes for
+      Rust 1.99. 1.1.0 adds the `complex` type and fixes `bool` arithmetic,
+      octal escapes in `re`, and closure capture in `raise`, `assert`, and
+      `except`; nothing in it changes the mount, OS-call, or limit APIs. 1.0.1
+      exists on GitHub but not on crates.io. `cargo check` with rustc 1.88.0
+      passes on 1.0.0, but its declared `rust-version` is 1.96, so Toha would
+      raise its own. Raising it has no runtime effect, because Toha ships a
+      native binary; the cost falls on contributors, CI, and crates that
+      depend on the Toha library. The dependency adds 89 crate names Toha does not already use,
       including the ruff Python parser, `cap-std`, and `stacker`. Upstream: MIT,
       8.5k stars, releases 1.0.0 and 1.1.0 ten days apart, a security bounty
       program, and its own security-review skill for the heap and mount code.
@@ -321,20 +336,25 @@ conclusion: >-
   mount exposes `.git` and other files the operator later executes, a `.git`
   name filter is bypassed by an existing symlink, the writes skip the plan
   checks and the dry run, and in-process Monty has no memory limit and no crash
-  isolation. These risks are not new; a trusted process hook carries all of
-  them. Two designs remain. First, keep the trust prompt and offer Monty hooks
-  as a narrower alternative to process hooks, which needs only the dependency
-  and a duration limit. Second, drop the trust prompt for Monty hooks that do
-  not call `run`, which needs writes to go through the plan (a staging
-  directory, or overlay writes harvested through an upstream monty-fs API), a
-  worker subprocess, and new duration, memory, and write-size limits. The
-  second design follows cargo-generate, the only scaffolding tool that
+  isolation. Except for crash isolation, these risks are not new; a trusted
+  process hook carries them. Two designs remain. First, keep the trust prompt
+  and offer Monty hooks as a narrower alternative to process hooks, which
+  needs the dependency and a duration limit. Second, drop the trust prompt for
+  Monty hooks that do not call `run`, which needs writes to go through the
+  plan, a worker subprocess, and new duration, memory, and write-size limits.
+  The second design follows cargo-generate, the only scaffolding tool that
   confines hook code, and adds what it lacks: resource limits, an argv-only
   host function, and trust bound to template content.
-  Recommendation: do not adopt Monty in Toha until the toolchain blocker is
-  resolved (monty 1.1.0 does not compile on stable Rust, and Monty requires a
-  newer Rust than Toha supports). Then measure the staging-directory design,
-  which makes the second design possible without the upstream API.
+  Recommendation: wait on Monty. No operator is blocked by the trust prompt,
+  and trust bound to template content already limits hooks to approved code.
+  The work every sandboxed design needs first, routing hook changes through
+  the plan and keeping hooks out of `.git`, also fixes process hooks, so it
+  goes ahead on its own. The latest Monty release does not compile on stable
+  Rust, and the language gaps that matter most to hooks (file search, callable
+  `re.sub`) belong upstream. A Toha hook API of host functions is a design of
+  its own, and is better designed once hook edits can be plan entries. The
+  decision is cheap to revisit: the probe crate retests a new release in
+  hours. Revisit when any trigger in the next steps occurs.
 
 next-steps:
   - Decide whether Toha may run a Monty worker subprocess (a bundled `monty`
@@ -355,4 +375,9 @@ next-steps:
   - Measure Starlark and Rhai against the same probes; with a harvest design
     Toha supplies every file operation itself, so the language choice is
     independent of the sandbox boundary.
-  - Re-test monty 1.1.0 or later on stable Rust before any adoption.
+  - "Revisit trigger: a Monty release compiles on stable Rust and adds `glob`
+    or `os.walk`. Rerun the probe crate against it."
+  - "Revisit trigger: the design that routes hook changes through the plan is
+    accepted. Measure hooks that edit only through Toha's edit operations."
+  - "Revisit trigger: an operator or template author asks for hooks that run
+    without a trust prompt."
