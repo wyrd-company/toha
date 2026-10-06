@@ -19,6 +19,9 @@ objective:
     that Toha gates on trust?
   - Is the Monty Python subset enough for file-editing hooks?
   - Can a sandboxed hook run without a trust prompt?
+  - How does the authority of a Monty hook compare with the authority of a
+    process hook that the operator trusts?
+  - Can a hook use third-party Python packages?
 
 background:
   current-design: >-
@@ -34,6 +37,8 @@ background:
     - Every hook needs trust, even a hook that only edits generated text, so a
       template that wants one small edit asks the operator to approve process
       execution.
+    - Trust is all or nothing. A trusted hook can read the home directory and
+      credentials, use the network, and write anywhere the operator can.
     - Monty (pydantic/monty) is a Python interpreter in Rust with no ambient
       filesystem, environment, network, or process access. The host reaches the
       sandbox only through mounts, an OS-call handler, and host functions.
@@ -56,6 +61,10 @@ ideas:
   - >-
     Refuse any path with a `.git` component in the host before the mount sees
     the call, to match the plan's `.git` rule.
+  - >-
+    Run the hook against a staging directory that holds the rendered output,
+    before the plan, so the plan, conflict check, dry run, and snapshot apply
+    to what the hook wrote and `.git` is not in the mount. Not measured.
   - >-
     Probe escapes by absolute path, `..`, `/proc`, rename and unlink across the
     mount edge, `chdir`, and symlinks that already exist in the project and
@@ -147,7 +156,8 @@ findings:
       route from an untrusted hook to code execution. Inferred: the same holds
       for other files that tools execute or load (`Makefile`, `package.json`
       scripts, `.vscode/tasks.json`, an existing executable whose mode bits
-      survive an overwrite).
+      survive an overwrite). The rating applies to a hook without trust. A
+      trusted process hook has the same access to `.git` and more.
 
   writes-bypass-plan:
     rating: RED
@@ -160,7 +170,8 @@ findings:
       but monty-fs 1.0.0 has no public API to read the overlay entries after
       the run (`OverlayState` exposes only `new`; `MountTable` does not return
       its mounts). Harvesting overlay writes into the plan needs an upstream
-      API or a Toha-owned OS-call handler.
+      API or a Toha-owned OS-call handler. The rating applies to a hook without
+      trust. Process hook writes also skip the plan.
 
   memory-limit-in-process:
     rating: RED
@@ -177,7 +188,9 @@ findings:
       limit ends the process. Upstream recommends `monty-pool`, which runs the
       interpreter in `monty` worker subprocesses, for untrusted code; it also
       contains stack-overflow and allocator aborts that in-process execution
-      does not (from docs; not measured).
+      does not (from docs; not measured). The rating applies to a hook without
+      trust. A process hook also has no memory limit, but a crash in it does
+      not end Toha.
 
   disk-write-unbounded:
     rating: YELLOW
@@ -186,7 +199,7 @@ findings:
     notes: >-
       Measured: with no `write_bytes_limit` on the mount, a hook writes 200 MB
       into the target in 128 ms. monty-fs supports a per-feed write-bytes cap;
-      Toha would have to choose a value.
+      Toha would have to choose a value. A process hook has no cap either.
 
   duration-limit:
     verdict: confirmed working
@@ -196,6 +209,39 @@ findings:
     notes: >-
       Measured: `while True: pass` stops with `TimeoutError` at the 200 ms
       `max_feed_duration`. Any value Toha adopts is a new timeout mechanic.
+
+  authority-compared-with-process-hooks:
+    verdict: strict subset
+    notes: >-
+      Measured: a Monty hook reads and writes only the target, has no
+      environment variables, cannot import `socket`, and starts a process only
+      through `run(argv)`, which Toha refuses without trust. Its duration is
+      bounded. A process hook runs with the full authority of the operator: it
+      reads the home directory and credentials, uses the network, writes
+      anywhere the operator can, and runs until it exits. Every risk above that
+      is rated for a hook without trust (`.git`, writes outside the plan, no
+      memory limit, unbounded writes) also applies to a trusted process hook.
+      Inferred: Monty can narrow what trust grants without removing the trust
+      prompt. For example, a hook that does not call `run` could need no
+      prompt for host access outside the target, and `run` keeps the prompt.
+      Inferred, not measured (probes ran on Linux only): one hook script runs
+      on Linux, macOS, and Windows with no shell and no Python install.
+
+  third-party-code:
+    rating: YELLOW
+    notes: >-
+      Measured from the monty 1.0.0 source (`load_module` in
+      `src/bytecode/vm/mod.rs`): `import` resolves only modules that Monty
+      implements in Rust, and raises `ModuleNotFoundError` for any other name.
+      Monty has no `sys.path` and does not load modules from disk, so a hook
+      cannot use pip packages or import another `.py` file, including one in
+      the template. Each hook is one source file. The available modules are
+      `re`, `json`, `pathlib`, `os` (filesystem only), `dataclasses`,
+      `datetime`, `collections`, `itertools`, `functools`, `math`, `random`,
+      `base64`, `binascii`, `copy`, `typing`, `unicodedata`, `sys`, `time`,
+      `asyncio`, and `gc`. Toha extends a hook only through host functions it
+      writes in Rust, such as a TOML parser; a template cannot bring its own
+      libraries.
 
   python-subset:
     rating: YELLOW
@@ -234,19 +280,23 @@ conclusion: >-
   The three claims hold: a Monty hook edits files inside the target mount,
   cannot read or write outside it (including through existing symlinks), and
   cannot start a process except through the host function, which Toha can
-  gate on trust with an uncatchable refusal. The assumption that a sandboxed
-  hook needs no trust prompt does not hold for the tested design. A read-write
-  mount of the target exposes `.git` and other files the operator later
-  executes, a `.git` name filter is bypassed by an existing symlink, the
-  writes skip the plan and the snapshot, and in-process Monty has no memory
-  limit and no crash isolation. A design that could drop the trust prompt
-  mounts the target as an overlay, harvests its writes into the plan (so
-  `TargetPath`, conflicts, dry run, and snapshot apply), and runs the
-  interpreter in a worker subprocess. That design depends on an upstream
-  monty-fs API that does not exist, on running a subprocess, and on new
-  duration, memory, and write-size limits. Recommendation: do not adopt Monty
-  hooks now. Keep process hooks behind trust. Revisit when monty-fs can return
-  overlay writes and the subprocess and limit choices are approved.
+  gate on trust with an uncatchable refusal. Monty hook authority is a strict
+  subset of process hook authority. The assumption that a sandboxed hook needs
+  no trust prompt does not hold for a read-write mount of the target: the
+  mount exposes `.git` and other files the operator later executes, a `.git`
+  name filter is bypassed by an existing symlink, the writes skip the plan and
+  the snapshot, and in-process Monty has no memory limit and no crash
+  isolation. These risks are not new; a trusted process hook carries all of
+  them. Two designs remain. First, keep the trust prompt and offer Monty hooks
+  as a narrower alternative to process hooks, which needs only the dependency
+  and a duration limit. Second, drop the trust prompt for Monty hooks that do
+  not call `run`, which needs writes to go through the plan (a staging
+  directory, or overlay writes harvested through an upstream monty-fs API), a
+  worker subprocess, and new duration, memory, and write-size limits.
+  Recommendation: do not adopt Monty in Toha until the toolchain blocker is
+  resolved (monty 1.1.0 does not compile on stable Rust, and Monty requires a
+  newer Rust than Toha supports). Then measure the staging-directory design,
+  which makes the second design possible without the upstream API.
 
 next-steps:
   - Decide whether Toha may run a Monty worker subprocess (a bundled `monty`
@@ -257,6 +307,13 @@ next-steps:
   - Ask upstream for a monty-fs API that returns overlay writes and deletions
     after a run, or measure a Toha-owned OS-call handler over a read-only
     `cap-std` directory that stages writes into the plan.
+  - Decide whether Toha offers Monty hooks as a narrower alternative to
+    process hooks behind the same trust prompt, or only as hooks without the
+    prompt.
+  - Measure a staging-directory design, where the hook edits the rendered
+    output before the plan, against the same probes. Also measure how a hook
+    edits files that already exist in the target, which the staging directory
+    does not hold.
   - Measure Starlark and Rhai against the same probes; with a harvest design
     Toha supplies every file operation itself, so the language choice is
     independent of the sandbox boundary.
