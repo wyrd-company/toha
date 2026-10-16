@@ -585,3 +585,26 @@ fn a_script_hook_finds_a_required_program_on_a_relative_path_entry() {
     assert_code(&output, 0);
     assert!(case.target.path().join("hook-ran").exists());
 }
+
+#[cfg(unix)]
+#[test]
+fn a_relative_path_entry_under_a_directory_holding_the_separator_is_not_searched() {
+    use std::os::unix::fs::PermissionsExt;
+    const PROGRAM: &str = "toha-fixture-relative-tool";
+    let case = Case::new();
+    let parent = tempfile::tempdir().unwrap();
+    let caller = parent.path().join("caller:extra");
+    let template_dir = tempfile::tempdir().unwrap();
+    let script = template_dir.path().join("setup.sh");
+    fs::write(&script, format!("#!/bin/sh\nexec {PROGRAM}\n")).unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    template(
+        template_dir.path(),
+        &format!("name: relative\nrequires:\n  - {PROGRAM}\nhooks:\n  - script: setup.sh\n"),
+    )
+    .unwrap();
+    install_marker(&caller.join("bin"), PROGRAM);
+    let output = apply_from(&caller, &case, template_dir.path());
+    assert_requirement_error_for(&output, PROGRAM);
+    case.assert_target_empty();
+}

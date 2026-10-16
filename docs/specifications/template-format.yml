@@ -226,7 +226,9 @@ description: >-
   hook agree; a name the lookup does not find falls back to the platform
   search. Every hook runs with `PATH` set to that search path, each relative
   entry made absolute, so a script hook and the programs a hook starts search
-  the same directories. When any program is
+  the same directories. A relative entry that has no absolute `PATH` form,
+  because the directory toha runs in holds the platform separator, is not
+  searched by the check or by any hook. When any program is
   absent, the command asks no question, writes no file, runs no hook, and
   names each absent program with its hint. The scripted route reports an
   `error` document of kind `requirement`. The check holds for a dry run, so

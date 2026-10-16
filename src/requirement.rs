@@ -59,20 +59,24 @@ pub fn check(template: &Template) -> Result<(), MissingRequirements> {
 /// absolute against the process working directory. Every hook receives this
 /// value as its `PATH`, so a hook, a script it runs, and their children search
 /// the directories [`check`] searched, whatever the hook's working directory.
+/// A relative entry is dropped when it has no absolute `PATH` form: the working
+/// directory is unavailable, or its absolute form holds the platform separator
+/// (`:` on Unix). The check and every hook then search the same remaining
+/// entries, so the check refuses before the interview rather than a hook
+/// failing after files are written.
 pub fn search_path() -> Option<OsString> {
     let path = std::env::var_os("PATH")?;
-    let Ok(cwd) = std::env::current_dir() else {
-        return Some(path);
-    };
-    std::env::join_paths(std::env::split_paths(&path).map(|entry| {
+    let cwd = std::env::current_dir().ok();
+    let entries = std::env::split_paths(&path).filter_map(|entry| {
         if entry.is_absolute() {
-            entry
-        } else {
-            cwd.join(entry)
+            return Some(entry);
         }
-    }))
-    .ok()
-    .or(Some(path))
+        let absolute = cwd.as_ref()?.join(entry);
+        std::env::join_paths([&absolute])
+            .is_ok()
+            .then_some(absolute)
+    });
+    Some(std::env::join_paths(entries).unwrap_or_default())
 }
 
 /// The executable that `program` names on [`search_path`], resolved the same
