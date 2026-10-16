@@ -13,12 +13,13 @@ use serde_json::Value;
 
 use crate::{
     fault::TemplateFault,
+    git_target::PlannedGit,
     hook::{HookResults, ResultSpec},
     inject::{
         Anchor, JsonFormat, JsonPath, MarkerStyle, PlannedEdit, PlannedJsonEdit, PlannedRegionEdit,
         RegionKey,
     },
-    interview::Completed,
+    interview::{Answer, Completed},
     jinja::{Expr, Tmpl, context_from_answers},
     staging::CanonicalTarget,
     template::{
@@ -111,6 +112,9 @@ pub struct Plan {
     /// of a skipped producer sees a bound `none`. Empty when no hook declares a
     /// result. Not part of the reviewable or persisted surface.
     pub(crate) result_seed: Vec<ResultSpec>,
+    /// The repository a reached `git` question asks for; `None` when the
+    /// template has no `git` question or the interview skipped it.
+    pub git: Option<PlannedGit>,
 }
 /// A surface rendered at plan build (`Ready`) or retained to render in the apply
 /// loop after its producer hooks run (`AfterHooks`). A result-free surface — the
@@ -368,6 +372,19 @@ pub enum PlanError {
     #[error("{field}: {message}")]
     Inject { field: String, message: String },
 }
+/// The repository the `git` question asks for. A reached question initializes
+/// the target; its non-empty answer, trimmed, is the `origin` remote.
+fn planned_git(template: &Template, completed: &Completed) -> Option<PlannedGit> {
+    let id = template.git_question()?;
+    if completed.was_skipped(id) {
+        return None;
+    }
+    let remote = match completed.answers.get(id) {
+        Some(Answer::Text(url)) if !url.trim().is_empty() => Some(url.trim().to_owned()),
+        _ => None,
+    };
+    Some(PlannedGit { remote })
+}
 fn rendered(text: &str, ctx: &impl serde::Serialize, source: &Path) -> Result<String, PlanError> {
     Tmpl::compile(text.into())
         .and_then(|t| t.render(ctx))
@@ -412,6 +429,7 @@ impl Plan {
             before_apply: None,
             after_apply: None,
             result_seed: template.result_specs(),
+            git: planned_git(template, completed),
         };
         // Render the retained source-tree program; it is not reopened here.
         for entry in &template.render_program {

@@ -144,7 +144,7 @@ $defs:
       id:
         $ref: "#/$defs/identifier"
       type:
-        enum: [ text, multiline, confirm, select, multiselect ]
+        enum: [ text, multiline, git, confirm, select, multiselect ]
       prompt:
         $ref: "#/$defs/template"
       description:

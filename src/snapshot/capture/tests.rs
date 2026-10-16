@@ -49,6 +49,7 @@ fn plan_of(files: Vec<PlannedFile>) -> Plan {
         before_apply: None,
         after_apply: None,
         result_seed: vec![],
+        git: None,
     }
 }
 

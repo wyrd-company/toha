@@ -161,7 +161,7 @@ fn print_error(line: &str) -> Result<(), String> {
 
 fn ask_value(ask: &mut impl Ask, prompt: &Prompt) -> Result<Value, String> {
     let value = match prompt.kind {
-        PromptKind::Text => json!(ask.text(prompt, &prompt.title)?),
+        PromptKind::Text | PromptKind::Git => json!(ask.text(prompt, &prompt.title)?),
         PromptKind::Multiline => json!(ask.multiline(prompt)?),
         PromptKind::Confirm => json!(ask.confirm(prompt)?),
         PromptKind::Select => json!(ask.select(prompt)?),

@@ -3,6 +3,7 @@
 //   implements: architecture
 // ---
 use crate::{
+    git_target::{GitReport, GitSetup, GitTargetError, Preflight},
     hook::{HookError, HookOutcome, HookResults, HookRunner, decode},
     inject::{
         EditResolution, JsonEditError, PlannedEdit, RegionError, RegionKey, resolve_json_edit,
@@ -37,6 +38,8 @@ pub enum Applied {
         hooks_run: usize,
         hooks: Vec<HookReport>,
         after_apply: Option<String>,
+        /// What the apply did for the template's `git` question, when reached.
+        git: Option<GitReport>,
     },
     NeedsTrust(Plan),
 }
@@ -106,6 +109,10 @@ pub enum ApplyError {
         id: Id,
         fault: OutputFault,
     },
+    /// The `git` question's repository could not be set up. A remote with
+    /// history stops the apply before any write.
+    #[error("{0}")]
+    Git(#[from] GitTargetError),
 }
 /// A fault in a hook's captured output. Every variant is byte-free: a message
 /// carries only a position, never the stream's bytes.
@@ -214,6 +221,13 @@ impl Plan {
         // an unforced region drift, a parse or path error, or a missing target
         // leaves every file on disk unchanged.
         let resolved = self.resolve_edits(target, options.force)?;
+        // The `git` question's remote is checked before the first write, so a
+        // remote with history leaves the target unchanged.
+        let git = self
+            .git
+            .as_ref()
+            .map(|planned| crate::git_target::preflight(planned, target))
+            .transpose()?;
         let mut written = Vec::new();
         // Whole-file targets that carry no edit write exactly as before. A target
         // with edits is committed once below, from its folded image.
@@ -278,6 +292,21 @@ impl Plan {
                 written.push(edited.path.clone());
             }
         }
+        // The repository exists before any hook runs, so a hook can use it.
+        let git = match git {
+            None => None,
+            Some(Preflight::Existing) => Some(GitReport {
+                setup: GitSetup::Existing,
+                warning: None,
+            }),
+            Some(Preflight::Initialize { remote, warning }) => {
+                let branch = crate::git_target::initialize(target.as_path(), remote.as_deref())?;
+                Some(GitReport {
+                    setup: GitSetup::Initialized { branch, remote },
+                    warning,
+                })
+            }
+        };
         // The only site where hook results exist. Each declared producer is
         // seeded not-run so a reader of a skipped producer sees a bound `none`;
         // real results overwrite the seed as producers run.
@@ -356,6 +385,7 @@ impl Plan {
             hooks_run,
             hooks: hook_reports,
             after_apply,
+            git,
         })
     }
 
@@ -613,6 +643,7 @@ mod tests {
             before_apply: None,
             after_apply: None,
             result_seed: vec![],
+            git: None,
         }
     }
 

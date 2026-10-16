@@ -7,6 +7,7 @@ pub mod apply;
 pub mod config;
 pub mod context;
 mod fault;
+pub mod git_target;
 pub mod hook;
 pub mod inject;
 pub mod interview;

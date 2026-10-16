@@ -29,6 +29,7 @@
 use crate::{
     AnswerError, Batch, Completed, EndKind, Ended, EvalError, Id, Interview, Item, Pending,
     Planned, PlannedHook, Prompt, PromptKind, RawAnswer, RawAnswers, Rejections, Template,
+    git_target::{GitSetup, PlannedGit},
     staging::{CanonicalTarget, StagedRecord},
 };
 use indexmap::IndexMap;
@@ -89,13 +90,14 @@ fn prompt_schema(prompt: &Prompt) -> Value {
     let kind = match prompt.kind {
         PromptKind::Text | PromptKind::TextLoop => "text",
         PromptKind::Multiline => "multiline",
+        PromptKind::Git => "git",
         PromptKind::Confirm => "confirm",
         PromptKind::Select => "select",
         PromptKind::MultiSelect => "multiselect",
     };
     property.insert("x-toha-type".into(), json!(kind));
     match prompt.kind {
-        PromptKind::Text | PromptKind::Multiline => {
+        PromptKind::Text | PromptKind::Multiline | PromptKind::Git => {
             property.insert("type".into(), json!("string"));
             property.extend(text_rules(prompt));
             if prompt.kind == PromptKind::Multiline {
@@ -203,9 +205,28 @@ pub struct ApplyReport {
     pub files: Vec<AppliedFile>,
     pub messages: Vec<String>,
     pub hooks: Vec<AppliedHook>,
+    /// What the apply did for the template's `git` question, when reached.
+    pub git: Option<GitSetup>,
+}
+/// The `git` member of an `applied` document.
+fn git_setup_value(setup: &GitSetup) -> Value {
+    match setup {
+        GitSetup::Initialized { branch, remote } => json!({
+            "setup": "initialized",
+            "branch": branch,
+            "remote": remote.as_deref().map(crate::source::without_userinfo),
+        }),
+        GitSetup::Existing => json!({ "setup": "existing" }),
+    }
+}
+/// The `git` member of a `planned` document: the remote a reached `git`
+/// question would add.
+fn planned_git_value(planned: &PlannedGit) -> Value {
+    json!({ "remote": planned.remote.as_deref().map(crate::source::without_userinfo) })
 }
 /// The `applied` result document: every written path with its action, the
-/// completion messages, and the hooks that ran. Exit 0.
+/// completion messages, the hooks that ran, and the `git` setup when the
+/// template's `git` question was reached. Exit 0.
 pub fn applied_document(report: &ApplyReport, context: &Context) -> Value {
     let files: Vec<Value> = report
         .files
@@ -217,8 +238,12 @@ pub fn applied_document(report: &ApplyReport, context: &Context) -> Value {
         .iter()
         .map(|hook| json!({"id": hook.id, "exit_code": hook.exit_code, "success": hook.success}))
         .collect();
-    json!({"protocol":1, "status":"applied", "context":context_value(context),
-        "files":files, "messages":report.messages, "hooks":hooks})
+    let mut document = json!({"protocol":1, "status":"applied", "context":context_value(context),
+        "files":files, "messages":report.messages, "hooks":hooks});
+    if let (Some(setup), Some(object)) = (&report.git, document.as_object_mut()) {
+        object.insert("git".into(), git_setup_value(setup));
+    }
+    document
 }
 /// Whether a planned apply's hooks would run without an extra grant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -264,9 +289,13 @@ pub fn planned_document(
         })
         .collect();
     let hooks: Vec<Value> = plan.hooks.iter().map(planned_hook_value).collect();
-    json!({"protocol":1, "status":"planned", "context":context_value(context),
+    let mut document = json!({"protocol":1, "status":"planned", "context":context_value(context),
         "files":files, "messages":messages, "hooks":hooks,
-        "trusted": trust == TrustState::Trusted})
+        "trusted": trust == TrustState::Trusted});
+    if let (Some(planned), Some(object)) = (&plan.git, document.as_object_mut()) {
+        object.insert("git".into(), planned_git_value(planned));
+    }
+    document
 }
 /// The kind of a scripted `error` result document. Every route-preparation and
 /// document fault maps to exactly one kind.
@@ -287,6 +316,9 @@ pub enum ErrorKind {
     Snapshot,
     /// A program the template `requires` is not on `PATH`. Exit 1.
     Requirement,
+    /// The `git` question's repository could not be set up: the remote already
+    /// has history, or the target could not be inspected or initialized. Exit 1.
+    Git,
 }
 impl ErrorKind {
     fn as_str(self) -> &'static str {
@@ -303,6 +335,7 @@ impl ErrorKind {
             Self::Ambiguous => "ambiguous",
             Self::Snapshot => "snapshot",
             Self::Requirement => "requirement",
+            Self::Git => "git",
         }
     }
 }

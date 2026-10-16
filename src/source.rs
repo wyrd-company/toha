@@ -190,8 +190,12 @@ pub fn without_userinfo(repo: &str) -> String {
     repo.to_string()
 }
 fn git_error(error: impl std::fmt::Display, repo: &str) -> SourceError {
+    SourceError::Git(redacted(&error.to_string(), repo))
+}
+/// `message` with the credentials of `repo` removed wherever it names them.
+pub(crate) fn redacted(message: &str, repo: &str) -> String {
     let safe = without_userinfo(repo);
-    let mut message = error.to_string().replace(repo, &safe);
+    let mut message = message.replace(repo, &safe);
     if let Some(scheme) = repo.find("://") {
         let start = scheme + 3;
         let end = repo[start..]
@@ -201,7 +205,7 @@ fn git_error(error: impl std::fmt::Display, repo: &str) -> SourceError {
             message = message.replace(&repo[start..start + at + 1], "");
         }
     }
-    SourceError::Git(message)
+    message
 }
 pub fn cache_path(cache: &Path, address: &Address, hosts: &Hosts, commit: &str) -> PathBuf {
     cache
