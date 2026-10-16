@@ -91,6 +91,7 @@ fn run(fixture: &Path, target: &Path) -> Result<Vec<String>, (u8, String)> {
                 hooks_run: 0,
                 hooks: vec![],
                 after_apply: None,
+                git: None,
             })
         }
     } else {

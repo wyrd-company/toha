@@ -212,6 +212,12 @@ pub enum QuestionKind {
     Multiline {
         default: Option<Tmpl>,
     },
+    /// The target repository's remote URL. A reached `git` question makes the
+    /// apply initialize the target as a git repository; a non-empty answer
+    /// adds it as the `origin` remote.
+    Git {
+        default: Option<Tmpl>,
+    },
     Confirm {
         default: Option<Typed<bool>>,
     },
@@ -604,6 +610,8 @@ struct Builder {
     /// than an undefined id, on any surface. `settle_hook_results` then enforces
     /// which surfaces may actually read one.
     result_ids: HashSet<String>,
+    /// The path of the first `git` question, so a second one is a load error.
+    git_question: Option<String>,
 }
 /// Collects question and computed ids from raw interview nodes, including nested groups.
 fn answer_ids(values: &[Value], ids: &mut HashSet<String>) {
@@ -1299,6 +1307,19 @@ impl Builder {
                 "multiline" => QuestionKind::Multiline {
                     default: self.tmpl(default, &format!("{path}.default")),
                 },
+                "git" => {
+                    match &self.git_question {
+                        Some(first) => problem(
+                            &mut self.problems,
+                            format!("{path}.type"),
+                            format!("only one git question allowed; {first} is already one"),
+                        ),
+                        None => self.git_question = Some(path.clone()),
+                    }
+                    QuestionKind::Git {
+                        default: self.tmpl(default, &format!("{path}.default")),
+                    }
+                }
                 "confirm" => QuestionKind::Confirm {
                     default: self.typed(default, &format!("{path}.default")),
                 },
@@ -1348,10 +1369,21 @@ impl Template {
     }
 
     /// The programs that must be on `PATH` before the interview starts, in
-    /// order: the declared `requires` entries. The pre-interview check reads
-    /// this list, not the field.
+    /// order: the declared `requires` entries, then `git` when the template has
+    /// a `git` question and does not declare `git` itself. The pre-interview
+    /// check reads this list, not the field.
     pub fn requirements(&self) -> Vec<Requirement> {
-        self.requires.clone()
+        let mut all = self.requires.clone();
+        if self.git_question().is_some() && !all.iter().any(|r| r.program == "git") {
+            all.push(Requirement {
+                program: "git".into(),
+                hint: Some(
+                    "This template creates a git repository; install git from https://git-scm.com."
+                        .into(),
+                ),
+            });
+        }
+        all
     }
 
     /// Loads a template in legacy staged mode: the seventeen names are neither
@@ -1435,6 +1467,7 @@ impl Template {
             partials: partials.clone(),
             reserves_context,
             result_ids: HashSet::new(),
+            git_question: None,
         };
         if let Some(values) = &raw.data {
             b.answer_ids.extend(values.keys().cloned());
@@ -1948,7 +1981,9 @@ impl NeedScan {
                     self.opt_typed(q.validate.max.as_ref(), &format!("{label}.validate.max"));
                     self.opt_expr(q.format.as_ref(), &format!("{label}.format"));
                     match &q.kind {
-                        QuestionKind::Text { default } | QuestionKind::Multiline { default } => {
+                        QuestionKind::Text { default }
+                        | QuestionKind::Multiline { default }
+                        | QuestionKind::Git { default } => {
                             self.opt_tmpl(default.as_ref(), &format!("{label}.default"));
                         }
                         QuestionKind::Confirm { default } => {
@@ -2017,6 +2052,19 @@ impl Template {
                 HookProgram::Run(args) => args.iter().any(|a| reads(a.references())),
                 HookProgram::Script { args, .. } => args.iter().any(|a| reads(a.references())),
             }
+    }
+
+    /// The id of the template's `git` question, wherever it is in the interview.
+    /// A template holds at most one.
+    pub fn git_question(&self) -> Option<&Id> {
+        fn walk(nodes: &[Node]) -> Option<&Id> {
+            nodes.iter().find_map(|node| match node {
+                Node::Question(q) if matches!(q.kind, QuestionKind::Git { .. }) => Some(&q.id),
+                Node::Group(g) => walk(&g.nodes),
+                _ => None,
+            })
+        }
+        walk(&self.interview)
     }
 
     /// Every declared producer's result spec, in run order (interview producers
@@ -2389,7 +2437,9 @@ impl Settle<'_> {
                     self.deny_opt_typed(q.validate.max.as_ref(), &format!("{label}.validate.max"));
                     self.deny_opt_expr(q.format.as_ref(), &format!("{label}.format"));
                     match &q.kind {
-                        QuestionKind::Text { default } | QuestionKind::Multiline { default } => {
+                        QuestionKind::Text { default }
+                        | QuestionKind::Multiline { default }
+                        | QuestionKind::Git { default } => {
                             self.deny_opt_tmpl(default.as_ref(), &format!("{label}.default"));
                         }
                         QuestionKind::Confirm { default } => {

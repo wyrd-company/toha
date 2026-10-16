@@ -37,6 +37,7 @@ use toha::{
         EnvironmentDecision, ExecutionFacts, FixedEnvironment, FixedEnvironmentSource, HostFacts,
         InvocationContext, SelectedTemplate,
     },
+    git_target::GitReport,
     hook::{ProcessRunner, ScriptedRunner},
     protocol::{
         self, AppliedFile, AppliedHook, ApplyReport, Context, DocumentStep, ErrorKind, Headless,
@@ -639,6 +640,12 @@ fn plan_lines(plan: &Plan, force: bool, edits: &[String]) -> Vec<String> {
     // Injection previews sit between the whole-file lines and the hook lines, the
     // order in which apply commits and then runs.
     lines.extend_from_slice(edits);
+    // The repository is initialized after the files and before the hooks.
+    lines.extend(
+        plan.git
+            .as_ref()
+            .map(toha::git_target::PlannedGit::preview_line),
+    );
     for planned in &plan.hooks {
         // A deferred hook lists its source form: `run[0]` rendered, later
         // arguments and cwd showing their `{{ id.field }}` placeholders. It runs
@@ -1699,6 +1706,7 @@ fn scripted_apply_error(error: toha::ApplyError, context: &Context) -> Outcome {
         E::Conflicts(_) | E::Drift(_) | E::Symlink(_) => ErrorKind::Conflict,
         E::Hook { .. } | E::HookIo { .. } | E::HookOutput { .. } => ErrorKind::Hook,
         E::Io { .. } | E::Deferred(_) | E::Region(_) | E::Json(_) => ErrorKind::Render,
+        E::Git(_) => ErrorKind::Git,
     };
     scripted_error(kind, error.to_string(), vec![], Some(context))
 }
@@ -1953,8 +1961,12 @@ fn scripted_completed(
             files,
             hooks,
             after_apply,
+            git,
             ..
         }) => {
+            if let Some(warning) = git.as_ref().and_then(|g| g.warning.clone()) {
+                messages.push(warning);
+            }
             if let Some(after) = after_apply {
                 messages.push(after);
             }
@@ -1978,7 +1990,9 @@ fn scripted_completed(
                         success: hook.success,
                     })
                     .collect(),
+                git: git.as_ref().map(|g| g.setup.clone()),
             };
+            let project = project_after_git(project, git.as_ref(), target);
             let snapshot = plain_apply_snapshot(
                 project.as_ref(),
                 was_clean,
@@ -2068,6 +2082,25 @@ fn plain_apply_snapshot(
         }
         Err(error) => serde_json::json!({ "error": error.to_string() }),
     }
+}
+/// The project a plain apply captures into: the repository opened before the
+/// apply, or the one the apply's `git` question initialized. A new repository
+/// has no commit, so its snapshot reports `no-commit` rather than `not-git`.
+/// Cleanliness is still the reading taken before the apply.
+fn project_after_git(
+    before: Option<toha::snapshot::Project>,
+    git: Option<&GitReport>,
+    target: &toha::staging::CanonicalTarget,
+) -> Option<toha::snapshot::Project> {
+    let initialized =
+        git.is_some_and(|g| matches!(g.setup, toha::git_target::GitSetup::Initialized { .. }));
+    if before.is_some() || !initialized {
+        return before;
+    }
+    open_project_for_snapshot(
+        toha::snapshot::Project::open(target),
+        &mut std::io::stderr(),
+    )
 }
 /// The plain apply's snapshot result as one human line for the person and agent
 /// routes, which report text: the id it saved, or the reason it saved none. The
@@ -2522,8 +2555,12 @@ fn run(
         &ProcessRunner,
         &mut |file| println!("{file}"),
     ) {
-        Ok(Applied::Written { after_apply, .. }) => {
-            let mut lines = Vec::from_iter(after_apply);
+        Ok(Applied::Written {
+            after_apply, git, ..
+        }) => {
+            let mut lines = git.as_ref().map(GitReport::lines).unwrap_or_default();
+            lines.extend(after_apply);
+            let capture_project = project_after_git(capture_project, git.as_ref(), &target);
             if let (Some(sv), Some(cplan)) = (saved.as_ref(), capture_plan.as_ref())
                 && let Some(line) = plain_apply_snapshot_line(
                     capture_project.as_ref(),

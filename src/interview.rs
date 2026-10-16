@@ -186,6 +186,11 @@ impl Completed {
             Disposition::DryRun => Step::Plan { apply: false },
         }
     }
+    /// Whether the question `id` was skipped, by its own `when`, an enclosing
+    /// group's, or a flow skip.
+    pub fn was_skipped(&self, id: &Id) -> bool {
+        self.skipped.contains_key(id)
+    }
     /// Adds the warning for each answer in `unused` whose question was
     /// skipped, at the position the question was skipped.
     pub(crate) fn warn_unused(&mut self, unused: &RawAnswers) {
@@ -334,6 +339,8 @@ enum PreparedDefaultSource {
 pub enum PromptKind {
     Text,
     Multiline,
+    /// A one-line remote URL for the target repository; answered as text.
+    Git,
     Confirm,
     Select,
     MultiSelect,
@@ -504,7 +511,9 @@ fn question_ready(q: &Question, a: &Answers, t: &Template, seed: &InterviewSeed)
     }
     let override_default = seed.defaults.contains_key(&q.id);
     match &q.kind {
-        QuestionKind::Text { default } | QuestionKind::Multiline { default } => {
+        QuestionKind::Text { default }
+        | QuestionKind::Multiline { default }
+        | QuestionKind::Git { default } => {
             override_default || default.as_ref().is_none_or(|v| tmpl_ready(v, a, t))
         }
         QuestionKind::Confirm { default } => {
@@ -540,6 +549,7 @@ fn default_ready(q: &Question, a: &Answers, t: &Template, seed: &InterviewSeed) 
     match &q.kind {
         QuestionKind::Text { default }
         | QuestionKind::Multiline { default }
+        | QuestionKind::Git { default }
         | QuestionKind::Select { default, .. } => {
             default.as_ref().is_none_or(|v| tmpl_ready(v, a, t))
         }
@@ -576,6 +586,7 @@ fn render_default(
     match &q.kind {
         QuestionKind::Text { default }
         | QuestionKind::Multiline { default }
+        | QuestionKind::Git { default }
         | QuestionKind::Select { default, .. } => default
             .as_ref()
             .map(|v| {
@@ -662,6 +673,7 @@ fn make_prompt(
     let kind = match &q.kind {
         QuestionKind::Text { .. } => PromptKind::Text,
         QuestionKind::Multiline { .. } => PromptKind::Multiline,
+        QuestionKind::Git { .. } => PromptKind::Git,
         QuestionKind::Confirm { .. } => PromptKind::Confirm,
         QuestionKind::Select { options: o, .. } => {
             options = eval_typed(o, &ctx, id, "options")?;
@@ -749,7 +761,7 @@ fn make_prompt(
 fn parse_kind(id: &Id, kind: PromptKind, value: Value) -> Result<Answer, Rejection> {
     let fail = |msg: &str| rejection(id, msg);
     match kind {
-        PromptKind::Text | PromptKind::Multiline | PromptKind::Select => value
+        PromptKind::Text | PromptKind::Multiline | PromptKind::Git | PromptKind::Select => value
             .as_str()
             .map(|v| Answer::Text(v.into()))
             .ok_or_else(|| fail("must be a string")),
@@ -910,6 +922,7 @@ fn prompt_kind(q: &Question) -> PromptKind {
     match q.kind {
         QuestionKind::Text { .. } => PromptKind::Text,
         QuestionKind::Multiline { .. } => PromptKind::Multiline,
+        QuestionKind::Git { .. } => PromptKind::Git,
         QuestionKind::Confirm { .. } => PromptKind::Confirm,
         QuestionKind::Select { .. } => PromptKind::Select,
         QuestionKind::MultiSelect { .. } => PromptKind::MultiSelect,
@@ -1427,7 +1440,9 @@ fn expressions(node: &Node) -> (Id, Vec<Expression<'_>>) {
                 out.push((field, source, refs));
             }
             match &q.kind {
-                QuestionKind::Text { default } | QuestionKind::Multiline { default } => {
+                QuestionKind::Text { default }
+                | QuestionKind::Multiline { default }
+                | QuestionKind::Git { default } => {
                     out.extend(default.as_ref().map(|v| tmpl("default", v)));
                 }
                 QuestionKind::Confirm { default } => {

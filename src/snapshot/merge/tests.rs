@@ -974,6 +974,7 @@ fn plan_of(files: Vec<crate::plan::PlannedFile>) -> crate::plan::Plan {
         before_apply: None,
         after_apply: None,
         result_seed: vec![],
+        git: None,
     }
 }
 

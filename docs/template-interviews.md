@@ -55,6 +55,32 @@ fallback when an editor is unavailable.
 
 The answer is still one string. Toha keeps its newlines when it renders a file.
 
+### `git`: a repository for the target
+
+Use `git` when the generated project should be a git repository. The person
+enters the URL of its remote, or leaves the answer empty for none.
+
+```yaml
+- id: remote
+  type: git
+  prompt: Remote URL (empty for none)
+```
+
+When the interview reaches this question, Toha initializes the target as a git
+repository after it writes the files and before any hook runs, so hooks can use
+git. The branch is your configured `init.defaultBranch`; if that is unset or
+`master`, Toha uses `main`. A URL answer becomes the `origin` remote.
+
+Toha checks the remote before it writes anything. If the remote already has
+history, Toha stops and tells the person to clone it first, then apply the
+template into the clone. If Toha cannot reach the remote, it adds the remote,
+shows a warning, and continues.
+
+A target that is already inside a git repository stays as it is. If a `when`
+skips the question, Toha does not initialize a repository. A template can have
+only one `git` question. Toha checks that `git` is on `PATH` before the
+interview starts, as if the template listed it in `requires`.
+
 ### `confirm`: yes or no
 
 Use `confirm` for a decision. Its answer is a boolean: `true` or `false`.

@@ -104,10 +104,10 @@ description: >-
   constraint whose inputs are available without rendering its presentation
   fields or forcing an unavailable dynamic constraint.
 
-  Questions. `type` is one of `text`, `multiline`, `confirm`, `select`, and
-  `multiselect`. `prompt` is required. `description` and `placeholder` are
+  Questions. `type` is one of `text`, `multiline`, `git`, `confirm`, `select`,
+  and `multiselect`. `prompt` is required. `description` and `placeholder` are
   optional. `required: true` rejects an empty answer. `default` has the answer
-  type: string for `text`, `multiline`, and `select`; boolean for `confirm`;
+  type: string for `text`, `multiline`, `git`, and `select`; boolean for `confirm`;
   array of strings for `multiselect` and for a looped `text`. `options` on
   `select` and `multiselect` is a literal array of strings or an expression
   that returns one. `validate.min` and `validate.max` bound the character
@@ -119,6 +119,25 @@ description: >-
   array of strings. An empty submission ends the loop. `loop.min` and
   `loop.max` bound the item count; when `loop.max` is reached, the loop ends.
   `validate` and `format` apply to each item.
+
+  Git question. A `git` question asks for the remote URL of the target's
+  repository; its answer is a one-line string, like `text`. A template holds at
+  most one `git` question; a second one is a load error. When the interview
+  reaches the question, the apply initializes the target as a git repository
+  after the files are written and before any hook runs. `HEAD` names the
+  configured `init.defaultBranch`, except that an unset or `master` value names
+  `main`. An answer that is not empty after trimming whitespace is added as the
+  remote `origin` with the fetch refspec `+refs/heads/*:refs/remotes/origin/*`;
+  an empty or `null` answer adds no remote. Before any write, the apply lists
+  the remote's references, resolving a relative local path from the target as
+  git does: a remote with any reference stops the apply, writes
+  nothing, and tells the caller to clone the remote first and apply into the
+  clone; a remote that cannot be listed adds a warning and the apply continues.
+  A target already inside a git repository is left unchanged, and its remote is
+  neither checked nor changed. A `git` question skipped by a `when` or a flow
+  skip initializes nothing, whatever its default. A template with a `git`
+  question requires the program `git`, as if `requires` listed it with a hint,
+  unless `requires` already lists `git`.
 
   Groups. A group holds child nodes under one `when`. The `group` value names
   the group for diagnostics and is not an answer id.

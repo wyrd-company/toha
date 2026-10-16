@@ -233,6 +233,29 @@ $defs:
         $ref: "#/$defs/merge"
       seed:
         $ref: "#/$defs/seed"
+      git:
+        description: >-
+          What the apply did for the template's `git` question, present when the
+          interview reached it. `initialized` names the branch `HEAD` names and
+          the `origin` remote, or `null` for none; `existing` means the target
+          was already inside a repository and was left unchanged.
+        oneOf:
+          - type: object
+            additionalProperties: false
+            required: [ setup, branch, remote ]
+            properties:
+              setup:
+                const: initialized
+              branch:
+                type: string
+              remote:
+                type: [ string, "null" ]
+          - type: object
+            additionalProperties: false
+            required: [ setup ]
+            properties:
+              setup:
+                const: existing
   planned:
     description: >-
       The scripted route planned the files and hooks and wrote nothing (a CLI or
@@ -283,6 +306,17 @@ $defs:
         type: boolean
       merge:
         $ref: "#/$defs/merge"
+      git:
+        description: >-
+          The repository the template's `git` question asks for, present when
+          the interview reached it: the `origin` remote to add, or `null` for
+          none. A target already inside a repository is left unchanged.
+        type: object
+        additionalProperties: false
+        required: [ remote ]
+        properties:
+          remote:
+            type: [ string, "null" ]
   error:
     description: >-
       The scripted route refused the request or a step failed. `kind` names the
@@ -311,6 +345,7 @@ $defs:
           - ambiguous
           - snapshot
           - requirement
+          - git
       message:
         type: string
       commands:

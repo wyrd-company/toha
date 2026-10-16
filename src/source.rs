@@ -190,8 +190,12 @@ pub fn without_userinfo(repo: &str) -> String {
     repo.to_string()
 }
 fn git_error(error: impl std::fmt::Display, repo: &str) -> SourceError {
+    SourceError::Git(redacted(&error.to_string(), repo))
+}
+/// `message` with the credentials of `repo` removed wherever it names them.
+pub(crate) fn redacted(message: &str, repo: &str) -> String {
     let safe = without_userinfo(repo);
-    let mut message = error.to_string().replace(repo, &safe);
+    let mut message = message.replace(repo, &safe);
     if let Some(scheme) = repo.find("://") {
         let start = scheme + 3;
         let end = repo[start..]
@@ -201,7 +205,7 @@ fn git_error(error: impl std::fmt::Display, repo: &str) -> SourceError {
             message = message.replace(&repo[start..start + at + 1], "");
         }
     }
-    SourceError::Git(message)
+    message
 }
 pub fn cache_path(cache: &Path, address: &Address, hosts: &Hosts, commit: &str) -> PathBuf {
     cache
@@ -295,6 +299,66 @@ fn expand_commit(repo: &str, short: &str, dest: &Path) -> Result<String, SourceE
         .map(|id| id.to_string())
         .map_err(|e| SourceError::Git(e.to_string()))
 }
+/// The roots Toha hands a bundled rustls transport, written once per connection
+/// owner and kept alive for as long as the connection may read them.
+pub(crate) type NativeRoots = Option<tempfile::NamedTempFile>;
+/// Point an HTTPS connection at the platform's trusted roots. System curl
+/// backends already use platform trust. Bundled rustls needs a CA bundle when
+/// Git has not supplied one.
+pub(crate) fn trust_native_roots(
+    connection: &mut gix::remote::Connection<
+        '_,
+        '_,
+        '_,
+        Box<dyn gix::protocol::transport::client::blocking_io::Transport + Send>,
+    >,
+    native_roots: &mut NativeRoots,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if !curl::Version::get()
+        .ssl_version()
+        .is_some_and(|backend| backend.starts_with("rustls"))
+    {
+        return Ok(());
+    }
+    let url = connection.transport_mut().to_url().into_owned();
+    let remote = connection.remote();
+    let Some(mut options) = remote
+        .repo()
+        .transport_options(url.as_bstr(), remote.name().map(gix::remote::Name::as_bstr))?
+    else {
+        return Ok(());
+    };
+    if let Some(http) =
+        options.downcast_mut::<gix::protocol::transport::client::blocking_io::http::Options>()
+        && http.ssl_ca_info.is_none()
+        && http.ssl_verify
+    {
+        if native_roots.is_none() {
+            let loaded = rustls_native_certs::load_native_certs();
+            if loaded.certs.is_empty() {
+                // Plain HTTP does not require CA roots. With no bundle,
+                // curl still verifies and rejects an untrusted TLS peer.
+                connection.set_transport_options(options);
+                return Ok(());
+            }
+            let mut bundle = tempfile::NamedTempFile::new()?;
+            for cert in loaded.certs {
+                writeln!(bundle, "-----BEGIN CERTIFICATE-----")?;
+                let encoded = base64::engine::general_purpose::STANDARD.encode(cert.as_ref());
+                for line in encoded.as_bytes().chunks(64) {
+                    bundle.write_all(line)?;
+                    bundle.write_all(b"\n")?;
+                }
+                writeln!(bundle, "-----END CERTIFICATE-----")?;
+            }
+            bundle.flush()?;
+            *native_roots = Some(bundle);
+        }
+        http.ssl_ca_info = Some(native_roots.as_ref().unwrap().path().to_owned());
+    }
+    connection.set_transport_options(options);
+    Ok(())
+}
 pub fn fetch(address: &Address, dest: &Path) -> Result<Fetched, SourceError> {
     let Address::Git {
         repo, reference, ..
@@ -317,55 +381,7 @@ pub fn fetch(address: &Address, dest: &Path) -> Result<Fetched, SourceError> {
     let mut native_roots = None;
     let mut clone = gix::prepare_clone(repo.as_str(), dest)
         .map_err(|e| git_error(e, repo))?
-        .configure_connection(move |connection| {
-            // System curl backends already use platform trust. Bundled rustls
-            // needs a CA bundle when Git has not supplied one.
-            if !curl::Version::get()
-                .ssl_version()
-                .is_some_and(|backend| backend.starts_with("rustls"))
-            {
-                return Ok(());
-            }
-            let url = connection.transport_mut().to_url().into_owned();
-            let remote = connection.remote();
-            let Some(mut options) = remote
-                .repo()
-                .transport_options(url.as_bstr(), remote.name().map(gix::remote::Name::as_bstr))?
-            else {
-                return Ok(());
-            };
-            if let Some(http) = options
-                .downcast_mut::<gix::protocol::transport::client::blocking_io::http::Options>()
-                && http.ssl_ca_info.is_none()
-                && http.ssl_verify
-            {
-                if native_roots.is_none() {
-                    let loaded = rustls_native_certs::load_native_certs();
-                    if loaded.certs.is_empty() {
-                        // Plain HTTP does not require CA roots. With no bundle,
-                        // curl still verifies and rejects an untrusted TLS peer.
-                        connection.set_transport_options(options);
-                        return Ok(());
-                    }
-                    let mut bundle = tempfile::NamedTempFile::new()?;
-                    for cert in loaded.certs {
-                        writeln!(bundle, "-----BEGIN CERTIFICATE-----")?;
-                        let encoded =
-                            base64::engine::general_purpose::STANDARD.encode(cert.as_ref());
-                        for line in encoded.as_bytes().chunks(64) {
-                            bundle.write_all(line)?;
-                            bundle.write_all(b"\n")?;
-                        }
-                        writeln!(bundle, "-----END CERTIFICATE-----")?;
-                    }
-                    bundle.flush()?;
-                    native_roots = Some(bundle);
-                }
-                http.ssl_ca_info = Some(native_roots.as_ref().unwrap().path().to_owned());
-            }
-            connection.set_transport_options(options);
-            Ok(())
-        });
+        .configure_connection(move |connection| trust_native_roots(connection, &mut native_roots));
     if let Some(reference) = reference {
         clone = if kind == RefKind::Commit {
             clone

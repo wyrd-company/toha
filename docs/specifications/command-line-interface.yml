@@ -285,6 +285,20 @@ description: >-
   never pushes. `init` adds a fetch refspec to an existing remote so a clone can
   fetch a project's snapshots.
 
+  Repository setup. When the interview reaches a template's `git` question,
+  `apply` initializes the target as a git repository, as the template format
+  defines. On the person and agent routes it prints `Initialized git repository
+  on branch <branch>`, followed by ` with remote origin <url>` when it added a
+  remote, or `Target is already inside a git repository; left it unchanged`;
+  `apply --dry-run` prints `git init`, followed by ` (remote origin <url>)`
+  when the answer names a remote. The scripted route reports the same in the
+  `git` member of the `applied` and `planned` documents. A remote that already
+  has history stops the apply with exit code 1 and writes nothing; the scripted
+  route reports an `error` document of kind `git`. The new repository has no
+  commit, so the apply's snapshot reports `no-commit`. A remote URL never shows
+  its credentials in any output. An update (`apply --from`) never initializes
+  a repository.
+
 
   Project updates. `apply --from <snapshot>` re-renders the template, replays the
   snapshot's recorded answers, asks only what the new version needs, and merges

@@ -300,6 +300,9 @@ fn build_candidate_reported(
     if !run_hooks {
         plan.hooks.clear();
     }
+    // An update's project is already a repository; the scratch checkout is
+    // never initialized or given a remote.
+    plan.git = None;
     let checkout_target_path = if target.is_root() {
         checkout.path().to_owned()
     } else {
