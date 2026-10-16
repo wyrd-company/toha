@@ -6,7 +6,11 @@
 //! an interview starts so that a caller does not answer questions for an apply
 //! whose hooks cannot run.
 use crate::template::Template;
-use std::{ffi::OsStr, fmt, path::Path};
+use std::{
+    ffi::OsStr,
+    fmt,
+    path::{Path, PathBuf},
+};
 
 /// One program a template requires: a bare executable name and an optional
 /// hint that tells the caller how to install it.
@@ -40,13 +44,28 @@ impl fmt::Display for MissingRequirements {
     }
 }
 
-/// Confirms every requirement of `template` is on the process `PATH`.
+/// Confirms every requirement of `template` is on the process `PATH`. A
+/// relative `PATH` entry resolves against the process working directory, as
+/// it does when a hook starts the program; see [`locate`].
 pub fn check(template: &Template) -> Result<(), MissingRequirements> {
     check_in(
         template,
         std::env::var_os("PATH").as_deref(),
         &std::env::current_dir().unwrap_or_default(),
     )
+}
+
+/// The executable that `program` names on the process `PATH`, resolved the
+/// same way as [`check`]. A hook starts this path, so the pre-interview check
+/// and the hook agree on which program runs, whatever the hook's working
+/// directory.
+pub fn locate(program: &str) -> Option<PathBuf> {
+    which::which_in(
+        program,
+        std::env::var_os("PATH"),
+        std::env::current_dir().unwrap_or_default(),
+    )
+    .ok()
 }
 
 /// Confirms every requirement of `template` is on the search path `paths`,

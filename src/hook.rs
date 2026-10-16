@@ -59,7 +59,18 @@ impl ProcessRunner {
                 let Some(program) = argv.first().filter(|v| !v.is_empty()) else {
                     return Err(HookError::EmptyCommand);
                 };
-                let mut c = Command::new(program);
+                // A bare name resolves on `PATH` before the working directory
+                // changes, as the `requires` check resolves it; a name the
+                // search does not find keeps the platform lookup and its error.
+                let resolved = if program.contains(['/', '\\']) {
+                    None
+                } else {
+                    crate::requirement::locate(program)
+                };
+                let mut c = match resolved {
+                    Some(path) => Command::new(path),
+                    None => Command::new(program),
+                };
                 c.args(&argv[1..]);
                 c
             }
