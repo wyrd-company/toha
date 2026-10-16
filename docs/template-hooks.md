@@ -45,8 +45,9 @@ each missing program with its hint. It asks no question, writes no file, and
 runs no hook. Toha does not run the program to find it.
 
 A program name cannot contain a path separator. A relative `PATH` entry is
-relative to the directory where you run Toha, for the check and for the hook
-that starts the program. Toha checks the requirements
+relative to the directory where you run Toha. Toha passes each hook a `PATH`
+with those entries made absolute, so a script hook and the programs it starts
+find the same programs as the check. Toha checks the requirements
 each time `stage`, `continue`, or `apply` drives the interview, including a dry
 run, so that a dry run predicts the apply. Toha checks every entry, also when
 the hooks that use it have a false `when`.

@@ -224,7 +224,9 @@ description: >-
   entry resolves against the directory toha runs in. A hook whose program is a
   bare name starts the executable this same lookup finds, so the check and the
   hook agree; a name the lookup does not find falls back to the platform
-  search. When any program is
+  search. Every hook runs with `PATH` set to that search path, each relative
+  entry made absolute, so a script hook and the programs a hook starts search
+  the same directories. When any program is
   absent, the command asks no question, writes no file, runs no hook, and
   names each absent program with its hint. The scripted route reports an
   `error` document of kind `requirement`. The check holds for a dry run, so
