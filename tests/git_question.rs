@@ -187,6 +187,12 @@ fn a_git_answer_initializes_the_target_with_origin_on_main() {
     );
     // The hook ran inside the new repository.
     assert_eq!(document["hooks"][0]["success"], true, "{document}");
+    // The new repository has no commit yet, so no snapshot is saved.
+    assert_eq!(
+        document["snapshot"],
+        json!({ "skipped": "no-commit" }),
+        "{document}"
+    );
     assert!(target.join("README.md").exists());
 }
 
@@ -356,6 +362,7 @@ fn the_agent_apply_route_reports_the_repository() {
         stdout.contains("Initialized git repository on branch main"),
         "{stdout}"
     );
+    assert!(stdout.contains("no snapshot saved: no-commit"), "{stdout}");
 }
 
 #[test]

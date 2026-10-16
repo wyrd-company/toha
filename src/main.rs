@@ -1990,8 +1990,9 @@ fn scripted_completed(
                         success: hook.success,
                     })
                     .collect(),
-                git: git.map(|g| g.setup),
+                git: git.as_ref().map(|g| g.setup.clone()),
             };
+            let project = project_after_git(project, git.as_ref(), target);
             let snapshot = plain_apply_snapshot(
                 project.as_ref(),
                 was_clean,
@@ -2081,6 +2082,25 @@ fn plain_apply_snapshot(
         }
         Err(error) => serde_json::json!({ "error": error.to_string() }),
     }
+}
+/// The project a plain apply captures into: the repository opened before the
+/// apply, or the one the apply's `git` question initialized. A new repository
+/// has no commit, so its snapshot reports `no-commit` rather than `not-git`.
+/// Cleanliness is still the reading taken before the apply.
+fn project_after_git(
+    before: Option<toha::snapshot::Project>,
+    git: Option<&GitReport>,
+    target: &toha::staging::CanonicalTarget,
+) -> Option<toha::snapshot::Project> {
+    let initialized =
+        git.is_some_and(|g| matches!(g.setup, toha::git_target::GitSetup::Initialized { .. }));
+    if before.is_some() || !initialized {
+        return before;
+    }
+    open_project_for_snapshot(
+        toha::snapshot::Project::open(target),
+        &mut std::io::stderr(),
+    )
 }
 /// The plain apply's snapshot result as one human line for the person and agent
 /// routes, which report text: the id it saved, or the reason it saved none. The
@@ -2540,6 +2560,7 @@ fn run(
         }) => {
             let mut lines = git.as_ref().map(GitReport::lines).unwrap_or_default();
             lines.extend(after_apply);
+            let capture_project = project_after_git(capture_project, git.as_ref(), &target);
             if let (Some(sv), Some(cplan)) = (saved.as_ref(), capture_plan.as_ref())
                 && let Some(line) = plain_apply_snapshot_line(
                     capture_project.as_ref(),
