@@ -901,8 +901,13 @@ fn trustable(resolved: &ResolvedTemplate, registry: &toha::registry::Registry) -
     (resolved.named && listed.layer != toha::registry::Layer::Local)
         .then(|| resolved.formal_name.clone())
 }
+/// Loads the template an interview is about to drive and confirms its
+/// `requires` programs are on `PATH`, so a caller answers no question for an
+/// apply whose hooks cannot run.
 fn load_template(resolved: &ResolvedTemplate) -> Result<Template, String> {
-    Template::load(&resolved.folder).map_err(|e| e.to_string())
+    let template = Template::load(&resolved.folder).map_err(|e| e.to_string())?;
+    toha::requirement::check(&template).map_err(|e| e.to_string())?;
+    Ok(template)
 }
 fn environment(
     dirs: &Dirs,
@@ -941,7 +946,7 @@ fn progress(saved: &StagedRecord, scope: &Scope, target: &CanonicalTarget) -> Pr
             scope.cwd,
         )
         .ok()?;
-        let template = load_template(&resolved).ok()?;
+        let template = Template::load(&resolved.folder).ok()?;
         let resolution = toha::interview::configured_defaults(
             &saved.template,
             &template,
@@ -1741,10 +1746,13 @@ fn scripted(
             Ok(v) => v,
             Err(e) => return scripted_resolve_error(e, path, &answers_file, force, dry_run, trust),
         };
-    let template = match load_template(&resolved) {
+    let template = match Template::load(&resolved.folder) {
         Ok(v) => v,
-        Err(e) => return scripted_error(ErrorKind::Source, e, vec![], None),
+        Err(e) => return scripted_error(ErrorKind::Source, e.to_string(), vec![], None),
     };
+    if let Err(e) = toha::requirement::check(&template) {
+        return scripted_error(ErrorKind::Requirement, e.to_string(), vec![], None);
+    }
     let (resolution, now) = match resolution(&resolved.formal_name, &template, &config) {
         Ok(v) => v,
         Err(e) => return scripted_error(ErrorKind::Source, e, vec![], None),

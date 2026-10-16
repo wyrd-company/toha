@@ -15,6 +15,7 @@ fn run(fixture: &Path, target: &Path) -> Result<Vec<String>, (u8, String)> {
     let target = toha::staging::canonical_target(target).map_err(|error| (1, error.to_string()))?;
     let template =
         Template::load(&fixture.join("template")).map_err(|error| (1, error.to_string()))?;
+    toha::requirement::check(&template).map_err(|error| (1, error.to_string()))?;
     let json: serde_json::Map<String, serde_json::Value> =
         serde_json::from_str(&fs::read_to_string(fixture.join("answers.json")).unwrap()).unwrap();
     let mut raw: RawAnswers = json

@@ -7,6 +7,7 @@ use crate::context::{
     FixedEnvironmentSource, RenderOrigin,
 };
 use crate::jinja::{Expr, FileTmpl, Partials, Tmpl, Typed, is_global, is_reserved};
+use crate::requirement::Requirement;
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use indexmap::IndexMap;
 use regex::Regex;
@@ -61,6 +62,9 @@ pub struct Template {
     pub static_files: GlobSet,
     pub hooks: Vec<HookNode>,
     pub messages: ApplyMessages,
+    /// The programs that must be on `PATH` before the interview starts, in
+    /// declaration order.
+    pub requires: Vec<Requirement>,
     /// Parsed, post-`!include`, pre-render interview hook node values, in
     /// interview order. The reviewable surface reads these, so any field —
     /// known or future — is covered without changing review code.
@@ -489,6 +493,7 @@ struct RawTemplate {
     static_files: Option<Vec<String>>,
     hooks: Option<Vec<Value>>,
     messages: Option<Map<String, Value>>,
+    requires: Option<Vec<Value>>,
 }
 static SCHEMA: LazyLock<jsonschema::Validator> = LazyLock::new(|| {
     let schema: Value = serde_norway::from_str(include_str!(
@@ -1624,6 +1629,7 @@ impl Template {
             static_files,
             hooks,
             messages,
+            requires: requirements(raw.requires.as_deref().unwrap_or_default()),
             interview_hook_nodes,
             top_hook_nodes,
             render_program,
@@ -1632,6 +1638,25 @@ impl Template {
             result_ids: b.result_ids,
         })
     }
+}
+
+/// The schema-validated `requires` entries: a bare program name, or an object
+/// with `program` and an optional `hint`.
+fn requirements(values: &[Value]) -> Vec<Requirement> {
+    values
+        .iter()
+        .filter_map(|value| match value {
+            Value::String(program) => Some(Requirement {
+                program: program.clone(),
+                hint: None,
+            }),
+            Value::Object(map) => Some(Requirement {
+                program: map.get("program")?.as_str()?.to_owned(),
+                hint: map.get("hint").and_then(Value::as_str).map(str::to_owned),
+            }),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The invariant surface of a source-tree walk: the roots and the rules that do

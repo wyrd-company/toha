@@ -4,7 +4,7 @@ relationships:
     - toha
 description: >-
   Defines the toha template: the folder layout, the `template.yml` file, the
-  interview, data, file generation, hooks, messages, and how Jinja is evaluated.
+  interview, data, file generation, requirements, hooks, messages, and how Jinja is evaluated.
   `docs/specifications/template-format.schema.yml` is the machine-readable
   definition of `template.yml`. `docs/examples/` holds conforming examples.
 
@@ -215,6 +215,18 @@ description: >-
   hooks, including `--dry-run` output and the listing shown when hooks need
   trust, shows each invocation with its rendered arguments.
 
+  Requirements. `requires` lists the programs the template's hooks need. An
+  entry is a bare program name, or an object with `program` and an optional
+  `hint` that tells the caller how to install it. A program name holds no path
+  separator and is neither `.` nor `..`. Before a command starts or continues
+  an interview, toha looks up each program on `PATH`, with the platform's
+  executable extensions on Windows, without running it. When any program is
+  absent, the command asks no question, writes no file, runs no hook, and
+  names each absent program with its hint. The scripted route reports an
+  `error` document of kind `requirement`. The check holds for a dry run, so
+  that a dry run predicts the apply. `requires` is not rendered and its `hint`
+  is plain text.
+
   Hook results. A hook opts in to a readable result with `id`. A later
   top-level hook reads it in `when`, in `run[1..]` or `args`, or in `cwd`, and
   `messages.after-apply` reads it too; no other surface may — not a file, a path
@@ -275,6 +287,7 @@ validation-criteria: >-
   duplicate identifier, an `each` name equal to an identifier, an expression or template that references an id not
   defined earlier in interview order, a `loop` on a question whose type is not
   `text`, `options` on a question whose type is not `select` or `multiselect`,
+  a `requires` program name with a path separator,
   a `flow` value that is not `stop`, `abort`, `dry-run`, or
   `{ skip: rest | group }`, a `{ skip: group }` on a flow node outside any
   group, a `flow` combined with another node key,

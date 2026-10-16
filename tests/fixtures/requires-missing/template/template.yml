@@ -1,0 +1,9 @@
+name: requires-missing
+requires:
+  - toha-fixture-absent-program
+  - program: toha-fixture-absent-tool
+    hint: Install the absent tool.
+interview:
+  - id: title
+    type: text
+    prompt: Title?

@@ -38,6 +38,12 @@ properties:
     $ref: "#/$defs/globs"
   static:
     $ref: "#/$defs/globs"
+  requires:
+    description: >-
+      Programs that must be on PATH before the interview starts.
+    type: array
+    items:
+      $ref: "#/$defs/requirement"
   hooks:
     type: array
     items:
@@ -68,6 +74,25 @@ $defs:
     type: array
     items:
       type: string
+  program:
+    description: A bare executable name, looked up on PATH.
+    type: string
+    pattern: '^[^/\\]+$'
+    not:
+      enum: [ ".", ".." ]
+  requirement:
+    oneOf:
+      - $ref: "#/$defs/program"
+      - type: object
+        additionalProperties: false
+        required: [ program ]
+        properties:
+          program:
+            $ref: "#/$defs/program"
+          hint:
+            description: How to install the program. Shown when it is missing.
+            type: string
+            minLength: 1
   bool-or-expression:
     oneOf:
       - type: boolean

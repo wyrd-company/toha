@@ -27,6 +27,28 @@ list to a shell. Each item can contain a Jinja text template, such as
 `"{{ file_name }}"`. A failed hook stops later hooks and makes the apply
 fail.
 
+## Require programs before the interview
+
+List the programs your hooks need in top-level `requires`. Toha looks up each
+one on `PATH` before it asks the first question:
+
+```yaml
+requires:
+  - git
+  - program: tool
+    hint: Install tool from your package manager.
+```
+
+An entry is a program name, or an object with `program` and an optional
+`hint`. When a program is missing, Toha stops before the interview and names
+each missing program with its hint. It asks no question, writes no file, and
+runs no hook. Toha does not run the program to find it.
+
+A program name cannot contain a path separator. Toha checks the requirements
+each time `stage`, `continue`, or `apply` drives the interview, including a dry
+run, so that a dry run predicts the apply. Toha checks every entry, also when
+the hooks that use it have a false `when`.
+
 ## Run a script stored in the template
 
 Use `script` to run an executable file inside the template root. Put its
