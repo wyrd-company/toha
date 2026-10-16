@@ -469,3 +469,18 @@ fn update_refuses_when_a_program_left_path_after_the_baseline() {
     );
     assert!(text.contains(ABSENT), "{text}");
 }
+
+#[test]
+fn a_hint_and_a_program_are_plain_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let template = template(
+        dir.path(),
+        "name: reqs\nrequires:\n  - \"{{ undefined_name }}\"\n  - { program: tool, hint: \"Run {{ undefined_name }}.\" }\n",
+    )
+    .unwrap();
+    assert_eq!(template.requires[0].program, "{{ undefined_name }}");
+    assert_eq!(
+        template.requires[1].hint.as_deref(),
+        Some("Run {{ undefined_name }}.")
+    );
+}
