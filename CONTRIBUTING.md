@@ -149,6 +149,8 @@ missing secret before it builds.
 The GitHub Release, crates.io, and Homebrew steps can run again for the same
 tag. Each leaves a channel that already holds the same release unchanged and
 fails when the channel holds different content for that version.
+Same-tag retries reject formula bytes that differ from the tap. Publish formula
+corrections with the next product release.
 
 `task release:check` runs a crates.io publish dry run, so a package that does
 not build from its published files fails the local gate.

@@ -18,11 +18,11 @@ for line in (args.directory / "SHA256SUMS").read_text().splitlines():
     checksums[name.lstrip("*")] = digest
 base = f"https://github.com/wyrd-company/toha/releases/download/{args.version}"
 lines = ["class Toha < Formula", '  desc "Generate projects and files from templates"',
-         '  homepage "https://github.com/wyrd-company/toha"', f'  version "{args.version}"',
+         '  homepage "https://github.com/wyrd-company/toha"',
          '  license "Apache-2.0"']
 for system, entries in (("macos", (("arm", "macos_aarch64"), ("intel", "macos_x86_64"))),
                         ("linux", (("arm", "linux_aarch64"), ("intel", "linux_x86_64")))):
-    lines.append(f"  on_{system} do")
+    lines += ["", f"  on_{system} do"]
     for arch, suffix in entries:
         filename = f"toha_{args.version}_{suffix}.tar.gz"
         if filename not in checksums:
@@ -30,5 +30,7 @@ for system, entries in (("macos", (("arm", "macos_aarch64"), ("intel", "macos_x8
         lines += [f"    on_{arch} do", f'      url "{base}/{filename}"',
                   f'      sha256 "{checksums[filename]}"', "    end"]
     lines.append("  end")
-lines += ["  def install", '    bin.install "toha"', "  end", "end"]
+lines += ["", "  def install", '    bin.install "toha"', "  end", "",
+          "  test do", '    assert_match version.to_s, shell_output("#{bin}/toha --version")',
+          "  end", "end"]
 args.output.write_text("\n".join(lines) + "\n")
