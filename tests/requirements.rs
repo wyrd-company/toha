@@ -7,7 +7,7 @@
 #[allow(dead_code)]
 mod support;
 use std::{
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     fs,
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
@@ -508,16 +508,23 @@ fn install_marker(dir: &Path, program: &str) {
 /// `caller`, with the relative entry `bin` first on `PATH`.
 #[cfg(unix)]
 fn apply_from(caller: &Path, case: &Case, template_dir: &Path) -> Output {
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    let search = std::env::join_paths(
+        std::iter::once(PathBuf::from("bin")).chain(std::env::split_paths(&inherited)),
+    )
+    .unwrap();
+    apply_with_path(caller, case, template_dir, &search)
+}
+
+/// Applies the hook template with `--trust` from the working directory
+/// `caller`, with `PATH` set to `search`.
+#[cfg(unix)]
+fn apply_with_path(caller: &Path, case: &Case, template_dir: &Path, search: &OsStr) -> Output {
     let formal = support::formal_name(template_dir);
     let answers = case.state.path().join("hook-answers.json");
     fs::write(
         &answers,
         serde_json::json!({ "template": formal, "answers": {} }).to_string(),
-    )
-    .unwrap();
-    let inherited = std::env::var_os("PATH").unwrap_or_default();
-    let search = std::env::join_paths(
-        std::iter::once(PathBuf::from("bin")).chain(std::env::split_paths(&inherited)),
     )
     .unwrap();
     support::isolated_command(case.state.path())
@@ -613,5 +620,31 @@ fn a_relative_path_entry_under_a_directory_holding_the_separator_is_not_searched
     let document = support::first_document(&output.stdout);
     let message = document["message"].as_str().unwrap();
     assert!(!message.contains("\n  sh"), "{message}");
+    case.assert_target_empty();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_path_with_no_absolute_entry_left_searches_no_directory() {
+    use std::os::unix::fs::PermissionsExt;
+    const PROGRAM: &str = "toha-fixture-relative-tool";
+    let case = Case::new();
+    let parent = tempfile::tempdir().unwrap();
+    let caller = parent.path().join("caller:extra");
+    fs::create_dir_all(caller.join("bin")).unwrap();
+    let template_dir = tempfile::tempdir().unwrap();
+    let script = template_dir.path().join("setup.sh");
+    fs::write(&script, format!("#!/bin/sh\nexec {PROGRAM}\n")).unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    template(
+        template_dir.path(),
+        &format!("name: relative\nrequires:\n  - {PROGRAM}\nhooks:\n  - script: setup.sh\n"),
+    )
+    .unwrap();
+    // The program sits in the caller directory itself, which an empty `PATH`
+    // would name; the only entry, `bin`, has no absolute form.
+    install_marker(&caller, PROGRAM);
+    let output = apply_with_path(&caller, &case, template_dir.path(), OsStr::new("bin"));
+    assert_requirement_error_for(&output, PROGRAM);
     case.assert_target_empty();
 }

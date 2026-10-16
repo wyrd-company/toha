@@ -64,19 +64,28 @@ pub fn check(template: &Template) -> Result<(), MissingRequirements> {
 /// (`:` on Unix). The check and every hook then search the same remaining
 /// entries, so the check refuses before the interview rather than a hook
 /// failing after files are written.
+///
+/// `None` means no directory remains, or `PATH` is unset. The check then finds
+/// no program, and a hook inherits the environment unchanged. An empty value
+/// is never returned, because an empty `PATH` names the working directory.
 pub fn search_path() -> Option<OsString> {
     let path = std::env::var_os("PATH")?;
     let cwd = std::env::current_dir().ok();
-    let entries = std::env::split_paths(&path).filter_map(|entry| {
-        if entry.is_absolute() {
-            return Some(entry);
-        }
-        let absolute = cwd.as_ref()?.join(entry);
-        std::env::join_paths([&absolute])
-            .is_ok()
-            .then_some(absolute)
-    });
-    Some(std::env::join_paths(entries).unwrap_or_default())
+    let entries: Vec<PathBuf> = std::env::split_paths(&path)
+        .filter_map(|entry| {
+            if entry.is_absolute() {
+                return Some(entry);
+            }
+            let absolute = cwd.as_ref()?.join(entry);
+            std::env::join_paths([&absolute])
+                .is_ok()
+                .then_some(absolute)
+        })
+        .collect();
+    if entries.is_empty() {
+        return None;
+    }
+    std::env::join_paths(entries).ok()
 }
 
 /// The executable that `program` names on [`search_path`], resolved the same
