@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.0
+
+### Features
+
+- Templates can declare the programs their hooks need in `requires`, checked before the interview starts, and a new `git` question turns the generated project into a git repository with an optional `origin` remote. Linux release binaries now run on older distributions, HTTPS template fetches use platform certificates, and Homebrew formulae pass strict audit.
+- A `git` question initializes the target as a git repository with an optional `origin` remote. Toha names the branch `main` when `init.defaultBranch` is unset or `master`, and stops before writing when the remote already has history so you can clone it first.
+- Templates can list the programs their hooks need in `requires`; Toha confirms each is on PATH before the interview starts and names any that are missing.
+
+### Fixes
+
+- Generate Homebrew formulae that pass strict audit and style checks.
+- Fetch HTTPS templates with platform certificate roots when Git has no explicit CA bundle.
+- Build Linux release binaries with a glibc 2.17 floor so they run on older supported distributions.
+
 ## 0.2.0
 
 ### Features
