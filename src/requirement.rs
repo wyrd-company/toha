@@ -57,10 +57,9 @@ pub fn check_in(
     cwd: &Path,
 ) -> Result<(), MissingRequirements> {
     let missing: Vec<Requirement> = template
-        .requires
-        .iter()
+        .requirements()
+        .into_iter()
         .filter(|requirement| which::which_in(&requirement.program, paths, cwd).is_err())
-        .cloned()
         .collect();
     if missing.is_empty() {
         Ok(())

@@ -1347,6 +1347,13 @@ impl Template {
         Self::load_with(folder, true)
     }
 
+    /// The programs that must be on `PATH` before the interview starts, in
+    /// order: the declared `requires` entries. The pre-interview check reads
+    /// this list, not the field.
+    pub fn requirements(&self) -> Vec<Requirement> {
+        self.requires.clone()
+    }
+
     /// Loads a template in legacy staged mode: the seventeen names are neither
     /// reserved nor available, so a pre-context authored identifier is not
     /// turned into a collision while its old stage is completed.
