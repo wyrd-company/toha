@@ -456,3 +456,24 @@ fn a_parent_step_after_a_symlink_in_a_remote_follows_the_symlink() {
     assert_eq!(document["kind"], "git", "{document}");
     assert!(!scene.target().exists(), "the target was written");
 }
+
+#[cfg(windows)]
+#[test]
+fn a_canonical_windows_file_url_with_history_stops_the_apply() {
+    let scene = Scene::new(TEMPLATE, false);
+    remote_with_history(scene.work.path());
+    // A canonical Windows path keeps its verbatim `\\?\` prefix in the URL.
+    let canonical = scene
+        .work
+        .path()
+        .join("history.git")
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .replace('\\', "/");
+    assert!(canonical.starts_with("//?/"), "{canonical}");
+    let (code, document) = scene.apply(json!({ "remote": format!("file:///{canonical}") }), &[]);
+    assert_eq!(code, Some(1), "{document}");
+    assert_eq!(document["kind"], "git", "{document}");
+    assert!(!scene.target().exists(), "the target was written");
+}

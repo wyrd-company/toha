@@ -219,10 +219,14 @@ fn probe_location(url: &str, target: &Path) -> String {
 }
 
 /// `path` without a Windows verbatim drive prefix (`\\?\C:\...` becomes
-/// `C:\...`), or `None` when it has none. A canonical Windows path carries the
+/// `C:\...`, and the slash form `//?/C:/...` of a `file:` URL becomes
+/// `C:/...`), or `None` when it has none. A canonical Windows path carries the
 /// prefix, and git URL parsing rejects it.
 fn without_verbatim(path: &Path) -> Option<std::path::PathBuf> {
-    let rest = path.to_str()?.strip_prefix(r"\\?\")?;
+    let text = path.to_str()?;
+    let rest = text
+        .strip_prefix(r"\\?\")
+        .or_else(|| text.strip_prefix("//?/"))?;
     let bytes = rest.as_bytes();
     (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
         .then(|| std::path::PathBuf::from(rest))

@@ -237,6 +237,18 @@ fn a_verbatim_drive_path_is_probed_in_its_plain_form() {
         without_verbatim(Path::new(r"\\?\C:\sample\history.git")),
         Some(std::path::PathBuf::from(r"C:\sample\history.git"))
     );
+    assert_eq!(
+        without_verbatim(Path::new("//?/C:/sample/history.git")),
+        Some(std::path::PathBuf::from("C:/sample/history.git"))
+    );
+    // A `file:` URL of a canonical Windows path is probed in its plain form.
+    assert_eq!(
+        probe_location(
+            "file:////?/C:/sample/history.git",
+            Path::new("/sample/work/project")
+        ),
+        "C:/sample/history.git"
+    );
     assert_eq!(without_verbatim(Path::new(r"\\?\UNC\host\share")), None);
     assert_eq!(without_verbatim(Path::new("/sample/history.git")), None);
 }
