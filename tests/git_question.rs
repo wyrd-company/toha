@@ -399,3 +399,19 @@ fn an_update_never_sets_up_a_repository() {
     assert!(document.get("git").is_none(), "{document}");
     assert_eq!(git_stdout(&target, &["remote"]), "");
 }
+
+#[test]
+fn the_applied_document_never_shows_remote_credentials() {
+    let scene = Scene::new(TEMPLATE, false);
+    // Nothing listens on the discard port, so the remote is unreachable.
+    let remote = "https://user:secret@127.0.0.1:9/sample.git";
+    let (code, document) = scene.apply(json!({ "remote": remote }), &[]);
+    assert_eq!(code, Some(0), "{document}");
+    assert_eq!(
+        document["git"]["remote"], "https://127.0.0.1:9/sample.git",
+        "{document}"
+    );
+    let text = document.to_string();
+    assert!(!text.contains("secret"), "{text}");
+    assert!(!text.contains("user:"), "{text}");
+}
