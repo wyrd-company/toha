@@ -146,6 +146,7 @@ pub fn stage(
         trust,
         PrepareMode::Stage,
         interactive,
+        false,
     ) {
         Ok(value) => value,
         Err(outcome) => return outcome,

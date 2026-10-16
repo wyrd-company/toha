@@ -238,6 +238,15 @@ fn assert_code(output: &Output, code: i32) {
     );
 }
 
+fn assert_requirement_error_for(output: &Output, program: &str) {
+    assert_code(output, 1);
+    let document = support::first_document(&output.stdout);
+    assert_eq!(document["status"], "error");
+    assert_eq!(document["kind"], "requirement");
+    let message = document["message"].as_str().unwrap();
+    assert!(message.contains(program), "{message}");
+}
+
 fn assert_requirement_error(output: &Output) {
     assert_code(output, 1);
     let document = support::first_document(&output.stdout);
@@ -393,13 +402,7 @@ fn baseline_refuses_while_a_program_is_absent() {
         "--answers",
         &answers,
     ]);
-    assert_code(&output, 1);
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(text.contains(ABSENT), "{text}");
+    assert_requirement_error(&output);
     assert!(!case.target.path().join("file.txt").exists());
 }
 
@@ -461,13 +464,7 @@ fn update_refuses_when_a_program_left_path_after_the_baseline() {
     let answers = case.answers();
     fs::remove_dir_all(case.bin.path()).unwrap();
     let output = case.run(&["apply", case.target(), "--from", &id, "--answers", &answers]);
-    assert_code(&output, 1);
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(text.contains(ABSENT), "{text}");
+    assert_requirement_error(&output);
 }
 
 #[test]
@@ -483,4 +480,86 @@ fn a_hint_and_a_program_are_plain_text() {
         template.requires[1].hint.as_deref(),
         Some("Run {{ undefined_name }}.")
     );
+}
+
+/// A template that requires `program` and runs it as its one hook, which
+/// records in the target that it ran.
+#[cfg(unix)]
+fn hook_template(dir: &Path, program: &str) {
+    template(
+        dir,
+        &format!("name: relative\nrequires:\n  - {program}\nhooks:\n  - run: [ {program} ]\n"),
+    )
+    .unwrap();
+}
+
+/// An executable `program` in `dir` that creates `hook-ran` in its working
+/// directory.
+#[cfg(unix)]
+fn install_marker(dir: &Path, program: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::create_dir_all(dir).unwrap();
+    let path = dir.join(program);
+    fs::write(&path, "#!/bin/sh\n: > hook-ran\n").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// Applies the hook template with `--trust` from the working directory
+/// `caller`, with the relative entry `bin` first on `PATH`.
+#[cfg(unix)]
+fn apply_from(caller: &Path, case: &Case, template_dir: &Path) -> Output {
+    let formal = support::formal_name(template_dir);
+    let answers = case.state.path().join("hook-answers.json");
+    fs::write(
+        &answers,
+        serde_json::json!({ "template": formal, "answers": {} }).to_string(),
+    )
+    .unwrap();
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    let search = std::env::join_paths(
+        std::iter::once(PathBuf::from("bin")).chain(std::env::split_paths(&inherited)),
+    )
+    .unwrap();
+    support::isolated_command(case.state.path())
+        .args([
+            "apply",
+            &support::folder_address(&template_dir.canonicalize().unwrap()),
+            case.target(),
+            "--answers",
+            answers.to_str().unwrap(),
+            "--trust",
+        ])
+        .env("PATH", search)
+        .current_dir(caller)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap()
+}
+
+#[cfg(unix)]
+#[test]
+fn a_relative_path_entry_finds_the_same_program_for_the_check_and_the_hook() {
+    const PROGRAM: &str = "toha-fixture-relative-tool";
+    let case = Case::new();
+    let caller = tempfile::tempdir().unwrap();
+    let template_dir = tempfile::tempdir().unwrap();
+    hook_template(template_dir.path(), PROGRAM);
+    install_marker(&caller.path().join("bin"), PROGRAM);
+    let output = apply_from(caller.path(), &case, template_dir.path());
+    assert_code(&output, 0);
+    assert!(case.target.path().join("hook-ran").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_relative_path_entry_does_not_reach_into_the_target() {
+    const PROGRAM: &str = "toha-fixture-relative-tool";
+    let case = Case::new();
+    let caller = tempfile::tempdir().unwrap();
+    let template_dir = tempfile::tempdir().unwrap();
+    hook_template(template_dir.path(), PROGRAM);
+    install_marker(&case.target.path().join("bin"), PROGRAM);
+    let output = apply_from(caller.path(), &case, template_dir.path());
+    assert_requirement_error_for(&output, PROGRAM);
+    assert!(!case.target.path().join("hook-ran").exists());
 }

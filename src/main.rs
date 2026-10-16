@@ -1580,6 +1580,11 @@ fn with_seed(mut document: serde_json::Value, seed_from: Option<&str>) -> serde_
     }
     document
 }
+/// The scripted `error` document of kind `requirement` for a template whose
+/// `requires` programs are not on `PATH`.
+fn requirement_error(error: &toha::MissingRequirements) -> Outcome {
+    scripted_error(ErrorKind::Requirement, error.to_string(), vec![], None)
+}
 fn scripted_error(
     kind: ErrorKind,
     message: String,
@@ -1751,7 +1756,7 @@ fn scripted(
         Err(e) => return scripted_error(ErrorKind::Source, e.to_string(), vec![], None),
     };
     if let Err(e) = toha::requirement::check(&template) {
-        return scripted_error(ErrorKind::Requirement, e.to_string(), vec![], None);
+        return requirement_error(&e);
     }
     let (resolution, now) = match resolution(&resolved.formal_name, &template, &config) {
         Ok(v) => v,
