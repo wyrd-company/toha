@@ -15,8 +15,9 @@ fn git(dir: &Path, args: &[&str]) {
     assert!(status.success(), "git {args:?} failed");
 }
 
+/// A `file://` URL for `path`, which is not canonicalized: a canonical Windows
+/// path carries a verbatim prefix that a git URL cannot hold.
 fn file_url(path: &Path) -> String {
-    let path = path.canonicalize().unwrap();
     let text = path.to_string_lossy().replace('\\', "/");
     if text.starts_with('/') {
         format!("file://{text}")
@@ -228,4 +229,14 @@ fn a_relative_local_remote_is_probed_from_the_target() {
     ] {
         assert_eq!(probe_location(url, target), url);
     }
+}
+
+#[test]
+fn a_verbatim_drive_path_is_probed_in_its_plain_form() {
+    assert_eq!(
+        without_verbatim(Path::new(r"\\?\C:\sample\history.git")),
+        Some(std::path::PathBuf::from(r"C:\sample\history.git"))
+    );
+    assert_eq!(without_verbatim(Path::new(r"\\?\UNC\host\share")), None);
+    assert_eq!(without_verbatim(Path::new("/sample/history.git")), None);
 }

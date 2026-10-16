@@ -187,29 +187,45 @@ fn probe_location(url: &str, target: &Path) -> String {
     let Ok(parsed) = gix::url::parse(gix::bstr::BStr::new(url)) else {
         return url.to_owned();
     };
-    let path = gix::path::from_bstr(&parsed.path);
-    if parsed.scheme == gix::url::Scheme::File && path.is_relative() {
-        // The target may not exist yet, so the leading `..` and `.` steps are
-        // resolved lexically; the target is canonical, so no symlink sits above
-        // it. The rest is kept as written, so the file system resolves any `..`
-        // after a symlink the way git will.
-        let mut resolved = target.to_path_buf();
-        let mut parts = path.components().peekable();
-        while let Some(part) = parts.peek() {
-            match part {
-                std::path::Component::ParentDir => {
-                    resolved.pop();
-                }
-                std::path::Component::CurDir => {}
-                _ => break,
-            }
-            parts.next();
-        }
-        resolved.extend(parts);
-        resolved.to_string_lossy().into_owned()
-    } else {
-        url.to_owned()
+    if parsed.scheme != gix::url::Scheme::File {
+        return url.to_owned();
     }
+    let path = gix::path::from_bstr(&parsed.path);
+    if !path.is_relative() || path.has_root() {
+        // Git cannot parse a verbatim `\\?\` drive path; probe its plain form.
+        return match without_verbatim(&path) {
+            Some(plain) => plain.to_string_lossy().into_owned(),
+            None => url.to_owned(),
+        };
+    }
+    // The target may not exist yet, so the leading `..` and `.` steps are
+    // resolved lexically; the target is canonical, so no symlink sits above
+    // it. The rest is kept as written, so the file system resolves any `..`
+    // after a symlink the way git will.
+    let mut resolved = without_verbatim(target).unwrap_or_else(|| target.to_path_buf());
+    let mut parts = path.components().peekable();
+    while let Some(part) = parts.peek() {
+        match part {
+            std::path::Component::ParentDir => {
+                resolved.pop();
+            }
+            std::path::Component::CurDir => {}
+            _ => break,
+        }
+        parts.next();
+    }
+    resolved.extend(parts);
+    resolved.to_string_lossy().into_owned()
+}
+
+/// `path` without a Windows verbatim drive prefix (`\\?\C:\...` becomes
+/// `C:\...`), or `None` when it has none. A canonical Windows path carries the
+/// prefix, and git URL parsing rejects it.
+fn without_verbatim(path: &Path) -> Option<std::path::PathBuf> {
+    let rest = path.to_str()?.strip_prefix(r"\\?\")?;
+    let bytes = rest.as_bytes();
+    (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
+        .then(|| std::path::PathBuf::from(rest))
 }
 
 /// Whether `path`, or its nearest existing ancestor, is inside a git repository.

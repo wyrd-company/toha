@@ -49,19 +49,6 @@ fn git_stdout(dir: &Path, args: &[&str]) -> String {
         .to_owned()
 }
 
-fn file_url(path: &Path) -> String {
-    let text = path
-        .canonicalize()
-        .unwrap()
-        .to_string_lossy()
-        .replace('\\', "/");
-    if text.starts_with('/') {
-        format!("file://{text}")
-    } else {
-        format!("file:///{text}")
-    }
-}
-
 /// One isolated run: a template, an empty target parent outside any repository,
 /// and a home directory whose git config the test controls.
 struct Scene {
@@ -148,7 +135,7 @@ fn assert_valid(document: &Value) {
 
 fn empty_remote(dir: &Path) -> String {
     git(dir, &["init", "--quiet", "--bare", "empty.git"]);
-    file_url(&dir.join("empty.git"))
+    support::file_url(&dir.join("empty.git"))
 }
 
 fn remote_with_history(dir: &Path) -> String {
@@ -159,7 +146,7 @@ fn remote_with_history(dir: &Path) -> String {
     git(&seed, &["add", "."]);
     git(&seed, &["commit", "--quiet", "-m", "seed"]);
     git(dir, &["clone", "--quiet", "--bare", "seed", "history.git"]);
-    file_url(&dir.join("history.git"))
+    support::file_url(&dir.join("history.git"))
 }
 
 #[test]
@@ -252,7 +239,7 @@ fn a_remote_with_history_stops_before_any_write() {
 #[test]
 fn an_unreachable_remote_warns_and_is_still_added() {
     let scene = Scene::new(TEMPLATE, false);
-    let missing = file_url(scene.work.path()) + "/missing.git";
+    let missing = support::file_url(scene.work.path()) + "/missing.git";
     let (code, document) = scene.apply(json!({ "remote": missing }), &[]);
     assert_eq!(code, Some(0), "{document}");
     let messages = support::document_messages(&document);
