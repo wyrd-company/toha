@@ -403,9 +403,9 @@ fn baseline_refuses_while_a_program_is_absent() {
     assert!(!case.target.path().join("file.txt").exists());
 }
 
-#[test]
-fn update_refuses_when_a_program_left_path_after_the_baseline() {
-    let case = Case::new();
+/// Baseline-applies the fixture into a git target with every program present,
+/// commits it, and returns the snapshot id.
+fn baselined(case: &Case) -> String {
     case.provide();
     target_repo(case.target.path());
     let template = support::folder_address(&missing_fixture());
@@ -423,6 +423,42 @@ fn update_refuses_when_a_program_left_path_after_the_baseline() {
     let id = document["snapshot"]["id"].as_str().unwrap().to_owned();
     git(case.target.path(), &["add", "."]);
     git(case.target.path(), &["commit", "--quiet", "-m", "baseline"]);
+    id
+}
+
+#[test]
+fn staged_update_continue_refuses_when_a_program_left_path() {
+    let case = Case::new();
+    let id = baselined(&case);
+    let template = support::folder_address(&missing_fixture());
+    let staged = case.run(&[
+        "stage",
+        &template,
+        case.target(),
+        "--from",
+        &id,
+        "--reanswer",
+        "--async",
+    ]);
+    assert_code(&staged, 4);
+    fs::remove_dir_all(case.bin.path()).unwrap();
+    let batch = case.state.path().join("batch.json");
+    fs::write(&batch, r#"{"title": "Other"}"#).unwrap();
+    let output = case.run(&["continue", case.target(), batch.to_str().unwrap()]);
+    assert_code(&output, 1);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(ABSENT), "{stderr}");
+    assert_eq!(
+        fs::read_to_string(case.target.path().join("file.txt")).unwrap(),
+        "Example\n"
+    );
+}
+
+#[test]
+fn update_refuses_when_a_program_left_path_after_the_baseline() {
+    let case = Case::new();
+    let id = baselined(&case);
+    let answers = case.answers();
     fs::remove_dir_all(case.bin.path()).unwrap();
     let output = case.run(&["apply", case.target(), "--from", &id, "--answers", &answers]);
     assert_code(&output, 1);
