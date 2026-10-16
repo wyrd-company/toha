@@ -472,7 +472,8 @@ fn a_canonical_windows_file_url_with_history_stops_the_apply() {
         .to_string_lossy()
         .replace('\\', "/");
     assert!(canonical.starts_with("//?/"), "{canonical}");
-    let (code, document) = scene.apply(json!({ "remote": format!("file:///{canonical}") }), &[]);
+    // `file://` and the `//?/` path give the URL form `file:////?/C:/...`.
+    let (code, document) = scene.apply(json!({ "remote": format!("file://{canonical}") }), &[]);
     assert_eq!(code, Some(1), "{document}");
     assert_eq!(document["kind"], "git", "{document}");
     assert!(!scene.target().exists(), "the target was written");
