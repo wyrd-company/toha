@@ -600,11 +600,18 @@ fn a_relative_path_entry_under_a_directory_holding_the_separator_is_not_searched
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
     template(
         template_dir.path(),
-        &format!("name: relative\nrequires:\n  - {PROGRAM}\nhooks:\n  - script: setup.sh\n"),
+        &format!(
+            "name: relative\nrequires:\n  - sh\n  - {PROGRAM}\nhooks:\n  - script: setup.sh\n"
+        ),
     )
     .unwrap();
     install_marker(&caller.join("bin"), PROGRAM);
     let output = apply_from(&caller, &case, template_dir.path());
     assert_requirement_error_for(&output, PROGRAM);
+    // Only the entry without an absolute form is dropped: `sh`, on an absolute
+    // inherited entry, is still found.
+    let document = support::first_document(&output.stdout);
+    let message = document["message"].as_str().unwrap();
+    assert!(!message.contains("\n  sh"), "{message}");
     case.assert_target_empty();
 }
