@@ -323,7 +323,10 @@ commands:
             `--like` selector could not be honoured — unknown, ambiguous,
             wrong-source, no snapshot of the source, or a target not in git with
             an explicit selector — reported as an `error` document of kind
-            `snapshot`. The scripted route reports every failure as an `error`
+            `snapshot`; or a program the template `requires` is not on `PATH`,
+            reported before the first question, and as an `error` document of
+            kind `requirement` on the scripted route. The scripted route
+            reports every failure as an `error`
             result document; the person and agent routes report on standard
             error.
         - code: 2

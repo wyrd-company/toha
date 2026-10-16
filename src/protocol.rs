@@ -285,6 +285,8 @@ pub enum ErrorKind {
     /// A `--like` seed selector could not be honoured (unknown, ambiguous,
     /// wrong-source, absent, or no project). Exit 1.
     Snapshot,
+    /// A program the template `requires` is not on `PATH`. Exit 1.
+    Requirement,
 }
 impl ErrorKind {
     fn as_str(self) -> &'static str {
@@ -300,6 +302,7 @@ impl ErrorKind {
             Self::Hook => "hook",
             Self::Ambiguous => "ambiguous",
             Self::Snapshot => "snapshot",
+            Self::Requirement => "requirement",
         }
     }
 }

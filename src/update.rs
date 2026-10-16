@@ -35,7 +35,7 @@ use toha::{RawAnswer, RawAnswers};
 use crate::cli::resolve::ResolvedTemplate;
 use crate::{
     Dirs, EnvironmentDecision, Outcome, apply_environment_grant, build_context, load_template,
-    read_answers_text, resolution, setup,
+    read_answers_text, requirement_error, resolution, setup,
 };
 
 /// The base an update merges from.
@@ -72,6 +72,7 @@ pub fn run_update(
         trust,
         PrepareMode::Apply,
         false,
+        answers.is_some(),
     ) {
         Ok(value) => value,
         Err(outcome) => return outcome,
@@ -241,6 +242,7 @@ pub(crate) enum PrepareMode {
     Stage,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare(
     base: &UpdateBase,
     template_arg: Option<String>,
@@ -249,6 +251,7 @@ pub(crate) fn prepare(
     trust: bool,
     mode: PrepareMode,
     interactive: bool,
+    scripted: bool,
 ) -> Result<Prepared, Outcome> {
     let project = match Project::open(target) {
         Ok(Some(project)) => project,
@@ -336,10 +339,19 @@ pub(crate) fn prepare(
             ));
         }
     };
-    let template = match load_template(&resolved) {
+    // The scripted route (`--answers`) reports a missing requirement as its
+    // `requirement` error document; the other routes report it as text.
+    let template = match Template::load(&resolved.folder) {
         Ok(value) => value,
-        Err(error) => return Err(Outcome::Error(error)),
+        Err(error) => return Err(Outcome::Error(error.to_string())),
     };
+    if let Err(error) = toha::requirement::check(&template) {
+        return Err(if scripted {
+            requirement_error(&error)
+        } else {
+            Outcome::Error(error.to_string())
+        });
+    }
 
     let (resolution, runtime_now) = match resolution(&resolved.formal_name, &template, &config) {
         Ok(value) => value,

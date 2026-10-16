@@ -310,6 +310,7 @@ $defs:
           - hook
           - ambiguous
           - snapshot
+          - requirement
       message:
         type: string
       commands:

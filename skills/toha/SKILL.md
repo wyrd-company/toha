@@ -21,7 +21,7 @@ Configuration files are `$TOHA_CONFIG` (local) and `$TOHA_USER_CONFIG` (user) wh
 | Exit | Action |
 | --- | --- |
 | 0 | Done; read the scripted result document (`applied` or `planned`), the human-readable apply summary, or the completion instructions. |
-| 1 | An error: load, missing stage, another template staged, conflict, render, or hook failure. The scripted route reports it as an `error` document carrying `kind`, `message`, and any `commands`; the person and agent routes name the next commands on standard error. |
+| 1 | An error: load, a program the template `requires` is not on `PATH`, missing stage, another template staged, conflict, render, or hook failure. The scripted route reports it as an `error` document carrying `kind`, `message`, and any `commands`; the person and agent routes name the next commands on standard error. |
 | 2 | Correct the command syntax (`toha <command> --help`). |
 | 3 | Hooks on a plain application (without `--from` or `--baseline`) need trust. The scripted route emits a `planned` document with `trusted: false`; the person and agent routes print the dry run and name the `--trust` command on standard error. Rerun with `--trust` if approved. |
 | 4 | A question batch. On the agent routes (`stage --async`, `continue PATH FILE`, `apply PATH`) the batch is followed by instructions on standard output and `apply PATH` never prompts; answer or correct it with `continue PATH FILE`. In a terminal, `continue PATH` (person) prompts the rest. |

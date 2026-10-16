@@ -1,0 +1,5 @@
+exit: 1
+error_contains:
+- "template `requires-missing` requires programs that are not on PATH"
+- "toha-fixture-absent-program"
+- "toha-fixture-absent-tool: Install the absent tool."

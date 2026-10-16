@@ -14,6 +14,7 @@ mod jinja;
 pub mod plan;
 pub mod protocol;
 pub mod registry;
+pub mod requirement;
 pub mod review;
 pub mod snapshot;
 pub mod source;
@@ -36,6 +37,7 @@ pub use plan::{
     Content, Deferred, FileMutation, Plan, PlanError, Planned, PlannedFile, PlannedHook,
     PlannedProgram, TargetPath,
 };
+pub use requirement::{MissingRequirements, Requirement};
 pub use review::{
     HookSurface, HookSurfaceDiff, HookView, ReviewDigest, ReviewError, ScriptDigest, Trust,
     evaluate_trust,

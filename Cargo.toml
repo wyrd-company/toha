@@ -51,6 +51,7 @@ rustix = { version = "1", features = ["process", "system"] }
 curl = { version = "0.4.50", default-features = false }
 rustls-native-certs = "0.8.4"
 base64 = "0.22"
+which = "8"
 
 [build-dependencies]
 tagver = "0.1.4"
