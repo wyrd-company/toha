@@ -265,7 +265,9 @@ jobs:
             "$RUNNER_TEMP/toha.rb"
           formula=homebrew-tools/Formula/toha.rb
           if [[ -f "$formula" ]]; then
-            current="$(sed -nE 's/^[[:space:]]*version "([^"]+)"/\1/p' "$formula")"
+            current="$(
+              sed -nE 's|.*releases/download/([^/]+)/.*|\1|p' "$formula" | sort -u
+            )"
             if [[ "$current" == "$version" ]]; then
               cmp "$formula" "$RUNNER_TEMP/toha.rb"
               exit 0
