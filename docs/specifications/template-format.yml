@@ -129,7 +129,8 @@ description: >-
   `main`. An answer that is not empty after trimming whitespace is added as the
   remote `origin` with the fetch refspec `+refs/heads/*:refs/remotes/origin/*`;
   an empty or `null` answer adds no remote. Before any write, the apply lists
-  the remote's references: a remote with any reference stops the apply, writes
+  the remote's references, resolving a relative local path from the target as
+  git does: a remote with any reference stops the apply, writes
   nothing, and tells the caller to clone the remote first and apply into the
   clone; a remote that cannot be listed adds a warning and the apply continues.
   A target already inside a git repository is left unchanged, and its remote is

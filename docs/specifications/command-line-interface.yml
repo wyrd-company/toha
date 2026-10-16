@@ -294,7 +294,8 @@ description: >-
   when the answer names a remote. The scripted route reports the same in the
   `git` member of the `applied` and `planned` documents. A remote that already
   has history stops the apply with exit code 1 and writes nothing; the scripted
-  route reports an `error` document of kind `git`. A remote URL never shows
+  route reports an `error` document of kind `git`. The new repository has no
+  commit, so the apply's snapshot reports `no-commit`. A remote URL never shows
   its credentials in any output. An update (`apply --from`) never initializes
   a repository.
 
