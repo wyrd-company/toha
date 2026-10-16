@@ -422,3 +422,31 @@ fn the_applied_document_never_shows_remote_credentials() {
     assert!(!text.contains("secret"), "{text}");
     assert!(!text.contains("user:"), "{text}");
 }
+
+#[test]
+fn a_relative_remote_with_history_is_checked_from_the_target() {
+    let scene = Scene::new(TEMPLATE, false);
+    // `history.git` sits beside the target, so `../history.git` names it from
+    // the target; Toha runs from another directory.
+    remote_with_history(scene.work.path());
+    let elsewhere = tempfile::tempdir().unwrap();
+    let document = json!({
+        "template": support::formal_name(scene.template.path()),
+        "answers": { "remote": "../history.git" },
+    });
+    let env = scene.iso.path().join("answers.json");
+    std::fs::write(&env, serde_json::to_vec(&document).unwrap()).unwrap();
+    let mut command = scene.command();
+    command
+        .current_dir(elsewhere.path())
+        .arg("apply")
+        .arg(scene.address())
+        .arg(scene.target())
+        .arg("--answers")
+        .arg(&env);
+    let output = command.output().unwrap();
+    let document = support::first_document(&output.stdout);
+    assert_eq!(output.status.code(), Some(1), "{document}");
+    assert_eq!(document["kind"], "git", "{document}");
+    assert!(!scene.target().exists(), "the target was written");
+}

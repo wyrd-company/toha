@@ -142,7 +142,7 @@ pub(crate) fn preflight_with(
     }
     let warning = match planned.remote.as_deref() {
         None => None,
-        Some(url) => match probe(url) {
+        Some(url) => match probe(&probe_location(url, target.as_path())) {
             RemoteState::Empty => None,
             RemoteState::HasHistory => {
                 return Err(GitTargetError::RemoteHasHistory {
@@ -177,6 +177,34 @@ pub fn set_up(preflight: Preflight, target: &CanonicalTarget) -> Result<GitRepor
             warning,
         },
     })
+}
+
+/// The location to probe for the remote `url` saved in the repository at
+/// `target`. Git resolves a relative local path from the repository's working
+/// tree, not from Toha's working directory, so the probe resolves it the same
+/// way. Every other URL is probed as written.
+fn probe_location(url: &str, target: &Path) -> String {
+    let Ok(parsed) = gix::url::parse(gix::bstr::BStr::new(url)) else {
+        return url.to_owned();
+    };
+    let path = gix::path::from_bstr(&parsed.path);
+    if parsed.scheme == gix::url::Scheme::File && path.is_relative() {
+        // The target may not exist yet, so `..` is resolved lexically. The
+        // target is canonical, so no symlink sits above it.
+        let mut resolved = target.to_path_buf();
+        for part in path.components() {
+            match part {
+                std::path::Component::ParentDir => {
+                    resolved.pop();
+                }
+                std::path::Component::CurDir => {}
+                other => resolved.push(other),
+            }
+        }
+        resolved.to_string_lossy().into_owned()
+    } else {
+        url.to_owned()
+    }
 }
 
 /// Whether `path`, or its nearest existing ancestor, is inside a git repository.

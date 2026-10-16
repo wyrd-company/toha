@@ -203,3 +203,24 @@ fn report_lines_put_the_warning_first_and_hide_credentials() {
         "git init (remote origin https://example.invalid/sample.git)"
     );
 }
+
+#[test]
+fn a_relative_local_remote_is_probed_from_the_target() {
+    let target = Path::new("/sample/work/project");
+    assert_eq!(
+        Path::new(&probe_location("../history.git", target)),
+        Path::new("/sample/work/history.git")
+    );
+    assert_eq!(
+        Path::new(&probe_location("./remotes/sample.git", target)),
+        target.join("remotes/sample.git")
+    );
+    for url in [
+        "https://example.invalid/sample.git",
+        "git@example.invalid:sample.git",
+        "file:///sample/history.git",
+        "/sample/history.git",
+    ] {
+        assert_eq!(probe_location(url, target), url);
+    }
+}
