@@ -380,3 +380,22 @@ interview:
         "{message}"
     );
 }
+
+#[test]
+fn an_update_never_sets_up_a_repository() {
+    let scene = Scene::new(TEMPLATE, false);
+    // A remote with history would stop a plain apply; an update never checks it.
+    let remote = remote_with_history(scene.work.path());
+    let target = scene.target();
+    std::fs::create_dir_all(&target).unwrap();
+    git(&target, &["init", "--quiet", "--initial-branch=main"]);
+    git(&target, &["config", "core.autocrlf", "false"]);
+    std::fs::write(target.join("notes.txt"), "seed\n").unwrap();
+    git(&target, &["add", "."]);
+    git(&target, &["commit", "--quiet", "-m", "seed"]);
+    let (code, document) = scene.apply(json!({ "remote": remote }), &["--baseline"]);
+    assert_eq!(code, Some(0), "{document}");
+    assert_eq!(document["status"], "applied", "{document}");
+    assert!(document.get("git").is_none(), "{document}");
+    assert_eq!(git_stdout(&target, &["remote"]), "");
+}

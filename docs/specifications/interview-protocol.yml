@@ -31,9 +31,11 @@ description: >-
   `questions` (exit 4), `ended` (exit 0), `applied` (exit 0), `planned` (exit 0,
   or exit 3 when hooks are untrusted on a plain apply; updates preview at exit 0), or `error` (exit 1, or exit 5 for an
   ambiguous template). An `applied` document lists each written path with its
-  action, the messages, and the hooks that ran; a `planned` document lists each
-  planned path with its action, the messages, the planned hooks, and whether
-  they are trusted; an `error` document carries a `kind`, a `message`, and the
+  action, the messages, the hooks that ran, and, when the interview reached a
+  `git` question, the repository setup in `git`; a `planned` document lists each
+  planned path with its action, the messages, the planned hooks, whether they
+  are trusted, and, when the interview reached a `git` question, the remote it
+  would add in `git`; an `error` document carries a `kind`, a `message`, and the
   commands that finish, discard, or retry the request when there are any. There
   is no `complete` document.
 
@@ -58,7 +60,7 @@ description: >-
   the property `title`, `description` is the property `description`,
   `default` is the property `default`, and `placeholder` is the single item of
   the property `examples`, all rendered. The question type maps to
-  JSON Schema as follows: `text` and `multiline` are `string`, with
+  JSON Schema as follows: `text`, `multiline`, and `git` are `string`, with
   `minLength`, `maxLength`, and `pattern` from `validate`; a looped `text` is
   an `array` of those strings with `minItems` and `maxItems` from `loop`;
   `confirm` is `boolean`; `select` is `string` with `enum` from the rendered
