@@ -3,7 +3,7 @@
 //   implements: architecture
 // ---
 use crate::{
-    git_target::{GitReport, GitSetup, GitTargetError, Preflight},
+    git_target::{GitReport, GitTargetError},
     hook::{HookError, HookOutcome, HookResults, HookRunner, decode},
     inject::{
         EditResolution, JsonEditError, PlannedEdit, RegionError, RegionKey, resolve_json_edit,
@@ -293,20 +293,9 @@ impl Plan {
             }
         }
         // The repository exists before any hook runs, so a hook can use it.
-        let git = match git {
-            None => None,
-            Some(Preflight::Existing) => Some(GitReport {
-                setup: GitSetup::Existing,
-                warning: None,
-            }),
-            Some(Preflight::Initialize { remote, warning }) => {
-                let branch = crate::git_target::initialize(target.as_path(), remote.as_deref())?;
-                Some(GitReport {
-                    setup: GitSetup::Initialized { branch, remote },
-                    warning,
-                })
-            }
-        };
+        let git = git
+            .map(|preflight| crate::git_target::set_up(preflight, target))
+            .transpose()?;
         // The only site where hook results exist. Each declared producer is
         // seeded not-run so a reader of a skipped producer sees a bound `none`;
         // real results overwrite the seed as producers run.

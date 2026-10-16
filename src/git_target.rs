@@ -161,6 +161,24 @@ pub(crate) fn preflight_with(
     })
 }
 
+/// Carry out a [`preflight`] decision after the files are written: initialize
+/// the target, or report that it was already inside a repository.
+pub fn set_up(preflight: Preflight, target: &CanonicalTarget) -> Result<GitReport, GitTargetError> {
+    Ok(match preflight {
+        Preflight::Existing => GitReport {
+            setup: GitSetup::Existing,
+            warning: None,
+        },
+        Preflight::Initialize { remote, warning } => GitReport {
+            setup: GitSetup::Initialized {
+                branch: initialize(target.as_path(), remote.as_deref())?,
+                remote,
+            },
+            warning,
+        },
+    })
+}
+
 /// Whether `path`, or its nearest existing ancestor, is inside a git repository.
 fn inside_repository(path: &Path) -> Result<bool, GitTargetError> {
     let start = path
