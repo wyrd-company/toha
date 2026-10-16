@@ -450,3 +450,22 @@ fn a_relative_remote_with_history_is_checked_from_the_target() {
     assert_eq!(document["kind"], "git", "{document}");
     assert!(!scene.target().exists(), "the target was written");
 }
+
+#[cfg(unix)]
+#[test]
+fn a_parent_step_after_a_symlink_in_a_remote_follows_the_symlink() {
+    let scene = Scene::new(TEMPLATE, false);
+    let work = scene.work.path();
+    // `work/history.git` is empty; `work/alias` points into `other/sub`, so
+    // `../alias/../history.git` from the target names `other/history.git`,
+    // which has history.
+    git(work, &["init", "--quiet", "--bare", "history.git"]);
+    let other = work.join("other");
+    std::fs::create_dir_all(other.join("sub")).unwrap();
+    remote_with_history(&other);
+    std::os::unix::fs::symlink(other.join("sub"), work.join("alias")).unwrap();
+    let (code, document) = scene.apply(json!({ "remote": "../alias/../history.git" }), &[]);
+    assert_eq!(code, Some(1), "{document}");
+    assert_eq!(document["kind"], "git", "{document}");
+    assert!(!scene.target().exists(), "the target was written");
+}

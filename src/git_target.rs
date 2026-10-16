@@ -189,18 +189,23 @@ fn probe_location(url: &str, target: &Path) -> String {
     };
     let path = gix::path::from_bstr(&parsed.path);
     if parsed.scheme == gix::url::Scheme::File && path.is_relative() {
-        // The target may not exist yet, so `..` is resolved lexically. The
-        // target is canonical, so no symlink sits above it.
+        // The target may not exist yet, so the leading `..` and `.` steps are
+        // resolved lexically; the target is canonical, so no symlink sits above
+        // it. The rest is kept as written, so the file system resolves any `..`
+        // after a symlink the way git will.
         let mut resolved = target.to_path_buf();
-        for part in path.components() {
+        let mut parts = path.components().peekable();
+        while let Some(part) = parts.peek() {
             match part {
                 std::path::Component::ParentDir => {
                     resolved.pop();
                 }
                 std::path::Component::CurDir => {}
-                other => resolved.push(other),
+                _ => break,
             }
+            parts.next();
         }
+        resolved.extend(parts);
         resolved.to_string_lossy().into_owned()
     } else {
         url.to_owned()

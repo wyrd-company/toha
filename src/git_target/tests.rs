@@ -215,6 +215,11 @@ fn a_relative_local_remote_is_probed_from_the_target() {
         Path::new(&probe_location("./remotes/sample.git", target)),
         target.join("remotes/sample.git")
     );
+    // A `..` after a named step is left for the file system to resolve.
+    assert_eq!(
+        Path::new(&probe_location("../alias/../history.git", target)),
+        Path::new("/sample/work/alias/../history.git")
+    );
     for url in [
         "https://example.invalid/sample.git",
         "git@example.invalid:sample.git",
