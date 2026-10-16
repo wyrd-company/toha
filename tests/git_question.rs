@@ -477,3 +477,58 @@ fn a_canonical_windows_file_url_with_history_stops_the_apply() {
     assert_eq!(document["kind"], "git", "{document}");
     assert!(!scene.target().exists(), "the target was written");
 }
+
+#[test]
+fn a_git_question_requires_git_before_the_interview() {
+    let scene = Scene::new(TEMPLATE, false);
+    let empty = tempfile::tempdir().unwrap();
+    let document = json!({
+        "template": support::formal_name(scene.template.path()),
+        "answers": { "remote": null },
+    });
+    let env = scene.iso.path().join("answers.json");
+    std::fs::write(&env, serde_json::to_vec(&document).unwrap()).unwrap();
+    let mut command = scene.command();
+    command
+        .env("PATH", empty.path())
+        .arg("apply")
+        .arg(scene.address())
+        .arg(scene.target())
+        .arg("--answers")
+        .arg(&env);
+    let output = command.output().unwrap();
+    let document = support::first_document(&output.stdout);
+    assert_valid(&document);
+    assert_eq!(output.status.code(), Some(1), "{document}");
+    assert_eq!(document["kind"], "requirement", "{document}");
+    let message = document["message"].as_str().unwrap();
+    assert!(message.contains("\n  git: "), "{message}");
+    assert!(!scene.target().exists(), "the target was written");
+}
+
+#[test]
+fn the_implicit_git_requirement_yields_to_a_declared_one() {
+    let scene = Scene::new(
+        "name: sample
+requires:
+  - program: git
+    hint: declared
+interview:
+  - id: remote
+    type: git
+    prompt: Remote URL
+",
+        false,
+    );
+    let template = toha::Template::load(scene.template.path()).unwrap();
+    let requirements = template.requirements();
+    assert_eq!(requirements.len(), 1, "{requirements:?}");
+    assert_eq!(requirements[0].hint.as_deref(), Some("declared"));
+}
+
+#[test]
+fn a_template_without_a_git_question_does_not_require_git() {
+    let scene = Scene::new("name: sample\n", false);
+    let template = toha::Template::load(scene.template.path()).unwrap();
+    assert!(template.requirements().is_empty());
+}

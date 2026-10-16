@@ -1369,10 +1369,21 @@ impl Template {
     }
 
     /// The programs that must be on `PATH` before the interview starts, in
-    /// order: the declared `requires` entries. The pre-interview check reads
-    /// this list, not the field.
+    /// order: the declared `requires` entries, then `git` when the template has
+    /// a `git` question and does not declare `git` itself. The pre-interview
+    /// check reads this list, not the field.
     pub fn requirements(&self) -> Vec<Requirement> {
-        self.requires.clone()
+        let mut all = self.requires.clone();
+        if self.git_question().is_some() && !all.iter().any(|r| r.program == "git") {
+            all.push(Requirement {
+                program: "git".into(),
+                hint: Some(
+                    "This template creates a git repository; install git from https://git-scm.com."
+                        .into(),
+                ),
+            });
+        }
+        all
     }
 
     /// Loads a template in legacy staged mode: the seventeen names are neither

@@ -78,7 +78,8 @@ shows a warning, and continues.
 
 A target that is already inside a git repository stays as it is. If a `when`
 skips the question, Toha does not initialize a repository. A template can have
-only one `git` question.
+only one `git` question. Toha checks that `git` is on `PATH` before the
+interview starts, as if the template listed it in `requires`.
 
 ### `confirm`: yes or no
 

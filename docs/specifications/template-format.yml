@@ -135,7 +135,9 @@ description: >-
   clone; a remote that cannot be listed adds a warning and the apply continues.
   A target already inside a git repository is left unchanged, and its remote is
   neither checked nor changed. A `git` question skipped by a `when` or a flow
-  skip initializes nothing, whatever its default.
+  skip initializes nothing, whatever its default. A template with a `git`
+  question requires the program `git`, as if `requires` listed it with a hint,
+  unless `requires` already lists `git`.
 
   Groups. A group holds child nodes under one `when`. The `group` value names
   the group for diagnostics and is not an answer id.

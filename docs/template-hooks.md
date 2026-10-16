@@ -50,7 +50,9 @@ with those entries made absolute, so a script hook and the programs it starts
 find the same programs as the check. Toha checks the requirements
 each time `stage`, `continue`, or `apply` drives the interview, including a dry
 run, so that a dry run predicts the apply. Toha checks every entry, also when
-the hooks that use it have a false `when`.
+the hooks that use it have a false `when`. A template with a
+[`git` question](/docs/toha/template-interviews#git-a-repository-for-the-target)
+requires `git` without listing it.
 
 ## Run a script stored in the template
 
