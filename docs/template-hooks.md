@@ -44,7 +44,9 @@ An entry is a program name, or an object with `program` and an optional
 each missing program with its hint. It asks no question, writes no file, and
 runs no hook. Toha does not run the program to find it.
 
-A program name cannot contain a path separator. Toha checks the requirements
+A program name cannot contain a path separator. A relative `PATH` entry is
+relative to the directory where you run Toha, for the check and for the hook
+that starts the program. Toha checks the requirements
 each time `stage`, `continue`, or `apply` drives the interview, including a dry
 run, so that a dry run predicts the apply. Toha checks every entry, also when
 the hooks that use it have a false `when`.

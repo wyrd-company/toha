@@ -220,7 +220,11 @@ description: >-
   `hint` that tells the caller how to install it. A program name holds no path
   separator and is neither `.` nor `..`. Before a command starts or continues
   an interview, toha looks up each program on `PATH`, with the platform's
-  executable extensions on Windows, without running it. When any program is
+  executable extensions on Windows, without running it. A relative `PATH`
+  entry resolves against the directory toha runs in. A hook whose program is a
+  bare name starts the executable this same lookup finds, so the check and the
+  hook agree; a name the lookup does not find falls back to the platform
+  search. When any program is
   absent, the command asks no question, writes no file, runs no hook, and
   names each absent program with its hint. The scripted route reports an
   `error` document of kind `requirement`. The check holds for a dry run, so
