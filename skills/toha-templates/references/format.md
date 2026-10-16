@@ -17,6 +17,7 @@ Toha validates `template.yml` against these types when it loads a template. Stri
 | `files` | array of file rules | Render support files for each item. |
 | `ignore` | array of glob strings | Skip source files. |
 | `static` | array of glob strings | Copy matching source files byte for byte. |
+| `requires` | array of program names or `{ program, hint }` | Programs that must be on `PATH` before the interview starts; plain text, not rendered. |
 | `hooks` | array of hook commands | Run after interview hook nodes. |
 | `messages.before-apply` | template string | Show before writing files. |
 | `messages.after-apply` | template string | Show after hooks. |
