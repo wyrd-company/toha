@@ -80,6 +80,9 @@ impl ProcessRunner {
                 c
             }
         };
+        if let Some(path) = crate::requirement::search_path() {
+            command.env("PATH", path);
+        }
         command.current_dir(
             target.join(
                 hook.cwd

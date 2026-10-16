@@ -7,7 +7,7 @@
 //! whose hooks cannot run.
 use crate::template::Template;
 use std::{
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     fmt,
     path::{Path, PathBuf},
 };
@@ -50,19 +50,37 @@ impl fmt::Display for MissingRequirements {
 pub fn check(template: &Template) -> Result<(), MissingRequirements> {
     check_in(
         template,
-        std::env::var_os("PATH").as_deref(),
+        search_path().as_deref(),
         &std::env::current_dir().unwrap_or_default(),
     )
 }
 
-/// The executable that `program` names on the process `PATH`, resolved the
-/// same way as [`check`]. A hook starts this path, so the pre-interview check
-/// and the hook agree on which program runs, whatever the hook's working
-/// directory.
+/// The process `PATH` with each relative entry, including an empty one, made
+/// absolute against the process working directory. Every hook receives this
+/// value as its `PATH`, so a hook, a script it runs, and their children search
+/// the directories [`check`] searched, whatever the hook's working directory.
+pub fn search_path() -> Option<OsString> {
+    let path = std::env::var_os("PATH")?;
+    let Ok(cwd) = std::env::current_dir() else {
+        return Some(path);
+    };
+    std::env::join_paths(std::env::split_paths(&path).map(|entry| {
+        if entry.is_absolute() {
+            entry
+        } else {
+            cwd.join(entry)
+        }
+    }))
+    .ok()
+    .or(Some(path))
+}
+
+/// The executable that `program` names on [`search_path`], resolved the same
+/// way as [`check`], with the platform's executable extensions on Windows.
 pub fn locate(program: &str) -> Option<PathBuf> {
     which::which_in(
         program,
-        std::env::var_os("PATH"),
+        search_path(),
         std::env::current_dir().unwrap_or_default(),
     )
     .ok()
