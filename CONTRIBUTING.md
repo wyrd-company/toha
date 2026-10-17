@@ -57,23 +57,14 @@ acceptance. Each step names the tool that owns it; see
 [`.github/workflows/cd.yml`](.github/workflows/cd.yml), and
 [`scripts/release/nfpm.yml`](scripts/release/nfpm.yml) for their definitions.
 
-1. Record one consumer-facing intent for the release and commit it alone, so its
-   later consumption has the addition in history:
-
-   ```sh
-   intentional add --release-unit toha:minor --message "<consumer summary>"
-   git add .intentional/intents/<generated>.md
-   git commit -m "chore(intent): record the <version> release summary intent (toha:minor)"
-   ```
-
-2. Seal the plan and keep its bytes unchanged. `intentional plan` reports
+1. Seal the plan and keep its bytes unchanged. `intentional plan` reports
    `<version>` for release unit `toha`:
 
    ```sh
    intentional plan > release-plan.json
    ```
 
-3. Apply the release and refresh the lock file. `intentional apply` writes
+2. Apply the release and refresh the lock file. `intentional apply` writes
    `Cargo.toml` and `CHANGELOG.md` and consumes the intents; `cargo update -p
    toha` refreshes the `toha` entry in `Cargo.lock` that Intentional does not
    project:
@@ -84,10 +75,10 @@ acceptance. Each step names the tool that owns it; see
    cargo update -p toha
    ```
 
-4. Commit the applied release as one commit: `Cargo.toml`, `Cargo.lock`,
+3. Commit the applied release as one commit: `Cargo.toml`, `Cargo.lock`,
    `CHANGELOG.md`, and the consumed intent deletions.
 
-5. Validate the applied commit. `intentional status` reports no pending intents,
+4. Validate the applied commit. `intentional status` reports no pending intents,
    tag authority at the previous version, and manifest drift at the new version;
    `task ci` runs `fmt-check`, `lint`, `test`, and `release:check`; the tag dry
    run proposes the bare `<version>` annotated tag without creating it:
@@ -99,7 +90,7 @@ acceptance. Each step names the tool that owns it; see
    intentional tag --plan release-plan.json --dry-run
    ```
 
-6. Build the host Linux x86_64 package with the same steps the CD build job runs:
+5. Build the host Linux x86_64 package with the same steps the CD build job runs:
 
    ```sh
    LIBCURL_NO_PKG_CONFIG=1 LIBZ_SYS_STATIC=1 \
@@ -116,7 +107,7 @@ acceptance. Each step names the tool that owns it; see
      --target dist/toha_<version>_linux_x86_64.rpm
    ```
 
-7. Retain the handoff in a durable location outside the working tree and record
+6. Retain the handoff in a durable location outside the working tree and record
    checksums, so it survives working-tree cleanup:
 
    ```sh
