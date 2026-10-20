@@ -28,6 +28,7 @@ terms:
   - contribution
   - export
   - document-question
+  - applied-record
 design-challenges:
   one-owner-per-byte: >-
     A workflow file that two templates edit has two writers, and every update
@@ -44,9 +45,16 @@ design-challenges:
     or a mirror. A child names a contract instead, so any parent that declares
     the contract at a compatible version accepts it.
   identity-readable-without-git: >-
-    Airlock reads snapshots over the GitHub API and must not link Git plumbing.
-    The snapshot document, its parser and its IO-free validation live in a
-    shared crate without Gitoxide, file-system or network dependencies.
+    Airlock reads applied records and snapshots over the GitHub API and must
+    not link Git plumbing. The record and snapshot documents, their parsers and
+    their IO-free validation live in a shared crate without Gitoxide,
+    file-system or network dependencies.
+  current-at-a-revision: >-
+    Snapshot refs record every apply on every branch, including branches that
+    never merged, and they survive the deletion of their target. No order over
+    refs tells which composition a given project revision holds. The project's
+    tree does, so each apply writes an applied record into the target, and a
+    reader takes the current compositions from the revision it audits.
 proposed-design:
   high-level-overview: >-
     A parent's `template.yml` declares `composition`: a composition contract
@@ -185,6 +193,25 @@ proposed-design:
     `paths` to equal the `files/` subtree. `created`, `generated`, `project`,
     `target` and `built_from` stay composition-wide; every member renders with
     the one frozen instant.
+  applied-record: >-
+    Every apply that captures a snapshot, with or without children, also writes
+    its entry in the applied record `.toha.json` at the target root. Entries are
+    keyed by parent source under `applications`, so several compositions applied
+    to one target share the file. An entry holds `format` (the integer 1),
+    `snapshot` (the id of the snapshot this apply captures), the parent's
+    `template`, `commit` and optional `content_digest`, and `children` with each
+    child's `template`, `source`, `commit` and optional `content_digest` in
+    member order. The entry holds no answers. Toha allocates the snapshot id
+    before plan building, so the captured record names its own snapshot. The
+    parent owns the entry as an edit-owned JSON value, written as a `struct`
+    edit with `create: true` is, and the existing typed edit rules retract and
+    merge it. A member plan or `inject` rule for `.toha.json` at the target root
+    is a planning error. The already-current comparison reads the entry's
+    `snapshot` member as equal, so the record alone never makes a render differ.
+    An apply that captures no snapshot writes no entry. Two branches that each
+    update a composition change the same entry, and the merge of those branches
+    conflicts there. The operator keeps one entry, and that entry is what the
+    merged revision holds.
   update-resolution: >-
     An update builds the candidate from the whole composition. Every member
     resolves through its recorded formal name, the way a single-template update
@@ -235,24 +262,34 @@ proposed-design:
     `TreeEntryKind` and `DocumentError`. `SnapshotDocument::from_json` parses
     and validates a `snapshot.json`; `to_json_bytes` writes the canonical bytes
     `from_json` accepts; `check_tree` validates a listing of path and
-    `TreeEntryKind` pairs; `templates` yields the parent then each child; and
-    `current` selects the current snapshot of each lineage. Module `answers`
+    `TreeEntryKind` pairs; and `templates` yields the parent then each child.
+    Module `applied` holds `APPLIED_RECORD_FILE`, `AppliedRecord` and
+    `Application`. `AppliedRecord::from_json` parses a `.toha.json`;
+    `applications` yields each entry with its parent source, snapshot id and
+    member identities; and `Application::agrees_with` checks a parsed snapshot
+    and the record's target against the entry. Module `answers`
     holds `AnswersDocument`, Toha's identity envelope, and `ContractDocument`,
     a JSON object read with its `$schema` identifier. The `toha` crate depends
     on `toha-documents` and adds Git storage, capture and merge. The crate holds
     no Intentional release-model types.
   identity-reading: >-
-    A reader lists `refs/toha/snapshots/`, reads each commit's `snapshot.json`
-    and parses it with the shared crate. A composition's lineage is its parent
-    source and target. The current snapshot of a lineage is its greatest id.
-    The crate exposes that selection so every reader applies one rule. Each
-    current snapshot yields the parent and every child as source, formal name
-    and revision.
+    A reader audits one project revision. It lists that revision's tree, reads
+    each `.toha.json`, and parses it with the shared crate. The record's folder
+    is the target, and each entry is one composition current at that
+    revision, with the parent and every child as source, formal name and
+    revision. A target deleted at the revision has no record, and an apply
+    made on a branch that never merged is absent from the revision's tree, so
+    neither reads as current. Snapshot refs are history and are not needed to
+    read identity. A reader that needs a composition's answers fetches
+    `refs/toha/snapshots/<id>` for the entry's id and checks it with
+    `agrees_with`; a missing ref or a disagreement is a finding the reader
+    reports, never a fallback to another snapshot.
   out-of-scope: >-
     YAML typed edits, one source applied twice in one composition, children that
-    contribute to other children, `--like` across compositions, and pushing
-    snapshot refs. Toha keeps writing no push configuration; publishing snapshot
-    refs to a remote stays an operator or workflow step.
+    contribute to other children, `--like` across compositions, selecting an
+    update's base from the applied record, and pushing snapshot refs. Toha
+    keeps writing no push configuration; publishing snapshot refs to a remote
+    stays an operator or workflow step.
 open-agreements: >-
   The answers contract design for Intentional and this design meet at three
   points, and each needs one statement agreed by both: the release-model
