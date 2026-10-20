@@ -18,6 +18,16 @@ description: >-
   which is relative to the target, and `ignore` and `static` globs, which are
   relative to the source subdirectory.
 
+  Parts. At most one top-level multiselect question has parts: true. It has
+  no when, precedes every flow node, and has literal unique option strings
+  matching ^[a-z0-9][a-z0-9_-]*$. Each option names one part; there are no
+  separate files, hooks or interviews for a part. The answer renders in option
+  order. --with and --without settle it through the ordinary question
+  constraints. The applied record holds it in parts, outside answers. Evidence:
+  invalid_part_declarations_are_load_errors and
+  part_answers_and_flags_render_in_option_order_and_flags_override_reanswer
+  in tests/parts.rs.
+
   Document questions. A `document` question takes a whole JSON object. Its
   required `schema` is one URI or a non-empty list of accepted URIs; required
   `input` is a literal relative default-file path resolved against the target.

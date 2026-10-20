@@ -240,6 +240,15 @@ description: >-
   member names the applied record path; outside Git a plain apply reports
   record.skipped as not-git. Preview and already-current write no record.
   Person and completed staged-agent updates report equivalent completion prose.
+  Completion results have an application member with prior_revision and
+  resolved_revision (null, {commit: SHA}, or {content_digest: SHA256}), and
+  parts_added and parts_removed arrays. A fresh apply has no prior revision
+  and lists its selected parts as added. Previews describe the proposed
+  selection. A staged interview carries part_selection: with and without
+  arrays and the copied base selection, so resume settles the same answer.
+  Evidence: parts_add_update_remove_shared_workflow_and_retract_and_release_edits,
+  staged_part_flags_survive_new_questions_continue_and_apply, and
+  fresh_stage_part_flags_and_like_parts_survive_resume in tests/parts.rs.
 
   Generator seed. A seeded questions or applied document carries seed.from,
   naming the selected application's target. It carries no answer values. Route

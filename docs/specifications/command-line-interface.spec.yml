@@ -59,6 +59,26 @@ commands:
           visual) this staged interview's templates reference. The grant is
           discovered before any batch and carries through every later batch and
           the apply.
+      - name: with
+        flags: [ --with ]
+        kind: option
+        description: >-
+          Repeatable. Add a part to the default selection on a fresh apply, the
+          seed selection with --like, or the recorded selection on update.
+          Settles the part question even with --reanswer. The settled answer
+          must meet the question constraints.
+        value:
+          type: string
+      - name: without
+        flags: [ --without ]
+        kind: option
+        description: >-
+          Repeatable. Remove a part from the same selection as --with. Reject
+          unknown parts, a part named by both flags, a template without parts,
+          or a part answer supplied with either flag, before any question.
+          Stage preserves the flags and their selection through resume.
+        value:
+          type: string
       - name: update
         flags: [ --update ]
         kind: flag
@@ -246,6 +266,26 @@ commands:
           interview is staged at the path.
         value:
           type: path
+      - name: with
+        flags: [ --with ]
+        kind: option
+        description: >-
+          Repeatable. Add a part to the default selection on a fresh apply, the
+          seed selection with --like, or the recorded selection on update.
+          Settles the part question even with --reanswer. The settled answer
+          must meet the question constraints.
+        value:
+          type: string
+      - name: without
+        flags: [ --without ]
+        kind: option
+        description: >-
+          Repeatable. Remove a part from the same selection as --with. Reject
+          unknown parts, a part named by both flags, a template without parts,
+          or a part answer supplied with either flag, before any question.
+          Stage preserves the flags and their selection through resume.
+        value:
+          type: string
       - name: update
         flags: [ --update ]
         kind: flag

@@ -50,6 +50,7 @@ pub struct Template {
     pub source_dir: PathBuf,
     pub data: IndexMap<Id, Value>,
     pub interview: Vec<Node>,
+    pub part_selection: crate::parts::Selection,
     pub root: PathBuf,
     /// The single include-confinement owner for this template's file bodies,
     /// created once from the canonical `root`. It is retained so a source-tree
@@ -174,6 +175,22 @@ impl Template {
         }
         find(&self.interview, id)
     }
+    /// The single, top-level question whose options name parts.
+    pub fn part_question(&self) -> Option<&Question> {
+        self.interview.iter().find_map(|node| match node {
+            Node::Question(q) if q.parts => Some(q),
+            _ => None,
+        })
+    }
+    pub fn selected_parts(&self, completed: &crate::Completed) -> Vec<String> {
+        self.part_question()
+            .and_then(|q| completed.answers.get(&q.id))
+            .and_then(|a| match a {
+                crate::Answer::List(parts) => Some(parts.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
     pub fn document_question_ids(&self) -> Vec<Id> {
         fn collect(nodes: &[Node], out: &mut Vec<Id>) {
             for node in nodes {
@@ -248,6 +265,7 @@ pub struct Question {
     pub placeholder: Option<Tmpl>,
     pub required: Typed<bool>,
     pub kind: QuestionKind,
+    pub parts: bool,
     pub validate: Validate,
     pub format: Option<Expr>,
     pub when: Option<Expr>,
@@ -1427,6 +1445,7 @@ impl Builder {
                     placeholder,
                     required,
                     kind,
+                    parts: map.get("parts").and_then(Value::as_bool).unwrap_or(false),
                     validate: Validate { min, max, regex },
                     format,
                     when,
@@ -1572,6 +1591,62 @@ impl Template {
                 }
             }
         }
+        fn validate_parts(
+            nodes: &[Value],
+            nested: bool,
+            flow: &mut bool,
+            count: &mut usize,
+            problems: &mut Vec<Problem>,
+        ) {
+            for node in nodes {
+                if node.get("flow").is_some() {
+                    *flow = true;
+                }
+                if node.get("parts") == Some(&Value::Bool(true)) {
+                    *count += 1;
+                    let options = node.get("options").and_then(Value::as_array);
+                    let valid_options = options.is_some_and(|items| {
+                        let mut seen = HashSet::new();
+                        items.iter().all(|item| {
+                            item.as_str().is_some_and(|s| {
+                                let mut chars = s.chars();
+                                matches!(chars.next(), Some('a'..='z' | '0'..='9'))
+                                    && chars.all(|c| {
+                                        c.is_ascii_lowercase()
+                                            || c.is_ascii_digit()
+                                            || c == '_'
+                                            || c == '-'
+                                    })
+                                    && seen.insert(s)
+                            })
+                        })
+                    });
+                    if *count > 1
+                        || nested
+                        || *flow
+                        || node.get("when").is_some()
+                        || node.get("type").and_then(Value::as_str) != Some("multiselect")
+                        || !valid_options
+                    {
+                        problem(
+                            problems,
+                            "interview.parts",
+                            "parts needs one top-level multiselect question before every flow, without when, with unique literal part names",
+                        );
+                    }
+                }
+                if let Some(children) = node.get("nodes").and_then(Value::as_array) {
+                    validate_parts(children, true, flow, count, problems);
+                }
+            }
+        }
+        validate_parts(
+            raw.interview.as_deref().unwrap_or_default(),
+            false,
+            &mut false,
+            &mut 0,
+            &mut b.problems,
+        );
         let interview = b.nodes(
             raw.interview.as_deref().unwrap_or_default(),
             "interview",
@@ -1740,6 +1815,7 @@ impl Template {
             source_dir,
             data,
             interview,
+            part_selection: Default::default(),
             root,
             partials,
             files,

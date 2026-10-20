@@ -582,6 +582,14 @@ fn render_default(
         return Ok(None);
     }
     let kind = prompt_kind(q);
+    if q.parts
+        && let Some(parts) = &t.part_selection.base
+    {
+        return Ok(Some(PreparedDefault {
+            answer: Answer::List(parts.clone()),
+            source: PreparedDefaultSource::Seed,
+        }));
+    }
     if let Some(entry) = seed.defaults.get(id) {
         let (raw, source) = match entry {
             DefaultBankEntry::Seed(raw) => (raw, PreparedDefaultSource::Seed),
@@ -1386,7 +1394,22 @@ fn check_answer(
     if empty {
         return Ok(answer);
     }
-    format_answer(template, answers, seed, q, prompt.kind, answer).map_err(CheckError::Eval)
+    let answer =
+        format_answer(template, answers, seed, q, prompt.kind, answer).map_err(CheckError::Eval)?;
+    if q.parts {
+        let Answer::List(parts) = validate(id, &Rules::of_prompt(prompt, q), answer.to_json())?
+        else {
+            unreachable!("parts is multiselect")
+        };
+        return Ok(Answer::List(
+            crate::parts::options(q)
+                .iter()
+                .filter(|p| parts.contains(p))
+                .cloned()
+                .collect(),
+        ));
+    }
+    Ok(answer)
 }
 /// Applies the `format` expression of `q` to a non-empty `answer`.
 fn format_answer(
@@ -1714,7 +1737,18 @@ impl<'a> Advance<'a> {
                     if active {
                         let prepared = make_prompt(q, self.template, &self.answers, &self.seed)?;
                         let prompt = prepared.prompt;
-                        if let Some(raw) = self.held.shift_remove(&q.id) {
+                        let selected = if q.parts && self.template.part_selection.is_present() {
+                            let default = match &prompt.default {
+                                Some(Answer::List(parts)) => parts.clone(),
+                                _ => vec![],
+                            };
+                            Some(RawAnswer(serde_json::json!(
+                                self.template.part_selection.settle(default)
+                            )))
+                        } else {
+                            None
+                        };
+                        if let Some(raw) = selected.or_else(|| self.held.shift_remove(&q.id)) {
                             match check_answer(
                                 self.template,
                                 &self.answers,

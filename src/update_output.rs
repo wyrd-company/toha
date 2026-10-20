@@ -22,6 +22,9 @@ pub(crate) fn text_outcome(outcome: Outcome, report: &UpdateReport, dry_run: boo
         ),
         String::new(),
     ];
+    if document["application"].is_object() {
+        lines.extend(crate::parts_output::lines(&document["application"]));
+    }
     let status = document["status"].as_str().unwrap_or("");
     if status == "already-current" {
         lines.push("Already current.".into());

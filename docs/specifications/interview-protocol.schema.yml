@@ -127,6 +127,28 @@ $defs:
         type: array
         items:
           type: string
+  revision:
+    oneOf:
+      - type: "null"
+      - type: object
+        additionalProperties: false
+        required: [ commit ]
+        properties:
+          commit: {type: string, pattern: '^[0-9a-f]{40}$'}
+      - type: object
+        additionalProperties: false
+        required: [ content_digest ]
+        properties:
+          content_digest: {type: string, pattern: '^[0-9a-f]{64}$'}
+  application:
+    type: object
+    additionalProperties: false
+    required: [ prior_revision, resolved_revision, parts_added, parts_removed ]
+    properties:
+      prior_revision: {$ref: "#/$defs/revision"}
+      resolved_revision: {$ref: "#/$defs/revision"}
+      parts_added: {type: array, uniqueItems: true, items: {type: string}}
+      parts_removed: {type: array, uniqueItems: true, items: {type: string}}
   already_current:
     description: >-
       An update whose settled render inputs and output equal the recorded application. Nothing is written.
@@ -140,6 +162,8 @@ $defs:
         const: already-current
       context:
         $ref: "#/$defs/context"
+      application:
+        $ref: "#/$defs/application"
       record:
         $ref: "#/$defs/record_outcome"
   batch:
@@ -193,6 +217,8 @@ $defs:
         const: applied
       context:
         $ref: "#/$defs/context"
+      application:
+        $ref: "#/$defs/application"
       files:
         type: array
         items:
@@ -265,6 +291,8 @@ $defs:
         const: planned
       context:
         $ref: "#/$defs/context"
+      application:
+        $ref: "#/$defs/application"
       files:
         type: array
         items:
