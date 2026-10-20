@@ -27,4 +27,21 @@ Configuration files are `$TOHA_CONFIG` (local) and `$TOHA_USER_CONFIG` (user) wh
 | 4 | A question batch. On the agent routes (`stage --async`, `continue PATH FILE`, `apply PATH`) the batch is followed by instructions on standard output and `apply PATH` never prompts; answer or correct it with `continue PATH FILE`. In a terminal, `continue PATH` (person) prompts the rest. |
 | 5 | The template name is ambiguous. The scripted route lists the matches in the `error` document's `commands`; other routes name them on standard error. Run the named command with the intended formal name, or add an alias. |
 
+Use `apply TEMPLATE PATH --update` or `stage TEMPLATE PATH --update` to update
+an application's source and target from `.toha.json`. Recorded ordinary answers
+replay; document questions use current inputs. `--baseline` re-adopts against
+an empty merge base when a recorded revision is unavailable or a folder template
+has no reproducible revision. An unchanged update reports `already-current`.
+
+For a template with a `parts: true` question, repeat `--with PART` and
+`--without PART` on apply or stage to change its default, seed, or recorded
+selection. Do not also answer that question in an answers document. The flags
+settle it even with `--reanswer`; without flags, updates replay the recorded
+selection. Staging preserves the selection. A removed part deletes unmodified
+whole files and conflicts with edited ones; its injections retract through the
+ordinary update rules. Completion documents carry `application` with
+`prior_revision`, `resolved_revision`, `parts_added`, and `parts_removed`;
+completion prose names the same values. Evidence: `tests/parts.rs` and the tested
+protocol exchange in `references/protocol.md`.
+
 `TOHA_RECORD` overrides `.toha.json` with a repository-relative record path.
