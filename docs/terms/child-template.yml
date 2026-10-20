@@ -1,0 +1,5 @@
+$schema: https://refinery.systems/ontology/term
+title: Child template
+description: >-
+  A template that declares contributions to a composition contract. A child
+  applies only as a member of a composition.

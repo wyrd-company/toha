@@ -1,0 +1,6 @@
+$schema: https://refinery.systems/ontology/term
+title: Composition
+description: >-
+  One application of a parent template and zero or more child templates into
+  one target, rendered as one plan and recorded in one snapshot. A template
+  applied alone is a composition with no children.
