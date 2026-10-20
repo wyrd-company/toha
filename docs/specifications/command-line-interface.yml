@@ -316,7 +316,7 @@ description: >-
   bytes conflict when the candidate differs. A missing entry, unavailable
   revision or failed base render names --baseline to re-baseline explicitly.
   --baseline adopts against an empty merge base. No snapshot ref is read or
-  migrated. Legacy snapshots list, snapshots clean and init remain available for old snapshot refs. --like accepts latest and snapshot IDs as legacy selectors.
+  migrated. There are no snapshots or init commands and no fetch refspec.
   Toha never pushes or writes push configuration.
 
   An update refuses a dirty target or record. --answers supplies overrides and

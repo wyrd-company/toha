@@ -413,6 +413,13 @@ fn malformed_record_is_refused_without_writes_and_retired_commands_are_absent() 
     );
     assert!(!out.status.success());
     assert!(!root.path().join("result.txt").exists());
+    for command in ["snapshots", "init"] {
+        let out = support::isolated_command(iso.path())
+            .arg(command)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2));
+    }
     let out = support::isolated_command(iso.path())
         .args(["apply", "--from", "legacy"])
         .output()

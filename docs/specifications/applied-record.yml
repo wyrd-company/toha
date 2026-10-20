@@ -79,11 +79,13 @@ description: >-
   Staging copies the selected entry; apply PATH refuses a changed entry and
   names stage TEMPLATE PATH --update. A staged --like run copies seed answers
   and parts. --like selects an application target of the same source; a bare
-  flag is a person-route picker. Legacy latest and snapshot-id selectors still read the old snapshot refs.
+  flag is a person-route picker. No temporal or snapshot-id selector exists.
 
   Re-baseline. --baseline adopts against an empty merge base. A repository
-  holding snapshot refs and no record uses this explicit command. Apply and update never create or read refs/toha/ refs and never migrate their contents.
-  Legacy snapshots list, snapshots clean and init manage existing refs and fetch configuration. Toha never pushes or writes push configuration.
+  holding snapshot refs and no record uses this explicit command. Toha never
+  creates, reads or lists refs/toha/ refs and never migrates their contents.
+  The operator removes old refs with Git. There are no snapshots or init
+  commands, no fetch refspec and no push configuration; Toha never pushes.
 
   Schema publication. docs/specifications/applied-record-1.schema.yml is the
   schema source and is included in Toha's package. Its URI is immutable: a

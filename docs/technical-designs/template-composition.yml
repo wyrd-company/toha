@@ -270,12 +270,19 @@ proposed-design:
     and no record re-baselines this way, and so does an application whose
     recorded revision cannot be rendered again.
   snapshot-fate: >-
-    Apply and update create and read no `refs/toha/` ref and migrate no snapshot
-    contents. Legacy `snapshots list`, `snapshots clean` and `init` remain
-    available for existing refs. `--like` accepts `latest` and snapshot ids or
-    prefixes through those legacy readers, in addition to application targets.
-    `--from <SNAPSHOT>` is replaced by `--update`; `--baseline` stays.
-
+    Toha creates, reads and lists no `refs/toha/` ref, and no code reads
+    `refs/toha/snapshots/*` to migrate; the operator removes old refs with Git.
+    `snapshots list`, `snapshots clean` and `init` are removed: the record is a
+    committed file that a person reads and edits directly, and no fetch refspec
+    is needed. `--from <SNAPSHOT>` on `apply` and `stage` is replaced by
+    `--update`, which takes no value, and `--reanswer` requires `--update`.
+    `--baseline` stays, as baseline states. `--like` selects its seed by target:
+    its value is the `target` of an application of the same source in the
+    record, and a bare `--like` on the person route lists those applications to
+    pick from. `latest` and snapshot ids are not selectors, because the record
+    keeps one entry per application and orders no entry by time. A seeded result
+    names the seed target. Base selection reads the record; no listing marks a
+    likely base.
   staging-and-protocol: >-
     A staged update or baseline holds a copy of the application entry it started
     from, or of the empty base, and its `--with` and `--without` parts, so
