@@ -13,7 +13,7 @@ relationships:
 Some templates are meant to be applied more than once into the same project —
 "add a widget", "add a module", "add a service". Each new one lives in its own
 subpath and usually wants most of the same answers as the last one. Toha's
-**`--like`** flag pre-fills a new application's answer defaults from a
+**`--like`** flag pre-fills a new application's answer defaults from the
 **applied record** of an earlier application of the same template source.
 
 `--like` is the *generate* axis. It is a sibling of `--update` (the *update* axis),
@@ -44,11 +44,11 @@ Copy the template identity exactly from a batch's `context.template`.
 
 If the `answers` object in `beta.json` only sets `label`, the new `beta` inherits
 `style`, `with_tests`,
-and every other answer from `alpha`'s entry. The `applied` document carries a
-`seed` member naming the target it seeded from:
+and every other answer from `alpha`'s entry. The `applied` document's
+`seed` member names the target it seeded from. Its value is:
 
 ```json
-{ "status": "applied", "seed": { "from": "src/widgets/alpha" }, ... }
+{ "from": "src/widgets/alpha" }
 ```
 
 The second application has its own entry in `.toha.json`, so a third can seed
@@ -71,9 +71,9 @@ template default. If a seeded value still violates a tightened constraint, Toha
 re-asks it (at a terminal) or returns it as a remaining question (exit code 4) —
 it is never written.
 
-The per-answer precedence, highest first, is: an answer the route submits, then a
-kind-matching recorded value, then a configured preset or template default, then
-the template's own default, then the question is asked.
+The per-answer precedence, highest first, is: an answer the route submits, then
+a kind-matching recorded value, then a configured preset or template default,
+then the template's own default, then the question is asked.
 
 ## Staging and resuming
 

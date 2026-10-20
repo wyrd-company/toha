@@ -23,9 +23,10 @@ use another location. Use `/` separators. The path cannot be absolute, contain
 
 ## Update a project
 
-Apply a Git template, then commit the files and record:
+Start a Git repository, apply a Git template, then commit the files and record:
 
 ```sh
+git init ./project
 toha apply https://example.invalid/templates/note ./project --answers answers.json
 git -C ./project add .
 git -C ./project commit -m "Generate project"
@@ -86,6 +87,8 @@ Add or remove parts with repeatable flags:
 
 ```sh
 toha apply https://example.invalid/templates/note ./project --update --with extra
+git -C ./project add .
+git -C ./project commit -m "Add extra part"
 toha apply https://example.invalid/templates/note ./project --update --without extra
 ```
 
@@ -124,7 +127,23 @@ toha apply ./note-template ./project --baseline --answers answers.json
 Use this command when there is no applied record, when the recorded revision is
 unavailable, or when an unversioned folder template cannot be rendered again.
 A repository with old snapshot refs also re-baselines this way. Toha does not
-read or migrate those refs.
+read or migrate those refs. Resolve any conflicts, commit the re-baselined files
+and record, and check the result before removing old refs.
+
+Inspect the old refs with Git:
+
+```sh
+git -C ./project for-each-ref --format='%(refname)' refs/toha/snapshots/
+```
+
+To remove one, pass its full name from that list to Git:
+
+```sh
+git -C ./project update-ref -d refs/toha/snapshots/<id>
+```
+
+Replace `<id>` with the actual ref suffix. This deletes that local ref; it does
+not remove a ref from a remote repository.
 
 ## Seed another application
 
@@ -136,6 +155,6 @@ toha apply ./note-template ./project/src/second --like src/first --answers answe
 
 A bare `--like` in a terminal lists applications to choose from. The result
 names the selected target. Read or edit `.toha.json` directly to inspect or remove
-entries. The [applied record schema](specifications/applied-record-1.schema.yml)
+entries. The [applied record schema](https://github.com/wyrd-company/toha/blob/main/docs/specifications/applied-record-1.schema.yml)
 is included in the Toha package; readers can vendor it without a Toha library or
 Git plumbing.

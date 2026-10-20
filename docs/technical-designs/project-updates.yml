@@ -93,9 +93,10 @@ proposed-design:
   merge: >-
     Base is HEAD with the target replaced by the merge base rendered from the
     recorded revision, answers (documents included), parts, generated instant
-    and context, without hooks. A failed render, unanswered question or
-    unavailable revision refuses the update and names --baseline. A whole-file
-    path uses rendered bytes only when their Git object id matches its recorded
+    and context, without hooks. A failed render, unanswered question,
+    unavailable revision or unversioned source refuses the update and names
+    --baseline. A whole-file path uses rendered bytes only when their Git object
+    id matches its recorded
     blob; otherwise it uses the retained object with that id. A hook path uses
     only its retained object. Base entries use the required recorded mode,
     never HEAD's mode; a missing mode leaves an ambiguous entry without a base.
