@@ -180,22 +180,24 @@ proposed-design:
     choices, never secret values: Toha has no secret question type, and a
     template asks for a credential's name, never its value.
   record-context: >-
-    `context` is an object keyed by reserved variable name. It holds the value
-    the run used for each of `toha_template_aliases`, the seven `toha_host_` and
-    `toha_is_` values and the five `toha_env_` values that the template
-    references on any render surface, found when the template loads from the
-    variables each surface's templates and expressions leave undeclared, `{%
-    include %}` partials included. A reserved value that the template does not
-    reference is not recorded. `toha_target_name` and the other three
-    `toha_template_` values follow from the entry and are not recorded. The
+    `context` is an object keyed by reserved variable name. Every render input a
+    template can read that is not derivable from the application entry is
+    recorded in `context` when referenced. It holds the value the run used for
+    each of `toha_target_name`, `toha_template_aliases`, `toha_template_source`,
+    the seven `toha_host_` and `toha_is_` values and the five `toha_env_` values
+    that the template references on any render surface, found when the template
+    loads from the variables each surface's templates and expressions leave
+    undeclared, `{% include %}` partials included. A reserved value that the
+    template does not reference is not recorded. Named and direct selections
+    can expose different `toha_template_source` values, and root checkout names
+    can differ across clones and worktrees. `toha_template_name` and
+    `toha_template_formal_name` follow from the entry and are not recorded. The
     merge base renders with the recorded values; the candidate renders with the
     updating run's values, and the new entry records those. Toha records these
-    values rather than forbid them in templates because forbidding them removes
-    a supported capability, such as a file that differs by operating system, and
-    because a value that a template renders into a file is already in the
-    project. A value that a template reads only in a condition is committed to
-    the record and nowhere else; the template author decides what a template
-    reads, and Toha reads `toha_env_` values only under trust.
+    values rather than forbid supported render inputs. A value read only in a
+    condition is committed to the record and nowhere else; the template author
+    decides what a template reads, and Toha reads `toha_env_` values only under
+    trust.
   record-paths: >-
     `paths` maps each path the application owns, relative to the target, to its
     ownership in the ownership forms of project updates: `origin` `toha` for a
@@ -205,9 +207,10 @@ proposed-design:
     under the target that a hook changed, listed after the hooks finish, with
     the same exclusions. Every `toha` and `hook` path also records `blob`, the
     Git object id, in the repository's object format, of the bytes the run left
-    at that path in Git stored form, after every hook. An `edit` path records no
-    `blob`. An edit path with empty `regions` and `values` is released on the
-    next update, as project updates state.
+    at that path in Git stored form, after every hook, and `mode`, the Git entry
+    mode `100644`, `100755` or `120000` left at that path. An `edit` path records
+    neither `blob` nor `mode`. An edit path with empty `regions` and `values` is
+    released on the next update, as project updates state.
   update-merge-base: >-
     An update renders the merge base from the application's entry: the recorded
     revision, `answers`, `parts`, `generated` and `context`, at the same target,
@@ -219,7 +222,9 @@ proposed-design:
     equals its recorded `blob`: the base render's bytes for a `toha` path when
     their object id equals `blob`, and otherwise the object `blob` names when
     the repository holds it. The base render's bytes are never used when their
-    object id differs, and a hook path never takes rendered bytes, because a
+    object id differs. Base entries use the recorded `mode`; an entry without
+    a recorded mode has no base when its mode is ambiguous and never takes the
+    mode from `HEAD`. A hook path never takes rendered bytes, because a
     render runs no hooks. A path with no such bytes has no base: when the
     candidate's bytes equal the project's file, the path is unchanged; when the
     candidate has the path and its bytes differ, the path is an add/add
@@ -265,19 +270,12 @@ proposed-design:
     and no record re-baselines this way, and so does an application whose
     recorded revision cannot be rendered again.
   snapshot-fate: >-
-    Toha creates, reads and lists no `refs/toha/` ref, and no code reads
-    `refs/toha/snapshots/*` to migrate; the operator removes old refs with Git.
-    `snapshots list`, `snapshots clean` and `init` are removed: the record is a
-    committed file that a person reads and edits directly, and no fetch refspec
-    is needed. `--from <SNAPSHOT>` on `apply` and `stage` is replaced by
-    `--update`, which takes no value, and `--reanswer` requires `--update`.
-    `--baseline` stays, as baseline states. `--like` selects its seed by target:
-    its value is the `target` of an application of the same source in the
-    record, and a bare `--like` on the person route lists those applications to
-    pick from. `latest` and snapshot ids are not selectors, because the record
-    keeps one entry per application and orders no entry by time. A seeded result
-    names the seed target. Base selection reads the record; no listing marks a
-    likely base.
+    Apply and update create and read no `refs/toha/` ref and migrate no snapshot
+    contents. Legacy `snapshots list`, `snapshots clean` and `init` remain
+    available for existing refs. `--like` accepts `latest` and snapshot ids or
+    prefixes through those legacy readers, in addition to application targets.
+    `--from <SNAPSHOT>` is replaced by `--update`; `--baseline` stays.
+
   staging-and-protocol: >-
     A staged update or baseline holds a copy of the application entry it started
     from, or of the empty base, and its `--with` and `--without` parts, so
@@ -375,8 +373,8 @@ proposed-design:
     by naming its URI, `https://intentional.foo/schemas/release-model/1` for
     line `1`, in the question's `schema` and by vendoring that schema in its
     schemas directory; a template that accepts two lines names both and branches
-    on `$schema`. Toha reads the committed model on every run and never replays
-    a recorded one. The record holds the model the process was rendered from as
+    on `$schema`. Toha does not replay the model from the applied record into the
+    candidate interview. The record holds the model the process was rendered from as
     the recorded answer to that document question, at `answers.<question id>`,
     which is `answers.release_model` in the release template. A comparison of
     that value with the committed `.intentional/release-model.json` shows a

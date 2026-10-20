@@ -118,14 +118,14 @@ features:
   update-templates: >-
     Refreshes installed templates that follow a branch to the newest commit
     of that branch.
-  snapshot-applies: >-
-    Records the output of an apply into a git target as a snapshot — a parentless
-    commit under a Toha-owned ref — so a later update knows what it wrote. A
-    snapshot holds the rendered files and the answers that produced them;
-    snapshots list, clean without pushing, and fetch as ordinary git objects.
+  record-applies: >-
+    Records each template application in the committed .toha.json at the
+    repository root. It holds identity, raw answers, selected parts, render
+    context and ownership with blob identities; a plain JSON reader validates
+    it against Toha's published schema.
   update-projects: >-
     Re-renders a template into a project it already generated and merges the
-    difference three-way from a base snapshot, so the template's changes reach
+    difference three-way from a verified merge base, so the template's changes reach
     the project while the operator's own edits survive and a conflict is left for
     the operator to resolve. An update replays the recorded answers and asks only
     what the new version needs; a baseline adopts an existing project from an
@@ -133,13 +133,13 @@ features:
   generate-into-subpaths: >-
     Applies one template repeatedly into subpaths of a project — "add a widget",
     "add a module" — where `apply TEMPLATE PATH --like <SELECTOR>` pre-fills the
-    new application's answer defaults from a snapshot of an earlier application
+    new application's answer defaults from the recorded answers of an earlier application
     of the same source. `--like` is the generate axis: it writes a fresh
     application and only seeds defaults, never merges, and is a sibling of the
-    update axis's `--from`, never combined with it. A seeded default is still a
-    default a person or an answers document overrides; the snapshot is selected
+    update axis's `--update`, never combined with it. A seeded default is still a
+    default a person or an answers document overrides; the application is selected
     repository-wide by source, so a prior application at another subpath seeds
-    the new one, and each new application saves its own snapshot so the next can
+    the new one, and each new application records its own entry so the next can
     seed from it in turn.
   name-templates: >-
     Resolves templates by alias, short name, or formal name, and reports

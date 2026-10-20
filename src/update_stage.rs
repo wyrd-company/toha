@@ -2,10 +2,10 @@
 // relationships:
 //   implements: architecture
 // ---
-//! The staged template-update flow: `stage --from`/`--baseline`/`--reanswer`,
+//! The staged template-update flow: `stage --update`/`--baseline`/`--reanswer`,
 //! then `continue PATH` and `apply PATH`.
 //!
-//! Staging an update drives the update replay adapter from the base snapshot's
+//! Staging an update drives the update replay adapter from the base application's
 //! recorded answers and saves a [`StagedRecord`] that holds the base, the
 //! `reanswer` flag, and the batches submitted so far. Without `--async` the
 //! person route prompts the unsettled questions, saving each batch; with it the
@@ -16,13 +16,13 @@
 //! is unchanged.
 
 use std::io::{self, IsTerminal};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use indexmap::IndexMap;
 use serde_json::Value;
 use toha::RawAnswer;
+use toha::applied::{Application, UpdateDrive, drive_update, drive_update_resume};
 use toha::interview::Seed;
-use toha::snapshot::{Snapshot, SnapshotId, UpdateDrive, drive_update, drive_update_resume};
 use toha::template::Id;
 
 use crate::cli::guidance;
@@ -30,9 +30,7 @@ use crate::staging::{CanonicalTarget, StagedRecord, Store};
 use crate::update::{self, PrepareMode, Prepared, UpdateBase};
 use crate::{AgentOutcome, Dirs, Outcome, context, instructions, setup};
 
-/// A staged baseline update stores this reserved base marker. It begins with
-/// `@`, which a ULID (Crockford base32) never contains, so it never collides
-/// with a snapshot id and is validated as the one non-id value on resume.
+/// The baseline marker is distinct from a serialized application object.
 pub(crate) const BASELINE_MARKER: &str = "@baseline";
 
 /// Whether a staged record is an update (it carries a base).
@@ -40,29 +38,28 @@ pub fn is_staged_update(saved: &StagedRecord) -> bool {
     saved.base.is_some()
 }
 
-/// The stored base value for a record: the full snapshot id, or the baseline
+/// The stored base value for a staged record: the copied application, or the baseline
 /// marker.
-fn stored_base(base: &UpdateBase, base_snapshot: Option<&Snapshot>) -> String {
+fn stored_base(base: &UpdateBase, base_application: Option<&Application>) -> String {
     match base {
-        UpdateBase::From(_) => base_snapshot
-            .expect("--from resolves a snapshot")
-            .id()
-            .to_string(),
+        UpdateBase::Update => serde_json::to_string(
+            &base_application
+                .expect("--update resolves an application")
+                .to_value(),
+        )
+        .expect("application serializes"),
         UpdateBase::Baseline => BASELINE_MARKER.to_owned(),
     }
 }
-
-/// Reconstruct the update base a record staged, validating the stored value as a
-/// snapshot id or the baseline marker.
 fn base_of(saved: &StagedRecord) -> Result<UpdateBase, String> {
     let value = saved.base.as_deref().ok_or("record is not an update")?;
     if value == BASELINE_MARKER {
         Ok(UpdateBase::Baseline)
     } else {
-        value
-            .parse::<SnapshotId>()
-            .map(|_| UpdateBase::From(value.to_owned()))
-            .map_err(|err| format!("staged base {value:?} is not a snapshot id: {err}"))
+        serde_json::from_str::<Value>(value).map_err(|_| {
+            "invalid staged application; run stage TEMPLATE PATH --update".to_owned()
+        })?;
+        Ok(UpdateBase::Update)
     }
 }
 
@@ -99,10 +96,11 @@ fn record(
     );
     record.base = Some(base.to_owned());
     record.reanswer = reanswer;
+    crate::save_document_answers(&prep.template, &mut record);
     record
 }
 
-/// `stage --from ID`/`--baseline` `[--reanswer]` `PATH` `[--async FILE]`. The
+/// `stage --update`/`--baseline` `[--reanswer]` `PATH` `[--async FILE]`. The
 /// person route (no `--async`) prompts and saves each batch; the agent route
 /// reports the batch.
 #[allow(clippy::too_many_arguments)]
@@ -113,6 +111,7 @@ pub fn stage(
     async_out: Option<Option<String>>,
     reanswer: bool,
     trust: bool,
+    input: &[PathBuf],
     dirs: &Dirs,
 ) -> Outcome {
     let (target, store) = match setup(path, dirs) {
@@ -138,7 +137,7 @@ pub fn stage(
             path,
         ));
     }
-    let prep = match update::prepare(
+    let mut prep = match update::prepare(
         &base,
         template_arg,
         &target,
@@ -151,7 +150,15 @@ pub fn stage(
         Ok(value) => value,
         Err(outcome) => return outcome,
     };
-    let base_value = stored_base(&base, prep.base_snapshot.as_ref());
+    if let Err(error) = toha::document::prepare(
+        &mut prep.template,
+        target.as_path(),
+        input,
+        &Default::default(),
+    ) {
+        return crate::document_input_error(error, None);
+    }
+    let base_value = stored_base(&base, prep.base_application.as_ref());
     let seed = Seed {
         now: prep.now.clone(),
         defaults: prep.configured_defaults.clone(),
@@ -246,79 +253,142 @@ fn report_batch(
 
 /// Resolve the pieces a staged-update resume needs, restoring the identity-
 /// bearing context from the record (not rebuilding it) and re-resolving the
-/// template and base snapshot. Returns the `Prepared` a merge consumes and the
+/// template and base application. Returns the `Prepared` a merge consumes and the
 /// reconstructed base.
 fn resume_prep(
-    saved: &StagedRecord,
+    saved: &mut StagedRecord,
     target: &CanonicalTarget,
     dirs: &Dirs,
     trust: bool,
+    input: &[PathBuf],
+    incoming: Option<&toha::RawAnswers>,
 ) -> Result<(Prepared, UpdateBase, Submissions), Outcome> {
     let base = base_of(saved).map_err(Outcome::Error)?;
-    let (prep, staged) = update::resume_prepared(saved, &base, target, dirs, trust)?;
+    let mut prep = update::resume_prepared(saved, &base, target, dirs, trust)?;
+    if let Some(incoming) = incoming {
+        crate::prepare_staged_documents(
+            &mut prep.template,
+            target.as_path(),
+            input,
+            incoming,
+            saved,
+        )
+        .map_err(|e| crate::document_input_error(e, None))?;
+    }
+    let staged = update::to_raw_staged(&saved.submissions).map_err(Outcome::Error)?;
     Ok((prep, base, staged))
 }
 
 /// `continue PATH [FILE]` for a staged update.
 pub fn continue_staged(
-    saved: StagedRecord,
+    mut saved: StagedRecord,
     path: &Path,
     answers: Option<String>,
+    input: &[PathBuf],
     dirs: &Dirs,
 ) -> Outcome {
     let (target, store) = match setup(path, dirs) {
         Ok(value) => value,
         Err(error) => return Outcome::Error(error),
     };
-    let (prep, _base, staged) = match resume_prep(&saved, &target, dirs, false) {
-        Ok(value) => value,
-        Err(outcome) => return outcome,
+    let empty = toha::RawAnswers::new();
+    let incoming = if answers.is_none() {
+        Some(&empty)
+    } else {
+        None
     };
-
-    // The person route prompts each remaining batch, re-driving through the
-    // adapter so a batch the recorded answers cover is not prompted.
+    let (mut prep, _base, mut staged) =
+        match resume_prep(&mut saved, &target, dirs, false, input, incoming) {
+            Ok(value) => value,
+            Err(outcome) => return outcome,
+        };
     let Some(answers_file) = answers else {
+        if let Err(error) = store.save(&target, &saved) {
+            return Outcome::Error(error.to_string());
+        }
         return continue_person(saved, prep, staged, &target, &store, path);
     };
-
-    // Agent route: drive to the pending batch and answer one document.
+    let seed = || Seed {
+        now: prep.now.clone(),
+        defaults: prep.configured_defaults.clone(),
+        context: prep.context.clone(),
+    };
+    match drive_update_resume(
+        &prep.template,
+        seed(),
+        &prep.recorded,
+        &staged,
+        saved.reanswer,
+    ) {
+        Ok(UpdateDrive::Completed { .. }) => {
+            return Outcome::Error(guidance::complete_answers_unused(path));
+        }
+        Ok(UpdateDrive::Ended(ended)) => {
+            if let Err(error) = store.remove(&target) {
+                return Outcome::Error(error.to_string());
+            }
+            return Outcome::Document(
+                toha::protocol::ended_document(&ended, &context(&target, &saved)),
+                0,
+            );
+        }
+        Ok(UpdateDrive::Ask { .. }) => {}
+        Err(error) => return Outcome::Error(error.to_string()),
+    }
+    let text = match crate::read_answers_text(&answers_file) {
+        Ok(value) => value,
+        Err(error) => return Outcome::Error(error),
+    };
+    let incoming = match toha::protocol::document_answers(&prep.resolved.formal_name, &text) {
+        Ok(value) => value,
+        Err(error) => return Outcome::Error(error.to_string()),
+    };
+    if let Err(error) = crate::prepare_staged_documents(
+        &mut prep.template,
+        target.as_path(),
+        input,
+        &incoming,
+        &mut saved,
+    ) {
+        return crate::document_input_error(error, None);
+    }
+    staged = match update::to_raw_staged(&saved.submissions) {
+        Ok(values) => values,
+        Err(e) => return Outcome::Error(e),
+    };
     let seed = Seed {
         now: prep.now.clone(),
         defaults: prep.configured_defaults.clone(),
         context: prep.context.clone(),
     };
-    let driven = match drive_update_resume(
+    let pending = match drive_update_resume(
         &prep.template,
         seed,
         &prep.recorded,
         &staged,
         saved.reanswer,
     ) {
-        Ok(value) => value,
-        Err(error) => return Outcome::Error(error.to_string()),
-    };
-    let pending = match driven {
-        // `continue PATH FILE` on a complete interview refuses before reading the
-        // document.
-        UpdateDrive::Completed { .. } => {
-            return Outcome::Error(guidance::complete_answers_unused(path));
-        }
-        UpdateDrive::Ask { pending, .. } => pending,
-        UpdateDrive::Ended(ended) => {
-            if let Err(error) = store.remove(&target) {
+        Ok(UpdateDrive::Ask { pending, .. }) => pending,
+        Ok(UpdateDrive::Completed { .. }) if incoming.is_empty() => {
+            if let Err(error) = store.save(&target, &saved) {
                 return Outcome::Error(error.to_string());
             }
-            eprintln!("{}", guidance::flow_ended(&ended));
-            return Outcome::Error(format!(
-                "the template ended the interview: {:?}",
-                ended.kind()
-            ));
+            return Outcome::Agent {
+                document: None,
+                instructions: instructions(&AgentOutcome::Complete, path),
+                code: 0,
+            };
         }
-    };
-
-    let text = match crate::read_answers_text(&answers_file) {
-        Ok(value) => value,
-        Err(error) => return Outcome::Error(error),
+        Ok(UpdateDrive::Completed { .. }) => {
+            return Outcome::Error(guidance::complete_answers_unused(path));
+        }
+        Ok(UpdateDrive::Ended(ended)) => {
+            return Outcome::Document(
+                toha::protocol::ended_document(&ended, &context(&target, &saved)),
+                0,
+            );
+        }
+        Err(error) => return Outcome::Error(error.to_string()),
     };
     match toha::protocol::answer_document_once(&prep.resolved.formal_name, pending, &text) {
         Ok(toha::protocol::DocumentStep::Accepted { submission, .. }) => {
@@ -327,13 +397,14 @@ pub fn continue_staged(
         Ok(toha::protocol::DocumentStep::Rejected {
             pending,
             rejections,
-        }) => {
-            let ctx = context(&target, &saved);
-            Outcome::Document(
-                toha::protocol::batch_document(pending.batch(), &ctx, Some(&rejections)),
-                4,
-            )
-        }
+        }) => Outcome::Document(
+            toha::protocol::batch_document(
+                pending.batch(),
+                &context(&target, &saved),
+                Some(&rejections),
+            ),
+            4,
+        ),
         Err(error) => Outcome::Error(error.to_string()),
     }
 }
@@ -432,9 +503,6 @@ fn continue_person(
     path: &Path,
 ) -> Outcome {
     use crate::terminal;
-    if !io::stdin().is_terminal() {
-        return Outcome::Error(guidance::continue_no_terminal(path));
-    }
     loop {
         let seed = Seed {
             now: prep.now.clone(),
@@ -480,6 +548,9 @@ fn continue_person(
                 if let Err(error) = store.save(target, &saved) {
                     return Outcome::Error(error.to_string());
                 }
+                if !io::stdin().is_terminal() {
+                    return Outcome::Error(guidance::continue_no_terminal(path));
+                }
                 let submission = match terminal::prompt_batch(&pending, &mut terminal::InquireAsk) {
                     Ok(submission) => submission,
                     Err(error) => return Outcome::Error(error),
@@ -494,20 +565,31 @@ fn continue_person(
 /// the base, removing the record only once that merge actually writes;
 /// when incomplete, report the pending batch.
 pub fn apply_staged(
-    saved: StagedRecord,
+    mut saved: StagedRecord,
     path: &Path,
     dry_run: bool,
     trust: bool,
+    input: &[PathBuf],
     dirs: &Dirs,
 ) -> Outcome {
     let (target, store) = match setup(path, dirs) {
         Ok(value) => value,
         Err(error) => return Outcome::Error(error),
     };
-    let (prep, _base, staged) = match resume_prep(&saved, &target, dirs, trust) {
+    let (prep, _base, staged) = match resume_prep(
+        &mut saved,
+        &target,
+        dirs,
+        trust,
+        input,
+        Some(&toha::RawAnswers::new()),
+    ) {
         Ok(value) => value,
         Err(outcome) => return outcome,
     };
+    if let Err(error) = store.save(&target, &saved) {
+        return Outcome::Error(error.to_string());
+    }
     let seed = Seed {
         now: prep.now.clone(),
         defaults: prep.configured_defaults.clone(),

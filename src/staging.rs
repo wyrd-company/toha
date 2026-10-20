@@ -5,7 +5,7 @@
 use crate::context::{
     EnvironmentAdmissionError, InvocationContext, InvocationContextWire, RenderOrigin,
 };
-use crate::interview::{Resolution, SnapshotSeed};
+use crate::interview::{ApplicationSeed, Resolution};
 use crate::{AnswerError, Interview, RawAnswer, RawAnswers, Seed, Template};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -29,22 +29,19 @@ pub struct StagedRecord {
     pub named: bool,
     pub now: String,
     pub submissions: Vec<IndexMap<String, Value>>,
-    /// The base snapshot id an update stages from, absent for a plain apply. When
-    /// present, the record resumes through the update replay adapter and applies
-    /// by merging from the base, not a fresh apply.
+    /// The serialized application selected for this update, or the baseline
+    /// marker. Resume checks that the selected application still matches.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
     /// Whether the staged update re-asks every recorded answer.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub reanswer: bool,
-    /// The snapshot `--like` seeded from, if any (the generate axis). A pinned
-    /// id, re-read from git on resume so `continue`/`apply PATH` rebuild the
-    /// identical seeded defaults; the record stores no prior-application answers.
-    /// Orthogonal to and mutually exclusive with the update axis's `base`:
-    /// `--like` (generate) and `--from` (update) never combine, so the two
-    /// optional members never both apply.
+    /// The seed target selected by `--like`. `seed_entry` copies its application
+    /// so later changes to the live record do not change staged defaults.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed_entry: Option<Value>,
     /// The versioned invocation context. A record written by [`StagedRecord::new`]
     /// carries the legacy projection; [`StagedRecord::new_with_context`] carries
     /// the current context. A pre-context record on disk has no field and
@@ -352,6 +349,7 @@ impl StagedRecord {
             base: None,
             reanswer: false,
             seed: None,
+            seed_entry: None,
             context: InvocationContextWire::Legacy,
         }
     }
@@ -377,6 +375,7 @@ impl StagedRecord {
             base: None,
             reanswer: false,
             seed: None,
+            seed_entry: None,
             context: wire,
         }
     }
@@ -447,17 +446,16 @@ impl StagedRecord {
         self.replay_from(interview, template)
     }
 
-    /// Replay a generate-axis staged interview, layering a snapshot seed over the
+    /// Replay a staged interview with the copied application seed layered over
     /// configured resolution through [`Resolution::start_with_seed`]. The caller
-    /// re-reads the pinned snapshot (`self.seed`) from git and folds it, so the
-    /// resumed defaults are identical to the staged run's. With `seed == None`
+    /// folds `seed_entry` so resumed defaults match the staged run. With no seed
     /// this is byte-for-byte [`Self::replay_with_resolution`]. Any wrong-kind
     /// warning was already reported at stage time; resume discards it.
     pub fn replay_with_seed<'a>(
         &self,
         template: &'a Template,
         resolution: Resolution,
-        seed: Option<SnapshotSeed>,
+        seed: Option<ApplicationSeed>,
         target: &CanonicalTarget,
     ) -> Result<Interview<'a>, StagingError> {
         let now = self

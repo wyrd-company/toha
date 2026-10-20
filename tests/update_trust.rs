@@ -68,19 +68,10 @@ fn an_approved_template_updates_and_runs_hooks_without_trust() {
     let target = tempfile::tempdir().unwrap();
     write_template(template_dir.path());
     let folder = template_dir.path().canonicalize().unwrap();
-    let formal = support::formal_name(&folder);
+    let formal = support::versioned_template(&folder);
 
     // Install and approve the template.
-    let add = toha(
-        &root,
-        &[
-            "templates",
-            "add",
-            folder.to_str().unwrap(),
-            "--alias",
-            "demo",
-        ],
-    );
+    let add = toha(&root, &["templates", "add", &formal, "--alias", "demo"]);
     assert_eq!(add.status.code(), Some(0), "add: {add:?}");
     let trust = toha(&root, &["templates", "trust", "demo"]);
     assert_eq!(trust.status.code(), Some(0), "trust: {trust:?}");
@@ -112,7 +103,7 @@ fn an_approved_template_updates_and_runs_hooks_without_trust() {
     assert_eq!(baseline.status.code(), Some(0), "baseline: {baseline:?}");
     let document = support::first_document(&baseline.stdout);
     assert_eq!(document["status"], "applied", "{document}");
-    let snapshot = document["snapshot"]["id"].as_str().unwrap().to_owned();
+    let _snapshot = document["record"]["path"].as_str().unwrap().to_owned();
     assert!(
         target.path().join("ran.txt").exists(),
         "the hook must run under the approval"
@@ -135,8 +126,7 @@ fn an_approved_template_updates_and_runs_hooks_without_trust() {
             "apply",
             "demo",
             target.path().to_str().unwrap(),
-            "--from",
-            &snapshot,
+            "--update",
             "--answers",
             env_revised.to_str().unwrap(),
         ],
@@ -160,8 +150,8 @@ fn an_unapproved_template_update_plans_without_running_hooks() {
     let target = tempfile::tempdir().unwrap();
     write_template(template_dir.path());
     let folder = template_dir.path().canonicalize().unwrap();
-    let formal = support::formal_name(&folder);
-    let address = support::folder_address(&folder);
+    let formal = support::versioned_template(&folder);
+    let address = formal.clone();
 
     git(target.path(), &["init", "--quiet"]);
     fs::write(target.path().join("README.md"), "seed\n").unwrap();
@@ -208,6 +198,7 @@ fn an_unapproved_template_update_plans_without_running_hooks() {
         "Sample greeting\n",
     )
     .unwrap();
+    support::refresh_template(&address);
     let index = fs::read(target.path().join(".git/index")).unwrap();
     let output = toha(
         &root,
@@ -218,14 +209,14 @@ fn an_unapproved_template_update_plans_without_running_hooks() {
             "--baseline",
         ],
     );
-    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
     let text = String::from_utf8(output.stdout.clone()).unwrap();
     for expected in [
         "Template: ",
         "Target: ",
         "Preview only; no changes written.",
         "Hooks need trust; rerun with --trust after reviewing them.",
-        "No snapshot saved: preview.",
+        "No applied record written: preview.",
     ] {
         assert!(text.contains(expected), "missing {expected}: {text}");
     }

@@ -1,0 +1,99 @@
+$schema: https://refinery.systems/ontology/specification
+relationships:
+  realizes: toha
+  implements: template-composition
+  related-to: project-updates
+description: >-
+  The applied record is one committed JSON file at the repository root,
+  `.toha.json`. TOHA_RECORD overrides its repository-relative path with slash
+  separators. Absolute paths, a .. component and symbolic-link components are
+  usage errors before the interview. A target below the repository root still
+  uses this one file, with target-relative ownership paths in its entry.
+
+  An apply, update or baseline that writes files records its application when
+  the target is inside a Git work tree at completion, including a repository
+  initialized by the run's git question. Outside Git the result says not-git.
+  Preview, dry-run, untrusted plan, stop and already-current write no record.
+  The record is written atomically as JSON with sorted object keys, two-space
+  indentation and a final newline. It is reserved against file and injection
+  plans, excluded from ownership and excluded from the three-way merge. An
+  update writes its new entry in the merged-files/index transaction.
+
+  The top-level members are $schema and applications. $schema equals
+  https://wyrd.foo/toha/schemas/applied-record/1. Applications are sorted by
+  target, then source; each pair occurs once. A run replaces only its own pair.
+  An entry stays until the operator removes it from the committed file.
+
+  Identity. target is relative to the repository root, with . for the root.
+  template is the formal name, including its reference. source is that name
+  without the reference. commit is the resolved lowercase 40-hex Git commit or
+  null. Optional content_digest holds a lowercase 64-hex SHA-256 revision and
+  never accompanies a non-null commit. generated is the frozen render instant,
+  carried forward on updates. parts lists selections in option order.
+
+  Answers. answers maps question ids to accepted raw values before formatting,
+  including whole document answers at answers.<question id>, arrays for looped
+  and multiselect questions, and accepted defaults. Skipped questions, computed
+  values and hook results are absent. The part question's answer belongs in
+  parts alone. A git answer strips URL user information. Templates ask for
+  credential names, never secret values; Toha has no secret question type.
+
+  Context. context holds only reserved values the template references on any
+  compiled render surface, including included partials. Every render input a
+  template can read that is not derivable from the entry is recorded when
+  referenced. Its permitted keys are toha_target_name, toha_template_aliases,
+  toha_template_source, the seven toha_host_ and toha_is_ names, and the five
+  toha_env_ names. Identity-derived context follows from the entry. The merge
+  base renders from recorded context; the candidate uses the current run's
+  context. Environment access retains its trust requirement.
+
+  Ownership. paths maps target-relative paths to origin toha, edit or hook.
+  Whole-file and hook entries require blob, the Git object id of their stored
+  bytes after hooks, and mode, the Git entry mode 100644, 100755 or 120000. Edit
+  entries require regions and values and have neither blob nor mode.
+  Capture excludes the record, ignored untracked files, gitlinks, paths inside
+  submodules and paths outside the target. An empty edit ownership is released
+  on the next update. Whole files removed by the candidate retract; hook-owned
+  content carries forward; edit files retain operator bytes outside owned edits.
+
+  Reading. Toha validates JSON against its shipped line 1 schema and refuses
+  malformed JSON, schema failures, an unsupported $schema, repeated pairs and
+  source/formal-name disagreement before writing. Errors name the record path
+  and do not quote answers. An update also refuses a record that differs from
+  HEAD. Two branches that update one application change the same entry and can
+  conflict there. The operator keeps one entry; no history is merged into it.
+
+  Merge base. apply TEMPLATE PATH --update selects the source/target pair and
+  fetches the recorded revision. It replays recorded answers, documents included,
+  with recorded generated and context values and no hooks. A render failure,
+  unanswered question, missing revision or unversioned source names --baseline.
+  Whole-file base bytes must match blob; otherwise a retained local object is
+  used. Base entries use their recorded mode, never HEAD's mode; a missing mode
+  leaves an ambiguous entry without a base. A hook path uses only its retained object. Missing bytes never replace
+  operator edits silently; differing additions conflict add/add, and removals
+  conflict modify/delete. Edit-owned paths use HEAD bytes. The candidate does
+  not replay documents from the old applied entry. Current staged document
+  answers remain fixed for their interview. An unchanged revision, answers, parts, context
+  and output is already-current and leaves the record untouched.
+
+  Staging copies the selected entry; apply PATH refuses a changed entry and
+  names stage TEMPLATE PATH --update. A staged --like run copies seed answers
+  and parts. --like selects an application target of the same source; a bare
+  flag is a person-route picker. Legacy latest and snapshot-id selectors still read the old snapshot refs.
+
+  Re-baseline. --baseline adopts against an empty merge base. A repository
+  holding snapshot refs and no record uses this explicit command. Apply and update never create or read refs/toha/ refs and never migrate their contents.
+  Legacy snapshots list, snapshots clean and init manage existing refs and fetch configuration. Toha never pushes or writes push configuration.
+
+  Schema publication. docs/specifications/applied-record-1.schema.yml is the
+  schema source and is included in Toha's package. Its URI is immutable: a
+  schema change publishes the next line at its own path and earlier lines
+  stay. Toha reads and writes line 1. Hosting is not required for readers,
+  which vendor this file from the Toha release they name.
+format: json-schema
+validation-criteria: >-
+  applied_record tests validate emitted records, root/subpath addressing,
+  TOHA_RECORD, reserved paths, exclusions, no-ref behavior, re-baselining and
+  already-current behavior. applied_record_schema fixtures validate positive
+  examples and a negative fixture for each required member against the shipped
+  schema, including validation of every serialized record.

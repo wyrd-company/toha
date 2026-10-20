@@ -419,11 +419,11 @@ mod tests {
 }
 
 /// Interpret the selected template revision without treating content as Git.
-pub fn snapshot_revision(
+pub fn applied_revision(
     formal: &str,
     commit: &str,
-) -> Result<toha::snapshot::Revision, toha::snapshot::SnapshotError> {
-    use toha::snapshot::{CommitId, ContentDigest, Revision};
+) -> Result<toha::applied::Revision, toha::applied::RecordError> {
+    use toha::applied::{CommitId, ContentDigest, Revision};
     if commit.is_empty() {
         Ok(Revision::Unversioned)
     } else if formal == bundled::RESERVED {
@@ -433,16 +433,16 @@ pub fn snapshot_revision(
     }
 }
 
-/// Resume a content snapshot only through a content-aware source resolver.
-pub fn resume_snapshot_template(
+/// Resume a content application only through a content-aware source resolver.
+pub fn resume_application_template(
     formal: &str,
-    revision: &toha::snapshot::Revision,
+    revision: &toha::applied::Revision,
     config: &Config,
     registry: &Registry,
     dirs: &Dirs,
     cwd: &Path,
 ) -> Result<ResolvedTemplate, ResolveError> {
-    use toha::snapshot::Revision;
+    use toha::applied::Revision;
     match revision {
         Revision::Content(digest) => {
             bundled::resume(formal, digest.as_str(), dirs).unwrap_or_else(|| {
@@ -461,7 +461,7 @@ pub fn resume_snapshot_template(
 #[cfg(test)]
 mod content_revision_tests {
     use super::*;
-    use toha::snapshot::{ContentDigest, Revision};
+    use toha::applied::{ContentDigest, Revision};
 
     #[test]
     fn content_revision_never_falls_through_to_git_resolution() {
@@ -478,7 +478,7 @@ mod content_revision_tests {
         };
         let config = config::load(&dirs.config_paths(), root.path()).unwrap();
         let revision = Revision::Content(ContentDigest::parse(&"ab".repeat(32)).unwrap());
-        let result = resume_snapshot_template(
+        let result = resume_application_template(
             "gh:example/template",
             &revision,
             &config,
@@ -498,7 +498,7 @@ mod content_revision_tests {
             !dirs.cache.exists(),
             "no Git fetch or cache materialization"
         );
-        let result = resume_snapshot_template(
+        let result = resume_application_template(
             bundled::RESERVED,
             &revision,
             &config,

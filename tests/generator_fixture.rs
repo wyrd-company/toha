@@ -196,26 +196,21 @@ fn scripted(
 // ---------------------------------------------------------------------------
 
 /// The valid snapshot captured at `target` within `project_root` (exactly one in
-/// the fixture), via the public `toha::snapshot` reader.
-fn snapshot_at(project_root: &Path, target: &str) -> toha::snapshot::Snapshot {
-    use toha::snapshot::{Listed, Project};
+/// the fixture), via the public `toha::applied` reader.
+fn snapshot_at(project_root: &Path, target: &str) -> toha::applied::Application {
+    use toha::applied::Project;
     let canonical = toha::staging::canonical_target(&project_root.join(target)).unwrap();
     let project = Project::open(&canonical).unwrap().expect("target in git");
-    let mut valid: Vec<_> = project
-        .snapshots()
+    project
+        .applications()
         .unwrap()
         .into_iter()
-        .filter_map(|listed| match listed {
-            Listed::Valid(snapshot) => Some(snapshot),
-            Listed::Invalid { .. } => None,
-        })
-        .collect();
-    assert_eq!(valid.len(), 1, "exactly one snapshot at {target}");
-    valid.pop().unwrap()
+        .find(|a| a.target().as_str() == target)
+        .unwrap()
 }
 
 /// A snapshot's recorded raw submissions as a comparable owned value.
-fn submissions_of(snapshot: &toha::snapshot::Snapshot) -> Vec<IndexMap<String, Value>> {
+fn submissions_of(snapshot: &toha::applied::Application) -> Vec<IndexMap<String, Value>> {
     snapshot.submissions().to_vec()
 }
 
@@ -259,10 +254,7 @@ fn build_base(
         &alpha_answers,
     );
     assert_eq!(code, 0, "alpha applied: {alpha_doc}");
-    let sa = alpha_doc["snapshot"]["id"]
-        .as_str()
-        .expect("alpha recorded snapshot SA")
-        .to_owned();
+    let sa = expect.alpha.target.clone();
     // alpha renders exactly its complete expected tree.
     assert_eq!(
         read_tree(&root.join(&expect.alpha.target)),
@@ -278,7 +270,7 @@ fn build_base(
 /// `SA` sentinel becomes a >= 6-char prefix of the alpha snapshot id.
 fn like_selector(expect: &FixtureExpect, sa: &str) -> String {
     if expect.beta.like == SA_SENTINEL {
-        sa[..8].to_owned()
+        sa.to_owned()
     } else {
         expect.beta.like.clone()
     }
@@ -460,10 +452,10 @@ fn crate_route(
 ) -> RouteResult {
     use toha::{
         ApplyOptions, Interview, Plan, RawAnswer, Template,
+        applied::Project,
         config::{ConfigEntry, DefaultSource, PresetName},
         hook::RecordingRunner,
-        interview::{SnapshotSeed, configured_defaults},
-        snapshot::Project,
+        interview::{ApplicationSeed, configured_defaults},
         staging::canonical_target,
         template::Id,
     };
@@ -477,14 +469,19 @@ fn crate_route(
 
     // Fold SA's recorded submissions into one default per id at the CLI boundary.
     let project = Project::open(&target).unwrap().expect("in git");
-    let snapshot = project.find(sa).unwrap();
+    let snapshot = project
+        .applications()
+        .unwrap()
+        .into_iter()
+        .find(|a| a.target().as_str() == sa)
+        .unwrap();
     let mut defaults: IndexMap<Id, RawAnswer> = IndexMap::new();
     for batch in snapshot.submissions() {
         for (key, value) in batch {
-            defaults.insert(Id::parse(key).unwrap(), RawAnswer(value.clone()));
+            defaults.insert(Id::parse(&key).unwrap(), RawAnswer(value.clone()));
         }
     }
-    let seed = SnapshotSeed {
+    let seed = ApplicationSeed {
         defaults,
         from: sa.to_owned(),
     };
@@ -534,7 +531,7 @@ fn crate_route(
     RouteResult {
         tree: read_tree(&beta_dir),
         seed_from: Some(sa.to_owned()),
-        submissions: vec![submission],
+        submissions: submissions_of(&snapshot_at(&root, &expect.beta.target)),
     }
 }
 
@@ -554,7 +551,7 @@ fn pure_engine_tree(
         ApplyOptions, Interview, Plan, RawAnswer, Template,
         config::{ConfigEntry, DefaultSource, PresetName},
         hook::RecordingRunner,
-        interview::{SnapshotSeed, configured_defaults},
+        interview::{ApplicationSeed, configured_defaults},
         staging::canonical_target,
         template::Id,
     };
@@ -569,7 +566,7 @@ fn pure_engine_tree(
     for (key, value) in alpha_answers.as_object().unwrap() {
         defaults.insert(Id::parse(key).unwrap(), RawAnswer(value.clone()));
     }
-    let seed = SnapshotSeed {
+    let seed = ApplicationSeed {
         defaults,
         // Deliberately NOT a real snapshot id: the engine must not resolve or gate
         // on `from`, so a git-free bogus value still produces the identical tree.
@@ -690,7 +687,19 @@ fn generator_twice_fixture_agrees_across_person_scripted_agent_and_crate_routes(
     if let Some(first) = document_submissions.first() {
         assert_eq!(
             first.as_slice(),
-            &[one_entry(&override_key, &override_value)],
+            &[fixture_answers(&expect.alpha.answers)
+                .as_object()
+                .unwrap()
+                .iter()
+                .map(|(key, value)| (
+                    key.clone(),
+                    if key == &override_key {
+                        override_value.clone()
+                    } else {
+                        value.clone()
+                    }
+                ))
+                .collect::<IndexMap<String, Value>>()],
             "a document route records exactly the submitted override"
         );
     }
@@ -748,8 +757,8 @@ fn generator_twice_fixture_agrees_across_person_scripted_agent_and_crate_routes(
         &base_parent.path().join("snapshots-check"),
         &expect.alpha.target,
     );
-    assert_ne!(sa_snapshot.id().to_string(), sb.id().to_string());
-    assert_eq!(sa_snapshot.id().to_string(), sa, "alpha snapshot is SA");
+    assert_ne!(sa_snapshot.target().to_string(), sb.target().to_string());
+    assert_eq!(sa_snapshot.target().to_string(), sa, "alpha snapshot is SA");
     if expect.snapshots.equal_source {
         assert_eq!(
             sa_snapshot.source(),
@@ -786,13 +795,6 @@ fn generator_twice_fixture_agrees_across_person_scripted_agent_and_crate_routes(
             "the git-free engine (no snapshot/Project/git) equals the git-backed crate route"
         );
     }
-}
-
-/// One submission batch with a single entry.
-fn one_entry(key: &str, value: &Value) -> IndexMap<String, Value> {
-    let mut m = IndexMap::new();
-    m.insert(key.to_owned(), value.clone());
-    m
 }
 
 /// A widget template with a NON-IDENTITY `format` on `label` (upper-cases it), so
@@ -839,10 +841,10 @@ fn routes_accept_the_same_effective_raw_including_seeded_defaults_before_formatt
     // "BETA" and the raw-including-defaults assertion fails.
     use toha::{
         ApplyOptions, Interview, Plan, RawAnswer, Template,
+        applied::Project,
         config::{ConfigEntry, DefaultSource, PresetName},
         hook::RecordingRunner,
-        interview::{SnapshotSeed, configured_defaults},
-        snapshot::Project,
+        interview::{ApplicationSeed, configured_defaults},
         staging::canonical_target,
         template::Id,
     };
@@ -869,7 +871,7 @@ fn routes_accept_the_same_effective_raw_including_seeded_defaults_before_formatt
     );
     let (code, alpha_doc) = scripted(iso.path(), &address, &base.join("src/alpha"), None, &alpha);
     assert_eq!(code, 0, "alpha applied: {alpha_doc}");
-    let sa = alpha_doc["snapshot"]["id"].as_str().unwrap().to_owned();
+    let sa = "src/alpha".to_owned();
     git(&base, &["add", "-A"]);
     git(&base, &["commit", "-q", "-m", "alpha"]);
 
@@ -891,14 +893,19 @@ fn routes_accept_the_same_effective_raw_including_seeded_defaults_before_formatt
         let template = Template::load(&template_root).unwrap();
         let target = canonical_target(&beta_dir).unwrap();
         let project = Project::open(&target).unwrap().expect("in git");
-        let snapshot = project.find(&sa).unwrap();
+        let snapshot = project
+            .applications()
+            .unwrap()
+            .into_iter()
+            .find(|a| a.target().as_str() == sa)
+            .unwrap();
         let mut defaults: IndexMap<Id, RawAnswer> = IndexMap::new();
         for b in snapshot.submissions() {
             for (k, v) in b {
-                defaults.insert(Id::parse(k).unwrap(), RawAnswer(v.clone()));
+                defaults.insert(Id::parse(&k).unwrap(), RawAnswer(v.clone()));
             }
         }
-        let seed = SnapshotSeed {
+        let seed = ApplicationSeed {
             defaults,
             from: sa.clone(),
         };
@@ -950,19 +957,24 @@ fn routes_accept_the_same_effective_raw_including_seeded_defaults_before_formatt
     assert_eq!(crate_effective["label"], json!("beta"));
 
     // A seed folded from SA at the CLI boundary, shared by the script/agent adapters.
-    let fold_seed = |root: &Path| -> (SnapshotSeed, Template, toha::staging::CanonicalTarget) {
+    let fold_seed = |root: &Path| -> (ApplicationSeed, Template, toha::staging::CanonicalTarget) {
         let template = Template::load(&template_root).unwrap();
         let target = canonical_target(&root.join("src/beta")).unwrap();
         let project = Project::open(&target).unwrap().expect("in git");
-        let snapshot = project.find(&sa).unwrap();
+        let snapshot = project
+            .applications()
+            .unwrap()
+            .into_iter()
+            .find(|a| a.target().as_str() == sa)
+            .unwrap();
         let mut defaults: IndexMap<Id, RawAnswer> = IndexMap::new();
         for b in snapshot.submissions() {
             for (k, v) in b {
-                defaults.insert(Id::parse(k).unwrap(), RawAnswer(v.clone()));
+                defaults.insert(Id::parse(&k).unwrap(), RawAnswer(v.clone()));
             }
         }
         (
-            SnapshotSeed {
+            ApplicationSeed {
                 defaults,
                 from: sa.clone(),
             },
@@ -1137,8 +1149,8 @@ fn routes_accept_the_same_effective_raw_including_seeded_defaults_before_formatt
         );
         assert_eq!(
             log[0].len(),
-            1,
-            "{route} is route-shaped (override only): {log:?}"
+            3,
+            "{route} records every accepted raw value: {log:?}"
         );
     }
 }
@@ -1185,7 +1197,7 @@ fn a_person_is_re_asked_a_constraint_invalid_seed_and_overrides_it() {
         &root,
     );
     assert_eq!(code, 0, "root applied: {doc}");
-    let sa = doc["snapshot"]["id"].as_str().unwrap().to_owned();
+    let sa = "src/alpha".to_owned();
     git(&project, &["add", "-A"]);
     git(&project, &["commit", "-q", "-m", "root"]);
 
@@ -1235,7 +1247,7 @@ fn a_seeded_plan_is_single_target_and_refuses_a_foreign_target() {
     use toha::{
         Interview, Plan, PlanError, RawAnswer, Template,
         config::{ConfigEntry, DefaultSource, PresetName},
-        interview::{SnapshotSeed, configured_defaults},
+        interview::{ApplicationSeed, configured_defaults},
         staging::canonical_target,
         template::Id,
     };
@@ -1248,7 +1260,7 @@ fn a_seeded_plan_is_single_target_and_refuses_a_foreign_target() {
     // A hand-built seed (no git needed): style=panel differs from the default.
     let mut defaults: IndexMap<Id, RawAnswer> = IndexMap::new();
     defaults.insert(Id::parse("style").unwrap(), RawAnswer(json!("panel")));
-    let seed = SnapshotSeed {
+    let seed = ApplicationSeed {
         defaults,
         from: "01M3TB4T089FWECKM1BNEM4J3H".to_owned(),
     };

@@ -102,6 +102,8 @@ pub(crate) fn has_symlink_component(
 
 #[derive(Debug)]
 pub struct Plan {
+    /// Inputs for the applied record. Internal candidate renders clear this.
+    pub record: Option<crate::applied::CaptureInputs>,
     pub files: Vec<PlannedFile>,
     pub edits: Vec<PlannedEdit>,
     pub conflicts: Vec<TargetPath>,
@@ -405,6 +407,12 @@ fn read_render(path: &Path, ctx: &impl serde::Serialize) -> Result<String, PlanE
     rendered(&text, ctx, path)
 }
 impl Plan {
+    pub fn record_identity(&mut self, template: String, revision: crate::applied::Revision) {
+        if let Some(record) = &mut self.record {
+            record.template = template;
+            record.revision = revision;
+        }
+    }
     pub fn build(
         template: &Template,
         completed: &Completed,
@@ -422,6 +430,33 @@ impl Plan {
             context.project(&mut ctx);
         }
         let mut plan = Self {
+            record: Some(crate::applied::CaptureInputs {
+                template: completed
+                    .context()
+                    .and_then(|c| c.formal_name())
+                    .unwrap_or_else(|| template.root.to_str().unwrap_or("template"))
+                    .to_owned(),
+                revision: crate::applied::Revision::Unversioned,
+                generated: crate::applied::FrozenNow::new(completed.now.clone()),
+                answers: completed
+                    .accepted_raw()
+                    .iter()
+                    .filter(|(id, _)| template.has_question_id(id))
+                    .map(|(id, raw)| {
+                        let value = if template.git_question() == Some(id) {
+                            raw.0
+                                .as_str()
+                                .map(|url| Value::String(crate::source::without_userinfo(url)))
+                                .unwrap_or_else(|| raw.0.clone())
+                        } else {
+                            raw.0.clone()
+                        };
+                        (id.to_string(), value)
+                    })
+                    .collect(),
+                context: template.record_context(completed.context()),
+                parts: vec![],
+            }),
             files: vec![],
             edits: vec![],
             conflicts: vec![],
@@ -598,6 +633,27 @@ impl Plan {
                 if !text.trim().is_empty() {
                     plan.after_apply = Some(Planned::Ready(text));
                 }
+            }
+        }
+        let project =
+            crate::applied::Project::open(target).map_err(|e| PlanError::Path(e.to_string()))?;
+        let root = project
+            .as_ref()
+            .and_then(|p| p.repo().workdir())
+            .unwrap_or(target.as_path());
+        let record = crate::applied::project::record_relative(root)
+            .map_err(|e| PlanError::Path(e.to_string()))?;
+        for mutation in plan.mutations() {
+            let path = match mutation {
+                FileMutation::Whole { path }
+                | FileMutation::Region { path, .. }
+                | FileMutation::JsonValue { path, .. } => path,
+            };
+            let full = target.as_path().join(path.as_path());
+            if full == root.join(&record) {
+                return Err(PlanError::Path(format!(
+                    "the applied record path {record} is reserved"
+                )));
             }
         }
         Ok(plan)

@@ -7,9 +7,9 @@
 //!
 //! The three trees are whole-repository trees so conflict paths are
 //! repository-relative and nothing outside the target can change: base is
-//! `HEAD` with the target replaced by the base snapshot's `files/` (empty for a
+//! `HEAD` with the target replaced by the base application's verified files (empty for a
 //! baseline), ours is `HEAD` (the operator), theirs is `HEAD` with the target
-//! replaced by the new snapshot's `files/`. The operator is "ours", so index
+//! replaced by the candidate's captured files. The operator is "ours", so index
 //! stage 2 holds the operator's bytes. Toha never runs a merge or filter driver;
 //! a path whose attributes name one is kept as the operator's content and
 //! reported as a `driver` conflict.
@@ -22,17 +22,13 @@ use gix::bstr::{BString, ByteSlice};
 use gix::filter::plumbing::pipeline::convert::ToWorktreeOutcome;
 use gix::objs::tree::EntryKind;
 
-use crate::snapshot::capture::{self, CaptureInputs};
-use crate::snapshot::project::Project;
-use crate::snapshot::record::{
-    CommitId, FrozenNow, Origin, ProjectPoint, RepoPath, Revision, SNAPSHOT_REF_PREFIX, Snapshot,
-    SnapshotId, Timestamp,
-};
-
+use crate::applied::capture::{self, CaptureInputs};
+use crate::applied::project::Project;
+use crate::applied::record::{Application, Origin, RepoPath, Revision};
 /// The base an update merges from.
 #[allow(clippy::large_enum_variant)]
 pub enum Base {
-    Snapshot(Snapshot),
+    Application(Application),
     Empty,
 }
 
@@ -52,7 +48,7 @@ pub enum Merged {
         changes: Vec<Change>,
     },
     Written {
-        snapshot: SnapshotId,
+        record: String,
         changes: Vec<Change>,
         conflicted: Vec<RepoPath>,
     },
@@ -103,27 +99,23 @@ fn git(err: impl std::fmt::Display) -> MergeError {
     MergeError::Git(err.to_string())
 }
 
-/// What the update records besides its files. The runtime supplies the id and
-/// created instant; `generated` is carried from the base so a date-rendering
-/// template stays byte-stable across updates.
-pub struct SnapshotInputs {
+/// The resolved identity of the candidate application.
+pub struct RecordInputs {
     pub template: String,
     pub revision: Revision,
-    pub generated: FrozenNow,
-    pub submissions: Vec<indexmap::IndexMap<crate::template::Id, serde_json::Value>>,
 }
 
-/// Apply a template update to the project: build the candidate snapshot through
+/// Apply a template update to the project: build the candidate application through
 /// the throwaway checkout, stop early when the result is already current, and
-/// otherwise merge it into the working tree. `--from` merges from a base
-/// snapshot; `--baseline` merges from an empty base.
+/// otherwise merge it into the working tree. `--update` merges from a base
+/// application; `--baseline` merges from an empty base.
 #[allow(clippy::too_many_arguments)]
 pub fn merge_apply(
     project: &Project,
     base: Base,
     template: &crate::template::Template,
     completed: &crate::interview::Completed,
-    inputs: SnapshotInputs,
+    inputs: RecordInputs,
     options: MergeOptions,
     runner: &dyn crate::hook::HookRunner,
 ) -> Result<Merged, MergeError> {
@@ -146,13 +138,13 @@ pub fn merge_apply_reported(
     base: Base,
     template: &crate::template::Template,
     completed: &crate::interview::Completed,
-    inputs: SnapshotInputs,
+    inputs: RecordInputs,
     options: MergeOptions,
     runner: &dyn crate::hook::HookRunner,
 ) -> Result<(Merged, UpdateReport), MergeError> {
-    // Build the plan for the real target with the snapshot's frozen instant.
+    // Build the plan for the real target with the application's frozen instant.
     let target_path = candidate_target(project)?;
-    let plan = crate::plan::Plan::build(template, completed, &target_path)
+    let mut plan = crate::plan::Plan::build(template, completed, &target_path)
         .map_err(|err| MergeError::Git(err.to_string()))?;
 
     let mut report = UpdateReport {
@@ -168,7 +160,11 @@ pub fn merge_apply_reported(
         return Ok((Merged::NeedsTrust, report));
     }
 
-    let capture_inputs = capture_inputs(project, &inputs)?;
+    plan.record_identity(inputs.template.clone(), inputs.revision.clone());
+    let capture_inputs = plan
+        .record
+        .take()
+        .expect("a completed plan has record inputs");
     let (new, candidate_report) = build_candidate_reported(
         project,
         &base,
@@ -180,22 +176,12 @@ pub fn merge_apply_reported(
 
     report.messages.extend(candidate_report.messages);
     report.hooks = candidate_report.hooks;
-    let published = published_commit(project, new.id())
-        .unwrap_or_else(|| gix::ObjectId::null(project.repo().object_hash()));
-
-    // Already current: the new snapshot equals the base — discard it and stop.
-    if let Base::Snapshot(base_snapshot) = &base
-        && is_already_current(project, base_snapshot, &new, &inputs)?
+    if let Base::Application(base_application) = &base
+        && is_already_current(base_application, &new, &inputs)
     {
-        remove_candidate(project, new.id(), published)?;
         return Ok((Merged::AlreadyCurrent, report));
     }
-
     let result = merge_into_worktree(project, &base, &new, &options);
-    if options.dry_run {
-        // A dry run saves nothing: remove the candidate ref the builder created.
-        remove_candidate(project, new.id(), published)?;
-    }
     result.map(|merged| (merged, report))
 }
 
@@ -213,36 +199,7 @@ fn candidate_target(project: &Project) -> Result<crate::staging::CanonicalTarget
     crate::staging::canonical_target(&path).map_err(|err| MergeError::Io(err.to_string()))
 }
 
-/// Build the capture inputs, stamping the id, created instant, and HEAD point.
-fn capture_inputs(project: &Project, inputs: &SnapshotInputs) -> Result<CaptureInputs, MergeError> {
-    let repo = project.repo();
-    let head = repo.head_id().map_err(git)?.detach();
-    let commit =
-        CommitId::parse(&head.to_hex().to_string()).map_err(|e| MergeError::Git(e.to_string()))?;
-    let branch = repo
-        .head_name()
-        .map_err(git)?
-        .map(|name| name.shorten().to_string());
-    Ok(CaptureInputs {
-        id: SnapshotId::generate(),
-        template: inputs.template.clone(),
-        revision: inputs.revision.clone(),
-        generated: inputs.generated.clone(),
-        created: Timestamp::now(),
-        project: ProjectPoint::new(commit, branch),
-        submissions: inputs
-            .submissions
-            .iter()
-            .map(|m| {
-                m.iter()
-                    .map(|(k, v)| (k.as_str().to_owned(), v.clone()))
-                    .collect()
-            })
-            .collect(),
-    })
-}
-
-/// Build the candidate snapshot through the throwaway checkout: check out HEAD,
+/// Build the candidate application through the throwaway checkout: check out HEAD,
 /// retract uncovered base ownership, apply the plan (and hooks unless it is a dry
 /// run), then capture with the base. The checkout is deleted afterwards.
 ///
@@ -260,9 +217,9 @@ fn build_candidate(
     inputs: CaptureInputs,
     run_hooks: bool,
     runner: &dyn crate::hook::HookRunner,
-) -> Result<Snapshot, MergeError> {
+) -> Result<Application, MergeError> {
     build_candidate_reported(project, base, plan, inputs, run_hooks, runner)
-        .map(|(snapshot, _)| snapshot)
+        .map(|(application, _)| application)
 }
 
 fn build_candidate_reported(
@@ -272,7 +229,7 @@ fn build_candidate_reported(
     inputs: CaptureInputs,
     run_hooks: bool,
     runner: &dyn crate::hook::HookRunner,
-) -> Result<(Snapshot, UpdateReport), MergeError> {
+) -> Result<(Application, UpdateReport), MergeError> {
     let mut report = UpdateReport::default();
     let repo = project.repo();
     let target = project.target().clone();
@@ -284,12 +241,12 @@ fn build_candidate_reported(
     let plan_paths = capture::group_plan(&plan);
 
     // Step 3: retract uncovered base ownership on the checkout before the apply.
-    let base_snapshot = match base {
-        Base::Snapshot(snapshot) => Some(snapshot),
+    let base_application = match base {
+        Base::Application(application) => Some(application),
         Base::Empty => None,
     };
-    if let Some(base_snapshot) = base_snapshot {
-        capture::retract_uncovered(checkout.path(), &target, &plan_paths, base_snapshot)
+    if let Some(base_application) = base_application {
+        capture::retract_uncovered(checkout.path(), &target, &plan_paths, base_application)
             .map_err(|e| MergeError::Git(e.to_string()))?;
     }
 
@@ -303,6 +260,7 @@ fn build_candidate_reported(
     // An update's project is already a repository; the scratch checkout is
     // never initialized or given a remote.
     plan.git = None;
+    plan.record = None;
     let checkout_target_path = if target.is_root() {
         checkout.path().to_owned()
     } else {
@@ -310,6 +268,7 @@ fn build_candidate_reported(
     };
     let checkout_target = crate::staging::canonical_target(&checkout_target_path)
         .map_err(|e| MergeError::Io(e.to_string()))?;
+    let before = capture::observe(checkout_target.as_path()).map_err(git)?;
     match plan
         .apply(
             &checkout_target,
@@ -343,41 +302,30 @@ fn build_candidate_reported(
         }
     }
 
-    // Step 6: capture the new snapshot from the checkout, then read it back.
-    let id = capture::capture(
+    let application = capture::capture(
         repo,
         checkout.path(),
         &target,
         &plan_paths,
-        base_snapshot,
+        base_application,
         inputs,
+        Some(&before),
     )
     .map_err(|e| MergeError::Git(e.to_string()))?;
-
-    // Read the captured snapshot back through the validating reader.
-    project
-        .find(&id.to_string())
-        .map(|snapshot| (snapshot, report))
-        .map_err(|e| MergeError::Git(e.to_string()))
+    Ok((application, report))
 }
 
-/// Whether the new snapshot equals the base: same revision, submissions, and
-/// `files/` tree, so nothing would change.
-fn is_already_current(
-    project: &Project,
-    base: &Snapshot,
-    new: &Snapshot,
-    inputs: &SnapshotInputs,
-) -> Result<bool, MergeError> {
-    let same_revision = base.revision() == &inputs.revision;
-    let base_files = snapshot_files_tree(project, base.id())?;
-    let new_files = snapshot_files_tree(project, new.id())?;
-    Ok(same_revision && base.submissions() == new.submissions() && base_files == new_files)
+fn is_already_current(base: &Application, new: &Application, inputs: &RecordInputs) -> bool {
+    base.revision() == &inputs.revision
+        && base.answers == new.answers
+        && base.parts == new.parts
+        && base.context == new.context
+        && base.files == new.files
 }
 
 /// Check out `HEAD`'s whole tree into `dest`, with no filter driver (drivers are
 /// stripped on the repository), never a linked worktree.
-fn checkout_head(repo: &gix::Repository, dest: &Path) -> Result<(), MergeError> {
+pub(super) fn checkout_head(repo: &gix::Repository, dest: &Path) -> Result<(), MergeError> {
     let tree_id = repo.head_tree_id().map_err(git)?;
     let mut index = repo.index_from_tree(&tree_id).map_err(git)?;
     let mut opts = repo
@@ -398,51 +346,21 @@ fn checkout_head(repo: &gix::Repository, dest: &Path) -> Result<(), MergeError> 
     Ok(())
 }
 
-/// Merge the new snapshot into the operator's working tree against `base`. The
-/// new snapshot must already be captured (its ref exists); on any unsuccessful
-/// exit its candidate ref is removed.
+/// Merge the new application into the operator's working tree against `base`. The
+/// candidate and reconstructed base hold transient verified file entries.
 pub(crate) fn merge_into_worktree(
     project: &Project,
     base: &Base,
-    new: &Snapshot,
+    new: &Application,
     options: &MergeOptions,
 ) -> Result<Merged, MergeError> {
-    // The commit this invocation published, so cleanup only removes the ref while
-    // it still points there (a concurrent replacement is preserved).
-    let published = published_commit(project, new.id());
-    let result = merge_inner(project, base, new, options);
-    if !options.dry_run && !matches!(result, Ok(Merged::Written { .. })) {
-        // Any unsuccessful post-capture exit removes this candidate ref. A cleanup
-        // failure keeps the original error and names the ref that remains.
-        if let (Err(original), Some(published)) = (&result, published)
-            && let Err(cleanup) = remove_candidate(project, new.id(), published)
-        {
-            return Err(MergeError::Io(format!(
-                "{original}; additionally, cleanup of {}{} failed: {cleanup}",
-                SNAPSHOT_REF_PREFIX,
-                new.id()
-            )));
-        }
-    }
-    result
-}
-
-/// The commit a snapshot's ref currently points at, if it exists.
-fn published_commit(project: &Project, id: &SnapshotId) -> Option<gix::ObjectId> {
-    let name = format!("{SNAPSHOT_REF_PREFIX}{id}");
-    project
-        .repo()
-        .find_reference(name.as_str())
-        .ok()?
-        .peel_to_commit()
-        .ok()
-        .map(|commit| commit.id().detach())
+    merge_inner(project, base, new, options)
 }
 
 fn merge_inner(
     project: &Project,
     base: &Base,
-    new: &Snapshot,
+    new: &Application,
     options: &MergeOptions,
 ) -> Result<Merged, MergeError> {
     let repo = project.repo();
@@ -455,14 +373,14 @@ fn merge_inner(
 
     let head_tree = repo.head_tree().map_err(git)?.id().detach();
     let base_files = match base {
-        Base::Snapshot(snapshot) => {
-            let files = snapshot_files_tree(project, snapshot.id())?;
+        Base::Application(application) => {
+            let files = application_files_tree(project, application)?;
             let mut editor = repo.edit_tree(files).map_err(git)?;
             // The previous update captured the retracted operator file with
             // empty edit ownership. Once the candidate stops capturing it,
             // omit it from both merge inputs so absence cannot mean deletion.
             // A candidate that owns it again still needs its original base.
-            for entry in snapshot.paths() {
+            for entry in application.paths() {
                 if matches!(entry.origin(), Origin::Edit { regions, values } if regions.is_empty() && values.is_empty())
                     && !new
                         .paths()
@@ -483,7 +401,7 @@ fn merge_inner(
             .map_err(git)?
             .detach(),
     };
-    let new_files = snapshot_files_tree(project, new.id())?;
+    let new_files = application_files_tree(project, new)?;
 
     let base_full = graft(project, head_tree, target, base_files)?;
     let theirs_full = graft(project, head_tree, target, new_files)?;
@@ -544,6 +462,22 @@ fn merge_inner(
         );
     }
 
+    // A missing recorded object is never an empty-base deletion. Retain the
+    // operator path and expose the deletion in conflict stages.
+    if let Base::Application(application) = base {
+        for owned in application.paths() {
+            let path = owned.path().to_string();
+            if !matches!(owned.origin(), Origin::Edit { .. })
+                && !application.files.contains_key(&path)
+                && !theirs_entries.contains_key(path.as_bytes())
+                && let Some(ours) = ours_entries.get(path.as_bytes())
+            {
+                let relative = repo_path_for(target, &BString::from(path.as_str())).to_string();
+                conflict_kinds.insert(relative.clone(), ConflictKind::ModifyDelete);
+                driver_stages.insert(relative, [None, Some(*ours), None]);
+            }
+        }
+    }
     let conflicted: Vec<RepoPath> = conflict_kinds
         .keys()
         .filter_map(|p| RepoPath::parse(p).ok())
@@ -581,6 +515,14 @@ fn merge_inner(
             changes.push(Change {
                 path: repo_path,
                 action,
+            });
+        }
+    }
+    for (path, kind) in &conflict_kinds {
+        if !changes.iter().any(|c| c.path.as_str() == path) {
+            changes.push(Change {
+                path: RepoPath::parse(path).map_err(git)?,
+                action: Action::Conflicted(*kind),
             });
         }
     }
@@ -631,10 +573,11 @@ fn merge_inner(
         how,
         head_start,
         index_digest_start,
+        new,
     )?;
 
     Ok(Merged::Written {
-        snapshot: *new.id(),
+        record: project.record_relative().map_err(git)?,
         changes,
         conflicted,
     })
@@ -678,6 +621,7 @@ fn commit_transaction(
     how: gix::merge::tree::TreatAsUnresolved,
     head_start: gix::ObjectId,
     index_digest_start: Option<Vec<u8>>,
+    application: &Application,
 ) -> Result<(), MergeError> {
     let repo = project.repo();
     let workdir = repo
@@ -696,9 +640,10 @@ fn commit_transaction(
 
     if repo.head_id().map_err(git)?.detach() != head_start
         || index_digest(repo) != index_digest_start
+        || project.ensure_record_clean().is_err()
         || !matches!(
             project.cleanliness(),
-            Ok(crate::snapshot::Cleanliness::Clean)
+            Ok(crate::applied::Cleanliness::Clean)
         )
     {
         return Err(MergeError::Changed);
@@ -725,6 +670,12 @@ fn commit_transaction(
         return Err(err);
     }
 
+    let record_path = project.record_path().map_err(git)?;
+    let previous_record = std::fs::read(&record_path).ok();
+    if let Err(error) = project.write_application(application.clone()) {
+        rollback(repo, &mut pipeline, state, &workdir, &done)?;
+        return Err(git(error));
+    }
     // The index is written last, through the held lock, so a write failure above
     // leaves the index untouched and staged work outside the target intact.
     if let Err(err) = write_index(
@@ -736,6 +687,14 @@ fn commit_transaction(
         how,
         lock,
     ) {
+        match previous_record {
+            Some(bytes) => {
+                std::fs::write(&record_path, bytes).map_err(|e| MergeError::Io(e.to_string()))?;
+            }
+            None => {
+                std::fs::remove_file(&record_path).map_err(|e| MergeError::Io(e.to_string()))?;
+            }
+        }
         rollback(repo, &mut pipeline, state, &workdir, &done)?;
         return Err(err);
     }
@@ -1068,6 +1027,19 @@ fn write_index(
             }
         }
     }
+    // Publish the record in the same index transaction as the merged files.
+    let relative = project.record_relative().map_err(git)?;
+    let record = std::fs::read(project.record_path().map_err(git)?)
+        .map_err(|e| MergeError::Io(e.to_string()))?;
+    let oid = repo.write_blob(&record).map_err(git)?.detach();
+    index.remove_entries(|_, path, _| path == relative.as_bytes());
+    index.dangerously_push_entry(
+        Default::default(),
+        oid,
+        gix::index::entry::Flags::empty(),
+        gix::index::entry::Mode::FILE,
+        gix::bstr::BStr::new(relative.as_bytes()),
+    );
     index.sort_entries();
 
     lock.with_mut(|file| {
@@ -1146,17 +1118,18 @@ fn is_driver_attributed(out: &gix::attrs::search::Outcome) -> bool {
     merge_driver || filter_driver
 }
 
-/// The `files/` tree oid of a snapshot.
-fn snapshot_files_tree(project: &Project, id: &SnapshotId) -> Result<gix::ObjectId, MergeError> {
+fn application_files_tree(
+    project: &Project,
+    application: &Application,
+) -> Result<gix::ObjectId, MergeError> {
     let repo = project.repo();
-    let name = format!("{SNAPSHOT_REF_PREFIX}{id}");
-    let mut reference = repo.find_reference(name.as_str()).map_err(git)?;
-    let commit = reference.peel_to_commit().map_err(git)?;
-    let tree = commit.tree().map_err(git)?;
-    match tree.lookup_entry_by_path("files").map_err(git)? {
-        Some(entry) if entry.mode().is_tree() => Ok(entry.oid().to_owned()),
-        _ => Ok(gix::ObjectId::empty_tree(repo.object_hash())),
+    let mut editor = repo
+        .edit_tree(gix::ObjectId::empty_tree(repo.object_hash()))
+        .map_err(git)?;
+    for (path, (oid, kind)) in &application.files {
+        editor.upsert(path.as_str(), *kind, *oid).map_err(git)?;
     }
+    Ok(editor.write().map_err(git)?.detach())
 }
 
 /// Graft `sub` into `base` at the target path (or replace the whole tree at the
@@ -1281,27 +1254,6 @@ fn is_binary(repo: &gix::Repository, id: gix::ObjectId) -> bool {
         Ok(object) => object.data.iter().take(8000).any(|&b| b == 0),
         Err(_) => false,
     }
-}
-
-/// Remove this invocation's candidate ref, only if it still points at the commit
-/// the capture published. A ref that another program replaced or already removed
-/// is preserved; a genuine deletion failure is reported.
-fn remove_candidate(
-    project: &Project,
-    id: &SnapshotId,
-    published: gix::ObjectId,
-) -> Result<(), MergeError> {
-    let repo = project.repo();
-    let name = format!("{SNAPSHOT_REF_PREFIX}{id}");
-    let mut reference = match repo.find_reference(name.as_str()) {
-        Ok(reference) => reference,
-        Err(_) => return Ok(()), // already gone
-    };
-    let current = reference.peel_to_commit().map_err(git)?.id().detach();
-    if current != published {
-        return Ok(()); // replaced by another program; preserve it
-    }
-    reference.delete().map_err(git)
 }
 
 #[cfg(test)]

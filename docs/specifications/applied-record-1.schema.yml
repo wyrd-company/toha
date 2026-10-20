@@ -1,0 +1,100 @@
+# ---
+# relationships:
+#   specifies: applied-record
+# ---
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://wyrd.foo/toha/schemas/applied-record/1
+title: Toha applied record, line 1
+description: >-
+  A published schema URI is immutable. A change to the schema publishes the next
+  line at its own path; each earlier line stays. Toha reads and writes line 1.
+type: object
+additionalProperties: false
+required: [$schema, applications]
+properties:
+  $schema:
+    const: https://wyrd.foo/toha/schemas/applied-record/1
+  applications:
+    type: array
+    items:
+      $ref: '#/$defs/application'
+$defs:
+  path:
+    type: string
+    minLength: 1
+    pattern: '^(?!/)(?!.*\\)(?!.*(?:^|/)[a-zA-Z]:)(?!.*(?:^|/)(?:\.{1,2}|\.git)(?:/|$))(?!.*//)(?!.*\/$).+$'
+  blob:
+    type: string
+    pattern: '^(?:[0-9a-f]{40}|[0-9a-f]{64})$'
+  ownership:
+    oneOf:
+      - type: object
+        additionalProperties: false
+        required: [origin, blob, mode]
+        properties:
+          origin: {enum: [toha, hook]}
+          blob: {$ref: '#/$defs/blob'}
+          mode: {enum: ['100644', '100755', '120000']}
+      - type: object
+        additionalProperties: false
+        required: [origin, regions, values]
+        properties:
+          origin: {const: edit}
+          regions:
+            type: array
+            uniqueItems: true
+            items: {type: string, minLength: 1}
+          values:
+            type: array
+            uniqueItems: true
+            items: {type: string, minLength: 1}
+  context:
+    type: object
+    additionalProperties: false
+    properties:
+      toha_target_name: {type: string}
+      toha_template_source: {type: [string, 'null']}
+      toha_template_aliases: {type: array, items: {type: string}}
+      toha_host_os: {type: string}
+      toha_host_arch: {type: string}
+      toha_host_os_name: {type: [string, 'null']}
+      toha_host_os_id: {type: [string, 'null']}
+      toha_host_os_id_like: {type: array, items: {type: string}}
+      toha_is_admin: {type: boolean}
+      toha_is_interactive: {type: boolean}
+      toha_env_user: {type: [string, 'null']}
+      toha_env_hostname: {type: [string, 'null']}
+      toha_env_editor: {type: [string, 'null']}
+      toha_env_shell: {type: [string, 'null']}
+      toha_env_visual: {type: [string, 'null']}
+  application:
+    type: object
+    additionalProperties: false
+    required: [target, template, source, commit, generated, parts, answers, context, paths]
+    properties:
+      target:
+        oneOf:
+          - {const: .}
+          - {$ref: '#/$defs/path'}
+      template: {type: string, minLength: 1}
+      source: {type: string, minLength: 1}
+      commit: {type: [string, 'null'], pattern: '^[0-9a-f]{40}$'}
+      content_digest: {type: string, pattern: '^[0-9a-f]{64}$'}
+      generated: {type: string, minLength: 1}
+      parts:
+        type: array
+        uniqueItems: true
+        items: {type: string, pattern: '^[a-z0-9][a-z0-9_-]*$'}
+      answers:
+        type: object
+        propertyNames: {pattern: '^[a-z_][a-z0-9_]*$'}
+      context: {$ref: '#/$defs/context'}
+      paths:
+        type: object
+        propertyNames: {$ref: '#/$defs/path'}
+        additionalProperties: {$ref: '#/$defs/ownership'}
+    if:
+      required: [content_digest]
+    then:
+      properties:
+        commit: {type: 'null'}

@@ -89,7 +89,7 @@ description: >-
   until it is approved again. Templates from a local templates path and
   templates given by address or folder to `stage` or `apply` are trusted only
   through `--trust`. The following reporting rules cover plain applications
-  without `--from` or `--baseline`. When the template has hooks and is not trusted, `apply`
+  without `--update` or `--baseline`. When the template has hooks and is not trusted, `apply`
   exits with code 3. On the person and agent routes it performs a dry run,
   lists the hooks, states that `--trust` is required, and names the same
   command with `--trust`; when an approval exists but no longer matches, the
@@ -285,20 +285,13 @@ description: >-
   has the package root as its work tree, or when tagver fails.
 
 
-  Snapshots. An apply into a git target records its output as a snapshot when the
-  target is inside a repository with a commit, was clean before the apply, and
-  the apply changed a captured path; otherwise it applies as before and the
-  `applied` document's `snapshot` member names why it saved none (`not-git`,
-  `no-commit`, `dirty`, `nothing-changed`, or `dry-run`). A genuine failure to
-  open the repository — as opposed to the target simply not being inside one — is
-  named as a warning on standard error before the apply proceeds and saves no
-  snapshot; the apply, its exit code, and its result document are otherwise
-  unchanged. `snapshots list` shows
-  a target's snapshots, newest first, and marks the one most likely to be a base.
-  `snapshots clean` removes snapshots named in a `{ "remove": [...] }` document
-  and reports the `git push --delete` commands to remove them from a remote; it
-  never pushes. `init` adds a fetch refspec to an existing remote so a clone can
-  fetch a project's snapshots.
+  Applied record. An apply that writes files inside a Git work tree writes
+  .toha.json at the repository root, including a repository initialized during
+  the run. TOHA_RECORD overrides its repository-relative path. The file holds
+  applications keyed by source and target and follows applied-record. A preview,
+  dry run, untrusted plan, stop and already-current update write no record.
+  Outside Git the result's record member says not-git. Reading errors are fatal
+  and name the path before any question or write.
 
   Repository setup. When the interview reaches a template's `git` question,
   `apply` initializes the target as a git repository, as the template format
@@ -310,72 +303,38 @@ description: >-
   `git` member of the `applied` and `planned` documents. A remote that already
   has history stops the apply with exit code 1 and writes nothing; the scripted
   route reports an `error` document of kind `git`. The new repository has no
-  commit, so the apply's snapshot reports `no-commit`. A remote URL never shows
-  its credentials in any output. An update (`apply --from`) never initializes
+  commit; the apply still writes its applied record. A remote URL never shows
+  its credentials in any output. An update (`apply --update`) never initializes
   a repository.
 
 
-  Project updates. `apply --from <snapshot>` re-renders the template, replays the
-  snapshot's recorded answers, asks only what the new version needs, and merges
-  the difference three-way into the target, so the template's changes arrive
-  while the operator's own edits survive; a conflict is written with markers and
-  left for the operator. `apply --baseline` merges the whole render from an empty
-  base, adopting an existing project. An update refuses a dirty target, a
-  snapshot taken for another target, and a `<TEMPLATE>` whose source is not the
-  snapshot's. At a terminal a one-shot update prompts what it cannot settle from
-  the recorded answers; `--answers` supplies overrides; `--reanswer` re-asks
-  every answer. An agent stages an update with `stage --from`/`--baseline` and
-  drives it through `continue` and `apply PATH`, which resume through the update
-  replay adapter and merge from the base. A scripted update reports `applied` or
-  `planned` with a `merge` member and, when it saved one, a `snapshot` member,
-  or `already-current` when the re-render equals the base; an untrusted scripted update
-  reports `planned` with `trusted: false` and writes nothing.
+  Project updates. apply TEMPLATE PATH --update selects the applied record
+  entry for the template source and target. It renders the recorded revision
+  from recorded answers, parts, generated instant and context without hooks.
+  Only bytes matching a recorded blob, or the retained object it names, form a
+  whole-file merge base; hook paths use only the retained object. Missing base
+  bytes conflict when the candidate differs. A missing entry, unavailable
+  revision or failed base render names --baseline to re-baseline explicitly.
+  --baseline adopts against an empty merge base. No snapshot ref is read or
+  migrated. Legacy snapshots list, snapshots clean and init remain available for old snapshot refs. --like accepts latest and snapshot IDs as legacy selectors.
+  Toha never pushes or writes push configuration.
 
-  Human-readable update completion. The person route and completed staged-agent
-  route print `Template: <formal name>` and `Target: <path>`, followed by one
-  line per merge change: `Added`, `Updated`, `Merged`, `Deleted`, `Conflicted`
-  (with the conflict kind), or `Not previewed`, then the repository-relative
-  path. They show interview and apply messages and allowed hook failures with
-  their id or ordinal and exit status. A written update prints `Saved snapshot
-  <id>`; a preview prints `Preview only; no changes written.` and `No snapshot
-  saved: preview.`; an unchanged render prints `Already current.` and `No
-  snapshot saved: already current.`. An untrusted preview names `--trust` after
-  hook review. Written conflicts end with `Resolve conflicts in these files
-  before committing.`. These routes emit no JSON completion document. Remaining
-  question batches keep their agent protocol output. The scripted `--answers`
-  route emits its JSON result document.
+  An update refuses a dirty target or record. --answers supplies overrides and
+  --reanswer asks again. Document questions read current inputs for the
+  candidate. A staged update copies its base entry; apply PATH refuses a changed
+  entry and names stage TEMPLATE PATH --update. The scripted result reports a
+  merge member and a written record path, or already-current with no write.
+  Person and completed staged-agent updates print template, target, changes,
+  conflicts, messages and the record path. Previews say no changes were written.
 
-  In-project generators. `apply <TEMPLATE> <PATH> --like <SELECTOR>` and `stage
-  <TEMPLATE> <PATH> --like <SELECTOR>` apply the template into a fresh subpath
-  and pre-fill that new application's answer defaults from a snapshot of an
-  earlier application of the same source. `--like` is the generate axis, a
-  sibling of the update axis's `--from`/`--baseline`, never an overload: it
-  writes a fresh application and only seeds defaults, never merges, and is
-  mutually exclusive with `--from` and `--baseline` (combining them is a usage
-  error, exit code 2). The selector is `latest` (the newest snapshot of the
-  template's source), a snapshot id or a prefix of at least six characters that
-  matches exactly one snapshot of that source, or, on the person route only, an
-  omitted value that lists the source's applications to pick from. The snapshot
-  is selected repository-wide and filtered by source identity — the formal name
-  without its `@reference` — so an earlier application at a different subpath
-  seeds the new one and a foreign source is refused. Each seeded default is a
-  default, not a submitted answer: a person accepts or overrides it, `--answers`
-  overrides it, and a seeded value the new template version rejects on a
-  constraint is re-asked (person) or returned as a remaining question (exit code
-  4), never written. Per answer id the precedence is a route answer, then a
-  kind-matching snapshot value, then a configured preset or template default,
-  then the template's own default, then the question is asked; a snapshot value
-  whose kind no longer matches is dropped with a warning. A `--like` apply into
-  a clean git subpath still saves its own snapshot, so a third application can
-  seed from the second. An agent stages with `stage --like` and drives
-  `continue`/`apply PATH`, which re-read the exact pinned snapshot so a newer
-  same-source snapshot added meanwhile does not change the seed. A seeded
-  `applied` or `questions` document carries an optional `seed` member naming the
-  snapshot it seeded from; it holds no answer values. `--like` with no snapshot
-  of the source (for `latest` or an explicit reference), an unknown, ambiguous,
-  or wrong-source selector, or a target not in git with an explicit selector
-  fails with an `error` document of kind `snapshot` at exit code 1; a bare
-  `--like` on the script or agent route is a usage error at exit code 2.
+  In-project generators. --like TARGET seeds a fresh application's defaults
+  from an entry of the same source at the named repository-relative target,
+  selected repository-wide. A bare flag is a person-route picker and is a usage
+  error on other routes. It conflicts with --update and --baseline. Route
+  answers override seeded defaults; wrong-kind defaults are dropped and invalid
+  ones are asked again. Staging copies the seed's answers and parts. Seeded
+  result documents name the seed target. The applied-record specification
+  defines record path, shape, validation and ownership.
 format: cli
 validation-criteria: >-
   A conforming command line matches

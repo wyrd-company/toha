@@ -2,7 +2,7 @@
 // relationships:
 //   implements: architecture
 // ---
-//! Capturing a snapshot from an applied target.
+//! Capturing an application from an applied target.
 //!
 //! After a plain `apply` (or a `--baseline` adoption) has written the target,
 //! capture records what Toha produced: every plan target — a whole file (origin
@@ -13,7 +13,7 @@
 //! links as links and the executable bit, and leaves out an untracked file git
 //! ignores.
 //!
-//! With a base snapshot (`--from`) it also carries hook files forward, retracts
+//! With a base application (`--update`) it also carries hook files forward, retracts
 //! an injection the new version dropped, and releases an edit that owns nothing;
 //! without one (a plain apply or a baseline) only the plan targets and hook
 //! changes are captured.
@@ -21,23 +21,31 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use indexmap::IndexMap;
-
-use crate::plan::{FileMutation, Plan, TargetPath};
-use crate::snapshot::record::{
-    self, CapturedBlob, FrozenNow, Origin, PathOwnership, ProjectPoint, RepoPath, Revision,
-    Snapshot, SnapshotDoc, SnapshotError, SnapshotId, Timestamp,
+use crate::applied::record::{
+    Application, CapturedBlob, FrozenNow, Origin, PathOwnership, RecordError, RepoPath, Revision,
 };
+use crate::plan::{FileMutation, Plan, TargetPath};
 
-/// What a capture records about the applied project besides its files.
+/// Render inputs that the committed application preserves.
+#[derive(Clone)]
 pub struct CaptureInputs {
-    pub id: SnapshotId,
     pub template: String,
     pub revision: Revision,
     pub generated: FrozenNow,
-    pub created: Timestamp,
-    pub project: ProjectPoint,
-    pub submissions: Vec<IndexMap<String, serde_json::Value>>,
+    pub answers: BTreeMap<String, serde_json::Value>,
+    pub context: BTreeMap<String, serde_json::Value>,
+    pub parts: Vec<String>,
+}
+
+impl std::fmt::Debug for CaptureInputs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CaptureInputs")
+            .field("template", &self.template)
+            .field("revision", &self.revision)
+            .field("answer_ids", &self.answers.keys().collect::<Vec<_>>())
+            .field("context_names", &self.context.keys().collect::<Vec<_>>())
+            .finish()
+    }
 }
 
 /// The ownership a plan asserts over one path.
@@ -52,60 +60,44 @@ pub(crate) struct PlanOwnership {
 /// the candidate-tree builder before the plan is consumed by apply.
 pub(crate) type PlanPaths = Vec<(String, PlanOwnership)>;
 
-/// Capture a snapshot from an applied target read at `source_dir` (the project
-/// working tree for a plain apply, the throwaway checkout for `--from`). With a
-/// `base` snapshot it also carries hook files forward, retracts an injection the
-/// new version dropped, releases an edit that owns nothing, and lets the merge
-/// see a removed whole-file. Returns the saved id.
-/// Capture the snapshot and save it under its ref. Used by an update, which
-/// always saves (already-current is decided earlier, by the merge).
+/// Capture in memory. Git blobs are written, but no ref or record is published.
 pub(crate) fn capture(
     repo: &gix::Repository,
     source_dir: &Path,
     target: &RepoPath,
     plan_paths: &PlanPaths,
-    base: Option<&Snapshot>,
+    base: Option<&Application>,
     inputs: CaptureInputs,
-) -> Result<SnapshotId, SnapshotError> {
-    let (doc, blobs, _changed) = collect(repo, source_dir, target, plan_paths, base, inputs)?;
-    record::save(repo, &doc, &blobs)
+    before: Option<&BTreeMap<String, Vec<u8>>>,
+) -> Result<Application, RecordError> {
+    let (mut application, blobs, _) =
+        collect(repo, source_dir, target, plan_paths, base, inputs, before)?;
+    application.files = blobs
+        .into_iter()
+        .map(|b| (b.path.to_string(), (b.oid, b.kind)))
+        .collect();
+    Ok(application)
 }
 
-/// Capture the snapshot of a plain apply, saving it only when at least one
-/// captured path differs from `HEAD` in content or entry kind. Returns `None`
-/// when nothing the apply owns changed, so the apply saves no snapshot. The test
-/// is path-scoped to the captured set, so an unrelated working-tree edit never
-/// creates a snapshot and an ignored output never suppresses one.
-pub(crate) fn capture_if_changed(
-    repo: &gix::Repository,
-    source_dir: &Path,
-    target: &RepoPath,
-    plan_paths: &PlanPaths,
-    inputs: CaptureInputs,
-) -> Result<Option<SnapshotId>, SnapshotError> {
-    let (doc, blobs, changed) = collect(repo, source_dir, target, plan_paths, None, inputs)?;
-    if !changed {
-        return Ok(None);
-    }
-    Ok(Some(record::save(repo, &doc, &blobs)?))
-}
-
-/// Build the snapshot document and its captured blobs, and report whether any
+/// Build the application document and its captured blobs, and report whether any
 /// captured path differs from `HEAD` in content or entry kind.
 fn collect(
     repo: &gix::Repository,
     source_dir: &Path,
     target: &RepoPath,
     plan_paths: &PlanPaths,
-    base: Option<&Snapshot>,
+    base: Option<&Application>,
     inputs: CaptureInputs,
-) -> Result<(SnapshotDoc, Vec<CapturedBlob>, bool), SnapshotError> {
+    before: Option<&BTreeMap<String, Vec<u8>>>,
+) -> Result<(Application, Vec<CapturedBlob>, bool), RecordError> {
+    let record_path = super::project::record_relative(repo.workdir().unwrap_or(source_dir))
+        .map_err(|e| RecordError::Git(e.to_string()))?;
     let plan_index: BTreeMap<&str, &PlanOwnership> =
         plan_paths.iter().map(|(p, o)| (p.as_str(), o)).collect();
 
     let (mut pipeline, index) = repo
         .filter_pipeline(None)
-        .map_err(|err| SnapshotError::Git(err.to_string()))?;
+        .map_err(|err| RecordError::Git(err.to_string()))?;
     let state: &gix::index::State = &index;
     let head = head_target_oids(repo, target)?;
 
@@ -121,6 +113,9 @@ fn collect(
     // 2. Every plan target, in plan order, captured whether or not its bytes changed.
     for (rel, ownership) in plan_paths {
         let repo_rel = repo_relative(target, rel);
+        if in_submodule(state, &repo_rel) {
+            continue;
+        }
         let Some((oid, kind)) = read_blob(repo, &mut pipeline, source_dir, &repo_rel, state)?
         else {
             continue; // a plan target the apply did not leave on disk
@@ -154,9 +149,10 @@ fn collect(
                 Origin::Hook => {
                     let changed = on_disk
                         .as_ref()
-                        .map(|(oid, _)| head.get(&rel).map(|(head_oid, _)| head_oid) != Some(oid))
-                        .unwrap_or(false);
-                    if !changed && let Some((oid, kind)) = base_file_blob(repo, base.id(), &rel)? {
+                        .is_some_and(|entry| head.get(&rel) != Some(entry));
+                    if !changed
+                        && let Some((oid, kind)) = base_file_blob(repo, base, &rel)?.or(on_disk)
+                    {
                         push(
                             &mut blobs,
                             &mut paths,
@@ -197,7 +193,7 @@ fn collect(
     };
     let mut on_disk = Vec::new();
     walk_files(&target_dir, Path::new(""), &mut on_disk)
-        .map_err(|err| SnapshotError::Git(err.to_string()))?;
+        .map_err(|err| RecordError::Git(err.to_string()))?;
     on_disk.sort();
 
     for rel in on_disk {
@@ -205,13 +201,21 @@ fn collect(
             continue;
         }
         let repo_rel = repo_relative(target, &rel);
+        if repo_rel == record_path || in_submodule(state, &repo_rel) {
+            continue;
+        }
+        if let Some(before) = before
+            && before.get(&rel) == fingerprint(&target_dir.join(&rel))?.as_ref()
+        {
+            continue;
+        }
         let Some((oid, kind)) = read_blob(repo, &mut pipeline, source_dir, &repo_rel, state)?
         else {
             continue;
         };
         match head.get(&rel) {
-            Some((head_oid, _)) if *head_oid == oid => continue, // unchanged tracked file
-            Some(_) => {}                                        // changed tracked file -> hook
+            Some((head_oid, head_kind)) if *head_oid == oid && *head_kind == kind => continue, // unchanged tracked file
+            Some(_) => {} // changed tracked file -> hook
             None => {
                 if is_ignored(repo, state, &repo_rel)? {
                     continue;
@@ -236,16 +240,14 @@ fn collect(
         .iter()
         .any(|blob| head.get(&blob.path.to_string()) != Some(&(blob.oid, blob.kind)));
 
-    let doc = SnapshotDoc::new(
-        inputs.id,
+    let doc = Application::new(
         inputs.template,
         inputs.revision,
         target.clone(),
-        inputs.created,
         inputs.generated,
-        inputs.project,
-        base.map(|b| *b.id()),
-        inputs.submissions,
+        inputs.answers,
+        inputs.context,
+        inputs.parts,
         paths,
     );
     Ok((doc, blobs, changed))
@@ -258,8 +260,8 @@ pub(crate) fn retract_uncovered(
     source_dir: &Path,
     target: &RepoPath,
     plan_paths: &PlanPaths,
-    base: &Snapshot,
-) -> Result<(), SnapshotError> {
+    base: &Application,
+) -> Result<(), RecordError> {
     let plan_index: BTreeMap<&str, &PlanOwnership> =
         plan_paths.iter().map(|(p, o)| (p.as_str(), o)).collect();
     for owned in base.paths() {
@@ -281,8 +283,8 @@ fn push(
     kind: gix::objs::tree::EntryKind,
     oid: gix::ObjectId,
     origin: Origin,
-) -> Result<(), SnapshotError> {
-    let path = TargetPath::parse(rel).map_err(|message| SnapshotError::Path {
+) -> Result<(), RecordError> {
+    let path = TargetPath::parse(rel).map_err(|message| RecordError::Path {
         path: rel.to_owned(),
         message,
     })?;
@@ -291,7 +293,11 @@ fn push(
         kind,
         oid,
     });
-    paths.push(PathOwnership::new(path, origin));
+    paths.push(
+        PathOwnership::new(path, origin)
+            .with_blob(oid)
+            .with_mode(kind),
+    );
     seen.insert(rel.to_owned());
     Ok(())
 }
@@ -333,7 +339,7 @@ pub(crate) fn group_plan(plan: &Plan) -> PlanPaths {
 fn head_target_oids(
     repo: &gix::Repository,
     target: &RepoPath,
-) -> Result<BTreeMap<String, (gix::ObjectId, gix::objs::tree::EntryKind)>, SnapshotError> {
+) -> Result<BTreeMap<String, (gix::ObjectId, gix::objs::tree::EntryKind)>, RecordError> {
     let head_tree = match repo.head_tree() {
         Ok(tree) => tree,
         Err(_) => return Ok(BTreeMap::new()), // unborn HEAD
@@ -343,7 +349,7 @@ fn head_target_oids(
     } else {
         match head_tree
             .lookup_entry_by_path(target.as_str())
-            .map_err(|err| SnapshotError::Git(err.to_string()))?
+            .map_err(|err| RecordError::Git(err.to_string()))?
         {
             Some(entry) if entry.mode().is_tree() => entry.oid().to_owned(),
             _ => return Ok(BTreeMap::new()),
@@ -359,13 +365,13 @@ fn collect_tree(
     tree_oid: gix::ObjectId,
     prefix: &str,
     oids: &mut BTreeMap<String, (gix::ObjectId, gix::objs::tree::EntryKind)>,
-) -> Result<(), SnapshotError> {
+) -> Result<(), RecordError> {
     use gix::objs::tree::EntryKind;
     let tree = repo
         .find_tree(tree_oid)
-        .map_err(|err| SnapshotError::Git(err.to_string()))?;
+        .map_err(|err| RecordError::Git(err.to_string()))?;
     for entry in tree.iter() {
-        let entry = entry.map_err(|err| SnapshotError::Git(err.to_string()))?;
+        let entry = entry.map_err(|err| RecordError::Git(err.to_string()))?;
         let name = entry.filename().to_string();
         let path = if prefix.is_empty() {
             name
@@ -389,17 +395,17 @@ fn is_ignored(
     repo: &gix::Repository,
     state: &gix::index::State,
     repo_rel: &str,
-) -> Result<bool, SnapshotError> {
+) -> Result<bool, RecordError> {
     let mut excludes = repo
         .excludes(
             state,
             None,
             gix::worktree::stack::state::ignore::Source::WorktreeThenIdMappingIfNotSkipped,
         )
-        .map_err(|err| SnapshotError::Git(err.to_string()))?;
+        .map_err(|err| RecordError::Git(err.to_string()))?;
     let platform = excludes
         .at_path(Path::new(repo_rel), Some(gix::index::entry::Mode::FILE))
-        .map_err(|err| SnapshotError::Git(err.to_string()))?;
+        .map_err(|err| RecordError::Git(err.to_string()))?;
     Ok(platform.is_excluded())
 }
 
@@ -416,6 +422,9 @@ fn repo_relative(target: &RepoPath, rel: &str) -> String {
 /// skipping a nested `.git`.
 fn walk_files(root: &Path, rel: &Path, out: &mut Vec<String>) -> std::io::Result<()> {
     let dir = root.join(rel);
+    if !rel.as_os_str().is_empty() && dir.join(".git").exists() {
+        return Ok(());
+    }
     if !dir.exists() {
         return Ok(());
     }
@@ -446,28 +455,28 @@ fn read_blob(
     source_dir: &Path,
     repo_rel: &str,
     state: &gix::index::State,
-) -> Result<Option<(gix::ObjectId, gix::objs::tree::EntryKind)>, SnapshotError> {
+) -> Result<Option<(gix::ObjectId, gix::objs::tree::EntryKind)>, RecordError> {
     use gix::filter::plumbing::pipeline::convert::ToGitOutcome;
     use gix::objs::tree::EntryKind;
     let full = source_dir.join(repo_rel);
     let md = match std::fs::symlink_metadata(&full) {
         Ok(md) => md,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(SnapshotError::Git(err.to_string())),
+        Err(err) => return Err(RecordError::Git(err.to_string())),
     };
     if md.is_symlink() {
-        let link = std::fs::read_link(&full).map_err(|e| SnapshotError::Git(e.to_string()))?;
+        let link = std::fs::read_link(&full).map_err(|e| RecordError::Git(e.to_string()))?;
         let oid = repo
             .write_blob(gix::path::into_bstr(link).as_ref())
-            .map_err(|e| SnapshotError::Git(e.to_string()))?
+            .map_err(|e| RecordError::Git(e.to_string()))?
             .detach();
         return Ok(Some((oid, EntryKind::Link)));
     }
     if md.is_file() {
-        let file = std::fs::File::open(&full).map_err(|e| SnapshotError::Git(e.to_string()))?;
+        let file = std::fs::File::open(&full).map_err(|e| RecordError::Git(e.to_string()))?;
         let outcome = pipeline
             .convert_to_git(file, Path::new(repo_rel), state)
-            .map_err(|e| SnapshotError::Git(e.to_string()))?;
+            .map_err(|e| RecordError::Git(e.to_string()))?;
         let oid = match outcome {
             ToGitOutcome::Unchanged(mut read) => repo.write_blob_stream(&mut read),
             ToGitOutcome::Buffer(buf) => repo.write_blob(buf),
@@ -478,12 +487,12 @@ fn read_blob(
             // alone on the read path, so a future strip regression cannot silently
             // spawn a long-running filter during capture.
             ToGitOutcome::Process(_) => {
-                return Err(SnapshotError::Git(
+                return Err(RecordError::Git(
                     "unexpected process filter after driver strip".into(),
                 ));
             }
         }
-        .map_err(|e| SnapshotError::Git(e.to_string()))?
+        .map_err(|e| RecordError::Git(e.to_string()))?
         .detach();
         let kind = if is_executable(&md) {
             EntryKind::BlobExecutable
@@ -553,7 +562,7 @@ fn apply_retraction(
     target: &RepoPath,
     rel: &str,
     uncovered: &Uncovered,
-) -> Result<(), SnapshotError> {
+) -> Result<(), RecordError> {
     if uncovered.regions.is_empty() && uncovered.values.is_empty() {
         return Ok(());
     }
@@ -562,23 +571,22 @@ fn apply_retraction(
     let mut bytes = match std::fs::read(&full) {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(err) => return Err(SnapshotError::Git(err.to_string())),
+        Err(err) => return Err(RecordError::Git(err.to_string())),
     };
-    let tpath = TargetPath::parse(rel).map_err(|message| SnapshotError::Path {
+    let tpath = TargetPath::parse(rel).map_err(|message| RecordError::Path {
         path: rel.to_owned(),
         message,
     })?;
 
     for key in &uncovered.regions {
-        let region =
-            crate::inject::RegionKey::parse(key).map_err(|message| SnapshotError::Path {
-                path: rel.to_owned(),
-                message,
-            })?;
+        let region = crate::inject::RegionKey::parse(key).map_err(|message| RecordError::Path {
+            path: rel.to_owned(),
+            message,
+        })?;
         let marker = crate::inject::MarkerStyle::infer(&tpath)
             .unwrap_or(crate::inject::MarkerStyle::line("#"));
         bytes = crate::inject::retract_region(&bytes, &region, &marker)
-            .map_err(|e| SnapshotError::Git(e.to_string()))?;
+            .map_err(|e| RecordError::Git(e.to_string()))?;
     }
 
     // Remove array elements from the highest index first so earlier ones stay valid.
@@ -588,15 +596,15 @@ fn apply_retraction(
     values.reverse();
     for value in values {
         let json_path =
-            crate::inject::JsonPath::parse(&value).map_err(|message| SnapshotError::Path {
+            crate::inject::JsonPath::parse(&value).map_err(|message| RecordError::Path {
                 path: rel.to_owned(),
                 message,
             })?;
         bytes = crate::inject::retract_json_value(&bytes, &json_path, format)
-            .map_err(|e| SnapshotError::Git(e.to_string()))?;
+            .map_err(|e| RecordError::Git(e.to_string()))?;
     }
 
-    std::fs::write(&full, bytes).map_err(|e| SnapshotError::Git(e.to_string()))?;
+    std::fs::write(&full, bytes).map_err(|e| RecordError::Git(e.to_string()))?;
     Ok(())
 }
 
@@ -615,30 +623,147 @@ fn json_format(path: &TargetPath) -> crate::inject::JsonFormat {
     }
 }
 
-/// The blob a base snapshot holds under `files/<rel>`, if any.
+/// A hook base is available only when its recorded object is retained locally.
 fn base_file_blob(
     repo: &gix::Repository,
-    base_id: &SnapshotId,
+    base: &Application,
     rel: &str,
-) -> Result<Option<(gix::ObjectId, gix::objs::tree::EntryKind)>, SnapshotError> {
-    let name = format!("{}{base_id}", crate::snapshot::record::SNAPSHOT_REF_PREFIX);
-    let mut reference = repo
-        .find_reference(name.as_str())
-        .map_err(|e| SnapshotError::Git(e.to_string()))?;
-    let commit = reference
-        .peel_to_commit()
-        .map_err(|e| SnapshotError::Git(e.to_string()))?;
-    let tree = commit
-        .tree()
-        .map_err(|e| SnapshotError::Git(e.to_string()))?;
-    match tree
-        .lookup_entry_by_path(format!("files/{rel}"))
-        .map_err(|e| SnapshotError::Git(e.to_string()))?
-    {
-        Some(entry) => Ok(Some((entry.oid().to_owned(), entry.mode().kind()))),
-        None => Ok(None),
-    }
+) -> Result<Option<(gix::ObjectId, gix::objs::tree::EntryKind)>, RecordError> {
+    Ok(base
+        .paths()
+        .iter()
+        .find(|p| p.path().to_string() == rel)
+        .and_then(|p| p.blob().zip(p.mode()))
+        .filter(|(oid, _)| repo.find_blob(*oid).is_ok()))
 }
 
-#[cfg(test)]
-mod tests;
+/// Reconstruct only verified whole-file bytes. Hook bytes can only come from
+/// their recorded object; edit-owned files start at the operator's HEAD.
+pub(crate) fn restore_base(
+    project: &super::Project,
+    application: &mut Application,
+    mut plan: Plan,
+) -> Result<(), RecordError> {
+    let repo = project.repo();
+    let head = repo.head_tree().map_err(git_error)?;
+    let rendered: BTreeSet<_> = plan
+        .files
+        .iter()
+        .map(|file| file.path.to_string())
+        .collect();
+    // Reuse the pure file/injection apply so a whole file's verified bytes
+    // include its injections. Edit-owned ancestors still come directly from HEAD.
+    let checkout = tempfile::tempdir().map_err(git_error)?;
+    super::merge::checkout_head(repo, checkout.path()).map_err(git_error)?;
+    let target_path = if application.target().is_root() {
+        checkout.path().to_owned()
+    } else {
+        checkout.path().join(application.target().as_str())
+    };
+    let target = crate::staging::canonical_target(&target_path).map_err(git_error)?;
+    plan.edits
+        .retain(|edit| rendered.contains(&edit.path().to_string()));
+    plan.hooks.clear();
+    plan.before_apply = None;
+    plan.after_apply = None;
+    plan.git = None;
+    plan.record = None;
+    plan.apply(
+        &target,
+        crate::ApplyOptions {
+            force: true,
+            trusted: true,
+        },
+        &crate::hook::ProcessRunner,
+    )
+    .map_err(git_error)?;
+    let (mut pipeline, index) = repo.filter_pipeline(None).map_err(git_error)?;
+    application.files.clear();
+    for owned in application.paths().to_vec() {
+        let path = owned.path().to_string();
+        let relative = repo_relative(application.target(), &path);
+        let current = head.lookup_entry_by_path(&relative).map_err(git_error)?;
+        let mut verified = None;
+        if matches!(owned.origin(), Origin::Edit { .. }) {
+            verified = current
+                .as_ref()
+                .map(|entry| (entry.oid().to_owned(), entry.mode().kind()));
+        } else if let Some((blob, mode)) = owned.blob().zip(owned.mode()) {
+            if matches!(owned.origin(), Origin::Toha)
+                && rendered.contains(&path)
+                && let Some((actual, _)) =
+                    read_blob(repo, &mut pipeline, checkout.path(), &relative, &index)?
+                && actual == blob
+            {
+                verified = Some((actual, mode));
+            }
+            if verified.is_none() && repo.find_blob(blob).is_ok() {
+                verified = Some((blob, mode));
+            }
+        }
+        if let Some(value) = verified {
+            application.files.insert(path, value);
+        }
+    }
+    Ok(())
+}
+
+fn in_submodule(index: &gix::index::State, path: &str) -> bool {
+    index.entries().iter().any(|entry| {
+        entry.mode == gix::index::entry::Mode::COMMIT && {
+            let prefix: &[u8] = entry.path(index).as_ref();
+            path.as_bytes() == prefix
+                || path
+                    .as_bytes()
+                    .strip_prefix(prefix)
+                    .is_some_and(|suffix| suffix.starts_with(b"/"))
+        }
+    })
+}
+
+/// Fingerprints before the apply distinguish hook changes from pre-existing dirt.
+pub(crate) fn observe(root: &Path) -> Result<BTreeMap<String, Vec<u8>>, RecordError> {
+    let mut files = Vec::new();
+    walk_files(root, Path::new(""), &mut files).map_err(|e| RecordError::Git(e.to_string()))?;
+    files
+        .into_iter()
+        .filter_map(|path| match fingerprint(&root.join(&path)) {
+            Ok(Some(hash)) => Some(Ok((path, hash))),
+            Ok(None) => None,
+            Err(error) => Some(Err(error)),
+        })
+        .collect()
+}
+fn fingerprint(path: &Path) -> Result<Option<Vec<u8>>, RecordError> {
+    use sha2::{Digest, Sha256};
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(RecordError::Git(e.to_string())),
+    };
+    let mut hash = Sha256::new();
+    if metadata.is_symlink() {
+        hash.update(b"link");
+        hash.update(
+            gix::path::into_bstr(
+                std::fs::read_link(path).map_err(|e| RecordError::Git(e.to_string()))?,
+            )
+            .as_ref(),
+        );
+    } else if metadata.is_file() {
+        hash.update(if is_executable(&metadata) {
+            b"exec".as_slice()
+        } else {
+            b"file"
+        });
+        let mut file = std::fs::File::open(path).map_err(|e| RecordError::Git(e.to_string()))?;
+        std::io::copy(&mut file, &mut hash).map_err(|e| RecordError::Git(e.to_string()))?;
+    } else {
+        return Ok(None);
+    }
+    Ok(Some(hash.finalize().to_vec()))
+}
+
+fn git_error(error: impl std::fmt::Display) -> RecordError {
+    RecordError::Git(error.to_string())
+}
