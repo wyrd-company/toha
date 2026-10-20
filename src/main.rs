@@ -738,7 +738,6 @@ fn prepare_staged_documents(
     incoming: &toha::RawAnswers,
     saved: &mut StagedRecord,
 ) -> Result<(), toha::document::PrepareError> {
-    template.part_selection = saved.part_selection.clone();
     toha::document::prepare_staged(template, target, input, &recorded_answers(saved), incoming)?;
     save_document_answers(template, saved);
     Ok(())
@@ -1017,8 +1016,7 @@ fn progress(saved: &StagedRecord, scope: &Scope, target: &CanonicalTarget) -> Pr
             scope.cwd,
         )
         .ok()?;
-        let mut template = Template::load(&resolved.folder).ok()?;
-        template.part_selection = saved.part_selection.clone();
+        let template = Template::load(&resolved.folder).ok()?;
         let resolution = toha::interview::configured_defaults(
             &saved.template,
             &template,
@@ -1401,7 +1399,6 @@ fn continue_run(path: PathBuf, answers: Option<String>, input: &[PathBuf], dirs:
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
     };
-    template.part_selection = saved.part_selection.clone();
     if let Err(e) = toha::document::restore_missing(&mut template, &recorded_answers(&saved)) {
         return Outcome::Error(e);
     }

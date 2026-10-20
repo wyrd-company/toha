@@ -418,7 +418,14 @@ fn staged_part_flags_survive_new_questions_continue_and_apply() {
         record(root.path(), ".toha.json")["applications"][0]["parts"],
         json!(["core", "extra"])
     );
-    assert!(String::from_utf8_lossy(&applied.stdout).contains("Parts added: extra"));
+    let summary = String::from_utf8_lossy(&applied.stdout);
+    assert!(summary.contains("Parts added: extra"));
+    assert!(summary.contains("Prior revision: "));
+    assert!(summary.contains(&format!(
+        "Resolved revision: {}",
+        git(source.path(), &["rev-parse", "HEAD"])
+    )));
+    assert!(summary.contains("Parts removed: none"));
 }
 #[test]
 fn fresh_stage_part_flags_and_like_parts_survive_resume() {
@@ -668,4 +675,83 @@ fn a_parts_format_cannot_hide_an_invalid_settled_selection() {
     );
     assert_eq!(out.status.code(), Some(4), "{out:?}");
     assert!(!root.path().join("result.txt").exists());
+}
+
+#[test]
+fn public_staged_replay_apis_restore_parts_from_the_serialized_record() {
+    let source = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    template(source.path(), PARTS, "{{ targets }}\n");
+    let template = toha::Template::load(source.path()).unwrap();
+    let target = toha::staging::canonical_target(root.path()).unwrap();
+    let mut saved = toha::staging::StagedRecord::new(
+        &target,
+        "example".into(),
+        "".into(),
+        false,
+        "2026-01-02T03:04:05+00:00[UTC]".into(),
+        vec![],
+    );
+    assert!(
+        serde_json::to_value(&saved)
+            .unwrap()
+            .get("part_selection")
+            .is_none()
+    );
+    saved.part_selection = toha::parts::Selection {
+        with: vec!["extra".into()],
+        without: vec!["core".into()],
+        base: Some(vec!["core".into()]),
+    };
+    let bytes = serde_json::to_vec(&saved).unwrap();
+    let mut saved: toha::staging::StagedRecord = serde_json::from_slice(&bytes).unwrap();
+    let resolution = || {
+        toha::interview::configured_defaults(
+            "example",
+            &template,
+            &Default::default(),
+            &Default::default(),
+        )
+        .unwrap()
+    };
+    let replayed = [
+        saved.replay(&template, &target).unwrap(),
+        saved
+            .replay_with_defaults(&template, Default::default(), &target)
+            .unwrap(),
+        saved
+            .replay_with_resolution(&template, resolution(), &target)
+            .unwrap(),
+        saved
+            .replay_with_seed(&template, resolution(), None, &target)
+            .unwrap(),
+        saved
+            .replay_with_seed(
+                &template,
+                resolution(),
+                Some(toha::interview::ApplicationSeed {
+                    defaults: Default::default(),
+                    from: ".".into(),
+                }),
+                &target,
+            )
+            .unwrap(),
+    ];
+    for replay in replayed {
+        let toha::Interview::Complete(completed) = replay else {
+            panic!("parts should be settled from the record")
+        };
+        assert_eq!(template.selected_parts(&completed), vec!["extra"]);
+    }
+    saved.part_selection = toha::parts::Selection {
+        base: Some(vec!["extra".into()]),
+        ..Default::default()
+    };
+    let toha::Interview::Asking(pending) = saved.replay(&template, &target).unwrap() else {
+        panic!("an unflagged fresh part question is asked")
+    };
+    let toha::Interview::Complete(completed) = pending.answer(Default::default()).unwrap() else {
+        panic!("the copied default should complete")
+    };
+    assert_eq!(template.selected_parts(&completed), vec!["extra"]);
 }

@@ -49,8 +49,10 @@ impl Selection {
         }
         Ok(())
     }
-    pub(crate) fn settle(&self, default: Vec<String>) -> Vec<String> {
-        let mut selected = self.base.clone().unwrap_or(default);
+    pub(crate) fn is_default(&self) -> bool {
+        !self.is_present() && self.base.is_none()
+    }
+    pub(crate) fn settle(&self, mut selected: Vec<String>) -> Vec<String> {
         for part in &self.with {
             if !selected.contains(part) {
                 selected.push(part.clone());

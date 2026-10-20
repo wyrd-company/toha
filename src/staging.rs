@@ -36,7 +36,7 @@ pub struct StagedRecord {
     /// Whether the staged update re-asks every recorded answer.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub reanswer: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "crate::parts::Selection::is_default")]
     pub part_selection: crate::parts::Selection,
     /// The seed target selected by `--like`. `seed_entry` copies its application
     /// so later changes to the live record do not change staged defaults.
@@ -421,13 +421,14 @@ impl StagedRecord {
             .parse()
             .map_err(|e: jiff::Error| StagingError::Replay(e.to_string()))?;
         let context = self.invocation_context(target)?;
-        let interview = Interview::start(
+        let interview = Interview::start_with_selection(
             template,
             Seed {
                 now,
                 defaults,
                 context,
             },
+            self.part_selection.clone(),
         )
         .map_err(|e| StagingError::Replay(e.to_string()))?;
         self.replay_from(interview, template)
@@ -445,7 +446,8 @@ impl StagedRecord {
             .map_err(|e: jiff::Error| StagingError::Replay(e.to_string()))?;
         let context = self.invocation_context(target)?;
         let interview = resolution
-            .start_with_context(template, now, context)
+            .start_with_selection(template, now, context, None, self.part_selection.clone())
+            .map(|(interview, _)| interview)
             .map_err(|e| StagingError::Replay(e.to_string()))?;
         self.replay_from(interview, template)
     }
@@ -468,7 +470,7 @@ impl StagedRecord {
             .map_err(|e: jiff::Error| StagingError::Replay(e.to_string()))?;
         let context = self.invocation_context(target)?;
         let (interview, _warnings) = resolution
-            .start_with_seed(template, now, context, seed)
+            .start_with_selection(template, now, context, seed, self.part_selection.clone())
             .map_err(|e| StagingError::Replay(e.to_string()))?;
         self.replay_from(interview, template)
     }
