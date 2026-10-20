@@ -214,6 +214,9 @@ enum Command {
     ///
     /// Multiline input uses an editor, or lines ending with . when no editor is available.
     Stage {
+        /// Read a JSON contract document, routed by its exact $schema URI. Repeatable.
+        #[arg(long, value_name = "FILE")]
+        input: Vec<PathBuf>,
         /// Alias, short name, formal name, git address, or folder of the template.
         template: String,
         /// Target directory.
@@ -259,6 +262,9 @@ enum Command {
     ///
     /// Multiline input uses an editor, or lines ending with . when no editor is available.
     Continue {
+        /// Submit a JSON contract document, routed by its exact $schema URI.
+        #[arg(long, value_name = "FILE", conflicts_with = "answers")]
+        input: Vec<PathBuf>,
         /// Target directory of the staged interview.
         path: PathBuf,
         /// Identity-bearing answers document for the current batch; - reads
@@ -289,6 +295,9 @@ enum Command {
         help_template = APPLY_HELP
     )]
     Apply {
+        /// Read a JSON contract document, routed by its exact $schema URI. Repeatable.
+        #[arg(long, value_name = "FILE")]
+        input: Vec<PathBuf>,
         /// One operand is the target directory; two are the template and the target directory.
         #[arg(num_args = 1..=2, required = true, value_name = "PATH", hide = true)]
         paths: Vec<String>,
@@ -700,6 +709,47 @@ fn injection_report(
     Ok(lines)
 }
 
+fn admitted_documents(template: &Template) -> indexmap::IndexMap<String, serde_json::Value> {
+    template
+        .document_question_ids()
+        .into_iter()
+        .filter_map(|id| {
+            let toha::QuestionKind::Document { contract } = &template.question(&id)?.kind else {
+                return None;
+            };
+            contract
+                .admitted()
+                .cloned()
+                .map(|value| (id.to_string(), value))
+        })
+        .collect()
+}
+fn save_document_answers(template: &Template, saved: &mut StagedRecord) {
+    let mut values = admitted_documents(template);
+    for submission in &mut saved.submissions {
+        for (id, value) in submission {
+            if let Some(new) = values.shift_remove(id) {
+                *value = new;
+            }
+        }
+    }
+    if !values.is_empty() {
+        saved.submissions.push(values);
+    }
+}
+fn overlay_document_answers(
+    template: &Template,
+    formal: &str,
+    supplied: toha::RawAnswers,
+) -> String {
+    let mut answers: indexmap::IndexMap<String, serde_json::Value> = supplied
+        .into_iter()
+        .map(|(id, v)| (id.to_string(), v.0))
+        .collect();
+    answers.extend(admitted_documents(template));
+    serde_json::json!({"template": formal, "answers": answers}).to_string()
+}
+
 /// Reads the answers document once as UTF-8 and prefixes a read failure with the
 /// source name. It does not inspect the JSON; the protocol boundary parses and
 /// verifies it.
@@ -1020,6 +1070,7 @@ fn staged_refusal(
     })
 }
 fn stage(
+    input: &[PathBuf],
     template: String,
     path: PathBuf,
     output: Option<Option<String>>,
@@ -1061,10 +1112,15 @@ fn stage(
         Ok(v) => v,
         Err(e) => return resolve_error(e),
     };
-    let template = match load_template(&resolved) {
+    let mut template = match load_template(&resolved) {
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
     };
+    if let Err(e) =
+        toha::document::prepare(&mut template, target.as_path(), input, &Default::default())
+    {
+        return Outcome::Error(e);
+    }
     let (resolution, now) = match resolution(&resolved.formal_name, &template, &config) {
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
@@ -1111,6 +1167,7 @@ fn stage(
         vec![],
     );
     saved.seed = seed_from.clone();
+    save_document_answers(&template, &mut saved);
     let interview = match resolution.start_with_seed(
         &template,
         now,
@@ -1282,7 +1339,12 @@ fn completion_preview(
         Outcome::Saved(0)
     }
 }
-fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome {
+fn continue_run(
+    path: PathBuf,
+    mut answers: Option<String>,
+    input: &[PathBuf],
+    dirs: &Dirs,
+) -> Outcome {
     let (target, store) = match setup(&path, dirs) {
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
@@ -1312,9 +1374,25 @@ fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome 
         Ok(v) => v,
         Err(e) => return resolve_error(e),
     };
-    let template = match load_template(&resolved) {
+    let mut template = match load_template(&resolved) {
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
+    };
+    if let Err(e) =
+        toha::document::prepare(&mut template, target.as_path(), input, &Default::default())
+    {
+        return Outcome::Error(e);
+    }
+    save_document_answers(&template, &mut saved);
+    let input_text = if input.is_empty() {
+        None
+    } else {
+        answers = Some("--input".into());
+        Some(overlay_document_answers(
+            &template,
+            &saved.template,
+            Default::default(),
+        ))
     };
     let resolution = match toha::interview::configured_defaults(
         &resolved.formal_name,
@@ -1349,8 +1427,13 @@ fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome 
     if let Interview::Complete(completed) = &interview {
         // `continue PATH FILE` on a complete interview refuses before reading the
         // document. `continue PATH` shows the completion preview.
-        if answers.is_some() {
+        if answers.is_some() && input.is_empty() {
             return Outcome::Error(guidance::complete_answers_unused(&path));
+        }
+        if !input.is_empty()
+            && let Err(e) = store.save(&target, &saved)
+        {
+            return Outcome::Error(e.to_string());
         }
         return completion_preview(
             &template,
@@ -1412,7 +1495,10 @@ fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome 
         };
     };
     // `continue PATH FILE` (agent): submit one document as a single step.
-    let text = match read_answers_text(&answers_file) {
+    let text = match input_text
+        .map(Ok)
+        .unwrap_or_else(|| read_answers_text(&answers_file))
+    {
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
     };
@@ -1715,15 +1801,17 @@ fn scripted_apply_error(error: toha::ApplyError, context: &Context) -> Outcome {
 /// and writes exactly one JSON result document for every outcome.
 #[allow(clippy::too_many_arguments)]
 fn scripted(
+    input: &[PathBuf],
     template_arg: String,
     path: &Path,
-    answers_file: String,
+    answers_file: Option<String>,
     force: bool,
     dry_run: bool,
     trust: bool,
     like: Option<Option<String>>,
     dirs: &Dirs,
 ) -> Outcome {
+    let answers_file = answers_file.as_deref().unwrap_or("");
     // 1. Construct one canonical target and check for a staged record.
     let (target, store) = match setup(path, dirs) {
         Ok(v) => v,
@@ -1750,16 +1838,16 @@ fn scripted(
     };
     let (config, registry) = match cli::resolve::load_context(dirs, &cwd) {
         Ok(v) => v,
-        Err(e) => return scripted_resolve_error(e, path, &answers_file, force, dry_run, trust),
+        Err(e) => return scripted_resolve_error(e, path, answers_file, force, dry_run, trust),
     };
     // 3. Resolve the command template, load it, produce the configured
     //    Resolution, and start the interview.
     let resolved =
         match cli::resolve::resolve_template(&template_arg, &config, &registry, dirs, &cwd) {
             Ok(v) => v,
-            Err(e) => return scripted_resolve_error(e, path, &answers_file, force, dry_run, trust),
+            Err(e) => return scripted_resolve_error(e, path, answers_file, force, dry_run, trust),
         };
-    let template = match Template::load(&resolved.folder) {
+    let mut template = match Template::load(&resolved.folder) {
         Ok(v) => v,
         Err(e) => return scripted_error(ErrorKind::Source, e.to_string(), vec![], None),
     };
@@ -1797,6 +1885,26 @@ fn scripted(
         Err(reject) => return like_reject_document(reject, Some(&ctx)),
     };
     let seed_from = like_seed.as_ref().map(|seed| seed.id.to_string());
+    // 4. Read the document once as UTF-8.
+    let text = match if answers_file.is_empty() {
+        Ok(serde_json::json!({"template": resolved.formal_name, "answers": {}}).to_string())
+    } else {
+        read_answers_text(answers_file)
+    } {
+        Ok(v) => v,
+        Err(e) => return scripted_error(ErrorKind::Input, e, vec![], Some(&ctx)),
+    };
+    let supplied = match protocol::document_answers(&resolved.formal_name, &text) {
+        Ok(v) => v,
+        Err(e) => {
+            let error = document_error(SubmitDocumentError::Document(e), &resolved.formal_name);
+            return Outcome::Document(protocol::error_document(&error, Some(&ctx)), 1);
+        }
+    };
+    if let Err(e) = toha::document::prepare(&mut template, target.as_path(), input, &supplied) {
+        return scripted_error(ErrorKind::Input, e, vec![], Some(&ctx));
+    }
+    let text = overlay_document_answers(&template, &resolved.formal_name, supplied);
     let interview = match resolution.start_with_seed(
         &template,
         now,
@@ -1808,11 +1916,6 @@ fn scripted(
             interview
         }
         Err(e) => return scripted_error(ErrorKind::Render, e.to_string(), vec![], Some(&ctx)),
-    };
-    // 4. Read the document once as UTF-8.
-    let text = match read_answers_text(&answers_file) {
-        Ok(v) => v,
-        Err(e) => return scripted_error(ErrorKind::Input, e, vec![], Some(&ctx)),
     };
     // 5-8. Parse, verify identity, and drive the headless walk.
     let headless = match protocol::answer_document_headless(
@@ -2174,6 +2277,7 @@ fn scripted_resolve_error(
 
 #[allow(clippy::too_many_arguments)]
 fn run(
+    input: &[PathBuf],
     template: Option<String>,
     path: &Path,
     answers: Option<String>,
@@ -2185,11 +2289,14 @@ fn run(
 ) -> Outcome {
     // Scripted route: apply TEMPLATE PATH --answers FILE. One shot, one result
     // document, never staged.
-    if let (Some(template), Some(answers_file)) = (template.clone(), answers.clone()) {
+    if let Some(template) = template.clone()
+        && (answers.is_some() || !input.is_empty())
+    {
         return scripted(
+            input,
             template,
             path,
-            answers_file,
+            answers.clone(),
             force,
             dry_run,
             trust,
@@ -2288,10 +2395,15 @@ fn run(
                 };
             approval = resolved.approval.clone();
             installed = trustable(&resolved, &registry);
-            let template = match load_template(&resolved) {
+            let mut template = match load_template(&resolved) {
                 Ok(v) => v,
                 Err(e) => return Outcome::Error(e),
             };
+            if let Err(e) =
+                toha::document::prepare(&mut template, target.as_path(), input, &Default::default())
+            {
+                return Outcome::Error(e);
+            }
             let (resolution, now) = match resolution(&resolved.formal_name, &template, &config) {
                 Ok(v) => v,
                 Err(e) => return Outcome::Error(e),
@@ -2326,6 +2438,7 @@ fn run(
                 vec![],
             );
             saved.seed = like_seed.as_ref().map(|seed| seed.id.to_string());
+            save_document_answers(&template, &mut saved);
             let interview = match resolution.start_with_seed(
                 &template,
                 now,
@@ -2375,10 +2488,16 @@ fn run(
             };
             approval = resolved.approval.clone();
             installed = trustable(&resolved, &registry);
-            let template = match load_template(&resolved) {
+            let mut template = match load_template(&resolved) {
                 Ok(v) => v,
                 Err(e) => return Outcome::Error(e),
             };
+            if let Err(e) =
+                toha::document::prepare(&mut template, target.as_path(), input, &Default::default())
+            {
+                return Outcome::Error(e);
+            }
+            save_document_answers(&template, &mut saved);
             let resolution = match toha::interview::configured_defaults(
                 &resolved.formal_name,
                 &template,
@@ -2612,6 +2731,7 @@ fn main() -> ExitCode {
     match command {
         Command::Skills { .. } => unreachable!("the home-free skills command returned above"),
         Command::Stage {
+            input,
             template,
             path,
             r#async,
@@ -2639,18 +2759,30 @@ fn main() -> ExitCode {
                 )
                 .finish();
             }
-            stage(template, path.clone(), r#async.clone(), trust, like, &dirs)
-                .retry(|formal| {
-                    Invocation::Stage {
-                        template: Arg::Given(guidance::formal_for("stage", formal)),
-                        path: &path,
-                        output: r#async.as_ref().map(|file| file.as_deref()),
-                    }
-                    .command()
-                })
-                .finish()
+            stage(
+                &input,
+                template,
+                path.clone(),
+                r#async.clone(),
+                trust,
+                like,
+                &dirs,
+            )
+            .retry(|formal| {
+                Invocation::Stage {
+                    template: Arg::Given(guidance::formal_for("stage", formal)),
+                    path: &path,
+                    output: r#async.as_ref().map(|file| file.as_deref()),
+                }
+                .command()
+            })
+            .finish()
         }
-        Command::Continue { path, answers } => continue_run(path, answers, &dirs).finish(),
+        Command::Continue {
+            path,
+            answers,
+            input,
+        } => continue_run(path, answers, &input, &dirs).finish(),
         Command::Abort { path } => abort(path, &dirs).finish(),
         Command::Templates(args) => {
             let cwd = match std::env::current_dir() {
@@ -2675,6 +2807,7 @@ fn main() -> ExitCode {
             }
         }
         Command::Apply {
+            input,
             paths,
             answers,
             force,
@@ -2701,6 +2834,7 @@ fn main() -> ExitCode {
                 .finish();
             }
             run(
+                &input,
                 template,
                 &path,
                 answers.clone(),

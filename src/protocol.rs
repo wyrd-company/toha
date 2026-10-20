@@ -91,12 +91,20 @@ fn prompt_schema(prompt: &Prompt) -> Value {
         PromptKind::Text | PromptKind::TextLoop => "text",
         PromptKind::Multiline => "multiline",
         PromptKind::Git => "git",
+        PromptKind::Document => "document",
         PromptKind::Confirm => "confirm",
         PromptKind::Select => "select",
         PromptKind::MultiSelect => "multiselect",
     };
     property.insert("x-toha-type".into(), json!(kind));
     match prompt.kind {
+        PromptKind::Document => {
+            property.insert("type".into(), json!("object"));
+            if let Some(document) = &prompt.document {
+                property.insert("x-toha-schemas".into(), json!(document.schemas));
+                property.insert("x-toha-input".into(), json!(document.input));
+            }
+        }
         PromptKind::Text | PromptKind::Multiline | PromptKind::Git => {
             property.insert("type".into(), json!("string"));
             property.extend(text_rules(prompt));
@@ -409,6 +417,13 @@ pub enum AnswersDocumentError {
     TemplateMismatch { declared: String, expected: String },
 }
 
+/// Verify an answers envelope before admitting document question values.
+pub fn document_answers(
+    expected_template: &str,
+    text: &str,
+) -> Result<RawAnswers, AnswersDocumentError> {
+    parse_and_verify(expected_template, text).map(|v| v.raw)
+}
 /// The parsed envelope, before identity verification. Private, so external JSON
 /// never yields a raw answer map without passing the identity gate first.
 struct WireAnswersDocument {

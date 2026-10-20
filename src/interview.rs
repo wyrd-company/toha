@@ -296,6 +296,8 @@ pub struct Batch {
     pub errors: Rejections,
     default_sources: IndexMap<Id, PreparedDefaultSource>,
 }
+// Keep the public prompt variant inline; document metadata adds one pointer.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum Item {
     Prompt(Prompt),
@@ -311,6 +313,13 @@ pub struct Prompt {
     pub default: Option<Answer>,
     pub options: Vec<String>,
     pub constraints: Constraints,
+    pub document: Option<Box<DocumentPrompt>>,
+}
+#[derive(Debug, Clone)]
+pub struct DocumentPrompt {
+    pub target: Option<std::path::PathBuf>,
+    pub schemas: Vec<String>,
+    pub input: std::path::PathBuf,
 }
 #[derive(Debug)]
 struct PreparedPrompt {
@@ -337,6 +346,7 @@ enum PreparedDefaultSource {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptKind {
+    Document,
     Text,
     Multiline,
     /// A one-line remote URL for the target repository; answered as text.
@@ -511,6 +521,7 @@ fn question_ready(q: &Question, a: &Answers, t: &Template, seed: &InterviewSeed)
     }
     let override_default = seed.defaults.contains_key(&q.id);
     match &q.kind {
+        QuestionKind::Document { .. } => true,
         QuestionKind::Text { default }
         | QuestionKind::Multiline { default }
         | QuestionKind::Git { default } => {
@@ -547,6 +558,7 @@ fn default_ready(q: &Question, a: &Answers, t: &Template, seed: &InterviewSeed) 
         return true;
     }
     match &q.kind {
+        QuestionKind::Document { .. } => true,
         QuestionKind::Text { default }
         | QuestionKind::Multiline { default }
         | QuestionKind::Git { default }
@@ -566,6 +578,9 @@ fn render_default(
     seed: &InterviewSeed,
 ) -> Result<Option<PreparedDefault>, EvalError> {
     let id = &q.id;
+    if matches!(q.kind, QuestionKind::Document { .. }) {
+        return Ok(None);
+    }
     let kind = prompt_kind(q);
     if let Some(entry) = seed.defaults.get(id) {
         let (raw, source) = match entry {
@@ -584,6 +599,7 @@ fn render_default(
     }
     let ctx = context(t, a, seed);
     match &q.kind {
+        QuestionKind::Document { .. } => Ok(None),
         QuestionKind::Text { default }
         | QuestionKind::Multiline { default }
         | QuestionKind::Git { default }
@@ -654,7 +670,8 @@ fn make_prompt(
                 .map_err(|e| fault(id, "placeholder", Some(v.source()), e))
         })
         .transpose()?;
-    let required = eval_typed(&q.required, &ctx, id, "required")?;
+    let required = matches!(q.kind, QuestionKind::Document { .. })
+        || eval_typed(&q.required, &ctx, id, "required")?;
     let min = q
         .validate
         .min
@@ -671,6 +688,7 @@ fn make_prompt(
     let mut loop_min = None;
     let mut loop_max = None;
     let kind = match &q.kind {
+        QuestionKind::Document { .. } => PromptKind::Document,
         QuestionKind::Text { .. } => PromptKind::Text,
         QuestionKind::Multiline { .. } => PromptKind::Multiline,
         QuestionKind::Git { .. } => PromptKind::Git,
@@ -696,7 +714,16 @@ fn make_prompt(
         }
     };
     let prepared = render_default(q, t, a, seed)?;
+    let document = match &q.kind {
+        QuestionKind::Document { contract } => Some(Box::new(DocumentPrompt {
+            target: contract.target.clone(),
+            schemas: contract.schemas.clone(),
+            input: contract.input.clone(),
+        })),
+        _ => None,
+    };
     let mut prompt = Prompt {
+        document,
         id: id.clone(),
         kind,
         title,
@@ -761,6 +788,13 @@ fn make_prompt(
 fn parse_kind(id: &Id, kind: PromptKind, value: Value) -> Result<Answer, Rejection> {
     let fail = |msg: &str| rejection(id, msg);
     match kind {
+        PromptKind::Document => {
+            if value.is_object() {
+                Ok(Answer::Value(value))
+            } else {
+                Err(fail("must be a JSON object"))
+            }
+        }
         PromptKind::Text | PromptKind::Multiline | PromptKind::Git | PromptKind::Select => value
             .as_str()
             .map(|v| Answer::Text(v.into()))
@@ -795,6 +829,7 @@ fn count(n: u32, one: &str, many: &str) -> String {
 /// absent or not yet known.
 struct Rules<'q> {
     kind: PromptKind,
+    document: Option<&'q crate::document::DocumentQuestion>,
     required: Option<bool>,
     min: Option<u32>,
     max: Option<u32>,
@@ -808,6 +843,10 @@ impl<'q> Rules<'q> {
         let c = &prompt.constraints;
         Self {
             kind: prompt.kind,
+            document: match &q.kind {
+                QuestionKind::Document { contract } => Some(contract),
+                _ => None,
+            },
             required: Some(c.required),
             min: c.min,
             max: c.max,
@@ -833,7 +872,15 @@ impl<'q> Rules<'q> {
         };
         Self {
             kind: prompt_kind(q),
-            required: q.required.literal().copied(),
+            document: match &q.kind {
+                QuestionKind::Document { contract } => Some(contract),
+                _ => None,
+            },
+            required: if matches!(q.kind, QuestionKind::Document { .. }) {
+                Some(true)
+            } else {
+                q.required.literal().copied()
+            },
             min: literal(&q.validate.min),
             max: literal(&q.validate.max),
             loop_min,
@@ -876,6 +923,10 @@ impl<'q> Rules<'q> {
         };
         Ok(Self {
             kind: prompt_kind(q),
+            document: match &q.kind {
+                QuestionKind::Document { contract } => Some(contract),
+                _ => None,
+            },
             required,
             min: number("validate.min", &q.validate.min)?,
             max: number("validate.max", &q.validate.max)?,
@@ -920,6 +971,7 @@ fn skipped_default(
 }
 fn prompt_kind(q: &Question) -> PromptKind {
     match q.kind {
+        QuestionKind::Document { .. } => PromptKind::Document,
         QuestionKind::Text { .. } => PromptKind::Text,
         QuestionKind::Multiline { .. } => PromptKind::Multiline,
         QuestionKind::Git { .. } => PromptKind::Git,
@@ -938,6 +990,9 @@ fn validate(id: &Id, rules: &Rules, value: Value) -> Result<Answer, Rejection> {
             return fail("is required".into());
         }
         return Ok(empty_answer(rules.kind));
+    }
+    if let Some(contract) = rules.document {
+        contract.validate(&value).map_err(|e| rejection(id, e))?;
     }
     let answer = parse_kind(id, rules.kind, value)?;
     if rules.required == Some(true)
@@ -1440,6 +1495,7 @@ fn expressions(node: &Node) -> (Id, Vec<Expression<'_>>) {
                 out.push((field, source, refs));
             }
             match &q.kind {
+                QuestionKind::Document { .. } => {}
                 QuestionKind::Text { default }
                 | QuestionKind::Multiline { default }
                 | QuestionKind::Git { default } => {
@@ -1663,9 +1719,10 @@ impl<'a> Advance<'a> {
                                 &self.answers,
                                 &self.seed,
                                 &prompt,
-                                raw,
+                                raw.clone(),
                             ) {
                                 Ok(answer) => {
+                                    self.accepted_raw.insert(q.id.clone(), raw);
                                     self.answers.insert(q.id.clone(), answer);
                                     continue;
                                 }
@@ -2007,7 +2064,7 @@ impl<'a> Interview<'a> {
             seed,
             answers: Answers::new(),
             accepted_raw: IndexMap::new(),
-            held: RawAnswers::new(),
+            held: crate::document::admitted(template),
             skipped: Skipped::new(),
             messages: vec![],
             step_start: 0,

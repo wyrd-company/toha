@@ -14,8 +14,36 @@ description: >-
   `source: .` makes the template root the source; `template.yml` itself is then
   never rendered. Files outside the source subdirectory are support material:
   toha reads them only when `template.yml` references them. Every path in
-  `template.yml` is relative to the template root, except `ignore` and `static`
-  globs, which are relative to the source subdirectory.
+  `template.yml` is relative to the template root, except document `input`,
+  which is relative to the target, and `ignore` and `static` globs, which are
+  relative to the source subdirectory.
+
+  Document questions. A `document` question takes a whole JSON object. Its
+  required `schema` is one URI or a non-empty list of accepted URIs; required
+  `input` is a literal relative default-file path resolved against the target.
+  It stays inside the target repository, or inside the target without a
+  repository. A document's `$schema` must equal an accepted URI, compared as
+  an exact string; without `$schema`, only a single-schema question accepts it.
+  The object validates against that schema. The answer retains every member.
+  A document question does not use `default`, `format`, `validate`, or `loop`.
+
+  Vendored schemas. `schemas` names a directory inside the template root and
+  outside the source subdirectory. Every `.json`, `.yml`, and `.yaml` file in
+  its tree is parsed and indexed by its string `$id`; other extensions are
+  ignored. A missing `$id`, malformed file, or duplicate `$id` is a load error
+  naming its files. Question schemas and external `$ref` resources resolve
+  by exact `$id` lookup first, then by HTTPS fetch. A fetch reads at most 1 MiB
+  of JSON and requires `$id` equal to the requested URI. Resolution and schema
+  compilation finish before the interview. A fetch or schema error names the
+  URI and stops the run before any output write. No fetched schema is cached.
+
+  Document inputs. On each run a question takes an accepted `--input` document,
+  then its answers-document value, then its default file. A missing default
+  leaves it unanswered. An existing invalid file stops the run and names its
+  path; no output is written and no replacement path is requested. A person
+  supplies a file path with `input` as the default. A script or agent receives
+  an object question in a batch. The named integration tests in
+  `tests/document_questions.rs` exercise admission, precedence, and refusals.
 
   Includes. The YAML tag `!include <path>` is valid on any value in
   `template.yml`. It is replaced by the content of the file at `<path>`, parsed
@@ -105,7 +133,7 @@ description: >-
   fields or forcing an unavailable dynamic constraint.
 
   Questions. `type` is one of `text`, `multiline`, `git`, `confirm`, `select`,
-  and `multiselect`. `prompt` is required. `description` and `placeholder` are
+  `multiselect`, and `document`. `prompt` is required. `description` and `placeholder` are
   optional. `required: true` rejects an empty answer. `default` has the answer
   type: string for `text`, `multiline`, `git`, and `select`; boolean for `confirm`;
   array of strings for `multiselect` and for a looped `text`. `options` on

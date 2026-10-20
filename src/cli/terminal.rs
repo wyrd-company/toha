@@ -161,6 +161,35 @@ fn print_error(line: &str) -> Result<(), String> {
 
 fn ask_value(ask: &mut impl Ask, prompt: &Prompt) -> Result<Value, String> {
     let value = match prompt.kind {
+        PromptKind::Document => {
+            let mut path_prompt = Prompt {
+                id: prompt.id.clone(),
+                kind: PromptKind::Text,
+                title: prompt.title.clone(),
+                description: prompt.description.clone(),
+                placeholder: prompt.placeholder.clone(),
+                default: prompt
+                    .document
+                    .as_ref()
+                    .map(|d| Answer::Text(d.input.display().to_string())),
+                options: vec![],
+                constraints: Default::default(),
+                document: None,
+            };
+            path_prompt.constraints.required = true;
+            let mut path = ask.text(&path_prompt, &prompt.title)?;
+            if path.is_empty() {
+                let document = prompt.document.as_ref().unwrap();
+                path = document
+                    .target
+                    .as_deref()
+                    .unwrap_or(std::path::Path::new("."))
+                    .join(&document.input)
+                    .display()
+                    .to_string();
+            }
+            toha::document::read(std::path::Path::new(&path))?
+        }
         PromptKind::Text | PromptKind::Git => json!(ask.text(prompt, &prompt.title)?),
         PromptKind::Multiline => json!(ask.multiline(prompt)?),
         PromptKind::Confirm => json!(ask.confirm(prompt)?),
