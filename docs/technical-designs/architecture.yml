@@ -20,6 +20,7 @@ relationships:
     - content-injection
     - project-updates
     - in-project-generators
+    - template-composition
     - hook-review-trust
     - installed-trust
 objective: >-
