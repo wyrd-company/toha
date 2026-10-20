@@ -45,6 +45,7 @@ pub struct Seed {
 struct InterviewSeed {
     now: jiff::Zoned,
     defaults: IndexMap<Id, DefaultBankEntry>,
+    part_selection: crate::parts::Selection,
     /// The invocation context, or `None` for the pre-context legacy projection
     /// route used by [`Resolution::start`], which projects none of the reserved
     /// names.
@@ -583,7 +584,7 @@ fn render_default(
     }
     let kind = prompt_kind(q);
     if q.parts
-        && let Some(parts) = &t.part_selection.base
+        && let Some(parts) = &seed.part_selection.base
     {
         return Ok(Some(PreparedDefault {
             answer: Answer::List(parts.clone()),
@@ -1141,6 +1142,7 @@ impl Resolution {
         Interview::start_with_bank(
             template,
             InterviewSeed {
+                part_selection: template.part_selection.clone(),
                 now,
                 defaults: self
                     .defaults
@@ -1165,6 +1167,7 @@ impl Resolution {
         Interview::start_with_bank(
             template,
             InterviewSeed {
+                part_selection: template.part_selection.clone(),
                 now,
                 defaults: self
                     .defaults
@@ -1200,12 +1203,41 @@ impl Resolution {
         context: InvocationContext,
         seed: Option<ApplicationSeed>,
     ) -> Result<(Interview<'a>, Vec<String>), EvalError> {
+        self.start_with_selection(
+            template,
+            now,
+            context,
+            seed,
+            template.part_selection.clone(),
+        )
+    }
+
+    pub(crate) fn start_with_selection<'a>(
+        self,
+        template: &'a Template,
+        now: jiff::Zoned,
+        context: InvocationContext,
+        seed: Option<ApplicationSeed>,
+        part_selection: crate::parts::Selection,
+    ) -> Result<(Interview<'a>, Vec<String>), EvalError> {
         let Some(seed) = seed else {
             // None ≡ start_with_context: the configured defaults enter the bank
             // exactly as they do without a seed, and no warning is produced.
-            return self
-                .start_with_context(template, now, context)
-                .map(|interview| (interview, Vec::new()));
+            let defaults = self
+                .defaults
+                .into_iter()
+                .map(|(id, value)| (id, DefaultBankEntry::Configured(value)))
+                .collect();
+            return Interview::start_with_bank(
+                template,
+                InterviewSeed {
+                    now,
+                    defaults,
+                    context: Some(context),
+                    part_selection,
+                },
+            )
+            .map(|interview| (interview, Vec::new()));
         };
         let mut defaults: IndexMap<Id, DefaultBankEntry> = self
             .defaults
@@ -1241,6 +1273,7 @@ impl Resolution {
         Interview::start_with_bank(
             template,
             InterviewSeed {
+                part_selection,
                 now,
                 defaults,
                 context: Some(context),
@@ -1737,13 +1770,13 @@ impl<'a> Advance<'a> {
                     if active {
                         let prepared = make_prompt(q, self.template, &self.answers, &self.seed)?;
                         let prompt = prepared.prompt;
-                        let selected = if q.parts && self.template.part_selection.is_present() {
+                        let selected = if q.parts && self.seed.part_selection.is_present() {
                             let default = match &prompt.default {
                                 Some(Answer::List(parts)) => parts.clone(),
                                 _ => vec![],
                             };
                             Some(RawAnswer(serde_json::json!(
-                                self.template.part_selection.settle(default)
+                                self.seed.part_selection.settle(default)
                             )))
                         } else {
                             None
@@ -2079,9 +2112,18 @@ fn probe_skips(mut state: Advance<'_>) -> (Skipped, bool) {
 }
 impl<'a> Interview<'a> {
     pub fn start(template: &'a Template, seed: Seed) -> Result<Self, EvalError> {
+        Self::start_with_selection(template, seed, template.part_selection.clone())
+    }
+
+    pub(crate) fn start_with_selection(
+        template: &'a Template,
+        seed: Seed,
+        part_selection: crate::parts::Selection,
+    ) -> Result<Self, EvalError> {
         Self::start_with_bank(
             template,
             InterviewSeed {
+                part_selection,
                 now: seed.now,
                 defaults: seed
                     .defaults

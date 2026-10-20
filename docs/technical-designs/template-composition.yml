@@ -259,7 +259,7 @@ proposed-design:
     replays into the candidate except document answers, and of the other
     questions only those that the new revision added are asked; `--answers`
     overrides a recorded answer and `--reanswer` asks every question again. When
-    the candidate revision, the settled answers and the settled parts equal the
+    the candidate revision, settled answers, parts, context and output equal the
     entry, the update is already-current and writes nothing, so the record alone
     never makes a render differ. The result document and the person summary name
     the prior and the resolved revision and the parts added and removed.
