@@ -160,15 +160,7 @@ pub fn stage(
     ) {
         return crate::document_input_error(error, None);
     }
-    if let Err(error) = crate::admit_parts(
-        &mut prep.template,
-        parts,
-        prep.base_application
-            .as_ref()
-            .map(|a| a.to_value())
-            .as_ref(),
-        &Default::default(),
-    ) {
+    if let Err(error) = crate::admit_parts(&mut prep.template, parts, None, &Default::default()) {
         return Outcome::Usage(error);
     }
     let base_value = stored_base(&base, prep.base_application.as_ref());

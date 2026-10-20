@@ -35,7 +35,9 @@ description: >-
   including whole document answers at answers.<question id>, arrays for looped
   and multiselect questions, and accepted defaults. Skipped questions, computed
   values and hook results are absent. The part question's answer belongs in
-  parts alone. A git answer strips URL user information. Templates ask for
+  parts alone. Candidate updates replay parts, including an empty selection,
+  only when the applied revision had a part question; a first-added part
+  question is asked. A git answer strips URL user information. Templates ask for
   credential names, never secret values; Toha has no secret question type.
 
   Context. context holds only reserved values the template references on any

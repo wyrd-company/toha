@@ -755,3 +755,248 @@ fn public_staged_replay_apis_restore_parts_from_the_serialized_record() {
     };
     assert_eq!(template.selected_parts(&completed), vec!["extra"]);
 }
+
+fn part_question_transition(staged: bool, previously_asked: bool) {
+    let iso = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    template(
+        source.path(),
+        if previously_asked { PARTS } else { QUESTION },
+        "before\n",
+    );
+    repository(source.path());
+    repository(root.path());
+    let address = support::file_url(source.path());
+    document(&run(
+        iso.path(),
+        &address,
+        root.path(),
+        if previously_asked {
+            json!({"targets":[]})
+        } else {
+            json!({"label":"sample"})
+        },
+        &[],
+    ));
+    let prior = git(source.path(), &["rev-parse", "HEAD"]);
+    commit(root.path());
+    template(source.path(), PARTS, "selected: {{ targets|join(',') }}\n");
+    commit(source.path());
+    let revision = git(source.path(), &["rev-parse", "HEAD"]);
+    let next = format!("{address}@{revision}");
+    let selected = if previously_asked {
+        json!([])
+    } else {
+        json!(["extra"])
+    };
+    let applied = if staged {
+        let stage = support::isolated_command(iso.path())
+            .arg("stage")
+            .arg(&next)
+            .arg(root.path())
+            .args(["--update", "--async"])
+            .output()
+            .unwrap();
+        assert_eq!(
+            stage.status.code(),
+            Some(if previously_asked { 0 } else { 4 }),
+            "first-added question asks; recorded empty selection replays: {stage:?}"
+        );
+        if !previously_asked {
+            assert!(
+                String::from_utf8_lossy(&stage.stdout).contains("targets"),
+                "first-added part question must be asked: {stage:?}"
+            );
+            let questions = support::first_document(&stage.stdout);
+            assert!(
+                questions.to_string().contains("targets"),
+                "first-added part question must be asked: {questions}"
+            );
+            // A separate command reloads the serialized staged record before answering.
+            let file = iso.path().join("continue.json");
+            std::fs::write(
+                &file,
+                json!({"template":next,"answers":{"targets":selected}}).to_string(),
+            )
+            .unwrap();
+            let continued = support::isolated_command(iso.path())
+                .arg("continue")
+                .arg(root.path())
+                .arg(file)
+                .output()
+                .unwrap();
+            assert!(continued.status.success(), "{continued:?}");
+        } else {
+            assert!(
+                !String::from_utf8_lossy(&stage.stdout).contains("\"questions\""),
+                "recorded empty selection must replay: {stage:?}"
+            );
+        }
+        let applied = support::isolated_command(iso.path())
+            .arg("apply")
+            .arg(root.path())
+            .output()
+            .unwrap();
+        assert!(applied.status.success(), "{applied:?}");
+        let summary = String::from_utf8_lossy(&applied.stdout);
+        assert!(
+            summary.contains(&format!("Prior revision: {prior}")),
+            "{summary}"
+        );
+        assert!(
+            summary.contains(&format!("Resolved revision: {revision}")),
+            "{summary}"
+        );
+        assert!(
+            summary.contains(if previously_asked {
+                "Parts added: none"
+            } else {
+                "Parts added: extra"
+            }),
+            "{summary}"
+        );
+        None
+    } else {
+        let unanswered = run(iso.path(), &next, root.path(), json!({}), &["--update"]);
+        if previously_asked {
+            Some(document(&unanswered))
+        } else {
+            assert_eq!(
+                unanswered.status.code(),
+                Some(4),
+                "first-added part question must be asked: {unanswered:?}"
+            );
+            let questions = support::first_document(&unanswered.stdout);
+            assert!(questions.to_string().contains("targets"), "{questions}");
+            assert_eq!(
+                std::fs::read_to_string(root.path().join("result.txt")).unwrap(),
+                "before\n"
+            );
+            Some(document(&run(
+                iso.path(),
+                &next,
+                root.path(),
+                json!({"targets":selected}),
+                &["--update"],
+            )))
+        }
+    };
+    if let Some(applied) = applied {
+        assert_eq!(
+            applied["application"]["prior_revision"],
+            json!({"commit":prior})
+        );
+        assert_eq!(
+            applied["application"]["resolved_revision"],
+            json!({"commit":revision})
+        );
+        assert_eq!(applied["application"]["parts_added"], selected);
+        assert_eq!(applied["application"]["parts_removed"], json!([]));
+    }
+    assert_eq!(
+        record(root.path(), ".toha.json")["applications"][0]["parts"],
+        selected
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("result.txt")).unwrap(),
+        if previously_asked {
+            "selected: \n"
+        } else {
+            "selected: extra\n"
+        }
+    );
+}
+#[test]
+fn direct_update_asks_first_added_part_question() {
+    part_question_transition(false, false);
+}
+#[test]
+fn staged_update_asks_first_added_part_question_after_resume() {
+    part_question_transition(true, false);
+}
+#[test]
+fn direct_update_replays_genuinely_recorded_empty_parts() {
+    part_question_transition(false, true);
+}
+#[test]
+fn staged_update_replays_genuinely_recorded_empty_parts() {
+    part_question_transition(true, true);
+}
+#[test]
+fn person_apply_rejects_unknown_part_before_prompting() {
+    let iso = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    template(source.path(), PARTS, "{{ targets }}\n");
+    let out = support::isolated_command(iso.path())
+        .arg("apply")
+        .arg(source.path())
+        .arg(root.path())
+        .args(["--with", "missing"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("unknown part"),
+        "{out:?}"
+    );
+    assert!(out.stdout.is_empty(), "no question before usage error");
+    assert!(!root.path().join("result.txt").exists());
+}
+
+#[test]
+fn direct_and_staged_without_core_preserve_recorded_extra() {
+    for staged in [false, true] {
+        let iso = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        template(source.path(), PARTS, "{{ targets|join(',') }}\n");
+        repository(source.path());
+        repository(root.path());
+        let address = support::file_url(source.path());
+        document(&run(
+            iso.path(),
+            &address,
+            root.path(),
+            json!({"targets":["core","extra"]}),
+            &[],
+        ));
+        commit(root.path());
+        if staged {
+            let stage = support::isolated_command(iso.path())
+                .arg("stage")
+                .arg(&address)
+                .arg(root.path())
+                .args(["--update", "--without", "core", "--async"])
+                .output()
+                .unwrap();
+            assert!(stage.status.success(), "{stage:?}");
+            let applied = support::isolated_command(iso.path())
+                .arg("apply")
+                .arg(root.path())
+                .output()
+                .unwrap();
+            assert!(applied.status.success(), "{applied:?}");
+            assert!(String::from_utf8_lossy(&applied.stdout).contains("Parts removed: core"));
+        } else {
+            let applied = document(&run(
+                iso.path(),
+                &address,
+                root.path(),
+                json!({}),
+                &["--update", "--without", "core"],
+            ));
+            assert_eq!(applied["application"]["parts_removed"], json!(["core"]));
+        }
+        assert_eq!(
+            record(root.path(), ".toha.json")["applications"][0]["parts"],
+            json!(["extra"])
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("result.txt")).unwrap(),
+            "extra\n"
+        );
+    }
+}

@@ -73,7 +73,9 @@ proposed-design:
     The crate-private adapter queues recorded raw values per id, including loop
     values. Verified route overrides replace queued values. Each pending batch
     consumes its next usable values; rejected values become unanswered with
-    retained rejections. Document answers are not queued. Person routes prompt,
+    retained rejections. Recorded parts are queued only when the applied revision
+    had a part question, including an empty selection. A first-added part
+    question is asked. Document answers are not queued. Person routes prompt,
     scripts report questions and agents save a stage carrying a copy of the
     recorded entry and the accepted submissions. Reanswer sends every batch to
     the route with recorded defaults. Resume reconstructs queues from the copied
@@ -110,7 +112,8 @@ proposed-design:
     disjoint changes and reports overlaps. Driver-attributed paths keep operator
     content and conflict stages. Clean results are staged. Text conflicts
     receive diff3 markers and stages 1/2/3; binary, add/add, modify/delete,
-    file/directory and driver conflicts keep operator files with corresponding
+    file/directory, driver and link conflicts (including links reported as
+    `content`) keep operator files with corresponding
     stages. Paths and index entries outside the target remain intact, except the
     record entry the transaction writes. Toha creates neither a commit nor Git
     merge state.

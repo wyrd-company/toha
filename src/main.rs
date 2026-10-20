@@ -2372,9 +2372,6 @@ fn run(
     // `--like` seeds a new application; it has nothing to attach to on a resume
     // (`apply PATH`, or `apply TEMPLATE PATH` naming a staged interview), whose
     // seed is already pinned in the staged record and re-read below.
-    if parts.is_present() && template.is_none() {
-        return Outcome::Usage("part flags belong to a new interview; use stage TEMPLATE PATH --update to change parts".into());
-    }
     if like.is_present() && template.is_none() {
         return Outcome::Error(
             "--like applies to a new application (apply TEMPLATE PATH); a resumed interview \
@@ -2393,9 +2390,6 @@ fn run(
         // interview, prompts, saves at each batch boundary, and applies at
         // completion.
         (Some(folder), None) => {
-            if !io::stdin().is_terminal() {
-                return Outcome::Error(guidance::no_terminal(&folder, path));
-            }
             let resolved =
                 match cli::resolve::resolve_template(&folder, &config, &registry, dirs, &cwd) {
                     Ok(v) => v,
@@ -2407,6 +2401,12 @@ fn run(
                 Ok(v) => v,
                 Err(e) => return Outcome::Error(e),
             };
+            if let Err(error) = parts.admit(&template, &Default::default()) {
+                return Outcome::Usage(error);
+            }
+            if !io::stdin().is_terminal() {
+                return Outcome::Error(guidance::no_terminal(&folder, path));
+            }
             if let Err(e) =
                 toha::document::prepare(&mut template, target.as_path(), input, &Default::default())
             {
