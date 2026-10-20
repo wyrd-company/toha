@@ -1,0 +1,4 @@
+$schema: https://refinery.systems/ontology/term
+title: Export
+description: >-
+  A value the parent computes after its interview and gives to every child.

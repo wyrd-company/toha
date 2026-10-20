@@ -1,0 +1,5 @@
+$schema: https://refinery.systems/ontology/term
+title: Parent template
+description: >-
+  The template that declares a composition contract. It owns the files its
+  extension points feed.

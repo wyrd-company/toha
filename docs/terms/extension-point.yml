@@ -1,0 +1,5 @@
+$schema: https://refinery.systems/ontology/term
+title: Extension point
+description: >-
+  A named list in the parent's render context that children fill with
+  contributions.

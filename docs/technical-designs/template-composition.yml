@@ -19,33 +19,15 @@ objective: >-
   publication child templates and an organization can read which templates a
   repository applied.
 terms:
-  composition: >-
-    One application of a parent template and zero or more child templates into
-    one target, rendered as one plan and recorded in one snapshot. A template
-    applied alone is a composition with no children.
-  parent-template: >-
-    The template that declares a composition contract. It owns the files its
-    extension points feed.
-  child-template: >-
-    A template that declares contributions to a composition contract. A child
-    applies only as a member of a composition.
-  member: >-
-    One template in a composition, identified by its source. A source occurs at
-    most once in a composition.
-  composition-contract: >-
-    A name and an integer major version that a parent declares and a child
-    names. It defines the extension points and exports a child may use.
-  extension-point: >-
-    A named list in the parent's render context that children fill with
-    contributions.
-  contribution: >-
-    One keyed value or text a child gives to one extension point.
-  export: >-
-    A value the parent computes after its interview and gives to every child.
-  document-question: >-
-    A question whose answer is a JSON value validated by a JSON Schema the
-    template ships. A contract document is routed to it by the document's
-    `$schema` identifier.
+  - composition
+  - parent-template
+  - child-template
+  - member
+  - composition-contract
+  - extension-point
+  - contribution
+  - export
+  - document-question
 design-challenges:
   one-owner-per-byte: >-
     A workflow file that two templates edit has two writers, and every update
@@ -67,15 +49,15 @@ design-challenges:
     shared crate without Gitoxide, file-system or network dependencies.
 proposed-design:
   high-level-overview: >-
-    A parent's `template.yml` declares `composition`: a contract name and
-    version, exports, and extension points. A child declares `contributes`: the
-    contract, the versions it accepts, and contributions. `apply` builds a
-    composition from the named template, `--with` and `--without` change
-    membership, and the shared interview runs each member in order. Plan
-    building renders contributions, binds them into the parent's context and
-    produces one plan. Apply, capture, merge and the transaction run over that
-    plan unchanged. The snapshot records every member's identity, revision,
-    submissions and owned paths.
+    A parent's `template.yml` declares `composition`: a composition contract
+    name and version, exports, and extension points. A child declares
+    `contributes`: the contract, the versions it accepts, and contributions.
+    `apply` builds a composition from the named template, `--with` and
+    `--without` change membership, and the shared interview runs each member in
+    order. Plan building renders contributions, binds them into the parent's
+    context and produces one plan. Apply, capture, merge and the transaction run
+    over that plan unchanged. The snapshot records every member's identity,
+    revision, submissions and owned paths.
   parent-declaration: >-
     `composition.contract` is a name matching `^[a-z0-9][a-z0-9.-]*$`, and
     `composition.version` is a positive integer. `composition.exports` maps an
@@ -154,7 +136,7 @@ proposed-design:
     `--force` and atomic per-file replacement apply to the composition plan as
     they do to one template.
   document-questions: >-
-    A question with `type: document` takes a JSON value. Its `schema` names one
+    A document question has `type: document` and takes a JSON value. Its `schema` names one
     JSON Schema file in the template root, or a list of them; each file's `$id`
     is a schema identifier the question accepts, and two files with one `$id`
     are a load error. An answer validates against the schema whose `$id` equals
