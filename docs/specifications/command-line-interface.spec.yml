@@ -122,7 +122,9 @@ commands:
             no snapshot of the source, or a target not in git with an explicit
             selector — reported as an `error` document of kind `snapshot`.
         - code: 2
-          meaning: Invalid command line.
+          meaning: >-
+            Invalid command line, or --input has no string $schema, an
+            unaccepted URI, or a duplicate route (exit 2).
         - code: 4
           meaning: The interview is staged and a question batch was emitted.
         - code: 5
@@ -192,6 +194,8 @@ commands:
             pinned a `--like` snapshot that is now missing or invalid when it is
             re-read from git on resume; the staged interview cannot be resumed and
             an `error` document of kind `snapshot` is reported.
+        - code: 2
+          meaning: An --input has no string $schema, an unaccepted URI, or a duplicate route.
         - code: 4
           meaning: Questions remain or answers were rejected; the result holds the batch.
   - name: apply
@@ -352,7 +356,9 @@ commands:
           meaning: >-
             Invalid command line: a bare `--like` without a selector on the
             script or agent route (a selector is required off the person route),
-            or `--like` combined with `--from` or `--baseline`.
+            or `--like` combined with `--from` or `--baseline`; or an `--input`
+            has no string `$schema`, an unaccepted URI, or a duplicate route.
+            Scripted input usage errors retain kind `input` in the error document.
         - code: 3
           meaning: >-
             A plain application (without --from or --baseline) has hooks and is

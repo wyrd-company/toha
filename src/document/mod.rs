@@ -74,6 +74,30 @@ impl DocumentQuestion {
     }
 }
 
+/// Admission distinguishes command usage from a selected document's run error.
+#[derive(Debug, thiserror::Error)]
+pub enum PrepareError {
+    #[error("{0}")]
+    Usage(String),
+    #[error("{0}")]
+    Run(String),
+}
+impl From<String> for PrepareError {
+    fn from(message: String) -> Self {
+        Self::Run(message)
+    }
+}
+impl From<&str> for PrepareError {
+    fn from(message: &str) -> Self {
+        Self::Run(message.into())
+    }
+}
+impl PrepareError {
+    pub fn is_usage(&self) -> bool {
+        matches!(self, Self::Usage(_))
+    }
+}
+
 /// Select and validate documents before starting an interview. Inputs override
 /// explicit answers; explicit answers override default files. No output is written.
 pub fn prepare(
@@ -81,7 +105,29 @@ pub fn prepare(
     target: &Path,
     inputs: &[PathBuf],
     answers: &RawAnswers,
-) -> Result<(), String> {
+) -> Result<(), PrepareError> {
+    prepare_session(template, target, inputs, answers, &RawAnswers::new(), false)
+}
+
+/// Admit only unanswered session questions; recorded answers remain fixed.
+pub fn prepare_staged(
+    template: &mut Template,
+    target: &Path,
+    inputs: &[PathBuf],
+    recorded: &RawAnswers,
+    incoming: &RawAnswers,
+) -> Result<(), PrepareError> {
+    prepare_session(template, target, inputs, incoming, recorded, true)
+}
+
+fn prepare_session(
+    template: &mut Template,
+    target: &Path,
+    inputs: &[PathBuf],
+    answers: &RawAnswers,
+    recorded: &RawAnswers,
+    defer_answers: bool,
+) -> Result<(), PrepareError> {
     if template.document_question_ids().is_empty() && inputs.is_empty() {
         return Ok(());
     }
@@ -91,13 +137,22 @@ pub fn prepare(
         let uri = value
             .get("$schema")
             .and_then(Value::as_str)
-            .ok_or_else(|| format!("{}: input needs a string $schema", path.display()))?;
+            .ok_or_else(|| {
+                PrepareError::Usage(format!("{}: input needs a string $schema", path.display()))
+            })?;
         let mut accepted = false;
         for id in template.document_question_ids() {
             let QuestionKind::Document { contract } = &template.question(&id).unwrap().kind else {
                 unreachable!()
             };
             if contract.schemas.iter().any(|s| s == uri) {
+                if let Some(previous) = recorded.get(&id)
+                    && previous.0 != value
+                {
+                    return Err(PrepareError::Run(format!(
+                        "question {id} is already answered in this staged interview; abort and stage again to change its answer"
+                    )));
+                }
                 contract
                     .validate(&value)
                     .map_err(|e| format!("{}: {e}", path.display()))?;
@@ -105,19 +160,19 @@ pub fn prepare(
                     .insert(id.clone(), RawAnswer(value.clone()))
                     .is_some()
                 {
-                    return Err(format!(
+                    return Err(PrepareError::Usage(format!(
                         "{}: more than one input for question {id}",
                         path.display()
-                    ));
+                    )));
                 }
                 accepted = true;
             }
         }
         if !accepted {
-            return Err(format!(
+            return Err(PrepareError::Usage(format!(
                 "{}: no document question accepts $schema {uri}",
                 path.display()
-            ));
+            )));
         }
     }
     let target = crate::staging::canonical_target(target).map_err(|e| e.to_string())?;
@@ -136,30 +191,49 @@ pub fn prepare(
             | gix::discover::upwards::Error::NoGitRepositoryWithinFs { .. }
             | gix::discover::upwards::Error::NoGitRepositoryWithinCeiling { .. },
         )) => target.as_path().to_owned(),
-        Err(e) => return Err(e.to_string()),
+        Err(e) => return Err(e.to_string().into()),
     };
     prepare_nodes(
         &mut template.interview,
         target.as_path(),
         &bound,
-        &routed,
-        answers,
+        &DocumentSources {
+            routed: &routed,
+            answers,
+            recorded,
+            defer_answers,
+        },
     )
+    .map_err(Into::into)
+}
+struct DocumentSources<'a> {
+    routed: &'a RawAnswers,
+    answers: &'a RawAnswers,
+    recorded: &'a RawAnswers,
+    defer_answers: bool,
 }
 fn prepare_nodes(
     nodes: &mut [Node],
     target: &Path,
     bound: &Path,
-    routed: &RawAnswers,
-    answers: &RawAnswers,
+    sources: &DocumentSources<'_>,
 ) -> Result<(), String> {
     for node in nodes {
         match node {
             Node::Question(q) => {
                 if let QuestionKind::Document { contract } = &mut q.kind {
                     let path = target.join(&contract.input);
-                    let value = if let Some(raw) = routed.get(&q.id).or_else(|| answers.get(&q.id))
+                    let value = if let Some(raw) = sources
+                        .recorded
+                        .get(&q.id)
+                        .or_else(|| sources.routed.get(&q.id))
                     {
+                        Some(raw.0.clone())
+                    } else if sources.defer_answers && sources.answers.contains_key(&q.id) {
+                        // The regular submission path validates and accepts this answer.
+                        // Its presence prevents a default file from taking the question.
+                        None
+                    } else if let Some(raw) = sources.answers.get(&q.id) {
                         Some(raw.0.clone())
                     } else {
                         let canonical = crate::staging::canonical_target(&path)
@@ -188,14 +262,14 @@ fn prepare_nodes(
                     contract.target = Some(target.to_owned());
                 }
             }
-            Node::Group(g) => prepare_nodes(&mut g.nodes, target, bound, routed, answers)?,
+            Node::Group(g) => prepare_nodes(&mut g.nodes, target, bound, sources)?,
             _ => {}
         }
     }
     Ok(())
 }
-/// Restore accepted staged documents only where this run admitted no document.
-/// Current inputs and default files retain precedence over staged replay.
+/// Restore recorded session documents before checking the session progress.
+/// Admission for unanswered questions happens separately through `prepare_staged`.
 pub fn restore_missing(template: &mut Template, recorded: &RawAnswers) -> Result<(), String> {
     fn restore(nodes: &mut [Node], recorded: &RawAnswers) -> Result<(), String> {
         for node in nodes {

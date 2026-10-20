@@ -91,17 +91,25 @@ The input document can be:
 ```
 
 A generated file can use `{{ catalog.title }}`. The answer keeps the entire
-object. Toha reads `catalog.json` from the target at the start of each run.
+object. For an unanswered question, Toha reads `catalog.json` from the target
+at the start of the run.
 The path can reach a parent directory inside the target repository; without
 Git it must stay inside the target. A missing file leaves the question
-unanswered. An invalid file stops the run before it writes output.
+unanswered. An invalid default file stops the run before it writes output.
 
 Use `toha apply ./catalog-view ./output --input ./another-catalog.json` to
 select a different file for one run. Repeat `--input` for different schemas.
 The `$schema` string routes the file to every question that accepts that URI.
 It overrides a value for `catalog` in an answers document, which overrides the
-default file. `stage --async --input FILE` and `continue PATH --input FILE`
-accept the same document.
+default file when the question is unanswered. `stage --async --input FILE`
+and `continue PATH --input FILE` accept the same document. Once a staged
+interview records an answer, it keeps that document for the session. A later
+default file cannot replace it. To change a recorded answer, abort and stage
+again. A missing `$schema`, an unaccepted URI, or two inputs for one question
+is a usage error (exit 2).
+
+If you type an unreadable path or select a file that is not a JSON object,
+Toha reports the error and asks for a path again. It keeps your earlier answers.
 
 A question can name a list of accepted schema URIs. The document's `$schema`
 selects one by exact string equality; it can be absent only when the question

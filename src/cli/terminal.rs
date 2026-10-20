@@ -177,19 +177,24 @@ fn ask_value(ask: &mut impl Ask, prompt: &Prompt) -> Result<Value, String> {
                 document: None,
             };
             path_prompt.constraints.required = true;
-            let path = ask.text(&path_prompt, &prompt.title)?;
-            let document = prompt.document.as_ref().unwrap();
-            let path = if path.is_empty() {
-                document.input.clone()
-            } else {
-                path.into()
-            };
-            let path = document
-                .target
-                .as_deref()
-                .unwrap_or(std::path::Path::new("."))
-                .join(path);
-            toha::document::read(&path)?
+            loop {
+                let path = ask.text(&path_prompt, &prompt.title)?;
+                let document = prompt.document.as_ref().unwrap();
+                let path = if path.is_empty() {
+                    document.input.clone()
+                } else {
+                    path.into()
+                };
+                let path = document
+                    .target
+                    .as_deref()
+                    .unwrap_or(std::path::Path::new("."))
+                    .join(path);
+                match toha::document::read(&path) {
+                    Ok(value) => break value,
+                    Err(error) => print_error(&error)?,
+                }
+            }
         }
         PromptKind::Text | PromptKind::Git => json!(ask.text(prompt, &prompt.title)?),
         PromptKind::Multiline => json!(ask.multiline(prompt)?),
@@ -493,6 +498,47 @@ mod tests {
             completed.answers[&toha::Id::parse("catalog").unwrap()].to_json()["title"],
             "Entered"
         );
+    }
+
+    #[test]
+    fn typed_document_path_errors_reask_without_losing_earlier_answers() {
+        for invalid in [None, Some("not JSON"), Some("[]")] {
+            let folder = tempfile::tempdir().unwrap();
+            let root = folder.path().join("template");
+            fs::create_dir(&root).unwrap();
+            support::copy_tree(std::path::Path::new("docs/examples/document"), &root);
+            let yaml = fs::read_to_string(root.join("template.yml")).unwrap().replace("interview:\n", "interview:\n  - id: note\n    type: text\n    prompt: Note\n    required: true\n");
+            fs::write(root.join("template.yml"), yaml).unwrap();
+            let target = folder.path().join("target");
+            fs::create_dir(&target).unwrap();
+            let mut template = Template::load(&root).unwrap();
+            toha::document::prepare(&mut template, &target, &[], &Default::default()).unwrap();
+            let interview = start(&template);
+            if let Some(text) = invalid {
+                fs::write(target.join("invalid.json"), text).unwrap();
+            }
+            fs::write(
+                target.join("valid.json"),
+                json!({"title":"Selected"}).to_string(),
+            )
+            .unwrap();
+            let mut ask = Script::new(json!({}));
+            ask.text_responses = VecDeque::from([
+                "Remembered".into(),
+                "invalid.json".into(),
+                "valid.json".into(),
+            ]);
+            let completed = driven(interview, &mut ask, |_| Ok(())).unwrap();
+            assert_eq!(
+                completed.answers[&toha::Id::parse("note").unwrap()].to_json(),
+                "Remembered"
+            );
+            assert_eq!(
+                completed.answers[&toha::Id::parse("catalog").unwrap()].to_json()["title"],
+                "Selected"
+            );
+            assert_eq!(ask.attempts, 3);
+        }
     }
 
     #[test]

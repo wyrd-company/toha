@@ -25,7 +25,7 @@ description: >-
   repository. A document's `$schema` must equal an accepted URI, compared as
   an exact string; without `$schema`, only a single-schema question accepts it.
   The object validates against that schema. The answer retains every member.
-  A document question does not use `default`, `format`, `validate`, or `loop`.
+  A document question does not use `required`, `default`, `format`, `validate`, or `loop`.
 
   Vendored schemas. `schemas` names a directory inside the template root and
   outside the source subdirectory. Every `.json`, `.yml`, and `.yaml` file in
@@ -38,10 +38,14 @@ description: >-
   URI and stops the run before any output write. No fetched schema is cached.
 
   Document inputs. On each run a question takes an accepted `--input` document,
-  then its answers-document value, then its default file. A missing default
-  leaves it unanswered. An existing invalid file stops the run and names its
+  then its answers-document value, then its default file when it is unanswered.
+  A staged answer persists for the session and is not replaced by later input
+  or a default file. A missing default
+  leaves it unanswered. An existing invalid default file stops the run and names its
   path; no output is written and no replacement path is requested. A person
-  supplies a file path with `input` as the default. A script or agent receives
+  supplies a file path with `input` as the default. An unreadable typed path,
+  malformed JSON, or a non-object typed file is reported and asked again while
+  earlier answers remain accepted. A script or agent receives
   an object question in a batch. The named integration tests in
   `tests/document_questions.rs` exercise admission, precedence, and refusals.
 

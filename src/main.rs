@@ -524,6 +524,7 @@ impl Dirs {
 enum Outcome {
     Written(Vec<String>),
     Error(String),
+    Usage(String),
     Document(serde_json::Value, u8),
     /// An agent-route result: an optional question-batch document followed by
     /// plain-text instructions, both on standard output. The batch is omitted
@@ -592,6 +593,10 @@ impl Outcome {
             Self::Error(message) => {
                 writeln!(err, "{message}")?;
                 Ok(ExitCode::from(1))
+            }
+            Self::Usage(message) => {
+                writeln!(err, "{message}")?;
+                Ok(ExitCode::from(2))
             }
             Self::Saved(code) => Ok(ExitCode::from(code)),
             Self::Document(value, code) => {
@@ -737,24 +742,47 @@ fn save_document_answers(template: &Template, saved: &mut StagedRecord) {
         saved.submissions.push(values);
     }
 }
+fn recorded_answers(saved: &StagedRecord) -> toha::RawAnswers {
+    saved
+        .submissions
+        .iter()
+        .flat_map(|s| s.iter())
+        .filter_map(|(id, value)| {
+            toha::Id::parse(id)
+                .ok()
+                .map(|id| (id, toha::RawAnswer(value.clone())))
+        })
+        .collect()
+}
 fn prepare_staged_documents(
     template: &mut Template,
     target: &Path,
     input: &[PathBuf],
+    incoming: &toha::RawAnswers,
     saved: &mut StagedRecord,
-) -> Result<(), String> {
-    toha::document::prepare(template, target, input, &Default::default())?;
-    let mut recorded = toha::RawAnswers::new();
-    for submission in &saved.submissions {
-        for (id, value) in submission {
-            if let Ok(id) = toha::Id::parse(id) {
-                recorded.insert(id, toha::RawAnswer(value.clone()));
-            }
-        }
-    }
-    toha::document::restore_missing(template, &recorded)?;
+) -> Result<(), toha::document::PrepareError> {
+    toha::document::prepare_staged(template, target, input, &recorded_answers(saved), incoming)?;
     save_document_answers(template, saved);
     Ok(())
+}
+fn document_input_error(error: toha::document::PrepareError, context: Option<&Context>) -> Outcome {
+    let usage = error.is_usage();
+    let message = error.to_string();
+    if let Some(context) = context {
+        let error = ResultError {
+            kind: ErrorKind::Input,
+            message,
+            commands: vec![],
+        };
+        Outcome::Document(
+            protocol::error_document(&error, Some(context)),
+            if usage { 2 } else { 1 },
+        )
+    } else if usage {
+        Outcome::Usage(message)
+    } else {
+        Outcome::Error(message)
+    }
 }
 fn overlay_document_answers(
     template: &Template,
@@ -1138,7 +1166,7 @@ fn stage(
     if let Err(e) =
         toha::document::prepare(&mut template, target.as_path(), input, &Default::default())
     {
-        return Outcome::Error(e);
+        return document_input_error(e, None);
     }
     let (resolution, now) = match resolution(&resolved.formal_name, &template, &config) {
         Ok(v) => v,
@@ -1392,7 +1420,7 @@ fn continue_run(path: PathBuf, answers: Option<String>, input: &[PathBuf], dirs:
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
     };
-    if let Err(e) = prepare_staged_documents(&mut template, target.as_path(), input, &mut saved) {
+    if let Err(e) = toha::document::restore_missing(&mut template, &recorded_answers(&saved)) {
         return Outcome::Error(e);
     }
     let resolution = match toha::interview::configured_defaults(
@@ -1414,6 +1442,68 @@ fn continue_run(path: PathBuf, answers: Option<String>, input: &[PathBuf], dirs:
     ) {
         Ok(v) => v,
         Err(e) => return Outcome::Error(guidance::replay_failed(&path, &saved.template, &e)),
+    };
+    let interview =
+        match saved.replay_with_seed(&template, resolution, pinned_seed.clone(), &target) {
+            Ok(v) => v,
+            Err(e) => {
+                return Outcome::Error(guidance::replay_failed(
+                    &path,
+                    &saved.template,
+                    &e.to_string(),
+                ));
+            }
+        };
+    // Refuse a submission to a settled session before reading its file.
+    if answers.is_some() {
+        match &interview {
+            Interview::Complete(_) => {
+                return Outcome::Error(guidance::complete_answers_unused(&path));
+            }
+            Interview::Ended(ended) => {
+                return Outcome::Error(guidance::ended_answers_unused(
+                    &path,
+                    &saved.template,
+                    ended.kind(),
+                ));
+            }
+            Interview::Asking(_) => {}
+        }
+    }
+    drop(interview);
+    let text = match answers.as_deref().map(read_answers_text).transpose() {
+        Ok(text) => text,
+        Err(e) => return Outcome::Error(e),
+    };
+    let incoming = match text
+        .as_deref()
+        .map(|text| protocol::document_answers(&saved.template, text))
+        .transpose()
+    {
+        Ok(raw) => raw.unwrap_or_default(),
+        Err(e) => {
+            return Outcome::Error(
+                document_error(SubmitDocumentError::Document(e), &saved.template).message,
+            );
+        }
+    };
+    if let Err(e) = prepare_staged_documents(
+        &mut template,
+        target.as_path(),
+        input,
+        &incoming,
+        &mut saved,
+    ) {
+        return document_input_error(e, None);
+    }
+    let resolution = match toha::interview::configured_defaults(
+        &resolved.formal_name,
+        &template,
+        &config.presets,
+        &config.template_defaults,
+    ) {
+        Ok(v) => v,
+        Err(e) => return Outcome::Error(e.to_string()),
     };
     let interview = match saved.replay_with_seed(&template, resolution, pinned_seed, &target) {
         Ok(v) => v,
@@ -1500,7 +1590,7 @@ fn continue_run(path: PathBuf, answers: Option<String>, input: &[PathBuf], dirs:
     }
     // `continue PATH` (person): prompt the remaining questions, saving each
     // batch, then show the completion preview.
-    let Some(answers_file) = answers else {
+    let Some(_answers_file) = answers else {
         if !io::stdin().is_terminal() {
             return Outcome::Error(guidance::continue_no_terminal(&path));
         }
@@ -1526,10 +1616,7 @@ fn continue_run(path: PathBuf, answers: Option<String>, input: &[PathBuf], dirs:
         };
     };
     // `continue PATH FILE` (agent): submit one document as a single step.
-    let text = match read_answers_text(&answers_file) {
-        Ok(v) => v,
-        Err(e) => return Outcome::Error(e),
-    };
+    let text = text.expect("answers file was read after the settled-session check");
     let formal = saved.template.clone();
     match protocol::answer_document_once(&formal, pending, &text) {
         Ok(DocumentStep::Accepted {
@@ -1930,7 +2017,7 @@ fn scripted(
         }
     };
     if let Err(e) = toha::document::prepare(&mut template, target.as_path(), input, &supplied) {
-        return scripted_error(ErrorKind::Input, e, vec![], Some(&ctx));
+        return document_input_error(e, Some(&ctx));
     }
     let text = overlay_document_answers(&template, &resolved.formal_name, supplied);
     let interview = match resolution.start_with_seed(
@@ -2430,7 +2517,7 @@ fn run(
             if let Err(e) =
                 toha::document::prepare(&mut template, target.as_path(), input, &Default::default())
             {
-                return Outcome::Error(e);
+                return document_input_error(e, None);
             }
             let (resolution, now) = match resolution(&resolved.formal_name, &template, &config) {
                 Ok(v) => v,
@@ -2520,10 +2607,14 @@ fn run(
                 Ok(v) => v,
                 Err(e) => return Outcome::Error(e),
             };
-            if let Err(e) =
-                prepare_staged_documents(&mut template, target.as_path(), input, &mut saved)
-            {
-                return Outcome::Error(e);
+            if let Err(e) = prepare_staged_documents(
+                &mut template,
+                target.as_path(),
+                input,
+                &Default::default(),
+                &mut saved,
+            ) {
+                return document_input_error(e, None);
             }
             let resolution = match toha::interview::configured_defaults(
                 &resolved.formal_name,

@@ -11,9 +11,13 @@ description: >-
   Contract document input. `apply` and `stage` accept repeatable `--input FILE`;
   `continue PATH --input FILE` submits a document to a staged interview. The
   file is a JSON object with a string `$schema`. Its exact URI routes the whole
-  object to every document question that accepts it. An unaccepted document or
-  multiple inputs for the same question is an input error. Inputs override an
-  answers-document value, which overrides the default file. An invalid selected
+  object to every document question that accepts it. A missing or non-string
+  `$schema`, an unaccepted URI, or multiple inputs for one question is a usage
+  error (exit 2; kind `input` on the scripted route). Inputs override an
+  answers-document value, which overrides the default file when an unanswered
+  question takes its answer. Recorded staged answers persist across runs;
+  a later input cannot replace them and a default file fills only unanswered
+  questions. An invalid `--input` or default
   document stops the run before staging or output writes. With `--input` and
   no terminal, a new apply uses the scripted route even without `--answers`.
   In a terminal it prompts for the remaining questions. The envelope for
