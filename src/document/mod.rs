@@ -194,6 +194,32 @@ fn prepare_nodes(
     }
     Ok(())
 }
+/// Restore accepted staged documents only where this run admitted no document.
+/// Current inputs and default files retain precedence over staged replay.
+pub fn restore_missing(template: &mut Template, recorded: &RawAnswers) -> Result<(), String> {
+    fn restore(nodes: &mut [Node], recorded: &RawAnswers) -> Result<(), String> {
+        for node in nodes {
+            match node {
+                Node::Question(q) => {
+                    if let QuestionKind::Document { contract } = &mut q.kind
+                        && contract.value.is_none()
+                        && let Some(raw) = recorded.get(&q.id)
+                    {
+                        contract
+                            .validate(&raw.0)
+                            .map_err(|e| format!("staged document {}: {e}", q.id))?;
+                        contract.value = Some(raw.0.clone());
+                    }
+                }
+                Node::Group(g) => restore(&mut g.nodes, recorded)?,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+    restore(&mut template.interview, recorded)
+}
+
 /// Read one external document as a JSON object.
 pub fn read(path: &Path) -> Result<Value, String> {
     let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;

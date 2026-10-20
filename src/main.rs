@@ -737,6 +737,25 @@ fn save_document_answers(template: &Template, saved: &mut StagedRecord) {
         saved.submissions.push(values);
     }
 }
+fn prepare_staged_documents(
+    template: &mut Template,
+    target: &Path,
+    input: &[PathBuf],
+    saved: &mut StagedRecord,
+) -> Result<(), String> {
+    toha::document::prepare(template, target, input, &Default::default())?;
+    let mut recorded = toha::RawAnswers::new();
+    for submission in &saved.submissions {
+        for (id, value) in submission {
+            if let Ok(id) = toha::Id::parse(id) {
+                recorded.insert(id, toha::RawAnswer(value.clone()));
+            }
+        }
+    }
+    toha::document::restore_missing(template, &recorded)?;
+    save_document_answers(template, saved);
+    Ok(())
+}
 fn overlay_document_answers(
     template: &Template,
     formal: &str,
@@ -1339,12 +1358,7 @@ fn completion_preview(
         Outcome::Saved(0)
     }
 }
-fn continue_run(
-    path: PathBuf,
-    mut answers: Option<String>,
-    input: &[PathBuf],
-    dirs: &Dirs,
-) -> Outcome {
+fn continue_run(path: PathBuf, answers: Option<String>, input: &[PathBuf], dirs: &Dirs) -> Outcome {
     let (target, store) = match setup(&path, dirs) {
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
@@ -1378,22 +1392,9 @@ fn continue_run(
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
     };
-    if let Err(e) =
-        toha::document::prepare(&mut template, target.as_path(), input, &Default::default())
-    {
+    if let Err(e) = prepare_staged_documents(&mut template, target.as_path(), input, &mut saved) {
         return Outcome::Error(e);
     }
-    save_document_answers(&template, &mut saved);
-    let input_text = if input.is_empty() {
-        None
-    } else {
-        answers = Some("--input".into());
-        Some(overlay_document_answers(
-            &template,
-            &saved.template,
-            Default::default(),
-        ))
-    };
     let resolution = match toha::interview::configured_defaults(
         &resolved.formal_name,
         &template,
@@ -1427,13 +1428,18 @@ fn continue_run(
     if let Interview::Complete(completed) = &interview {
         // `continue PATH FILE` on a complete interview refuses before reading the
         // document. `continue PATH` shows the completion preview.
-        if answers.is_some() && input.is_empty() {
+        if answers.is_some() {
             return Outcome::Error(guidance::complete_answers_unused(&path));
         }
-        if !input.is_empty()
-            && let Err(e) = store.save(&target, &saved)
-        {
-            return Outcome::Error(e.to_string());
+        if !input.is_empty() {
+            if let Err(e) = store.save(&target, &saved) {
+                return Outcome::Error(e.to_string());
+            }
+            return Outcome::Agent {
+                document: None,
+                instructions: instructions(&AgentOutcome::Complete, &path),
+                code: 0,
+            };
         }
         return completion_preview(
             &template,
@@ -1455,6 +1461,12 @@ fn continue_run(
                 ended.kind(),
             ));
         }
+        if !input.is_empty()
+            && ended.kind() == EndKind::Stop
+            && let Err(e) = store.save(&target, &saved)
+        {
+            return Outcome::Error(e.to_string());
+        }
         if let Err(e) = ended_removed(ended, &target, &store) {
             return Outcome::Error(e);
         }
@@ -1467,6 +1479,25 @@ fn continue_run(
     let Interview::Asking(pending) = interview else {
         unreachable!("a complete or ended interview returned above");
     };
+    if !input.is_empty() {
+        if let Err(e) = store.save(&target, &saved) {
+            return Outcome::Error(e.to_string());
+        }
+        return Outcome::Agent {
+            document: Some(protocol::batch_document(
+                pending.batch(),
+                &context(&target, &saved),
+                None,
+            )),
+            instructions: instructions(
+                &AgentOutcome::Batch {
+                    template: &saved.template,
+                },
+                &path,
+            ),
+            code: 4,
+        };
+    }
     // `continue PATH` (person): prompt the remaining questions, saving each
     // batch, then show the completion preview.
     let Some(answers_file) = answers else {
@@ -1495,10 +1526,7 @@ fn continue_run(
         };
     };
     // `continue PATH FILE` (agent): submit one document as a single step.
-    let text = match input_text
-        .map(Ok)
-        .unwrap_or_else(|| read_answers_text(&answers_file))
-    {
+    let text = match read_answers_text(&answers_file) {
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
     };
@@ -2290,7 +2318,7 @@ fn run(
     // Scripted route: apply TEMPLATE PATH --answers FILE. One shot, one result
     // document, never staged.
     if let Some(template) = template.clone()
-        && (answers.is_some() || !input.is_empty())
+        && (answers.is_some() || (!input.is_empty() && !io::stdin().is_terminal()))
     {
         return scripted(
             input,
@@ -2493,11 +2521,10 @@ fn run(
                 Err(e) => return Outcome::Error(e),
             };
             if let Err(e) =
-                toha::document::prepare(&mut template, target.as_path(), input, &Default::default())
+                prepare_staged_documents(&mut template, target.as_path(), input, &mut saved)
             {
                 return Outcome::Error(e);
             }
-            save_document_answers(&template, &mut saved);
             let resolution = match toha::interview::configured_defaults(
                 &resolved.formal_name,
                 &template,

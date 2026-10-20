@@ -619,3 +619,128 @@ fn document_does_not_replay_a_seeded_default_when_its_file_is_missing() {
     let result = toha::protocol::answer_headless(&template, interview, RawAnswers::new()).unwrap();
     assert!(matches!(result, toha::protocol::Headless::Pending { .. }));
 }
+
+#[cfg(unix)]
+#[test]
+fn terminal_input_keeps_other_questions_interactive() {
+    use expectrl::{Expect, Session};
+    let f = Fixture::new();
+    let input = f.doc("input.json", "Selected");
+    let text = fs::read_to_string(f.template.join("template.yml")).unwrap();
+    fs::write(
+        f.template.join("template.yml"),
+        format!("{text}  - id: note\n    type: text\n    prompt: Note?\n    required: true\n"),
+    )
+    .unwrap();
+    fs::write(
+        f.template.join("template/result.txt"),
+        "{{ catalog.title }} {{ note }}\n",
+    )
+    .unwrap();
+    let mut command = support::isolated_command(f.root.path());
+    command
+        .arg("apply")
+        .arg(support::folder_address(&f.template))
+        .arg(&f.target)
+        .arg("--input")
+        .arg(&input);
+    let mut session = Session::spawn(command).unwrap();
+    session.expect("Note?").unwrap();
+    session.send_line("Entered").unwrap();
+    session.expect(expectrl::Eof).unwrap();
+    assert_eq!(
+        fs::read_to_string(f.target.join("result.txt")).unwrap(),
+        "Selected Entered\n"
+    );
+}
+
+#[test]
+fn continue_input_saves_document_while_other_required_questions_remain() {
+    let f = Fixture::new();
+    let input = f.doc("input.json", "Selected");
+    let text = fs::read_to_string(f.template.join("template.yml")).unwrap();
+    fs::write(
+        f.template.join("template.yml"),
+        format!("{text}  - id: note\n    type: text\n    prompt: Note?\n    required: true\n"),
+    )
+    .unwrap();
+    fs::write(
+        f.template.join("template/result.txt"),
+        "{{ catalog.title }} {{ note }}\n",
+    )
+    .unwrap();
+    let out = support::isolated_command(f.root.path())
+        .arg("stage")
+        .arg(support::folder_address(&f.template))
+        .arg(&f.target)
+        .arg("--async")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(4));
+    let out = support::isolated_command(f.root.path())
+        .arg("continue")
+        .arg(&f.target)
+        .arg("--input")
+        .arg(input)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(4), "{}", error_text(&out));
+    let batch = support::first_document(&out.stdout);
+    assert!(batch["schema"]["properties"].get("catalog").is_none());
+    assert!(batch["schema"]["properties"].get("note").is_some());
+    let answers = f.answers(json!({"note":"Entered"}));
+    let out = support::isolated_command(f.root.path())
+        .arg("continue")
+        .arg(&f.target)
+        .arg(answers)
+        .output()
+        .unwrap();
+    assert_success(&out);
+    let out = support::isolated_command(f.root.path())
+        .arg("apply")
+        .arg(&f.target)
+        .output()
+        .unwrap();
+    assert_success(&out);
+    assert_eq!(
+        fs::read_to_string(f.target.join("result.txt")).unwrap(),
+        "Selected Entered\n"
+    );
+}
+
+#[test]
+fn continue_input_preserves_flow_stop_for_resume() {
+    let f = Fixture::new();
+    let input = f.doc("input.json", "Selected");
+    let text = fs::read_to_string(f.template.join("template.yml")).unwrap();
+    fs::write(
+        f.template.join("template.yml"),
+        format!("{text}  - flow: stop\n    when: catalog.title == 'Selected'\n"),
+    )
+    .unwrap();
+    let out = support::isolated_command(f.root.path())
+        .arg("stage")
+        .arg(support::folder_address(&f.template))
+        .arg(&f.target)
+        .arg("--async")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(4));
+    let out = support::isolated_command(f.root.path())
+        .arg("continue")
+        .arg(&f.target)
+        .arg("--input")
+        .arg(input)
+        .output()
+        .unwrap();
+    assert_success(&out);
+    assert_eq!(support::first_document(&out.stdout)["status"], "ended");
+    let out = support::isolated_command(f.root.path())
+        .arg("apply")
+        .arg(&f.target)
+        .output()
+        .unwrap();
+    assert_success(&out);
+    assert!(error_text(&out).contains("stopped"), "{}", error_text(&out));
+    assert!(!f.target.join("result.txt").exists());
+}
