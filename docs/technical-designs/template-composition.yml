@@ -162,14 +162,15 @@ proposed-design:
     document's value for its id, and the file named by `file`, read from the
     working tree at the start of the run. A file that is not a JSON object,
     whose `$schema` the question does not accept, or that fails its schema is
-    refused in the same way as an invalid input. The error names the path, and
-    nothing is written. A document answer is recorded like any other submission,
-    so the snapshot holds the document the render used, but an update never
-    replays a recorded document answer. When none of the three is present, the
-    question is unanswered: a person is asked for a file path with `file` as the
-    default, and a script or agent receives it in a question batch. The
-    Intentional release model reaches a template this way: the question's `file`
-    is `.intentional/release-model.json`, and its schema list holds the vendored
+    refused in the same way as an invalid input. The error names the path,
+    nothing is written, and Toha does not ask for another file. A document
+    answer is recorded like any other submission, so the snapshot holds the
+    document the render used, but an update never replays a recorded document
+    answer. When none of the three is present, the question is unanswered: a
+    person is asked for a file path with `file` as the default, and a script or
+    agent receives it in a question batch. The Intentional release model reaches
+    a template this way: the question's `file` is
+    `.intentional/release-model.json`, and its schema list holds the vendored
     release model schema, whose `$id` is the published identifier for line
     `release-model/1`.
   hooks-and-trust: >-
