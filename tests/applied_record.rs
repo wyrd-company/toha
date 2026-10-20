@@ -862,6 +862,23 @@ fn recorded_mode_preserves_an_operator_chmod_during_a_content_update() {
 #[cfg(unix)]
 #[test]
 fn hook_symlink_base_uses_its_recorded_mode_when_the_operator_changes_its_kind() {
+    hook_symlink_update(Some("file"));
+}
+
+#[cfg(unix)]
+#[test]
+fn hook_symlink_retarget_stays_a_link_in_the_worktree_and_index() {
+    hook_symlink_update(None);
+}
+
+#[cfg(unix)]
+#[test]
+fn conflicting_hook_symlink_targets_preserve_the_operator_link() {
+    hook_symlink_update(Some("link"));
+}
+
+#[cfg(unix)]
+fn hook_symlink_update(operator: Option<&str>) {
     let iso = tempfile::tempdir().unwrap();
     let source = tempfile::tempdir().unwrap();
     let root = tempfile::tempdir().unwrap();
@@ -888,9 +905,18 @@ fn hook_symlink_base_uses_its_recorded_mode_when_the_operator_changes_its_kind()
         app["applications"][0]["paths"]["link.txt"]["mode"],
         "120000"
     );
-    std::fs::remove_file(root.path().join("link.txt")).unwrap();
-    std::fs::write(root.path().join("link.txt"), "operator\n").unwrap();
-    commit(root.path());
+    let link = root.path().join("link.txt");
+    assert_eq!(std::fs::read_link(&link).unwrap(), Path::new("first"));
+    if let Some(kind) = operator {
+        std::fs::remove_file(&link).unwrap();
+        if kind == "file" {
+            std::fs::write(&link, "operator\n").unwrap();
+        } else {
+            std::os::unix::fs::symlink("operator", &link).unwrap();
+        }
+        commit(root.path());
+    }
+    let operator_blob = git(root.path(), &["rev-parse", "HEAD:link.txt"]);
     std::fs::write(&manifest, text.replace("ln -s first", "ln -s second")).unwrap();
     commit(source.path());
     let next = format!("{address}@{}", git(source.path(), &["rev-parse", "HEAD"]));
@@ -901,17 +927,76 @@ fn hook_symlink_base_uses_its_recorded_mode_when_the_operator_changes_its_kind()
         json!({}),
         &["--update", "--trust"],
     );
+    let output = document(&output);
+    assert_eq!(output["status"], "applied");
+    let recorded = record(root.path(), ".toha.json");
+    let owned = &recorded["applications"][0]["paths"]["link.txt"];
+    assert_eq!(owned["mode"], "120000");
     assert_eq!(
-        document(&output)["merge"]["conflicted"],
-        json!(["link.txt"])
+        git(
+            root.path(),
+            &["cat-file", "blob", owned["blob"].as_str().unwrap()]
+        ),
+        "second"
     );
-    let stages = git(root.path(), &["ls-files", "-u", "link.txt"]);
-    assert!(
-        stages
-            .lines()
-            .any(|line| line.starts_with("120000 ") && line.contains(" 1\tlink.txt")),
-        "{stages}"
-    );
+    if let Some(kind) = operator {
+        assert_eq!(output["merge"]["conflicted"], json!(["link.txt"]));
+        assert!(
+            output["merge"]["changes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c["path"] == "link.txt"
+                    && c["action"] == "conflicted"
+                    && c["conflict"] == "content")
+        );
+        let stages = git(root.path(), &["ls-files", "-u", "link.txt"]);
+        let rows: Vec<_> = stages.lines().collect();
+        assert_eq!(rows.len(), 3, "{stages}");
+        let blobs = [
+            app["applications"][0]["paths"]["link.txt"]["blob"]
+                .as_str()
+                .unwrap(),
+            operator_blob.as_str(),
+            owned["blob"].as_str().unwrap(),
+        ];
+        for (i, mode) in [
+            "120000",
+            if kind == "file" { "100644" } else { "120000" },
+            "120000",
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert_eq!(
+                rows[i],
+                format!("{mode} {} {}\tlink.txt", blobs[i], i + 1),
+                "{stages}"
+            );
+        }
+        assert_eq!(git(root.path(), &["show", ":1:link.txt"]), "first");
+        assert_eq!(git(root.path(), &["show", ":2:link.txt"]), "operator");
+        assert_eq!(git(root.path(), &["show", ":3:link.txt"]), "second");
+        if kind == "file" {
+            assert!(std::fs::symlink_metadata(&link).unwrap().is_file());
+            assert_eq!(std::fs::read(&link).unwrap(), b"operator\n");
+        } else {
+            assert_eq!(std::fs::read_link(&link).unwrap(), Path::new("operator"));
+        }
+    } else {
+        assert_eq!(output["merge"]["conflicted"], json!([]));
+        assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink());
+        assert_eq!(std::fs::read_link(&link).unwrap(), Path::new("second"));
+        assert_eq!(
+            git(root.path(), &["ls-files", "--stage", "link.txt"]),
+            format!("120000 {} 0\tlink.txt", owned["blob"].as_str().unwrap())
+        );
+        assert_eq!(
+            git(root.path(), &["status", "--porcelain", "link.txt"]),
+            "M  link.txt".trim()
+        );
+        assert!(git(root.path(), &["diff", "--", "link.txt"]).is_empty());
+    }
 }
 
 #[test]

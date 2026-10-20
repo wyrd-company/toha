@@ -551,11 +551,23 @@ fn merge_inner(
         return Err(MergeError::Occupied(occupied));
     }
 
-    // Paths whose conflict is not a content merge keep the operator's file on
-    // disk (their diff3 body is not written); a content conflict writes markers.
+    // Only regular-file text conflicts receive diff3 markers. Symlink and
+    // file/link conflicts retain the operator's node, even when gitoxide
+    // classifies them as content conflicts; their stages still carry all sides.
     let keep_operator: std::collections::BTreeSet<String> = conflict_kinds
         .iter()
-        .filter(|(_, kind)| !matches!(kind, ConflictKind::Content))
+        .filter(|(path, kind)| {
+            !matches!(kind, ConflictKind::Content)
+                || outcome.conflicts.iter().any(|conflict| {
+                    conflict.is_unresolved(how)
+                        && conflict.ours.location().as_bstr() == path.as_bytes().as_bstr()
+                        && conflict
+                            .entries()
+                            .iter()
+                            .flatten()
+                            .any(|entry| entry.mode.is_link())
+                })
+        })
         .map(|(path, _)| path.clone())
         .collect();
 
@@ -729,7 +741,7 @@ fn write_all(
             continue;
         }
         drift_check(pipeline, state, &repo_rel, expected.map(|(o, _)| *o))?;
-        let bytes = worktree_bytes(repo, pipeline, *id, &repo_rel)?;
+        let bytes = worktree_bytes(repo, pipeline, *id, &repo_rel, *mode)?;
         write_atomically(workdir, &repo_rel, &bytes, *mode)?;
         done.push(Restorable {
             repo_rel,
@@ -750,7 +762,7 @@ fn write_all(
         }
         drift_check(pipeline, state, &repo_rel, Some(*id))?;
         let full = workdir.join(&repo_rel);
-        if full.exists() {
+        if full.symlink_metadata().is_ok() {
             std::fs::remove_file(&full).map_err(|e| MergeError::Io(e.to_string()))?;
         }
         done.push(Restorable {
@@ -792,7 +804,7 @@ mod inject_fail {
         AFTER.with(|a| a.set(None));
     }
 
-    /// The on-disk bytes of each written path, captured at the moment of failure.
+    /// The bytes or raw link target of each path at the moment of failure.
     pub(super) fn observed() -> Vec<(String, Option<Vec<u8>>)> {
         OBSERVED.with(|o| o.borrow().clone())
     }
@@ -809,10 +821,16 @@ mod inject_fail {
             let snap: Vec<_> = done
                 .iter()
                 .map(|r| {
-                    (
-                        r.repo_rel.clone(),
-                        std::fs::read(workdir.join(&r.repo_rel)).ok(),
-                    )
+                    (r.repo_rel.clone(), {
+                        let full = workdir.join(&r.repo_rel);
+                        if full.symlink_metadata().is_ok_and(|md| md.is_symlink()) {
+                            std::fs::read_link(&full)
+                                .ok()
+                                .map(|target| gix::path::into_bstr(target).to_vec())
+                        } else {
+                            std::fs::read(full).ok()
+                        }
+                    })
                 })
                 .collect();
             OBSERVED.with(|o| *o.borrow_mut() = snap);
@@ -842,15 +860,19 @@ fn drift_check(
     Ok(())
 }
 
-/// The worktree (smudged) bytes for a git blob, applying built-in conversions
-/// only.
+/// Raw Git bytes for a symlink target; worktree bytes for a regular file,
+/// applying only built-in conversions.
 fn worktree_bytes(
     repo: &gix::Repository,
     pipeline: &mut gix::filter::Pipeline<'_>,
     id: gix::ObjectId,
     repo_rel: &str,
+    mode: gix::index::entry::Mode,
 ) -> Result<Vec<u8>, MergeError> {
     let data = repo.find_object(id).map_err(git)?.data.clone();
+    if mode == gix::index::entry::Mode::SYMLINK {
+        return Ok(data); // Link targets are raw Git bytes, never smudged text.
+    }
     let outcome = pipeline
         .convert_to_worktree(
             &data,
@@ -869,8 +891,9 @@ fn worktree_bytes(
     })
 }
 
-/// Write `bytes` to `workdir/repo_rel` by a temporary file and rename, setting
-/// the executable bit from `mode`.
+/// Write a temporary node and rename it over `workdir/repo_rel`. Git mode
+/// selects a raw-target symlink or a regular file with its executable bit.
+/// Failure before rename leaves the operator's node in place.
 fn write_atomically(
     workdir: &Path,
     repo_rel: &str,
@@ -880,6 +903,32 @@ fn write_atomically(
     let full = workdir.join(repo_rel);
     if let Some(parent) = full.parent() {
         std::fs::create_dir_all(parent).map_err(|e| MergeError::Io(e.to_string()))?;
+    }
+    if mode == gix::index::entry::Mode::SYMLINK {
+        // Own the temporary name until rename without opening/following the
+        // target. The directory also removes an uncommitted link on failure.
+        let temporary = tempfile::Builder::new()
+            .prefix(".toha-")
+            .tempdir_in(full.parent().expect("a worktree path has a parent"))
+            .map_err(|e| MergeError::Io(e.to_string()))?;
+        let link = temporary.path().join("link");
+        let target = gix::path::from_bstr(gix::bstr::BStr::new(bytes));
+        #[cfg(not(windows))]
+        gix::fs::symlink::create(target.as_ref(), &link)
+            .map_err(|e| MergeError::Io(e.to_string()))?;
+        #[cfg(windows)]
+        {
+            // Resolve the target type relative to the final link, rather than
+            // the temporary directory (Windows distinguishes directory links).
+            let result = if full.parent().expect("parent").join(&target).is_dir() {
+                std::os::windows::fs::symlink_dir(&target, &link)
+            } else {
+                std::os::windows::fs::symlink_file(&target, &link)
+            };
+            result.map_err(|e| MergeError::Io(e.to_string()))?;
+        }
+        std::fs::rename(&link, &full).map_err(|e| MergeError::Io(e.to_string()))?;
+        return Ok(());
     }
     let mut builder = tempfile::Builder::new();
     builder.prefix(".toha-");
@@ -930,13 +979,13 @@ fn rollback(
         match entry.head {
             Some((oid, mode)) => {
                 // Restore the HEAD content (a modify or a delete).
-                let bytes = worktree_bytes(repo, pipeline, oid, &entry.repo_rel)?;
+                let bytes = worktree_bytes(repo, pipeline, oid, &entry.repo_rel, mode)?;
                 write_atomically(workdir, &entry.repo_rel, &bytes, mode)?;
             }
             None => {
                 // An add: remove the created file.
                 let full = workdir.join(&entry.repo_rel);
-                if full.exists() {
+                if full.symlink_metadata().is_ok() {
                     std::fs::remove_file(&full).map_err(|e| MergeError::Io(e.to_string()))?;
                 }
             }
