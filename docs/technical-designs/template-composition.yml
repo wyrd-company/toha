@@ -158,9 +158,21 @@ proposed-design:
     `--trust` covers every member of that run. The hook listing groups
     invocations by member, and an untrusted result names each untrusted member
     and the `templates trust` command for it. A parent's approval never covers a
-    child, and a child's never covers the parent. Interview hooks run at their
-    position in each member's interview. Top-level hooks run after all files are
-    written: the parent's list first, then each child's in member order.
+    child, and a child's never covers the parent.
+  hook-order-and-ownership: >-
+    After all files are written, each member runs its hooks in member order:
+    its interview hook nodes in interview order, then its top-level list, as a
+    template applied alone does. A hook result stays in its member. Toha lists
+    the target after each member's hooks finish. A path that no member plans,
+    that differs from `HEAD` at that listing and that no earlier member owns is
+    hook-owned by that member. A hook that changes a path another member owns,
+    planned or hook-owned, does not change its owner; the owner's captured
+    bytes include the change, as a hook change to a planned file is captured
+    for one template today. On an update, a hook-owned path carried forward
+    from the base keeps the member that the base records, matched by source.
+    When a member plans that path, or a member's hook changes it in the
+    candidate, the rules above choose its owner again. A preview runs no hooks,
+    so each carried path keeps its recorded member.
   snapshot-record: >-
     A snapshot of a composition with children uses format version 2. The
     top-level identity, revision, submissions and paths are the parent's, as in
@@ -184,20 +196,25 @@ proposed-design:
     resolve stops the update before candidate construction, naming the member
     and `--without`.
   update-behavior: >-
-    A parent update re-renders the parent's files with the current
-    contributions and merges them three-way. A parent whose contract version
-    changes refuses every child that does not accept the new version, and the
-    message names each one. The caller gives each a compatible formal name with
-    `--with`, or removes it with `--without`, in the same render. A child
-    update changes its contributions, and the parent's re-render carries them.
-    An added child adds its contributions to the parent's files and its own
-    files to the candidate. A removed child is absent
-    from the candidate: its contributions leave the parent's render, its whole
-    files leave the template side so the merge removes the unmodified ones and
-    reports a modify/delete conflict for edited ones, and its edit-owned paths
-    follow the existing retraction and release rules. Base selection, merge,
-    conflict stages, preview, already-current and the transaction are those of
-    project updates.
+    A parent update re-renders the parent's files with the current contributions
+    and merges them three-way. A parent whose contract version changes refuses
+    every child that does not accept the new version, and the message names each
+    one. The caller gives each a compatible formal name with `--with`, or
+    removes it with `--without`, in the same render. A child update changes its
+    contributions, and the parent's re-render carries them. An added child adds
+    its contributions to the parent's files and its own files to the candidate.
+    A removed child is absent from the candidate: its contributions leave the
+    parent's render, its whole files leave the template side so the merge
+    removes the unmodified ones and reports a modify/delete conflict for edited
+    ones, and its edit-owned paths follow the existing retraction and release
+    rules. Its hook-owned paths are released: they leave both the merge base and
+    the candidate, so the project keeps its file, and the result lists each
+    released path with the removed member. Toha cannot tell a file a hook
+    created from a tracked file a hook changed, so removal never deletes hook
+    output. A path that a remaining member plans, or that a remaining member's
+    hook changes in the candidate, is not released; that member owns it. Base
+    selection, merge, conflict stages, preview, already-current and the
+    transaction are those of project updates.
   staging-and-protocol: >-
     A staged composition records the parent, each added and removed member and
     each member's accepted submissions, so `continue` and `apply PATH` rebuild
