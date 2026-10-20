@@ -1,5 +1,0 @@
-$schema: https://refinery.systems/ontology/term
-title: Member
-description: >-
-  One template in a composition, identified by its source. A source occurs at
-  most once in a composition.

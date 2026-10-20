@@ -1,0 +1,7 @@
+$schema: https://refinery.systems/ontology/term
+title: Part
+description: >-
+  One option of a template's part question: an optional piece of the
+  template's output that a caller selects with `--with` and removes with
+  `--without`. The template alone renders every part, and the applied record
+  lists the parts each application selected.
