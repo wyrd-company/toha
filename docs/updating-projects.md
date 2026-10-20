@@ -110,12 +110,6 @@ result and `.toha.json`. Scripted results include `application.parts_added` and
 Person summaries show the same information. Staging preserves the flags and
 the selection they change.
 
-The named tests `parts_add_update_remove_shared_workflow_and_retract_and_release_edits`,
-`removing_a_part_conflicts_with_an_edited_whole_file`,
-`part_flags_reject_usage_before_questions_and_validate_the_settled_answer`, and
-`staged_part_flags_survive_new_questions_continue_and_apply` exercise these rules
-in `tests/parts.rs`.
-
 ## Re-baseline an application
 
 Use `--baseline` to adopt a project against an empty merge base:
