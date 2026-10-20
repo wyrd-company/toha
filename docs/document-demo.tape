@@ -22,7 +22,7 @@ Type 'export PS1="demo> "; clear' Enter
 Show
 Type 'cat template/catalog.json' Enter
 Sleep 1s
-Type 'toha apply ./template ./output --input ./template/catalog.json | jq "{status, files}"' Enter
+Type 'toha apply ./template ./output --input ./template/catalog.json </dev/null | jq "{status, files}"' Enter
 Sleep 2s
 Type 'cat output/catalog.txt' Enter
 Sleep 3s

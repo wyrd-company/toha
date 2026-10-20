@@ -177,18 +177,19 @@ fn ask_value(ask: &mut impl Ask, prompt: &Prompt) -> Result<Value, String> {
                 document: None,
             };
             path_prompt.constraints.required = true;
-            let mut path = ask.text(&path_prompt, &prompt.title)?;
-            if path.is_empty() {
-                let document = prompt.document.as_ref().unwrap();
-                path = document
-                    .target
-                    .as_deref()
-                    .unwrap_or(std::path::Path::new("."))
-                    .join(&document.input)
-                    .display()
-                    .to_string();
-            }
-            toha::document::read(std::path::Path::new(&path))?
+            let path = ask.text(&path_prompt, &prompt.title)?;
+            let document = prompt.document.as_ref().unwrap();
+            let path = if path.is_empty() {
+                document.input.clone()
+            } else {
+                path.into()
+            };
+            let path = document
+                .target
+                .as_deref()
+                .unwrap_or(std::path::Path::new("."))
+                .join(path);
+            toha::document::read(&path)?
         }
         PromptKind::Text | PromptKind::Git => json!(ask.text(prompt, &prompt.title)?),
         PromptKind::Multiline => json!(ask.multiline(prompt)?),
@@ -472,6 +473,26 @@ mod tests {
             Ok(Session::Ended(_)) => panic!("unexpected flow end"),
             Err(error) => Err(error),
         }
+    }
+
+    #[test]
+    fn terminal_document_default_path_resolves_against_target() {
+        let folder = tempfile::tempdir().unwrap();
+        let mut template = Template::load(std::path::Path::new("docs/examples/document")).unwrap();
+        toha::document::prepare(&mut template, folder.path(), &[], &Default::default()).unwrap();
+        let interview = start(&template);
+        // The file appears while the person is answering the pending prompt.
+        fs::write(
+            folder.path().join("catalog.json"),
+            json!({"title":"Entered"}).to_string(),
+        )
+        .unwrap();
+        let mut ask = Script::new(json!({}));
+        let completed = driven(interview, &mut ask, |_| Ok(())).unwrap();
+        assert_eq!(
+            completed.answers[&toha::Id::parse("catalog").unwrap()].to_json()["title"],
+            "Entered"
+        );
     }
 
     #[test]

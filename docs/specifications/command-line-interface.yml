@@ -14,8 +14,9 @@ description: >-
   object to every document question that accepts it. An unaccepted document or
   multiple inputs for the same question is an input error. Inputs override an
   answers-document value, which overrides the default file. An invalid selected
-  document stops the run before staging or output writes. With `--input`, a new
-  apply uses the scripted route, even without `--answers`. The envelope for
+  document stops the run before staging or output writes. With `--input` and
+  no terminal, a new apply uses the scripted route even without `--answers`.
+  In a terminal it prompts for the remaining questions. The envelope for
   `--answers` is unchanged. `tests/document_questions.rs` covers these routes.
 
   Template arguments. A `<TEMPLATE>` argument is read in this order: a value
