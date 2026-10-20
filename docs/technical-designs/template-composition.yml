@@ -33,15 +33,15 @@ design-challenges:
   merge-base-without-stored-bytes: >-
     An update needs the bytes the last apply wrote as its merge base, and the
     applied record holds no file contents. Rendering is deterministic for one
-    template revision, one set of answers and one frozen instant, so the update
-    renders the recorded revision again. Two inputs are not in the record: hook
-    output, and the host and environment values that a render can read. Hook
-    output is covered by the blob ids the record keeps for paths a hook wrote or
-    changed. A template that reads a `toha_host_`, `toha_is_` or `toha_env_`
-    value in a rendered file gets a merge base for the updating host; a
-    difference reads as an operator edit, so the merge keeps the project's line,
-    or reports a conflict where the template also changed that line. This
-    consequence is inferred from the merge rules, not measured.
+    template revision, one set of answers, one frozen instant and one set of
+    host and environment values, so the record keeps each of those inputs and
+    the update renders the recorded revision again. A merge base that differs
+    from the bytes the apply wrote is worse than none: when it happens to equal
+    the project's file, the merge takes the template's bytes and silently
+    replaces an operator edit. The record therefore keeps the Git object id of
+    every file it owns whole, and a base whose object id differs is never used:
+    the path has no base and conflicts. Hook output cannot be rendered again, so
+    it is a base only when the repository holds its recorded object.
   one-record-per-repository: >-
     Generators apply one source into many subpaths, and a release template
     applies at the repository root. One record at one known path lets a reader
@@ -66,8 +66,9 @@ proposed-design:
     `.toha.json` at the repository root: template identity, selected parts,
     answers, the frozen instant and path ownership. `apply --update` reads the
     application from the record, renders the recorded revision with the recorded
-    answers and parts as the merge base, renders the requested revision as the
-    candidate, and merges three-way. Candidate construction, merge, conflict
+    answers, parts and host values as the merge base, uses it for a path only
+    when it matches the recorded object id, renders the requested revision as
+    the candidate, and merges three-way. Candidate construction, merge, conflict
     stages, preview, already-current and the transaction are those of project
     updates. A document question takes a JSON document identified by a schema
     URI, resolved from the template's schemas directory first and fetched
@@ -162,22 +163,39 @@ proposed-design:
     64-hex lowercase SHA-256 content revision; an application never records both
     a commit and a content digest. `generated` is the frozen render instant,
     which an update carries forward. `parts` lists the selected parts in option
-    order, and is empty when the template has no part question. `answers` and
-    `paths` follow.
+    order, and is empty when the template has no part question. `answers`,
+    `context` and `paths` follow.
   record-answers: >-
     `answers` is an object keyed by question id. Each value is that question's
     raw accepted value, in the form an answers document gives it: a looped
     `text` is its array of items, and a `multiselect` answer its array. A
-    skipped question, a computed value, a hook result and a reserved `toha_`
-    value are not answers and are not recorded. The part question's answer is
-    `parts` and does not occur in `answers`. A document answer is recorded at
-    `answers.<question id>` as the whole JSON object the render used, so the
-    merge base renders from that document, and an update whose settled document
-    differs from it is never already-current; an update's candidate never
-    replays it (document-questions). A `git` answer is recorded without the user
+    skipped question, a computed value and a hook result are not answers and are
+    not recorded. The part question's answer is `parts` and does not occur in
+    `answers`. A document answer is recorded at `answers.<question id>` as the
+    whole JSON object the render used, so the merge base renders from that
+    document, and an update whose settled document differs from it is never
+    already-current; an update's candidate never replays it
+    (document-questions). A `git` answer is recorded without the user
     information of its URL, as every output shows it. Answers hold names and
     choices, never secret values: Toha has no secret question type, and a
     template asks for a credential's name, never its value.
+  record-context: >-
+    `context` is an object keyed by reserved variable name. It holds the value
+    the run used for each of `toha_template_aliases`, the seven `toha_host_` and
+    `toha_is_` values and the five `toha_env_` values that the template
+    references on any render surface, found when the template loads from the
+    variables each surface's templates and expressions leave undeclared, `{%
+    include %}` partials included. A reserved value that the template does not
+    reference is not recorded. `toha_target_name` and the other three
+    `toha_template_` values follow from the entry and are not recorded. The
+    merge base renders with the recorded values; the candidate renders with the
+    updating run's values, and the new entry records those. Toha records these
+    values rather than forbid them in templates because forbidding them removes
+    a supported capability, such as a file that differs by operating system, and
+    because a value that a template renders into a file is already in the
+    project. A value that a template reads only in a condition is committed to
+    the record and nowhere else; the template author decides what a template
+    reads, and Toha reads `toha_env_` values only under trust.
   record-paths: >-
     `paths` maps each path the application owns, relative to the target, to its
     ownership in the ownership forms of project updates: `origin` `toha` for a
@@ -185,29 +203,38 @@ proposed-design:
     or `hook` for a file a hook created or changed. Toha lists ownership as
     project updates capture it: every path the plan targets, and every path
     under the target that a hook changed, listed after the hooks finish, with
-    the same exclusions. A path whose written bytes differ from the bytes the
-    plan rendered also records `blob`, the Git object id of the written bytes in
-    the repository's object format: every hook-owned path, and every planned
-    path that a hook changed. An edit path with empty `regions` and `values` is
-    released on the next update, as project updates state.
+    the same exclusions. Every `toha` and `hook` path also records `blob`, the
+    Git object id, in the repository's object format, of the bytes the run left
+    at that path in Git stored form, after every hook. An `edit` path records no
+    `blob`. An edit path with empty `regions` and `values` is released on the
+    next update, as project updates state.
   update-merge-base: >-
     An update renders the merge base from the application's entry: the recorded
-    revision, `answers`, `parts` and `generated`, at the same target, with no
-    hooks and with the updating run's host and environment values. The base
-    render submits every recorded answer, document answers included, so it
-    renders from the document the last render used. A base render that fails, or
-    that leaves a question unanswered, refuses the update before any write,
-    names the failure and names `--baseline`. A whole-file path takes the base
-    render's bytes. An edit-owned path takes the project's `HEAD` bytes: the
-    candidate applies its edits to those same bytes, so the merge takes the
-    template's edit, and the injection drift rules decide operator changes
-    inside owned bytes. A path that records `blob` takes that object when the
-    repository holds it, which is the usual case because the apply's output was
-    committed. When the repository does not hold it, a planned path takes the
-    base render's bytes, and a hook-owned path has no base, so a candidate that
-    differs from the project's file is an add/add conflict and never a silent
-    replacement. Every other path is the project's `HEAD`, as the target outside
-    the base is in project updates.
+    revision, `answers`, `parts`, `generated` and `context`, at the same target,
+    with no hooks. The base render submits every recorded answer, document
+    answers included, so it renders from the document the last render used. A
+    base render that fails, or that leaves a question unanswered, refuses the
+    update before any write, names the failure and names `--baseline`. Each
+    `toha` and `hook` path takes as its base only bytes whose Git object id
+    equals its recorded `blob`: the base render's bytes for a `toha` path when
+    their object id equals `blob`, and otherwise the object `blob` names when
+    the repository holds it. The base render's bytes are never used when their
+    object id differs, and a hook path never takes rendered bytes, because a
+    render runs no hooks. A path with no such bytes has no base: when the
+    candidate's bytes equal the project's file, the path is unchanged; when the
+    candidate has the path and its bytes differ, the path is an add/add
+    conflict; and when the candidate removes the path, the path is a
+    modify/delete conflict. The project's file stays in the working tree, and
+    the candidate's bytes are in the conflict stages. An edit-owned path takes
+    the project's `HEAD` bytes: the candidate applies its edits to those same
+    bytes, so the merge result is the candidate, operator bytes outside owned
+    regions and values are kept, and the injection drift rules decide operator
+    changes inside owned bytes. Every other path is the project's `HEAD`, as the
+    target outside the base is in project updates. An update therefore never
+    replaces an operator edit without a conflict, except an edit to a JSON value
+    Toha owns, which converges to the template's value as the injection rules
+    state, and an edit inside an owned region, which the drift rules refuse
+    unless `--force` is given.
   update-resolution: >-
     `apply TEMPLATE PATH --update` and `stage TEMPLATE PATH --update` update the
     application whose `source` equals TEMPLATE's source and whose `target` is
@@ -315,13 +342,13 @@ proposed-design:
     `docs/specifications/applied-record-1.schema.yml`, and
     `docs/specifications/applied-record.yml` specifies the record. A record's
     `$schema` member equals that `$id`. The schema defines the members that
-    applied-record, application-entry, record-answers and record-paths name. A
-    published schema URI is immutable and never changes what it describes: a
-    change to the schema publishes the next line, `applied-record/2`, at its own
-    path, and the file for each earlier line stays. Toha writes and reads line
-    `1`. The URI does not resolve until hosting exists; a reader vendors a copy,
-    and a test in the reader's repository compares the copy with the Toha
-    release it names.
+    applied-record, application-entry, record-answers, record-context and
+    record-paths name. A published schema URI is immutable and never changes
+    what it describes: a change to the schema publishes the next line,
+    `applied-record/2`, at its own path, and the file for each earlier line
+    stays. Toha writes and reads line `1`. The URI does not resolve until
+    hosting exists; a reader vendors a copy, and a test in the reader's
+    repository compares the copy with the Toha release it names.
   identity-reading: >-
     A reader audits one project revision. It reads the record at the path it
     expects, the repository root unless it is configured otherwise, parses it as

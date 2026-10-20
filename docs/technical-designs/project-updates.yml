@@ -32,10 +32,12 @@ proposed-design:
     runs and repository configuration is unchanged by these operations.
   applied-record: >-
     The applied record `.toha.json` holds one entry per application: template
-    identity, selected parts, raw accepted answers, the frozen render instant
-    and per-path ownership. The template composition design defines its path,
-    its members, its schema and when a run writes it. The record is the only
-    state an update reads; Toha creates no Git ref.
+    identity, selected parts, raw accepted answers, the frozen render instant,
+    the host and environment values the template reads, and per-path ownership
+    with the Git object id of each whole-file and hook-owned path. The template
+    composition design defines its path, its members, its schema and when a run
+    writes it. The record is the only state an update reads; Toha creates no Git
+    ref.
   capture: >-
     Every apply, update and baseline that writes files into a Git work tree
     captures ownership into its record entry. Capture includes every plan
@@ -43,8 +45,8 @@ proposed-design:
     target. It retains file mode and symlink contents without following links.
     Untracked ignored files, gitlinks, submodule contents and outside-target
     files are excluded; tracked files remain eligible despite ignore rules.
-    Outside-target hook changes are reported. A path whose written bytes differ
-    from the planned bytes also records the Git object id of the written bytes.
+    Outside-target hook changes are reported. Each whole-file and hook-owned
+    path also records the Git object id of the bytes left after every hook.
     Content uses Git built-in stored-form conversions only. A preview records
     nothing.
   ownership-transitions: >-
@@ -55,11 +57,11 @@ proposed-design:
     and JSON values before applying new intent, removing array elements from
     highest index down. A new whole mutation covers all old ownership; a region
     covers the same key; a JSON value covers values at or below its path.
-    Retracting the last owned identity still records the path as edit with
-    empty ownership lists, so that change participates in the merge. A path
-    whose recorded entry already holds edit with empty ownership lists is
-    released and omitted from both base and candidate template trees,
-    preserving the operator file. Update never removes an edit-owned file.
+    Retracting the last owned identity still records the path as edit with empty
+    ownership lists, so that change participates in the merge. A path whose
+    recorded entry already holds edit with empty ownership lists is released and
+    omitted from both base and candidate template trees, preserving the operator
+    file. Update never removes an edit-owned file.
   answer-replay: >-
     The crate-private adapter queues recorded raw values per id, including loop
     values. Verified route overrides replace queued values. Each pending batch
@@ -73,46 +75,47 @@ proposed-design:
     values actually submitted.
   candidate-and-preview: >-
     Real updates check out HEAD into a temporary directory, apply ownership
-    retractions and the new plan through a destination adapter, run trusted hooks
-    there and capture the candidate. Planning retains the real project target
-    for invocation facts. Preview uses the same builder on in-memory HEAD images
-    with hooks suppressed and hook-owned bytes carried forward; those outputs
-    are marked not previewed. CLI dry-run and interview DryRun both select this
-    path. Preview changes no project file, index, record or staged record.
-    An equal revision, equal answers and equal parts produce already-current
-    without a retained candidate.
+    retractions and the new plan through a destination adapter, run trusted
+    hooks there and capture the candidate. Planning retains the real project
+    target for invocation facts. Preview uses the same builder on in-memory HEAD
+    images with hooks suppressed and hook-owned bytes carried forward; those
+    outputs are marked not previewed. CLI dry-run and interview DryRun both
+    select this path. Preview changes no project file, index, record or staged
+    record. An equal revision, equal answers and equal parts produce
+    already-current without a retained candidate.
   merge: >-
     Base is HEAD with the target replaced by the merge base that the template
-    composition design renders from the recorded entry, excluding released
-    paths; ours is HEAD; theirs substitutes candidate files. Baseline uses an
-    empty base target. Rename detection is off. Operator-only paths remain ours.
-    Git line merging combines disjoint changes and reports overlaps.
-    Driver-attributed paths keep operator content and conflict stages. Clean
-    results are staged. Text conflicts receive diff3 markers and stages 1/2/3;
-    binary, add/add, modify/delete, file/directory and driver conflicts keep
-    operator files with corresponding stages. Paths and index entries outside
-    the target remain intact, except the record entry the transaction writes.
-    Toha creates neither a commit nor Git merge state.
+    composition design takes from the recorded entry, excluding released paths
+    and every path whose recorded object id no bytes match; ours is HEAD; theirs
+    substitutes candidate files. Baseline uses an empty base target. Rename
+    detection is off. Operator-only paths remain ours. Git line merging combines
+    disjoint changes and reports overlaps. Driver-attributed paths keep operator
+    content and conflict stages. Clean results are staged. Text conflicts
+    receive diff3 markers and stages 1/2/3; binary, add/add, modify/delete,
+    file/directory and driver conflicts keep operator files with corresponding
+    stages. Paths and index entries outside the target remain intact, except the
+    record entry the transaction writes. Toha creates neither a commit nor Git
+    merge state.
   transaction-and-cleanup: >-
-    Preconditions require a clean target, a record equal to HEAD, and a
-    recorded application for the template's source and the target. Candidate
-    construction follows the trust gate. Merge checks occupied untracked paths
-    before locking. Under the index lock, HEAD, index checksum, target
-    cleanliness and occupied paths are checked again. Each replacement verifies
-    current HEAD bytes or absence immediately before writing, and the record is
-    written last. Failure rolls back only paths still holding this invocation's
-    output and preserves concurrent edits, then releases its lock and removes
-    its temporary candidate. Cleanup failure retains the original error and
-    names the remaining paths. After transaction commit, reporting failure
-    retains the result and the record. Recovery guidance is target-scoped.
+    Preconditions require a clean target, a record equal to HEAD, and a recorded
+    application for the template's source and the target. Candidate construction
+    follows the trust gate. Merge checks occupied untracked paths before
+    locking. Under the index lock, HEAD, index checksum, target cleanliness and
+    occupied paths are checked again. Each replacement verifies current HEAD
+    bytes or absence immediately before writing, and the record is written last.
+    Failure rolls back only paths still holding this invocation's output and
+    preserves concurrent edits, then releases its lock and removes its temporary
+    candidate. Cleanup failure retains the original error and names the
+    remaining paths. After transaction commit, reporting failure retains the
+    result and the record. Recovery guidance is target-scoped.
   completion-output: >-
     The candidate apply retains interview and apply messages and hook outcomes
     through merge_apply_reported. The CLI formats person and completed
     staged-agent updates as prose naming template, target, prior and resolved
     revision, parts added and removed, merge actions, conflicts and record
     outcome. Scripted updates retain JSON results. Remaining-question batches
-    retain their protocol. Preview, already-current, trust and conflict
-    guidance follow the command-line-interface contract.
+    retain their protocol. Preview, already-current, trust and conflict guidance
+    follow the command-line-interface contract.
   base-selection: >-
     An update's base is the record entry for its template's source and its
     target. No route chooses among candidate bases, and no listing marks one.
