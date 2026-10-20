@@ -3,4 +3,5 @@ title: Document question
 description: >-
   A question whose answer is a JSON value validated by a JSON Schema the
   template ships. A contract document is routed to it by the document's
-  `$schema` identifier.
+  `$schema` identifier, and the question names a default file that Toha reads
+  on every apply.

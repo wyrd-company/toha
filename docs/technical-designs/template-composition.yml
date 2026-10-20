@@ -144,21 +144,30 @@ proposed-design:
     `--force` and atomic per-file replacement apply to the composition plan as
     they do to one template.
   document-questions: >-
-    A document question has `type: document` and takes a JSON value. Its `schema` names one
-    JSON Schema file in the template root, or a list of them; each file's `$id`
-    is a schema identifier the question accepts, and two files with one `$id`
-    are a load error. An answer validates against the schema whose `$id` equals
-    the answer's `$schema` member, or against the only schema when the answer
-    has no `$schema`. A document answer is recorded and replayed like any other
-    submission. `apply` and `stage` accept `--input FILE`, repeatable, and
-    `continue PATH --input FILE` submits one to a staged interview. Each reads
-    a contract document: a JSON object whose `$schema` member is a schema
+    A document question has `type: document` and takes a JSON value. Its
+    `schema` names one JSON Schema file in the template root, or a list of them;
+    each file's `$id` is a schema identifier the question accepts, and two files
+    with one `$id` are a load error. An answer validates against the schema
+    whose `$id` equals the answer's `$schema` member, or against the only schema
+    when the answer has no `$schema`. `path`, which is required, names the
+    question's default file: a literal path relative to the target that stays
+    inside the target's repository, or inside the target when it is in no
+    repository. `apply` and `stage` accept `--input FILE`, repeatable, and
+    `continue PATH --input FILE` submits one to a staged interview. Each reads a
+    contract document: a JSON object whose `$schema` member is a schema
     identifier. Toha submits it to every document question, in every member,
     that accepts that identifier. An input that no question accepts is a usage
-    error. An answers document can also answer a document question by id. A
-    person is asked for a file path and Toha reads that file. On an update, an
-    input replaces the recorded answer, as a route submission replaces a
-    recorded value today.
+    error. On every apply, update, stage and preview, a document question takes
+    the first of: an input it accepts, an answers document's value for its id,
+    and the file at `path` read from the working tree. A document answer is
+    recorded like any other submission, so the snapshot holds the document the
+    render used, but an update never replays a recorded document answer. When
+    none of the three is present, the question is unanswered: a person is asked
+    for a file path with `path` as the default, and a script or agent receives
+    it in a question batch. The Intentional release model reaches a template
+    this way: the question's `path` is `.intentional/release-model.json`, and
+    its schema list holds the vendored release model schema, whose `$id` is the
+    published identifier for line `release-model/1`.
   hooks-and-trust: >-
     Each member keeps its own executable surface and approval digest. An apply
     runs hooks only when every member that has hooks is trusted, by a recorded
@@ -284,18 +293,18 @@ proposed-design:
     `refs/toha/snapshots/<id>` for the entry's id and checks it with
     `agrees_with`; a missing ref or a disagreement is a finding the reader
     reports, never a fallback to another snapshot.
+  release-model-agreement: >-
+    The Intentional release model design and this design agree on four points.
+    The release model document carries its schema identifier, including its
+    major version, in a top-level `$schema` member. Toha routes that document
+    to document questions by that identifier, compared by exact string
+    equality, never by template formal name. A document question that reads
+    the model names `.intentional/release-model.json` as its default file.
+    `toha-documents` holds the routing types, and Intentional's own crate holds
+    the release model types.
   out-of-scope: >-
     YAML typed edits, one source applied twice in one composition, children that
     contribute to other children, `--like` across compositions, selecting an
     update's base from the applied record, and pushing snapshot refs. Toha
     keeps writing no push configuration; publishing snapshot refs to a remote
     stays an operator or workflow step.
-open-agreements: >-
-  The answers contract design for Intentional and this design meet at three
-  points, and each needs one statement agreed by both: the release-model
-  document carries its schema identifier, including its major version, in a
-  top-level `$schema` member; Toha routes that document to document questions
-  by that identifier, never by template formal name; and `toha-documents`
-  holds the routing types while Intentional owns its release-model types. The
-  crate, module and type names above are the shape this design proposes for
-  that agreement.
