@@ -1,0 +1,7 @@
+$schema: https://refinery.systems/ontology/term
+title: Applied record
+description: >-
+  The file `.toha.json` at the root of a target. For each composition applied
+  to that target, it names the snapshot of the last apply and the identity of
+  every member. The record is part of the project's tree, so each revision
+  shows only the compositions that revision holds.
