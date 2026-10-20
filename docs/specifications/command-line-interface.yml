@@ -8,6 +8,16 @@ description: >-
   `docs/specifications/command-line-interface.spec.yml` is the machine-readable
   command definition.
 
+  Contract document input. `apply` and `stage` accept repeatable `--input FILE`;
+  `continue PATH --input FILE` submits a document to a staged interview. The
+  file is a JSON object with a string `$schema`. Its exact URI routes the whole
+  object to every document question that accepts it. An unaccepted document or
+  multiple inputs for the same question is an input error. Inputs override an
+  answers-document value, which overrides the default file. An invalid selected
+  document stops the run before staging or output writes. With `--input`, a new
+  apply uses the scripted route, even without `--answers`. The envelope for
+  `--answers` is unchanged. `tests/document_questions.rs` covers these routes.
+
   Template arguments. A `<TEMPLATE>` argument is read in this order: a value
   that contains `://` or starts with `git@` is a git URL; a value that starts
   with a configured or built-in host prefix followed by `:` is a git shorthand

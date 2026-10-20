@@ -1,0 +1,10 @@
+# ---
+# relationships:
+#   demonstrates: template-composition
+# ---
+$id: https://schemas.example.test/catalog/1
+type: object
+required: [title]
+properties:
+  title:
+    type: string

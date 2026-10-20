@@ -73,6 +73,15 @@ description: >-
   its options in `anyOf: [{enum: [...]}, {type: null}]` instead of `enum`, so
   the enum lists only the options.
 
+  Document questions. `x-toha-type: document` describes an object answer;
+  `x-toha-schemas` lists its accepted schema URIs, and `x-toha-input` names its
+  default file relative to the target. The question remains required while
+  no document is present. A submitted value is the whole JSON object, including
+  its `$schema`. The engine validates against the accepted URI's resolved
+  schema, or the sole accepted schema without `$schema`. The answers envelope
+  retains its existing shape. See `missing_default_stays_unanswered_in_script_and_stage_batches`
+  and `document_answer_reaches_completed_raw_and_rendering_without_losing_members`.
+
   Answers. The `answers` member of an answers document is a JSON object keyed by
   question id, wrapped in the identity envelope described above. `continue PATH
   FILE` reads the document from a file or from standard input. Answers for

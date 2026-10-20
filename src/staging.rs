@@ -427,7 +427,7 @@ impl StagedRecord {
             },
         )
         .map_err(|e| StagingError::Replay(e.to_string()))?;
-        self.replay_from(interview)
+        self.replay_from(interview, template)
     }
 
     pub fn replay_with_resolution<'a>(
@@ -444,7 +444,7 @@ impl StagedRecord {
         let interview = resolution
             .start_with_context(template, now, context)
             .map_err(|e| StagingError::Replay(e.to_string()))?;
-        self.replay_from(interview)
+        self.replay_from(interview, template)
     }
 
     /// Replay a generate-axis staged interview, layering a snapshot seed over the
@@ -468,11 +468,25 @@ impl StagedRecord {
         let (interview, _warnings) = resolution
             .start_with_seed(template, now, context, seed)
             .map_err(|e| StagingError::Replay(e.to_string()))?;
-        self.replay_from(interview)
+        self.replay_from(interview, template)
     }
 
-    fn replay_from<'a>(&self, mut interview: Interview<'a>) -> Result<Interview<'a>, StagingError> {
+    fn replay_from<'a>(
+        &self,
+        mut interview: Interview<'a>,
+        template: &Template,
+    ) -> Result<Interview<'a>, StagingError> {
         for submission in &self.submissions {
+            // Documents admitted for this run have already entered the engine.
+            // Replay the other answers without submitting those documents twice.
+            let filtered: IndexMap<_, _> = submission.iter().filter(|(id, _)| {
+                let Ok(id) = crate::Id::parse(id) else { return true; };
+                !matches!(template.question(&id).map(|q| &q.kind), Some(crate::QuestionKind::Document { contract }) if contract.admitted().is_some())
+            }).map(|(id, value)| (id.clone(), value.clone())).collect();
+            if !submission.is_empty() && filtered.is_empty() {
+                continue;
+            }
+            let submission = &filtered;
             let Interview::Asking(pending) = interview else {
                 return Err(StagingError::Replay(
                     "submission after completed interview".into(),

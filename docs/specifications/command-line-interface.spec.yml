@@ -34,6 +34,12 @@ commands:
         value:
           type: directory
     options:
+      - name: input
+        flags: [ --input ]
+        kind: option
+        description: Read a JSON contract document and route by its exact $schema URI. Repeatable.
+        value:
+          type: path
       - name: async
         flags: [ -a, --async ]
         kind: option
@@ -144,6 +150,13 @@ commands:
           dry-run plan at completion.
         value:
           type: path
+    options:
+      - name: input
+        flags: [ --input ]
+        kind: option
+        description: Read a JSON contract document and route by its exact $schema URI. Repeatable.
+        value:
+          type: path
     output:
       modes:
         - name: human-readable
@@ -205,6 +218,12 @@ commands:
         value:
           type: directory
     options:
+      - name: input
+        flags: [ --input ]
+        kind: option
+        description: Read a JSON contract document and route by its exact $schema URI. Repeatable.
+        value:
+          type: path
       - name: dry-run
         flags: [ -d, --dry-run ]
         kind: flag

@@ -1,0 +1,12 @@
+# ---
+# relationships:
+#   demonstrates: template-composition
+# ---
+name: catalog-view
+schemas: schemas
+interview:
+  - id: catalog
+    type: document
+    prompt: Catalog file
+    schema: https://schemas.example.test/catalog/1
+    input: catalog.json
