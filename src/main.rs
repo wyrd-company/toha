@@ -2316,7 +2316,7 @@ fn run(
         Ok(v) => v,
         Err(e) => return Outcome::Error(e.to_string()),
     };
-    if parts.is_present() && existing.is_some() {
+    if parts.is_present() && (existing.is_some() || template.is_none()) {
         return Outcome::Usage("part flags belong to a new interview; use stage TEMPLATE PATH --update to change parts".into());
     }
     // `apply PATH` on a staged update resumes it through the update replay
