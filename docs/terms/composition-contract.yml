@@ -1,5 +1,0 @@
-$schema: https://refinery.systems/ontology/term
-title: Composition contract
-description: >-
-  A name and an integer major version that a parent declares and a child
-  names. It defines the extension points and exports a child may use.

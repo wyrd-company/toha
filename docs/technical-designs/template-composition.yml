@@ -3,314 +3,352 @@ relationships:
   realizes: toha
   implements:
     - template-format
-    - snapshot
     - command-line-interface
     - interview-protocol
   related-to:
     - architecture
     - project-updates
     - content-injection
-    - hook-review-trust
-    - installed-trust
+    - in-project-generators
+    - bundled-demo
 objective: >-
-  Let a child template contribute to a file a parent template owns, render the
-  parent and its children as one application, and keep every contribution
-  through `apply --from` updates, so that a release workflow template accepts
-  publication child templates and an organization can read which templates a
-  repository applied.
+  Let one template offer optional parts that a caller selects with `--with` and
+  `--without`, record each application in a committed applied record that a
+  reader parses as plain JSON, render an update's merge base again from that
+  record, and let a template take a JSON document, such as the Intentional
+  release model, by its schema URI, so that a release workflow template
+  publishes to the targets a repository selects and an organization can read
+  which template, revision and parts a repository applied.
 terms:
-  - composition
-  - parent-template
-  - child-template
-  - member
-  - composition-contract
-  - extension-point
-  - contribution
-  - export
-  - document-question
+  - part
   - applied-record
+  - document-question
 design-challenges:
-  one-owner-per-byte: >-
+  one-writer-per-file: >-
     A workflow file that two templates edit has two writers, and every update
-    must decide whose bytes win. Contributions enter the parent's render as data
-    and the parent alone writes the file, so ownership, three-way merge and
-    retraction keep their single-template rules.
-  yaml-without-typed-edits: >-
-    GitHub workflows are YAML, and Toha has no YAML typed edit. Composition does
-    not need one: the parent emits the YAML, and `toyaml` serializes each
-    contributed value with sorted keys. Region rules still inject into YAML
-    files a composition does not own.
-  coupling-without-addresses: >-
-    A child that names its parent by source address breaks on a fork, a rename
-    or a mirror. A child names a contract instead, so any parent that declares
-    the contract at a compatible version accepts it.
+    must decide whose bytes win. A part is a choice that the template's own
+    render reads, not a second template, so the template alone writes every
+    file, and ownership, three-way merge and retraction keep their
+    single-template rules. Removing a part is an ordinary render without it.
+  merge-base-without-stored-bytes: >-
+    An update needs the bytes the last apply wrote as its merge base, and the
+    applied record holds no file contents. Rendering is deterministic for one
+    template revision, one set of answers and one frozen instant, so the update
+    renders the recorded revision again. Two inputs are not in the record: hook
+    output, and the host and environment values that a render can read. Hook
+    output is covered by the blob ids the record keeps for paths a hook wrote or
+    changed. A template that reads a `toha_host_`, `toha_is_` or `toha_env_`
+    value in a rendered file gets a merge base for the updating host; a
+    difference reads as an operator edit, so the merge keeps the project's line,
+    or reports a conflict where the template also changed that line. This
+    consequence is inferred from the merge rules, not measured.
+  one-record-per-repository: >-
+    Generators apply one source into many subpaths, and a release template
+    applies at the repository root. One record at one known path lets a reader
+    find every application without listing the tree. Two branches that change
+    one application change the same entry, and their merge conflicts in the
+    record.
   identity-readable-without-git: >-
-    Airlock reads applied records and snapshots over the GitHub API and must
-    not link Git plumbing. The record and snapshot documents, their parsers and
-    their IO-free validation live in a shared crate without Gitoxide,
-    file-system or network dependencies.
-  current-at-a-revision: >-
-    Snapshot refs record every apply on every branch, including branches that
-    never merged, and they survive the deletion of their target. No order over
-    refs tells which composition a given project revision holds. The project's
-    tree does, so each apply writes an applied record into the target, and a
-    reader takes the current compositions from the revision it audits.
+    Airlock reads repositories over the GitHub API and links no Git plumbing and
+    no Toha crate. The record is a plain JSON file in the tree with a published
+    JSON Schema, so a reader validates it against a vendored copy of that schema
+    and needs no ref, no library and no Toha release.
+  schemas-before-hosting: >-
+    Published schema URIs do not resolve until hosting exists. A template
+    vendors each schema it accepts in its schemas directory, so resolution needs
+    no network; a fetch serves only a URI that the template does not vendor.
 proposed-design:
   high-level-overview: >-
-    A parent's `template.yml` declares `composition`: a composition contract
-    name and version, exports, and extension points. A child declares
-    `contributes`: the contract, the versions it accepts, and contributions.
-    `apply` builds a composition from the named template, `--with` and
-    `--without` change membership, and the shared interview runs each member in
-    order. Plan building renders contributions, binds them into the parent's
-    context and produces one plan. Apply, capture, merge and the transaction run
-    over that plan unchanged. The snapshot records every member's identity,
-    revision, submissions and owned paths.
-  parent-declaration: >-
-    `composition.contract` is a name matching `^[a-z0-9][a-z0-9.-]*$`, and
-    `composition.version` is a positive integer. `composition.exports` maps an
-    export name, a Jinja identifier, to an expression that evaluates over the
-    parent's completed answers, computed values and data. `composition
-    .extension-points` lists entries with an `id`, a Jinja identifier unique in
-    the template, and a `shape` of `value` or `text`. An optional
-    `key-pattern` is a regular expression every contribution key must match.
-    An optional `schema` names a JSON Schema file in the template root that
-    validates each `value` contribution. A template that declares
-    `composition` cannot also declare `contributes`.
-  child-declaration: >-
-    `contributes.contract` names a contract, and `contributes.version` is an
-    integer or a list of integers that the child accepts. `contributes.to` lists
-    contributions. Each contribution names an `extension-point`, a `key`
-    template and an optional `when`. A `value` contribution carries `value`, a
-    JSON-compatible value whose string leaves are templates, as `struct.value`
-    is. A `text` contribution carries inline `content` or a `source` support
-    file, rendered as an injection body is. A contribution reads no hook
-    result. A child is otherwise an ordinary template: its interview, source
-    subdirectory, `files`, `inject`, hooks and messages behave as they do
-    alone.
-  membership: >-
-    A fresh apply names the parent as TEMPLATE, and each `--with <TEMPLATE>`,
-    repeatable, adds a child. An update names any member as TEMPLATE with
-    `--from`. In the same render, `--with` adds a child or, for a member's
-    source, replaces that member's formal name, and `--without <TEMPLATE>`
-    removes a member. `--without` matches a member by source and does not
-    fetch or load the removed template. Membership is valid when every child's contract name equals the
-    parent's and one of its versions equals the parent's version. Toha refuses
-    before any question when a child names another contract, accepts no version
-    of the parent's, repeats a member's source, or applies without a parent. A
-    refusal for a child named alone directs the caller to name the parent and
-    `--with` the child, or to update a composition snapshot. `--without` of the
-    parent is refused, and the message names `snapshots clean`. `--like` with
-    `--with` or `--without` is a usage error.
-  member-order: >-
-    The parent comes first, then children in ascending source order. Order does
-    not depend on the order of `--with` flags or on when a child joined, so a
-    composition renders the same bytes however it was built.
-  answers-flow: >-
-    Each member has its own answer namespace: ids, computed values, data and
-    hook results do not cross members, and two members may use the same id. The
-    interview runs the parent's nodes, then evaluates exports, then runs each
-    child's nodes in member order. The reserved variable `toha_parent` holds the
-    exports in every child render surface, including its interview, and is
-    `none` in a parent or a template applied alone. A child question default
-    can read `toha_parent`. A child cannot give values to the parent's
-    interview; its only output into the parent is its contributions. No
-    template writes answers for another composition.
-  contributions-in-context: >-
-    After the last child's interview, Toha renders each child's contributions
-    in that child's context. The reserved variable `toha_contributions` is an
-    object keyed by extension point id. Each value is a list of
-    `{key, value, template}` objects sorted by key, where `template` is the
-    contributing member's source; a declared point with no contributions is an
-    empty list. The parent reads `toha_contributions` in file bodies, file
-    paths, `files` rules, `inject` rules, hooks and the `after-apply` message,
-    and in no interview surface. Children and a template without extension
-    points see an empty object. `toha_parent` and `toha_contributions` join the
-    reserved names, so a data key, id or `each` binding that equals one is a load
-    error.
-  contribution-validation: >-
-    Plan building refuses, naming the member, the extension point and the key, a
-    contribution to an id the parent does not declare, a shape that differs from
-    the declared shape, a key that is empty, fails `key-pattern` or repeats
-    another contribution's key in the same point, and a value that fails the
-    point's schema. Schema failures report the failing instance path without
-    the value.
-  path-ownership: >-
-    Every planned path has one owning member. Two members that both plan a whole
-    file at one path, or a child `inject` rule whose target another member
-    plans, are planning errors naming both members; the message directs the
-    child author to an extension point. A member's `inject` into a path no member
-    plans keeps today's rules. Unchanged rendering, whole-file conflicts,
-    `--force` and atomic per-file replacement apply to the composition plan as
-    they do to one template.
+    A template can mark one `multiselect` question as its part question, and
+    each option of that question is a part. `--with <PART>` and `--without
+    <PART>` settle that question on apply and on update. Every apply that writes
+    files into a Git work tree records its application in the applied record
+    `.toha.json` at the repository root: template identity, selected parts,
+    answers, the frozen instant and path ownership. `apply --update` reads the
+    application from the record, renders the recorded revision with the recorded
+    answers and parts as the merge base, renders the requested revision as the
+    candidate, and merges three-way. Candidate construction, merge, conflict
+    stages, preview, already-current and the transaction are those of project
+    updates. A document question takes a JSON document identified by a schema
+    URI, resolved from the template's schemas directory first and fetched
+    otherwise. Toha publishes a JSON Schema for the record. Toha creates no Git
+    ref, writes no push configuration and never pushes.
+  part-declaration: >-
+    A question with `parts: true` is the template's part question, and each of
+    its options is a part. The question has type `multiselect`; its `options` is
+    a literal array of unique strings that each match `^[a-z0-9][a-z0-9_-]*$`;
+    and it is a top-level node of `interview` with no `when`, placed before
+    every flow node, so that every run reaches it. A template holds at most one
+    part question. A second one, `parts: true` on another type, options given as
+    an expression, and a part question inside a group, after a flow node or with
+    a `when` are load errors. A template without a part question has no parts.
+    Toha puts the part question's answer in option order, so one selection
+    renders the same bytes however it was given. A part has no files, interview
+    or hooks of its own: the template reads the answer by the question's id in
+    `when` conditions, file bodies, file paths, `files` rules, `inject` rules
+    and hooks, and the template alone writes every file. Hook trust is the
+    template's, as for any template. The template contract's optional parts form
+    is expressible: its `targets` question gains `parts: true`, and its `when:
+    "'npm' in targets"` conditions, the `!include` of each `target.yml` into
+    `data`, and the includes written inside `{% if '<target>' in targets %}` are
+    unchanged.
+  part-selection: >-
+    `apply` and `stage` accept `--with <PART>` and `--without <PART>`, each
+    repeatable. On a fresh apply, when either is given, the part question's
+    answer is its default, with each `--with` part added and each `--without`
+    part removed, and the question is not asked; with `--like`, the default is
+    the seed application's parts. With neither flag the question is asked and
+    answered as any question is. On an update, the answer is the recorded
+    `parts` with the same additions and removals, and with neither flag the
+    recorded parts replay. `--reanswer` asks the part question again unless
+    either flag is given. Toha refuses with a usage error, before any question,
+    when the template has no part question, a named part is not an option, one
+    part is named by both flags, or an answers document gives the part question
+    a value in the same run as either flag. The part question's `required`,
+    `validate.min` and `validate.max` apply to the settled answer, and a failure
+    is an answer rejection. A recorded part that the new revision no longer
+    offers is rejected on replay, as any recorded value that a new revision
+    refuses is. The result document and the person summary list the parts added
+    and the parts removed.
+  part-removal: >-
+    A part removed on an update is absent from the candidate render and present
+    in the merge base, because the record holds the parts the base used. The
+    merge therefore deletes the unmodified whole files only that part planned,
+    reports a modify/delete conflict for edited ones, and takes out of a shared
+    file the lines only that part rendered, as it does for any template change.
+    The part's edit-owned paths follow the existing retraction and release
+    rules. A part added on an update is present in the candidate only, so its
+    files and lines merge as template additions. Parts need no merge rule of
+    their own.
+  applied-record: >-
+    The applied record is the file `.toha.json` at the root of the target's
+    repository. The environment variable `TOHA_RECORD` overrides the path: its
+    value is a path relative to the repository root with `/` separators, for
+    example `.github/toha.json`, and an absolute path, a `..` component, or a
+    path through a symbolic link is a usage error before any question. An apply,
+    update or baseline that writes files writes the record in the same
+    transaction when the target is inside a Git work tree at the end of the run,
+    including a work tree that the run's `git` question initialized; outside a
+    work tree it writes no record, and the result document says `not-git`. A
+    preview, a dry run, an untrusted plan, a stop and an already-current update
+    write no record. The record is one JSON object with two members: `$schema`,
+    the record schema's `$id`, and `applications`, an array sorted by `target`
+    and then by `source`, in which each pair of `target` and `source` occurs
+    once. A target that is not the repository root is named by its application's
+    `target`, and that application's `paths` keys stay relative to the target,
+    so the one record holds every application in the repository, including each
+    subpath a generator writes. A run replaces only the entry for its own source
+    and target and keeps every other entry. Toha writes the record as JSON with
+    two-space indentation, object keys in sorted order and a final newline. The
+    record path is reserved: a planned file, `files` rule or `inject` rule whose
+    target is the record is a planning error, and the record is never an owned
+    path of any application. The record is not part of the merge: an update
+    reads it before rendering and its transaction writes the new entry, and an
+    update refuses when the record differs from `HEAD`, as it refuses a dirty
+    target. Toha reads a record as JSON and validates it against the record
+    schema it ships. A `$schema` that is not that `$id`, a schema failure, a
+    repeated pair, and a file that does not parse, such as one that holds merge
+    conflict markers, are run errors that name the path, and nothing is written.
+    When two branches update one application, the operator keeps one entry in
+    the merge, and that entry is what the merged revision holds. An application
+    stays in the record until its entry is removed, and removing an entry is an
+    operator edit to a committed file.
+  application-entry: >-
+    Each application holds these members. `target` is the target relative to the
+    repository root, `.` for the root. `template` is the formal name the run
+    used, with any `@reference`, and `source` is the formal name without its
+    reference. `commit` is the resolved 40-hex template commit, or null for a
+    template without a Git revision. `content_digest` is optional and holds a
+    64-hex lowercase SHA-256 content revision; an application never records both
+    a commit and a content digest. `generated` is the frozen render instant,
+    which an update carries forward. `parts` lists the selected parts in option
+    order, and is empty when the template has no part question. `answers` and
+    `paths` follow.
+  record-answers: >-
+    `answers` is an object keyed by question id. Each value is that question's
+    raw accepted value, in the form an answers document gives it: a looped
+    `text` is its array of items, and a `multiselect` answer its array. A
+    skipped question, a computed value, a hook result and a reserved `toha_`
+    value are not answers and are not recorded. The part question's answer is
+    `parts` and does not occur in `answers`. A document answer is recorded, so
+    the merge base renders from the document the last render used, but an
+    update's candidate never replays it (document-questions). A `git` answer is
+    recorded without the user information of its URL, as every output shows it.
+    Answers hold names and choices, never secret values: Toha has no secret
+    question type, and a template asks for a credential's name, never its value.
+  record-paths: >-
+    `paths` maps each path the application owns, relative to the target, to its
+    ownership in the ownership forms of project updates: `origin` `toha` for a
+    whole file, `edit` with `regions` and `values` for a file Toha edits inside,
+    or `hook` for a file a hook created or changed. Toha lists ownership as
+    project updates capture it: every path the plan targets, and every path
+    under the target that a hook changed, listed after the hooks finish, with
+    the same exclusions. A path whose written bytes differ from the bytes the
+    plan rendered also records `blob`, the Git object id of the written bytes in
+    the repository's object format: every hook-owned path, and every planned
+    path that a hook changed. An edit path with empty `regions` and `values` is
+    released on the next update, as project updates state.
+  update-merge-base: >-
+    An update renders the merge base from the application's entry: the recorded
+    revision, `answers`, `parts` and `generated`, at the same target, with no
+    hooks and with the updating run's host and environment values. The base
+    render submits every recorded answer, document answers included, so it
+    renders from the document the last render used. A base render that fails, or
+    that leaves a question unanswered, refuses the update before any write,
+    names the failure and names `--baseline`. A whole-file path takes the base
+    render's bytes. An edit-owned path takes the project's `HEAD` bytes: the
+    candidate applies its edits to those same bytes, so the merge takes the
+    template's edit, and the injection drift rules decide operator changes
+    inside owned bytes. A path that records `blob` takes that object when the
+    repository holds it, which is the usual case because the apply's output was
+    committed. When the repository does not hold it, a planned path takes the
+    base render's bytes, and a hook-owned path has no base, so a candidate that
+    differs from the project's file is an add/add conflict and never a silent
+    replacement. Every other path is the project's `HEAD`, as the target outside
+    the base is in project updates.
+  update-resolution: >-
+    `apply TEMPLATE PATH --update` and `stage TEMPLATE PATH --update` update the
+    application whose `source` equals TEMPLATE's source and whose `target` is
+    PATH. A reference in TEMPLATE selects the candidate revision; without one,
+    the source resolves as an apply resolves it. Toha refuses before any
+    question when there is no record or no such application, and the message
+    names `--baseline`. The merge base needs the recorded revision. Toha fetches
+    a recorded commit from the source; when the fetch fails or the source no
+    longer has the commit, the update refuses before any question, names the
+    source and the commit, and names `--baseline`. A recorded content digest
+    resolves only through the content resolver of its source, the bundled demo,
+    and only when the available content has that digest; another digest refuses
+    in the same way. An application recorded with neither, which an unversioned
+    folder template gives, has no reproducible merge base, and its update
+    refuses in the same way. Toha never falls back to an empty base: an empty
+    base occurs only when the caller names `--baseline`. Each recorded answer
+    replays into the candidate except document answers, and of the other
+    questions only those that the new revision added are asked; `--answers`
+    overrides a recorded answer and `--reanswer` asks every question again. When
+    the candidate revision, the settled answers and the settled parts equal the
+    entry, the update is already-current and writes nothing, so the record alone
+    never makes a render differ. The result document and the person summary name
+    the prior and the resolved revision and the parts added and removed.
+  baseline: >-
+    `apply TEMPLATE PATH --baseline` and `stage TEMPLATE PATH --baseline` adopt
+    an existing project: the whole render merges against an empty base, and the
+    run writes the application's entry. A repository that holds snapshot refs
+    and no record re-baselines this way, and so does an application whose
+    recorded revision cannot be rendered again.
+  snapshot-fate: >-
+    Toha creates, reads and lists no `refs/toha/` ref, and no code reads
+    `refs/toha/snapshots/*` to migrate; the operator removes old refs with Git.
+    `snapshots list`, `snapshots clean` and `init` are removed: the record is a
+    committed file that a person reads and edits directly, and no fetch refspec
+    is needed. `--from <SNAPSHOT>` on `apply` and `stage` is replaced by
+    `--update`, which takes no value, and `--reanswer` requires `--update`.
+    `--baseline` stays, as baseline states. `--like` selects its seed by target:
+    its value is the `target` of an application of the same source in the
+    record, and a bare `--like` on the person route lists those applications to
+    pick from. `latest` and snapshot ids are not selectors, because the record
+    keeps one entry per application and orders no entry by time. A seeded result
+    names the seed target. Base selection reads the record; no listing marks a
+    likely base.
+  staging-and-protocol: >-
+    A staged update or baseline holds a copy of the application entry it started
+    from, or of the empty base, and its `--with` and `--without` parts, so
+    `continue` and `apply PATH` render the same merge base. `apply PATH` refuses
+    when the record's entry for that application differs from the copy, and the
+    message names `stage --update`. A staged fresh apply holds its part flags in
+    the same way, and a staged `--like` apply holds a copy of the seed entry's
+    answers and parts. A question batch that holds the part question lists the
+    parts as its options. `--answers` documents and question batches otherwise
+    keep the interview protocol.
   document-questions: >-
-    A document question has `type: document` and takes a JSON value. Its
-    `schema` names one JSON Schema file in the template root, or a list of them;
-    each file's `$id` is a schema identifier the question accepts, and two files
-    with one `$id` are a load error. An answer validates against the schema
-    whose `$id` equals the answer's `$schema` member, or against the only schema
-    when the answer has no `$schema`. `file`, which is required, names the
-    question's default file: a literal relative path, resolved against the
-    target, that stays inside the target's repository, or inside the target when
-    it is in no repository. `apply` and `stage` accept `--input FILE`,
+    A document question has `type: document` and takes a JSON object. `schema`
+    is a URI, or a list of URIs, naming each JSON Schema the question accepts.
+    `input`, which is required, names the question's default file: a literal
+    relative path, resolved against the target, that stays inside the target's
+    repository, or inside the target when it is in no repository. A missing
+    `input` is a load error. `apply` and `stage` accept `--input FILE`,
     repeatable, and `continue PATH --input FILE` submits one to a staged
     interview. Each reads a contract document: a JSON object whose `$schema`
-    member is a schema identifier. Toha submits it to every document question,
-    in every member, that accepts that identifier. An input that no question
-    accepts is a usage error. On every apply, update, stage and preview, a
-    document question takes the first of: an input it accepts, an answers
-    document's value for its id, and the file named by `file`, read from the
-    working tree at the start of the run. A file that is not a JSON object,
-    whose `$schema` the question does not accept, or that fails its schema is
-    refused in the same way as an invalid input. The error names the path,
-    nothing is written, and Toha does not ask for another file. A document
-    answer is recorded like any other submission, so the snapshot holds the
-    document the render used, but an update never replays a recorded document
-    answer. When none of the three is present, the question is unanswered: a
-    person is asked for a file path with `file` as the default, and a script or
-    agent receives it in a question batch. The Intentional release model reaches
-    a template this way: the question's `file` is
-    `.intentional/release-model.json`, and its schema list holds the vendored
-    release model schema, whose `$id` is the published identifier for line
-    `release-model/1`.
-  hooks-and-trust: >-
-    Each member keeps its own executable surface and approval digest. An apply
-    runs hooks only when every member that has hooks is trusted, by a recorded
-    approval that matches its installed surface or by `--trust` for the run.
-    `--trust` covers every member of that run. The hook listing groups
-    invocations by member, and an untrusted result names each untrusted member
-    and the `templates trust` command for it. A parent's approval never covers a
-    child, and a child's never covers the parent.
-  hook-order-and-ownership: >-
-    After all files are written, each member runs its hooks in member order:
-    its interview hook nodes in interview order, then its top-level list, as a
-    template applied alone does. A hook result stays in its member. Toha lists
-    the target after each member's hooks finish. A path that no member plans,
-    that differs from `HEAD` at that listing and that no earlier member owns is
-    hook-owned by that member. A hook that changes a path another member owns,
-    planned or hook-owned, does not change its owner; the owner's captured
-    bytes include the change, as a hook change to a planned file is captured
-    for one template today. On an update, a hook-owned path carried forward
-    from the base keeps the member that the base records, matched by source.
-    When a member plans that path, or a member's hook changes it in the
-    candidate, the rules above choose its owner again. A preview runs no hooks,
-    so each carried path keeps its recorded member.
-  snapshot-record: >-
-    A snapshot of a composition with children uses format version 2. The
-    top-level identity, revision, submissions and paths are the parent's, as in
-    format 1. `children` lists each child in member order with `template`,
-    `source`, `commit`, optional `content_digest`, `submissions` and `paths`, in
-    the same forms as the top level. A composition without children writes
-    format 1. Reading accepts formats 1 and 2. Validation also requires a child
-    source to differ from every other member's source, each captured path to
-    occur in exactly one member's `paths`, and the union of every member's
-    `paths` to equal the `files/` subtree. `created`, `generated`, `project`,
-    `target` and `built_from` stay composition-wide; every member renders with
-    the one frozen instant.
-  applied-record: >-
-    Every apply that captures a snapshot, with or without children, also writes
-    its entry in the applied record `.toha.json` at the target root. Entries are
-    keyed by parent source under `applications`, so several compositions applied
-    to one target share the file. An entry holds `format` (the integer 1),
-    `snapshot` (the id of the snapshot this apply captures), the parent's
-    `template`, `commit` and optional `content_digest`, and `children` with each
-    child's `template`, `source`, `commit` and optional `content_digest` in
-    member order. The entry holds no answers. Toha allocates the snapshot id
-    before plan building, so the captured record names its own snapshot. The
-    parent owns the entry as an edit-owned JSON value, written as a `struct`
-    edit with `create: true` is, and the existing typed edit rules retract and
-    merge it. A member plan or `inject` rule for `.toha.json` at the target root
-    is a planning error. The already-current comparison reads the entry's
-    `snapshot` member as equal, so the record alone never makes a render differ.
-    An apply that captures no snapshot writes no entry. Two branches that each
-    update a composition change the same entry, and the merge of those branches
-    conflicts there. The operator keeps one entry, and that entry is what the
-    merged revision holds.
-  update-resolution: >-
-    An update builds the candidate from the whole composition. Every member
-    resolves through its recorded formal name, the way a single-template update
-    resolves its template today. When TEMPLATE or a `--with` names a member's
-    source with a different reference, that formal name replaces the recorded
-    one. Each member replays its recorded submissions except document answers,
-    which the document question rule settles again on every run. Of the other
-    questions, only those that a new revision added are asked. The result
-    document and the person summary list each member with its prior and resolved
-    revision. A member that does not resolve stops the update before candidate
-    construction, naming the member and `--without`.
-  update-behavior: >-
-    A parent update re-renders the parent's files with the current contributions
-    and merges them three-way. A parent whose contract version changes refuses
-    every child that does not accept the new version, and the message names each
-    one. The caller gives each a compatible formal name with `--with`, or
-    removes it with `--without`, in the same render. A child update changes its
-    contributions, and the parent's re-render carries them. An added child adds
-    its contributions to the parent's files and its own files to the candidate.
-    A removed child is absent from the candidate: its contributions leave the
-    parent's render, its whole files leave the template side so the merge
-    removes the unmodified ones and reports a modify/delete conflict for edited
-    ones, and its edit-owned paths follow the existing retraction and release
-    rules. Its hook-owned paths are released: they leave both the merge base and
-    the candidate, so the project keeps its file, and the result lists each
-    released path with the removed member. Toha cannot tell a file a hook
-    created from a tracked file a hook changed, so removal never deletes hook
-    output. A path that a remaining member plans, or that a remaining member's
-    hook changes in the candidate, is not released; that member owns it. Base
-    selection, merge, conflict stages, preview, already-current and the
-    transaction are those of project updates.
-  staging-and-protocol: >-
-    A staged composition records the parent, each added and removed member and
-    each member's accepted submissions, so `continue` and `apply PATH` rebuild
-    the same composition. A `questions` batch belongs to one member, and its
-    `context.template` is that member's formal name. `--answers` is repeatable:
-    each document's `template` selects the member it answers by exact formal
-    name. A document that names no member is refused as an identity mismatch.
-    Result documents list members in member order.
-  shared-document-crate: >-
-    The workspace crate `toha-documents`, published to crates.io with Toha,
-    holds document types and their parsers with no Gitoxide, file-system,
-    process or network dependency. Module `snapshot` holds `SnapshotId`,
-    `RepoPath`, `CommitId`, `ContentDigest`, `Revision`, `ProjectPoint`,
-    `FrozenNow`, `Timestamp`, `Origin`, `PathOwnership`, `AppliedTemplate`
-    (one member's formal name, source, revision, submissions and paths),
-    `SnapshotDocument` (formats 1 and 2, parent and children),
-    `SNAPSHOT_REF_PREFIX`, `SnapshotRef` (parses a ref name into its id),
-    `TreeEntryKind` and `DocumentError`. `SnapshotDocument::from_json` parses
-    and validates a `snapshot.json`; `to_json_bytes` writes the canonical bytes
-    `from_json` accepts; `check_tree` validates a listing of path and
-    `TreeEntryKind` pairs; and `templates` yields the parent then each child.
-    Module `applied` holds `APPLIED_RECORD_FILE`, `AppliedRecord` and
-    `Application`. `AppliedRecord::from_json` parses a `.toha.json`;
-    `applications` yields each entry with its parent source, snapshot id and
-    member identities; and `Application::agrees_with` checks a parsed snapshot
-    and the record's target against the entry. Module `answers`
-    holds `AnswersDocument`, Toha's identity envelope, and `ContractDocument`,
-    a JSON object read with its `$schema` identifier. The `toha` crate depends
-    on `toha-documents` and adds Git storage, capture and merge. The crate holds
-    no Intentional release-model types.
+    member is a URI. Toha submits it to every document question that accepts
+    that URI, compared by exact string equality and never by template formal
+    name. An input that no question accepts is a usage error. On every apply,
+    update, stage and preview, a document question takes the first of: an input
+    it accepts, an answers document's value for its id, and the file named by
+    `input`, read from the working tree at the start of the run. A document
+    validates against the resolved schema whose URI equals its `$schema`, or
+    against the question's only schema when the document has no `$schema`. A
+    file that is not a JSON object, whose `$schema` the question does not
+    accept, or that fails its schema is refused in the same way as an invalid
+    input: the error names the path, nothing is written, and Toha does not ask
+    for another file. A document answer is recorded in `answers`, so the record
+    holds the document the render used, and the merge base renders from it, but
+    an update's candidate never replays a recorded document answer. When none of
+    the three is present, the question is unanswered: a person is asked for a
+    file path with `input` as the default, and a script or agent receives the
+    question in a question batch.
+  schema-resolution: >-
+    `schemas` in `template.yml` names the template's schemas directory, relative
+    to the template root and outside the source subdirectory. Toha reads every
+    file in it and in its subdirectories whose extension is `.json`, `.yml` or
+    `.yaml`, parses it as JSON or YAML by that extension, and indexes it by its
+    top-level `$id`. A file without a string `$id`, a file that does not parse,
+    and two files with one `$id` are load errors that name the files; a file
+    with another extension is not read. When the template loads, Toha resolves
+    every URI that a document question names, and every `$ref` that a resolved
+    schema makes to another resource. A URI resolves to the indexed file whose
+    `$id` equals it, compared by exact string equality, and otherwise to an
+    HTTPS fetch of the URI. A fetch reads at most 1 MiB, parses the body as
+    JSON, and requires the body's `$id` to equal the URI. A URI that is not
+    `https`, a failed fetch, a body that is not a JSON Schema, and a body whose
+    `$id` differs are run errors that name the URI. They occur before any
+    question, and nothing is written. Toha keeps no copy of a fetched schema.
+    The fetch uses the TLS configuration of HTTPS template sources and adds no
+    timeout of its own. The schema fetch is Toha's only network read apart from
+    template sources. Hosted URIs, for example
+    `https://intentional.foo/schemas/release-model/1`, do not resolve until
+    hosting exists, so vendoring is the working path, and until then a template
+    that names a schema it does not vendor fails to load.
+  record-schema: >-
+    Toha publishes a JSON Schema for the applied record. Its `$id` is
+    `https://wyrd.foo/toha/schemas/applied-record/1`, its repository path is
+    `docs/specifications/applied-record-1.schema.yml`, and
+    `docs/specifications/applied-record.yml` specifies the record. A record's
+    `$schema` member equals that `$id`. The schema defines the members that
+    applied-record, application-entry, record-answers and record-paths name. A
+    published schema URI is immutable and never changes what it describes: a
+    change to the schema publishes the next line, `applied-record/2`, at its own
+    path, and the file for each earlier line stays. Toha writes and reads line
+    `1`. The URI does not resolve until hosting exists; a reader vendors a copy,
+    and a test in the reader's repository compares the copy with the Toha
+    release it names.
   identity-reading: >-
-    A reader audits one project revision. It lists that revision's tree, reads
-    each `.toha.json`, and parses it with the shared crate. The record's folder
-    is the target, and each entry is one composition current at that
-    revision, with the parent and every child as source, formal name and
-    revision. A target deleted at the revision has no record, and an apply
-    made on a branch that never merged is absent from the revision's tree, so
-    neither reads as current. Snapshot refs are history and are not needed to
-    read identity. A reader that needs a composition's answers fetches
-    `refs/toha/snapshots/<id>` for the entry's id and checks it with
-    `agrees_with`; a missing ref or a disagreement is a finding the reader
-    reports, never a fallback to another snapshot.
+    A reader audits one project revision. It reads the record at the path it
+    expects, the repository root unless it is configured otherwise, parses it as
+    JSON, and validates it against a vendored copy of the record schema whose
+    `$id` equals the record's `$schema`. Each application gives the target,
+    source, formal name, revision, parts and answers that the revision holds.
+    The record is part of the tree, so an apply made on a branch that never
+    merged is absent from the revision, and an application stays until its entry
+    is removed; a reader can report an application whose target is absent from
+    the tree. The reader needs no Git plumbing, no Toha crate and no ref. Toha
+    ships no reader library; the schema is the contract.
   release-model-agreement: >-
-    The Intentional release model design and this design agree on four points.
-    The release model document carries its schema identifier, including its
-    major version, in a top-level `$schema` member. Toha routes that document
-    to document questions by that identifier, compared by exact string
-    equality, never by template formal name. A document question that reads
-    the model names `.intentional/release-model.json` as its default file.
-    `toha-documents` holds the routing types, and Intentional's own crate holds
-    the release model types.
+    This design and the Intentional release model design agree on these points.
+    The release model document carries its schema URI, including its line, in a
+    top-level `$schema` member, and Toha routes the document to document
+    questions by exact string equality with that URI, never by template formal
+    name. A document question that reads the model names
+    `.intentional/release-model.json` as its `input`. A template accepts a line
+    by naming its URI, `https://intentional.foo/schemas/release-model/1` for
+    line `1`, in the question's `schema` and by vendoring that schema in its
+    schemas directory; a template that accepts two lines names both and branches
+    on `$schema`. Toha reads the committed model on every run and never replays
+    a recorded one. The record holds the model the last render used, so a
+    comparison of the recorded and committed models shows a process that needs
+    an update. Toha holds no release model types, Intentional never runs Toha,
+    and Toha never runs Intentional.
   out-of-scope: >-
-    YAML typed edits, one source applied twice in one composition, children that
-    contribute to other children, `--like` across compositions, selecting an
-    update's base from the applied record, and pushing snapshot refs. Toha
-    keeps writing no push configuration; publishing snapshot refs to a remote
-    stays an operator or workflow step.
+    More than one part question in a template, parts with their own interview,
+    files or hook trust, extension of a template by another template without a
+    fork, YAML typed edits, `--like` across sources, a secrets facility, a copy
+    of fetched schemas, migration from `refs/toha/snapshots/*`, and pushing.
+    Toha writes no push configuration.
