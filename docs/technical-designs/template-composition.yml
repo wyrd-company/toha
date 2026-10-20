@@ -302,18 +302,23 @@ proposed-design:
     name. An input that no question accepts is a usage error. On every apply,
     update, stage and preview, a document question takes the first of: an input
     it accepts, an answers document's value for its id, and the file named by
-    `input`, read from the working tree at the start of the run. A document
-    validates against the resolved schema whose URI equals its `$schema`, or
+    `input`, read from the working tree at the start of the run. This precedence
+    applies when an unanswered question takes an answer. A recorded staged
+    answer persists for its session; later inputs cannot replace it and default
+    files only fill unanswered questions. A document validates against the resolved
+    schema whose URI equals its `$schema`, or
     against the question's only schema when the document has no `$schema`. A
-    file that is not a JSON object, whose `$schema` the question does not
-    accept, or that fails its schema is refused in the same way as an invalid
+    supplied input or default file that is not a JSON object, whose `$schema`
+    the question does not accept, or that fails its schema is refused in the same way as an invalid
     input: the error names the path, nothing is written, and Toha does not ask
     for another file. A document answer is recorded in `answers`, so the record
     holds the document the render used, and the merge base renders from it, but
     an update's candidate never replays a recorded document answer. When none of
     the three is present, the question is unanswered: a person is asked for a
     file path with `input` as the default, and a script or agent receives the
-    question in a question batch.
+    question in a question batch. For a path typed by a person, a read or
+    validation error is reported and the path is asked again, keeping earlier
+    answers.
   schema-resolution: >-
     `schemas` in `template.yml` names the template's schemas directory, relative
     to the template root and outside the source subdirectory. Toha reads every

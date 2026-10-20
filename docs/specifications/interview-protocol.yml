@@ -82,6 +82,14 @@ description: >-
   retains its existing shape. See `missing_default_stays_unanswered_in_script_and_stage_batches`
   and `document_answer_reaches_completed_raw_and_rendering_without_losing_members`.
 
+  Recorded staged document answers persist for the session. The input,
+  answers-document, and default-file precedence applies when an unanswered
+  question takes an answer. It never replaces a recorded staged answer.
+  A default file that appears or changes later does not replace that answer;
+  a later `--input` with a different value is refused as already answered.
+  See `recorded_staged_answer_survives_later_default_and_input` and
+  `incoming_staged_answer_takes_precedence_over_new_default_file`.
+
   Answers. The `answers` member of an answers document is a JSON object keyed by
   question id, wrapped in the identity envelope described above. `continue PATH
   FILE` reads the document from a file or from standard input. Answers for

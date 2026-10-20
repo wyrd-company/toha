@@ -204,6 +204,7 @@ $defs:
           required: [ schema, input ]
           not:
             anyOf:
+              - required: [ required ]
               - required: [ default ]
               - required: [ format ]
               - required: [ loop ]

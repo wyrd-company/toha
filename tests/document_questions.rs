@@ -254,7 +254,7 @@ fn unaccepted_input_is_a_usage_error_with_no_writes() {
     let input = f.doc("input.json", "Item");
     fs::write(&input, json!({"$schema":OTHER,"title":"Item"}).to_string()).unwrap();
     let out = f.apply(&["--input", input.to_str().unwrap()]);
-    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(out.status.code(), Some(2));
     assert!(error_text(&out).contains("no document question accepts"));
     assert!(!f.target.join("result.txt").exists());
 }
@@ -289,7 +289,11 @@ fn default_path_cannot_leave_target_without_repository() {
     let mut template = f.load();
     let error =
         toha::document::prepare(&mut template, &f.target, &[], &RawAnswers::new()).unwrap_err();
-    assert!(error.contains("inside target repository or target"));
+    assert!(
+        error
+            .to_string()
+            .contains("inside target repository or target")
+    );
 }
 #[test]
 fn default_path_can_reach_repository_parent_from_target_subdirectory() {
@@ -323,7 +327,7 @@ fn missing_input_is_a_load_error() {
     assert!(Template::load(&f.template).is_err());
 }
 #[test]
-fn yaml_schema_and_nested_json_reference_are_resolved_without_fetch() {
+fn yaml_schema_and_nested_json_reference_validate() {
     let f = Fixture::new();
     fs::remove_file(f.template.join("schemas/catalog.json")).unwrap();
     fs::create_dir(f.template.join("schemas/nested")).unwrap();
@@ -408,6 +412,7 @@ fn schema_list_selects_exact_document_uri_and_requires_identity_when_ambiguous()
     assert!(
         toha::document::prepare(&mut template, &f.target, &[], &answers)
             .unwrap_err()
+            .to_string()
             .contains("$schema")
     );
 }
@@ -527,7 +532,7 @@ fn empty_or_absolute_default_paths_are_load_errors() {
     }
 }
 #[test]
-fn staged_apply_rereads_changed_default_file() {
+fn staged_apply_preserves_recorded_default_file_answer() {
     let f = Fixture::new();
     f.default("First");
     let out = support::isolated_command(f.root.path())
@@ -547,7 +552,7 @@ fn staged_apply_rereads_changed_default_file() {
     assert_success(&out);
     assert_eq!(
         fs::read_to_string(f.target.join("result.txt")).unwrap(),
-        "Second\n"
+        "First\n"
     );
 }
 #[test]
@@ -561,7 +566,7 @@ fn duplicate_routed_inputs_are_refused_before_writes() {
         "--input",
         second.to_str().unwrap(),
     ]);
-    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(out.status.code(), Some(2));
     assert!(error_text(&out).contains("more than one input"));
     assert!(!f.target.join("result.txt").exists());
 }
@@ -596,6 +601,7 @@ fn default_symlink_cannot_leave_target() {
     assert!(
         toha::document::prepare(&mut template, &f.target, &[], &RawAnswers::new())
             .unwrap_err()
+            .to_string()
             .contains("inside target repository or target")
     );
 }
@@ -742,5 +748,258 @@ fn continue_input_preserves_flow_stop_for_resume() {
         .unwrap();
     assert_success(&out);
     assert!(error_text(&out).contains("stopped"), "{}", error_text(&out));
+    assert!(!f.target.join("result.txt").exists());
+}
+
+#[test]
+fn vendored_root_and_reference_make_no_network_connections() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+    let f = Fixture::new();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let root_uri = format!("https://{}/catalog", listener.local_addr().unwrap());
+    let reference_uri = format!("{root_uri}/title");
+    let worker_listener = listener.try_clone().unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let connections = Arc::new(AtomicUsize::new(0));
+    let worker_stop = stop.clone();
+    let worker_connections = connections.clone();
+    let worker = std::thread::spawn(move || {
+        while !worker_stop.load(Ordering::SeqCst) {
+            match worker_listener.accept() {
+                Ok((stream, _)) => {
+                    worker_connections.fetch_add(1, Ordering::SeqCst);
+                    drop(stream);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(1))
+                }
+                Err(error) => panic!("listener: {error}"),
+            }
+        }
+    });
+    let text = fs::read_to_string(f.template.join("template.yml"))
+        .unwrap()
+        .replace(URI, &root_uri);
+    fs::write(f.template.join("template.yml"), text).unwrap();
+    fs::remove_file(f.template.join("schemas/catalog.json")).unwrap();
+    fs::write(
+        f.template.join("schemas/catalog.yaml"),
+        format!(
+            "$id: {root_uri}\ntype: object\nproperties:\n  title:\n    $ref: '{reference_uri}'\n"
+        ),
+    )
+    .unwrap();
+    fs::write(
+        f.template.join("schemas/title.json"),
+        json!({"$id":reference_uri,"type":"string"}).to_string(),
+    )
+    .unwrap();
+    let input = f.doc("input.json", "Vendored");
+    fs::write(
+        &input,
+        json!({"$schema":root_uri,"title":"Vendored"}).to_string(),
+    )
+    .unwrap();
+    let out = f.apply(&["--input", input.to_str().unwrap()]);
+    stop.store(true, Ordering::SeqCst);
+    worker.join().unwrap();
+    assert_success(&out);
+    assert_eq!(
+        connections.load(Ordering::SeqCst),
+        0,
+        "a vendored schema caused a fetch attempt"
+    );
+    assert!(
+        matches!(listener.accept(),Err(error) if error.kind()==std::io::ErrorKind::WouldBlock),
+        "a connection remained queued"
+    );
+}
+
+#[test]
+fn inputs_without_a_string_schema_are_usage_errors() {
+    for value in [
+        json!({"title":"Item"}),
+        json!({"$schema":null}),
+        json!({"$schema":42}),
+    ] {
+        let f = Fixture::new();
+        let input = f.doc("input.json", "Item");
+        fs::write(&input, value.to_string()).unwrap();
+        let out = f.apply(&["--input", input.to_str().unwrap()]);
+        assert_eq!(out.status.code(), Some(2), "{}", error_text(&out));
+        assert_eq!(support::first_document(&out.stdout)["kind"], "input");
+        assert!(!f.target.join("result.txt").exists());
+        let out = support::isolated_command(f.root.path())
+            .arg("stage")
+            .arg(support::folder_address(&f.template))
+            .arg(&f.target)
+            .arg("--async")
+            .arg("--input")
+            .arg(input)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "{}", error_text(&out));
+    }
+}
+
+#[test]
+fn continue_unaccepted_input_is_a_usage_error_and_keeps_session_pending() {
+    let f = Fixture::new();
+    let input = f.doc("input.json", "Item");
+    fs::write(&input, json!({"$schema":OTHER}).to_string()).unwrap();
+    let out = support::isolated_command(f.root.path())
+        .arg("stage")
+        .arg(support::folder_address(&f.template))
+        .arg(&f.target)
+        .arg("--async")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(4));
+    let out = support::isolated_command(f.root.path())
+        .arg("continue")
+        .arg(&f.target)
+        .arg("--input")
+        .arg(input)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2), "{}", error_text(&out));
+    let out = support::isolated_command(f.root.path())
+        .arg("apply")
+        .arg(&f.target)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(4));
+    assert!(!f.target.join("result.txt").exists());
+}
+
+#[test]
+fn document_required_property_is_a_load_error() {
+    for required in ["true", "false"] {
+        let f = Fixture::new();
+        let text = fs::read_to_string(f.template.join("template.yml")).unwrap();
+        fs::write(
+            f.template.join("template.yml"),
+            text.replace(
+                "    type: document",
+                &format!("    type: document\n    required: {required}"),
+            ),
+        )
+        .unwrap();
+        assert!(
+            Template::load(&f.template).is_err(),
+            "document required: {required} was accepted"
+        );
+    }
+}
+
+#[test]
+fn recorded_staged_answer_survives_later_default_and_input() {
+    let f = Fixture::new();
+    let answers = f.answers(json!({"catalog":{"$schema":URI,"title":"Recorded"}}));
+    let out = support::isolated_command(f.root.path())
+        .arg("stage")
+        .arg(support::folder_address(&f.template))
+        .arg(&f.target)
+        .arg("--async")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(4));
+    let out = support::isolated_command(f.root.path())
+        .arg("continue")
+        .arg(&f.target)
+        .arg(answers)
+        .output()
+        .unwrap();
+    assert_success(&out);
+    f.default("Default");
+    let input = f.doc("input.json", "Replacement");
+    let out = support::isolated_command(f.root.path())
+        .arg("continue")
+        .arg(&f.target)
+        .arg("--input")
+        .arg(input)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(error_text(&out).contains("already answered"));
+    fs::write(f.target.join("catalog.json"), "not JSON").unwrap();
+    let out = support::isolated_command(f.root.path())
+        .arg("apply")
+        .arg(&f.target)
+        .arg("--dry-run")
+        .output()
+        .unwrap();
+    assert_success(&out);
+    assert!(!f.target.join("result.txt").exists());
+    let out = support::isolated_command(f.root.path())
+        .arg("apply")
+        .arg(&f.target)
+        .output()
+        .unwrap();
+    assert_success(&out);
+    assert_eq!(
+        fs::read_to_string(f.target.join("result.txt")).unwrap(),
+        "Recorded\n"
+    );
+}
+
+#[test]
+fn incoming_staged_answer_takes_precedence_over_new_default_file() {
+    let f = Fixture::new();
+    let answers = f.answers(json!({"catalog":{"$schema":URI,"title":"Submitted"}}));
+    let out = support::isolated_command(f.root.path())
+        .arg("stage")
+        .arg(support::folder_address(&f.template))
+        .arg(&f.target)
+        .arg("--async")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(4));
+    fs::write(f.target.join("catalog.json"), "not JSON").unwrap();
+    let out = support::isolated_command(f.root.path())
+        .arg("continue")
+        .arg(&f.target)
+        .arg(answers)
+        .output()
+        .unwrap();
+    assert_success(&out);
+    f.default("Default");
+    let out = support::isolated_command(f.root.path())
+        .arg("apply")
+        .arg(&f.target)
+        .output()
+        .unwrap();
+    assert_success(&out);
+    assert_eq!(
+        fs::read_to_string(f.target.join("result.txt")).unwrap(),
+        "Submitted\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn person_input_routing_error_exits_two() {
+    use expectrl::{Expect, Session, process::unix::WaitStatus};
+    let f = Fixture::new();
+    let input = f.doc("input.json", "Item");
+    fs::write(&input, json!({"$schema":OTHER}).to_string()).unwrap();
+    let mut command = support::isolated_command(f.root.path());
+    command
+        .arg("apply")
+        .arg(support::folder_address(&f.template))
+        .arg(&f.target)
+        .arg("--input")
+        .arg(input);
+    let mut session = Session::spawn(command).unwrap();
+    session.expect("no document question accepts").unwrap();
+    session.expect(expectrl::Eof).unwrap();
+    assert!(matches!(
+        session.get_process().wait().unwrap(),
+        WaitStatus::Exited(_, 2)
+    ));
     assert!(!f.target.join("result.txt").exists());
 }
