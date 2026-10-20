@@ -96,6 +96,7 @@ fn record(
     );
     record.base = Some(base.to_owned());
     record.reanswer = reanswer;
+    record.part_selection = prep.template.part_selection.clone();
     crate::save_document_answers(&prep.template, &mut record);
     record
 }
@@ -112,6 +113,7 @@ pub fn stage(
     reanswer: bool,
     trust: bool,
     input: &[PathBuf],
+    parts: toha::parts::Selection,
     dirs: &Dirs,
 ) -> Outcome {
     let (target, store) = match setup(path, dirs) {
@@ -157,6 +159,17 @@ pub fn stage(
         &Default::default(),
     ) {
         return crate::document_input_error(error, None);
+    }
+    if let Err(error) = crate::admit_parts(
+        &mut prep.template,
+        parts,
+        prep.base_application
+            .as_ref()
+            .map(|a| a.to_value())
+            .as_ref(),
+        &Default::default(),
+    ) {
+        return Outcome::Usage(error);
     }
     let base_value = stored_base(&base, prep.base_application.as_ref());
     let seed = Seed {

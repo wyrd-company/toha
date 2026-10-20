@@ -58,6 +58,7 @@ pub fn run_update(
     dry_run: bool,
     trust: bool,
     input: &[PathBuf],
+    parts: toha::parts::Selection,
     dirs: &Dirs,
 ) -> Outcome {
     let (target, _store) = match setup(path, dirs) {
@@ -94,6 +95,17 @@ pub fn run_update(
         None => IndexMap::new(),
     };
 
+    if let Err(error) = crate::admit_parts(
+        &mut prep.template,
+        parts,
+        prep.base_application
+            .as_ref()
+            .map(|a| a.to_value())
+            .as_ref(),
+        &overrides,
+    ) {
+        return Outcome::Usage(error);
+    }
     if let Err(error) =
         toha::document::prepare(&mut prep.template, target.as_path(), input, &overrides)
     {
@@ -464,11 +476,12 @@ pub(crate) fn resume_prepared(
         Ok(value) => value,
         Err(error) => return Err(crate::resolve_error(error)),
     };
-    let template = match load_template(&resolved) {
+    let mut template = match load_template(&resolved) {
         Ok(value) => value,
         Err(error) => return Err(Outcome::Error(error)),
     };
 
+    template.part_selection = saved.part_selection.clone();
     let (resolution, _) = match resolution(&resolved.formal_name, &template, &config) {
         Ok(value) => value,
         Err(error) => return Err(Outcome::Error(error)),
@@ -564,6 +577,15 @@ pub(crate) fn finish_merge(
         Ok(revision) => revision,
         Err(error) => return Outcome::Error(error.to_string()),
     };
+    let metadata = crate::parts_output::metadata(
+        prep.base_application.as_ref().map(|a| a.revision()),
+        &revision,
+        prep.base_application
+            .as_ref()
+            .map(|a| a.parts.as_slice())
+            .unwrap_or(&[]),
+        &prep.template.selected_parts(&completed),
+    );
     let inputs = RecordInputs {
         template: prep.resolved.formal_name.clone(),
         revision,
@@ -587,7 +609,12 @@ pub(crate) fn finish_merge(
         runner,
     ) {
         Ok((merged, report)) => {
-            let outcome = merged_outcome(merged, &ctx, base_id.as_deref());
+            let outcome = match merged_outcome(merged, &ctx, base_id.as_deref()) {
+                Outcome::Document(document, code) => {
+                    Outcome::Document(crate::with_application(document, &metadata), code)
+                }
+                other => other,
+            };
             if scripted {
                 outcome
             } else {
@@ -619,7 +646,7 @@ fn candidate_submissions(
     template: &Template,
 ) -> Result<Vec<IndexMap<Id, RawAnswer>>, String> {
     let documents = template.document_question_ids();
-    Ok(recorded_submissions(application)?
+    Ok(recorded_submissions(application, template)?
         .into_iter()
         .map(|mut submission| {
             submission.retain(|id, _| !documents.contains(id));
@@ -630,8 +657,11 @@ fn candidate_submissions(
 }
 
 /// The base application's recorded submissions, as the interview's raw answers.
-fn recorded_submissions(application: &Application) -> Result<Vec<IndexMap<Id, RawAnswer>>, String> {
-    application
+fn recorded_submissions(
+    application: &Application,
+    template: &Template,
+) -> Result<Vec<IndexMap<Id, RawAnswer>>, String> {
+    let mut submissions: Vec<IndexMap<Id, RawAnswer>> = application
         .submissions()
         .iter()
         .map(|submission| {
@@ -644,7 +674,14 @@ fn recorded_submissions(application: &Application) -> Result<Vec<IndexMap<Id, Ra
                 })
                 .collect::<Result<IndexMap<_, _>, _>>()
         })
-        .collect()
+        .collect::<Result<_, _>>()?;
+    if let Some(q) = template.part_question() {
+        submissions.push(IndexMap::from([(
+            q.id.clone(),
+            RawAnswer(json!(application.parts)),
+        )]));
+    }
+    Ok(submissions)
 }
 
 /// Map a merge result to the caller's result document. An update reports the
@@ -793,7 +830,7 @@ fn restore_merge_base(
     };
     let mut interview =
         toha::Interview::start(&template, seed).map_err(|e| failure(e.to_string()))?;
-    let mut remaining = recorded_submissions(&application)
+    let mut remaining = recorded_submissions(&application, &template)
         .map_err(failure)?
         .into_iter()
         .flatten()

@@ -147,6 +147,8 @@ $defs:
     properties:
       id:
         $ref: "#/$defs/identifier"
+      parts:
+        type: boolean
       type:
         enum: [ text, multiline, git, confirm, select, multiselect, document ]
       schema:

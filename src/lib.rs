@@ -14,6 +14,7 @@ pub mod hook;
 pub mod inject;
 pub mod interview;
 mod jinja;
+pub mod parts;
 pub mod plan;
 pub mod protocol;
 pub mod registry;

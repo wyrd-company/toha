@@ -66,6 +66,53 @@ Staging keeps a copy of the entry. If the entry changes, stage the update again.
 When two branches update one application, both change the same record entry.
 Resolve a merge conflict by keeping one entry that describes the applied result.
 
+## Add or remove parts
+
+A template can mark one `multiselect` question with `parts: true`. Its options
+name the parts. The template uses that answer in file bodies, paths, conditions,
+injections and hooks. For example:
+
+```yaml
+interview:
+  - id: targets
+    type: multiselect
+    parts: true
+    prompt: Select parts
+    options: [core, extra]
+    default: [core]
+```
+
+Add or remove parts with repeatable flags:
+
+```sh
+toha apply https://example.invalid/templates/note ./project --update --with extra
+toha apply https://example.invalid/templates/note ./project --update --without extra
+```
+
+On a fresh apply, the flags change the question's default; `--like` uses the
+seed application's parts. On an update, they change the recorded selection.
+Without flags, updates replay that selection. `--reanswer` asks the part question
+again unless a part flag settles it. Do not also answer that question in an
+answers document when a part flag is present.
+
+Selections render in option order. Unknown parts, a part named by both flags,
+and flags on a template without a part question are usage errors. The settled
+answer must meet the question's required, minimum and maximum constraints.
+
+Removing a part deletes its unmodified whole files. An edited file has a
+modify/delete conflict. Shared files merge through the same three-way update;
+injections retract their owned content and then release the path. Commit the
+result and `.toha.json`. Scripted results include `application.parts_added` and
+`application.parts_removed`, plus `prior_revision` and `resolved_revision`.
+Person summaries show the same information. Staging preserves the flags and
+the selection they change.
+
+The named tests `parts_add_update_remove_shared_workflow_and_retract_and_release_edits`,
+`removing_a_part_conflicts_with_an_edited_whole_file`,
+`part_flags_reject_usage_before_questions_and_validate_the_settled_answer`, and
+`staged_part_flags_survive_new_questions_continue_and_apply` exercise these rules
+in `tests/parts.rs`.
+
 ## Re-baseline an application
 
 Use `--baseline` to adopt a project against an empty merge base:

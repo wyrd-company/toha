@@ -327,6 +327,21 @@ description: >-
   Person and completed staged-agent updates print template, target, changes,
   conflicts, messages and the record path. Previews say no changes were written.
 
+  Parts. --with PART and --without PART are repeatable on apply and stage.
+  They settle the one parts: true multiselect question from its default, the
+  --like seed's parts, or the update's recorded parts, in option order. They
+  take precedence over --reanswer. A template without a part question, an
+  unknown part, a part named by both flags, or a part answer supplied with
+  either flag is a usage error before any question. Required and min/max
+  constraints apply to the settled answer. Without flags, the question follows
+  the ordinary interview or recorded replay. Removed parts use ordinary merge
+  deletion, conflict and injection-retraction rules. Staging preserves the
+  flags and the selection they modify. Completion results carry application
+  with prior_revision, resolved_revision, parts_added and parts_removed;
+  revision is null for an unversioned template, {commit: SHA} for Git, or
+  {content_digest: SHA256} for content. Person summaries show those values.
+  Evidence: tests/parts.rs and tests/verified_merge_base.rs.
+
   In-project generators. --like TARGET seeds a fresh application's defaults
   from an entry of the same source at the named repository-relative target,
   selected repository-wide. A bare flag is a person-route picker and is a usage

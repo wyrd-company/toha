@@ -36,6 +36,8 @@ pub struct StagedRecord {
     /// Whether the staged update re-asks every recorded answer.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub reanswer: bool,
+    #[serde(default)]
+    pub part_selection: crate::parts::Selection,
     /// The seed target selected by `--like`. `seed_entry` copies its application
     /// so later changes to the live record do not change staged defaults.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -348,6 +350,7 @@ impl StagedRecord {
             submissions,
             base: None,
             reanswer: false,
+            part_selection: Default::default(),
             seed: None,
             seed_entry: None,
             context: InvocationContextWire::Legacy,
@@ -374,6 +377,7 @@ impl StagedRecord {
             submissions,
             base: None,
             reanswer: false,
+            part_selection: Default::default(),
             seed: None,
             seed_entry: None,
             context: wire,

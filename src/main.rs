@@ -5,6 +5,7 @@ mod cli {
     pub mod resolve;
     pub mod templates;
 }
+mod parts_output;
 mod update;
 mod update_output;
 mod update_stage;
@@ -217,6 +218,12 @@ enum Command {
         /// Read a JSON contract document, routed by its exact $schema URI. Repeatable.
         #[arg(long, value_name = "FILE")]
         input: Vec<PathBuf>,
+        /// Add an optional part. Repeatable.
+        #[arg(long = "with", value_name = "PART")]
+        with: Vec<String>,
+        /// Remove an optional part. Repeatable.
+        #[arg(long = "without", value_name = "PART")]
+        without: Vec<String>,
         /// Alias, short name, formal name, git address, or folder of the template.
         template: String,
         /// Target directory.
@@ -294,6 +301,12 @@ enum Command {
         /// Read a JSON contract document, routed by its exact $schema URI. Repeatable.
         #[arg(long, value_name = "FILE")]
         input: Vec<PathBuf>,
+        /// Add an optional part. Repeatable.
+        #[arg(long = "with", value_name = "PART")]
+        with: Vec<String>,
+        /// Remove an optional part. Repeatable.
+        #[arg(long = "without", value_name = "PART")]
+        without: Vec<String>,
         /// One operand is the target directory; two are the template and the target directory.
         #[arg(num_args = 1..=2, required = true, value_name = "PATH", hide = true)]
         paths: Vec<String>,
@@ -663,6 +676,21 @@ fn injection_report(
     Ok(lines)
 }
 
+fn admit_parts(
+    template: &mut Template,
+    mut parts: toha::parts::Selection,
+    prior: Option<&serde_json::Value>,
+    supplied: &toha::RawAnswers,
+) -> Result<(), String> {
+    parts.admit(template, supplied)?;
+    if let Some(prior) = prior {
+        parts.base = prior
+            .get("parts")
+            .and_then(|v| serde_json::from_value(v.clone()).ok());
+    }
+    template.part_selection = parts;
+    Ok(())
+}
 fn admitted_documents(template: &Template) -> indexmap::IndexMap<String, serde_json::Value> {
     template
         .document_question_ids()
@@ -710,6 +738,7 @@ fn prepare_staged_documents(
     incoming: &toha::RawAnswers,
     saved: &mut StagedRecord,
 ) -> Result<(), toha::document::PrepareError> {
+    template.part_selection = saved.part_selection.clone();
     toha::document::prepare_staged(template, target, input, &recorded_answers(saved), incoming)?;
     save_document_answers(template, saved);
     Ok(())
@@ -988,7 +1017,8 @@ fn progress(saved: &StagedRecord, scope: &Scope, target: &CanonicalTarget) -> Pr
             scope.cwd,
         )
         .ok()?;
-        let template = Template::load(&resolved.folder).ok()?;
+        let mut template = Template::load(&resolved.folder).ok()?;
+        template.part_selection = saved.part_selection.clone();
         let resolution = toha::interview::configured_defaults(
             &saved.template,
             &template,
@@ -1054,6 +1084,7 @@ fn staged_refusal(
         ))
     })
 }
+#[allow(clippy::too_many_arguments)]
 fn stage(
     input: &[PathBuf],
     template: String,
@@ -1061,6 +1092,7 @@ fn stage(
     output: Option<Option<String>>,
     trust: bool,
     like: Option<Option<String>>,
+    parts: toha::parts::Selection,
     dirs: &Dirs,
 ) -> Outcome {
     let (target, store) = match setup(&path, dirs) {
@@ -1145,6 +1177,14 @@ fn stage(
     }
     let seed_from = like_seed.as_ref().map(|seed| seed.id.to_string());
     let seed_entry = like_seed.as_ref().map(|seed| seed.entry.clone());
+    if let Err(error) = admit_parts(
+        &mut template,
+        parts,
+        seed_entry.as_ref(),
+        &Default::default(),
+    ) {
+        return Outcome::Usage(error);
+    }
     let mut saved = StagedRecord::new_with_context(
         invocation.clone(),
         resolved.commit.clone(),
@@ -1154,6 +1194,7 @@ fn stage(
     );
     saved.seed = seed_from.clone();
     saved.seed_entry = seed_entry;
+    saved.part_selection = template.part_selection.clone();
     save_document_answers(&template, &mut saved);
     let interview = match resolution.start_with_seed(
         &template,
@@ -1360,6 +1401,7 @@ fn continue_run(path: PathBuf, answers: Option<String>, input: &[PathBuf], dirs:
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
     };
+    template.part_selection = saved.part_selection.clone();
     if let Err(e) = toha::document::restore_missing(&mut template, &recorded_answers(&saved)) {
         return Outcome::Error(e);
     }
@@ -1720,6 +1762,13 @@ fn like_reject_document(reject: LikeReject, context: Option<&Context>) -> Outcom
         code,
     )
 }
+fn with_application(
+    mut document: serde_json::Value,
+    metadata: &serde_json::Value,
+) -> serde_json::Value {
+    document["application"] = metadata.clone();
+    document
+}
 /// Add the optional `seed: { from }` member to a result document when `--like`
 /// seeded the interview; leaves the document unchanged otherwise.
 fn with_seed(mut document: serde_json::Value, seed_from: Option<&str>) -> serde_json::Value {
@@ -1864,6 +1913,7 @@ fn scripted(
     dry_run: bool,
     trust: bool,
     like: Option<Option<String>>,
+    parts: toha::parts::Selection,
     dirs: &Dirs,
 ) -> Outcome {
     let answers_file = answers_file.as_deref().unwrap_or("");
@@ -1956,6 +2006,14 @@ fn scripted(
             return Outcome::Document(protocol::error_document(&error, Some(&ctx)), 1);
         }
     };
+    if let Err(error) = admit_parts(
+        &mut template,
+        parts,
+        like_seed.as_ref().map(|seed| &seed.entry),
+        &supplied,
+    ) {
+        return Outcome::Usage(error);
+    }
     if let Err(e) = toha::document::prepare(&mut template, target.as_path(), input, &supplied) {
         return document_input_error(e, Some(&ctx));
     }
@@ -2067,6 +2125,12 @@ fn scripted_completed(
         Ok(revision) => plan.record_identity(resolved.formal_name.clone(), revision),
         Err(error) => return Outcome::Error(error.to_string()),
     }
+    let metadata = parts_output::metadata(
+        None,
+        &plan.record.as_ref().expect("plan record").revision,
+        &[],
+        &template.selected_parts(&completed),
+    );
     let mut messages = completed.messages.clone();
     if let Some(before) = &plan.before_apply {
         messages.push(before.clone());
@@ -2086,13 +2150,25 @@ fn scripted_completed(
     if dry_run {
         let code = if has_hooks && !trusted { 3 } else { 0 };
         return Outcome::Document(
-            protocol::planned_document(&classified, &plan, &messages, ctx, trust_state),
+            with_application(
+                protocol::planned_document(&classified, &plan, &messages, ctx, trust_state),
+                &metadata,
+            ),
             code,
         );
     }
     if has_hooks && !trusted {
         return Outcome::Document(
-            protocol::planned_document(&classified, &plan, &messages, ctx, TrustState::Untrusted),
+            with_application(
+                protocol::planned_document(
+                    &classified,
+                    &plan,
+                    &messages,
+                    ctx,
+                    TrustState::Untrusted,
+                ),
+                &metadata,
+            ),
             3,
         );
     }
@@ -2147,7 +2223,10 @@ fn scripted_completed(
                     .collect(),
                 git: git.as_ref().map(|g| g.setup.clone()),
             };
-            let mut document = with_seed(protocol::applied_document(&report, ctx), seed_from);
+            let mut document = with_application(
+                with_seed(protocol::applied_document(&report, ctx), seed_from),
+                &metadata,
+            );
             document["record"] = record_document(&record);
             Outcome::Document(document, 0)
         }
@@ -2209,6 +2288,7 @@ fn run(
     dry_run: bool,
     trust: bool,
     like: Option<Option<String>>,
+    parts: toha::parts::Selection,
     dirs: &Dirs,
 ) -> Outcome {
     // Scripted route: apply TEMPLATE PATH --answers FILE. One shot, one result
@@ -2225,6 +2305,7 @@ fn run(
             dry_run,
             trust,
             like,
+            parts,
             dirs,
         );
     }
@@ -2238,6 +2319,9 @@ fn run(
         Ok(v) => v,
         Err(e) => return Outcome::Error(e.to_string()),
     };
+    if parts.is_present() && existing.is_some() {
+        return Outcome::Usage("part flags belong to a new interview; use stage TEMPLATE PATH --update to change parts".into());
+    }
     // `apply PATH` on a staged update resumes it through the update replay
     // adapter and merges from the base.
     if answers.is_none()
@@ -2291,6 +2375,9 @@ fn run(
     // `--like` seeds a new application; it has nothing to attach to on a resume
     // (`apply PATH`, or `apply TEMPLATE PATH` naming a staged interview), whose
     // seed is already pinned in the staged record and re-read below.
+    if parts.is_present() && template.is_none() {
+        return Outcome::Usage("part flags belong to a new interview; use stage TEMPLATE PATH --update to change parts".into());
+    }
     if like.is_present() && template.is_none() {
         return Outcome::Error(
             "--like applies to a new application (apply TEMPLATE PATH); a resumed interview \
@@ -2363,6 +2450,15 @@ fn run(
             );
             saved.seed = like_seed.as_ref().map(|seed| seed.id.to_string());
             saved.seed_entry = like_seed.as_ref().map(|seed| seed.entry.clone());
+            if let Err(error) = admit_parts(
+                &mut template,
+                parts,
+                saved.seed_entry.as_ref(),
+                &Default::default(),
+            ) {
+                return Outcome::Usage(error);
+            }
+            saved.part_selection = template.part_selection.clone();
             save_document_answers(&template, &mut saved);
             let interview = match resolution.start_with_seed(
                 &template,
@@ -2540,6 +2636,18 @@ fn run(
         Ok(plan) => plan,
         Err(error) => return Outcome::Error(error.to_string()),
     };
+    if let Some(saved) = &saved {
+        match cli::resolve::applied_revision(&saved.template, &saved.commit) {
+            Ok(revision) => plan.record_identity(saved.template.clone(), revision),
+            Err(error) => return Outcome::Error(error.to_string()),
+        }
+    }
+    let metadata = parts_output::metadata(
+        None,
+        &plan.record.as_ref().expect("plan record").revision,
+        &[],
+        &template.selected_parts(&completed),
+    );
     if dry_run {
         let edits = match injection_report(&plan, &target) {
             Ok(edits) => edits,
@@ -2551,6 +2659,7 @@ fn run(
             completed.messages
         }
         .into_iter()
+        .chain(parts_output::lines(&metadata))
         .chain(plan_lines(&plan, force, &edits));
         if plan.hooks.is_empty() || registry_trusted || trust {
             return Outcome::Written(lines.collect());
@@ -2568,12 +2677,6 @@ fn run(
             )
         );
         return Outcome::Saved(0);
-    }
-    if let Some(saved) = &saved {
-        match cli::resolve::applied_revision(&saved.template, &saved.commit) {
-            Ok(revision) => plan.record_identity(saved.template.clone(), revision),
-            Err(error) => return Outcome::Error(error.to_string()),
-        }
     }
     let before = plan.before_apply.clone();
     let preview = plan_lines(&plan, force, &[]);
@@ -2602,7 +2705,8 @@ fn run(
             record,
             ..
         }) => {
-            let mut lines = git.as_ref().map(GitReport::lines).unwrap_or_default();
+            let mut lines = parts_output::lines(&metadata);
+            lines.extend(git.as_ref().map(GitReport::lines).unwrap_or_default());
             lines.extend(after_apply);
             if let toha::applied::RecordOutcome::Written(path) = record {
                 lines.push(format!("saved applied record {path}"));
@@ -2667,6 +2771,8 @@ fn main() -> ExitCode {
         Command::Skills { .. } => unreachable!("the home-free skills command returned above"),
         Command::Stage {
             input,
+            with,
+            without,
             template,
             path,
             r#async,
@@ -2676,6 +2782,11 @@ fn main() -> ExitCode {
             reanswer,
             like,
         } => {
+            let parts = toha::parts::Selection {
+                with,
+                without,
+                base: None,
+            };
             // A staged update (`stage --update`/`--baseline`) drives the update
             // replay adapter; a plain stage starts a fresh interview.
             if update || baseline {
@@ -2692,6 +2803,7 @@ fn main() -> ExitCode {
                     reanswer,
                     trust,
                     &input,
+                    parts,
                     &dirs,
                 )
                 .finish();
@@ -2703,6 +2815,7 @@ fn main() -> ExitCode {
                 r#async.clone(),
                 trust,
                 like,
+                parts,
                 &dirs,
             )
             .retry(|formal| {
@@ -2745,6 +2858,8 @@ fn main() -> ExitCode {
         }
         Command::Apply {
             input,
+            with,
+            without,
             paths,
             answers,
             force,
@@ -2755,6 +2870,11 @@ fn main() -> ExitCode {
             reanswer,
             like,
         } => {
+            let parts = toha::parts::Selection {
+                with,
+                without,
+                base: None,
+            };
             let (template, path) = match paths.as_slice() {
                 [path] => (None, PathBuf::from(path)),
                 [template, path] => (Some(template.clone()), PathBuf::from(path)),
@@ -2767,7 +2887,7 @@ fn main() -> ExitCode {
                     update::UpdateBase::Baseline
                 };
                 return update::run_update(
-                    base, template, &path, answers, reanswer, dry_run, trust, &input, &dirs,
+                    base, template, &path, answers, reanswer, dry_run, trust, &input, parts, &dirs,
                 )
                 .finish();
             }
@@ -2780,6 +2900,7 @@ fn main() -> ExitCode {
                 dry_run,
                 trust,
                 like,
+                parts,
                 &dirs,
             )
             .retry(|formal| {

@@ -441,7 +441,10 @@ impl Plan {
                 answers: completed
                     .accepted_raw()
                     .iter()
-                    .filter(|(id, _)| template.has_question_id(id))
+                    .filter(|(id, _)| {
+                        template.has_question_id(id)
+                            && template.part_question().map(|q| &q.id) != Some(*id)
+                    })
                     .map(|(id, raw)| {
                         let value = if template.git_question() == Some(id) {
                             raw.0
@@ -455,7 +458,7 @@ impl Plan {
                     })
                     .collect(),
                 context: template.record_context(completed.context()),
-                parts: vec![],
+                parts: template.selected_parts(completed),
             }),
             files: vec![],
             edits: vec![],
