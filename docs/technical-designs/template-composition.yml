@@ -170,12 +170,14 @@ proposed-design:
     `text` is its array of items, and a `multiselect` answer its array. A
     skipped question, a computed value, a hook result and a reserved `toha_`
     value are not answers and are not recorded. The part question's answer is
-    `parts` and does not occur in `answers`. A document answer is recorded, so
-    the merge base renders from the document the last render used, but an
-    update's candidate never replays it (document-questions). A `git` answer is
-    recorded without the user information of its URL, as every output shows it.
-    Answers hold names and choices, never secret values: Toha has no secret
-    question type, and a template asks for a credential's name, never its value.
+    `parts` and does not occur in `answers`. A document answer is recorded at
+    `answers.<question id>` as the whole JSON object the render used, so the
+    merge base renders from that document, and an update whose settled document
+    differs from it is never already-current; an update's candidate never
+    replays it (document-questions). A `git` answer is recorded without the user
+    information of its URL, as every output shows it. Answers hold names and
+    choices, never secret values: Toha has no secret question type, and a
+    template asks for a credential's name, never its value.
   record-paths: >-
     `paths` maps each path the application owns, relative to the target, to its
     ownership in the ownership forms of project updates: `origin` `toha` for a
@@ -342,10 +344,13 @@ proposed-design:
     line `1`, in the question's `schema` and by vendoring that schema in its
     schemas directory; a template that accepts two lines names both and branches
     on `$schema`. Toha reads the committed model on every run and never replays
-    a recorded one. The record holds the model the last render used, so a
-    comparison of the recorded and committed models shows a process that needs
-    an update. Toha holds no release model types, Intentional never runs Toha,
-    and Toha never runs Intentional.
+    a recorded one. The record holds the model the process was rendered from as
+    the recorded answer to that document question, at `answers.<question id>`,
+    which is `answers.release_model` in the release template. A comparison of
+    that value with the committed `.intentional/release-model.json` shows a
+    process that needs an update, and an update that renders from a different
+    model is never already-current. Toha holds no release model types,
+    Intentional never runs Toha, and Toha never runs Intentional.
   out-of-scope: >-
     More than one part question in a template, parts with their own interview,
     files or hook trust, extension of a template by another template without a
