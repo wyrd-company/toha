@@ -101,7 +101,12 @@ proposed-design:
     the seed application's parts. With neither flag the question is asked and
     answered as any question is. On an update, the answer is the recorded
     `parts` with the same additions and removals, and with neither flag the
-    recorded parts replay. `--reanswer` asks the part question again unless
+    recorded parts replay when the applied revision had a part question, including
+    an empty selection. A part question first added by the candidate revision
+    is asked rather than answered from the prior empty parts list, even when
+    optional or defaulted. For a first-added part question, either flag modifies
+    its default.
+    `--reanswer` asks the part question again unless
     either flag is given. Toha refuses with a usage error, before any question,
     when the template has no part question, a named part is not an option, one
     part is named by both flags, or an answers document gives the part question

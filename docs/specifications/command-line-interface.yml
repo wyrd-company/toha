@@ -334,7 +334,9 @@ description: >-
   unknown part, a part named by both flags, or a part answer supplied with
   either flag is a usage error before any question. Required and min/max
   constraints apply to the settled answer. Without flags, the question follows
-  the ordinary interview or recorded replay. Removed parts use ordinary merge
+  the ordinary interview or recorded replay. Recorded replay includes an empty
+  selection only when the applied revision had a part question. An update asks
+  a first-added part question. Removed parts use ordinary merge
   deletion, conflict and injection-retraction rules. Staging preserves the
   flags and the selection they modify. Completion results carry application
   with prior_revision, resolved_revision, parts_added and parts_removed;

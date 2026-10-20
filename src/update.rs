@@ -95,15 +95,7 @@ pub fn run_update(
         None => IndexMap::new(),
     };
 
-    if let Err(error) = crate::admit_parts(
-        &mut prep.template,
-        parts,
-        prep.base_application
-            .as_ref()
-            .map(|a| a.to_value())
-            .as_ref(),
-        &overrides,
-    ) {
+    if let Err(error) = crate::admit_parts(&mut prep.template, parts, None, &overrides) {
         return Outcome::Usage(error);
     }
     if let Err(error) =
@@ -320,7 +312,7 @@ pub(crate) fn prepare(
         ),
         UpdateBase::Baseline => None,
     };
-    let (merge_base, base_application) = restore_merge_base(
+    let (merge_base, base_application, prior_part_question) = restore_merge_base(
         &project,
         base_application,
         target,
@@ -378,9 +370,8 @@ pub(crate) fn prepare(
     };
 
     let recorded = match &base_application {
-        Some(application) => {
-            candidate_submissions(application, &template).map_err(Outcome::Error)?
-        }
+        Some(application) => candidate_submissions(application, &template, prior_part_question)
+            .map_err(Outcome::Error)?,
         None => Vec::new(),
     };
 
@@ -454,7 +445,7 @@ pub(crate) fn resume_prepared(
     };
     let cwd = std::env::current_dir().map_err(|e| Outcome::Error(e.to_string()))?;
     let (config, registry) = cli_context(dirs, &cwd)?;
-    let (merge_base, base_application) = restore_merge_base(
+    let (merge_base, base_application, prior_part_question) = restore_merge_base(
         &project,
         base_application,
         target,
@@ -497,9 +488,8 @@ pub(crate) fn resume_prepared(
     };
     let trusted = apply_environment_grant(trust, &resolved, &template);
     let recorded = match &base_application {
-        Some(application) => {
-            candidate_submissions(application, &template).map_err(Outcome::Error)?
-        }
+        Some(application) => candidate_submissions(application, &template, prior_part_question)
+            .map_err(Outcome::Error)?,
         None => Vec::new(),
     };
     Ok(Prepared {
@@ -641,15 +631,20 @@ fn source_of(formal: &str) -> String {
 
 /// Only ordinary answers are replayed into a candidate. Documents are admitted
 /// from this run's inputs; recorded documents belong to the merge base alone.
+/// Parts replay only if the applied revision actually asked a part question.
 fn candidate_submissions(
     application: &Application,
     template: &Template,
+    prior_part_question: bool,
 ) -> Result<Vec<IndexMap<Id, RawAnswer>>, String> {
     let documents = template.document_question_ids();
     Ok(recorded_submissions(application, template)?
         .into_iter()
         .map(|mut submission| {
-            submission.retain(|id, _| !documents.contains(id));
+            submission.retain(|id, _| {
+                !documents.contains(id)
+                    && (prior_part_question || template.part_question().is_none_or(|q| &q.id != id))
+            });
             submission
         })
         .filter(|submission| !submission.is_empty())
@@ -776,9 +771,9 @@ fn restore_merge_base(
     registry: &toha::registry::Registry,
     dirs: &Dirs,
     cwd: &Path,
-) -> Result<(Base, Option<Application>), Outcome> {
+) -> Result<(Base, Option<Application>, bool), Outcome> {
     let Some(mut application) = application else {
-        return Ok((Base::Empty, None));
+        return Ok((Base::Empty, None, false));
     };
     let failure_source = application.source().to_owned();
     let failure_revision = application.revision().clone();
@@ -867,5 +862,9 @@ fn restore_merge_base(
     project
         .restore_base(&mut application, plan)
         .map_err(|e| failure(e.to_string()))?;
-    Ok((Base::Application(application.clone()), Some(application)))
+    Ok((
+        Base::Application(application.clone()),
+        Some(application),
+        template.part_question().is_some(),
+    ))
 }

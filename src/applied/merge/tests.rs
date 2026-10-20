@@ -1388,3 +1388,53 @@ fn symlink_blob_bytes_bypass_worktree_text_conversion() {
         b"target\n"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn a_dangling_operator_link_is_occupied_before_any_update_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q", "-b", "main"]);
+    write(&root.join("app/keep.txt"), b"k\n");
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "operator"]);
+    // An untracked file occupies the path the template adds.
+    std::os::unix::fs::symlink("missing-operator-target", root.join("app/added.txt")).unwrap();
+
+    make_snapshot(root, BASE_ID, "app", &[("keep.txt", b"k\n")]);
+    make_snapshot(
+        root,
+        NEW_ID,
+        "app",
+        &[("keep.txt", b"k\n"), ("added.txt", b"template\n")],
+    );
+
+    let project = open(root, "app");
+    let base = read_snapshot(&project, BASE_ID);
+    let new = read_snapshot(&project, NEW_ID);
+    let result = merge_into_worktree(
+        &project,
+        &Base::Application(base),
+        &new,
+        &MergeOptions {
+            trusted: true,
+            dry_run: false,
+        },
+    );
+    assert!(
+        matches!(result, Err(MergeError::Occupied(_))),
+        "refuses the occupied path"
+    );
+
+    // The operator's file is untouched, and the candidate ref was removed (31).
+    assert_eq!(
+        std::fs::read_link(root.join("app/added.txt")).unwrap(),
+        std::path::Path::new("missing-operator-target")
+    );
+    let refs = git(root, &["for-each-ref", "refs/toha/snapshots/"]);
+    assert!(refs.is_empty(), "no refs are created");
+    assert!(
+        !refs.contains(NEW_ID),
+        "candidate ref removed on unsuccessful exit: {refs}"
+    );
+}

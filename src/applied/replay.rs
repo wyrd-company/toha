@@ -123,7 +123,13 @@ pub(crate) fn replay<'a>(
     }
 
     let interview = Interview::start(template, seed)?;
-    drive_from_queue(interview, queue, reanswer, Vec::new())
+    drive_from_queue(
+        interview,
+        queue,
+        template.part_question().map(|q| &q.id),
+        reanswer,
+        Vec::new(),
+    )
 }
 
 /// Resume a staged update: rebuild the adapter from the base's `recorded`
@@ -193,7 +199,13 @@ pub(crate) fn replay_resume<'a>(
             Err(AnswerError::Eval(error)) => return Err(error),
         };
     }
-    drive_from_queue(interview, queue, reanswer, submissions)
+    drive_from_queue(
+        interview,
+        queue,
+        template.part_question().map(|q| &q.id),
+        reanswer,
+        submissions,
+    )
 }
 
 /// Drive `interview` from the value `queue`, auto-submitting each batch when every
@@ -203,6 +215,7 @@ pub(crate) fn replay_resume<'a>(
 fn drive_from_queue<'a>(
     mut interview: Interview<'a>,
     mut queue: HashMap<Id, VecDeque<RawAnswer>>,
+    part_question: Option<&Id>,
     reanswer: bool,
     mut submissions: Vec<IndexMap<Id, RawAnswer>>,
 ) -> Result<Replay<'a>, EvalError> {
@@ -227,12 +240,18 @@ fn drive_from_queue<'a>(
             });
         }
 
+        // A part question needs an explicit selection, including an empty one.
+        // Do not accept its default merely because it is optional and absent
+        // from the recorded revision.
         let prompts: Vec<(Id, bool)> = pending
             .batch()
             .items
             .iter()
             .filter_map(|item| match item {
-                Item::Prompt(prompt) => Some((prompt.id.clone(), prompt.constraints.required)),
+                Item::Prompt(prompt) => Some((
+                    prompt.id.clone(),
+                    prompt.constraints.required || part_question == Some(&prompt.id),
+                )),
                 Item::Message(_) => None,
             })
             .collect();

@@ -542,7 +542,7 @@ fn merge_inner(
         if !ours_entries.contains_key(path) {
             let repo_path = repo_path_for(target, path);
             let on_disk = workdir.join(repo_path.as_str());
-            if on_disk.exists() {
+            if on_disk.symlink_metadata().is_ok() {
                 occupied.push(repo_path);
             }
         }
