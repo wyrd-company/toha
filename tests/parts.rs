@@ -627,6 +627,23 @@ fn part_flags_settle_dynamic_defaults_after_earlier_answers() {
     );
 }
 #[test]
+fn applying_without_a_staged_interview_refuses_part_flags_as_usage() {
+    let iso = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let applied = support::isolated_command(iso.path())
+        .arg("apply")
+        .arg(root.path())
+        .args(["--with", "core"])
+        .output()
+        .unwrap();
+    assert_eq!(applied.status.code(), Some(2), "{applied:?}");
+    assert!(String::from_utf8_lossy(&applied.stderr).contains("stage TEMPLATE PATH --update"));
+    assert!(applied.stdout.is_empty(), "{applied:?}");
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+    assert!(!support::staged_dir(iso.path()).exists());
+}
+
+#[test]
 fn applying_a_staged_update_refuses_new_part_flags() {
     let iso = tempfile::tempdir().unwrap();
     let source = tempfile::tempdir().unwrap();

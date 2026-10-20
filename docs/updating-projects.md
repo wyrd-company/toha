@@ -93,10 +93,12 @@ toha apply https://example.invalid/templates/note ./project --update --without e
 ```
 
 On a fresh apply, the flags change the question's default; `--like` uses the
-seed application's parts. On an update, they change the recorded selection.
-Without flags, updates replay that selection. `--reanswer` asks the part question
-again unless a part flag settles it. Do not also answer that question in an
-answers document when a part flag is present.
+seed application's parts. On an update, they change the recorded selection when
+the applied revision had a part question. Without flags, updates replay that
+selection, including an empty selection. A part question first added by the new
+revision is asked; `--with` and `--without` change its default instead.
+`--reanswer` asks the part question again unless a part flag settles it. Do not
+also answer that question in an answers document when a part flag is present.
 
 Selections render in option order. Unknown parts, a part named by both flags,
 and flags on a template without a part question are usage errors. The settled
