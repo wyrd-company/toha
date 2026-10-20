@@ -52,9 +52,17 @@ fn hash_object(repo: &Path, bytes: &[u8]) -> String {
 
 thread_local! { static APPLICATIONS: std::cell::RefCell<std::collections::BTreeMap<(std::path::PathBuf,String),Application>> = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) }; }
 fn make_snapshot(dir: &Path, id: &str, target: &str, files: &[(&str, &[u8])]) {
+    let entries: Vec<_> = files
+        .iter()
+        .map(|(path, bytes)| (*path, *bytes, EntryKind::Blob))
+        .collect();
+    make_snapshot_entries(dir, id, target, &entries);
+}
+
+fn make_snapshot_entries(dir: &Path, id: &str, target: &str, files: &[(&str, &[u8], EntryKind)]) {
     let mut paths = Vec::new();
     let mut entries = std::collections::BTreeMap::new();
-    for (path, bytes) in files {
+    for (path, bytes, kind) in files {
         let oid = gix::ObjectId::from_hex(hash_object(dir, bytes).as_bytes()).unwrap();
         paths.push(
             crate::applied::PathOwnership::new(
@@ -62,9 +70,9 @@ fn make_snapshot(dir: &Path, id: &str, target: &str, files: &[(&str, &[u8])]) {
                 Origin::Toha,
             )
             .with_blob(oid)
-            .with_mode(EntryKind::Blob),
+            .with_mode(*kind),
         );
-        entries.insert((*path).to_owned(), (oid, gix::objs::tree::EntryKind::Blob));
+        entries.insert((*path).to_owned(), (oid, *kind));
     }
     let mut application = Application::new(
         "forge:catalog/receipt@stable".into(),
@@ -1211,4 +1219,172 @@ fn atomic_write_preserves_an_unrelated_temporary_filename() {
         b"operator data"
     );
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_write_failures_restore_nodes_record_and_index() {
+    // Cover retarget, addition and deletion, including dangling links. Fail only
+    // after a real write, and retain an operator file outside the target.
+    for operation in ["retarget", "add", "delete", "refused"] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git(root, &["init", "-q", "-b", "main"]);
+        write(&root.join("app/z.txt"), b"before\n");
+        write(&root.join("outside.txt"), b"operator\n");
+        if operation != "add" {
+            std::os::unix::fs::symlink("first", root.join("app/a.txt")).unwrap();
+        }
+        git(root, &["add", "."]);
+        git(root, &["commit", "-qm", "example"]);
+        let mut base_files = vec![("z.txt", b"before\n".as_slice(), EntryKind::Blob)];
+        if operation != "add" {
+            base_files.push(("a.txt", b"first", EntryKind::Link));
+        }
+        let mut new_files = if operation == "refused" {
+            vec![("z.txt", b"invalid\0target".as_slice(), EntryKind::Link)]
+        } else {
+            vec![("z.txt", b"after\n".as_slice(), EntryKind::Blob)]
+        };
+        if operation != "delete" {
+            new_files.push(("a.txt", b"second", EntryKind::Link));
+        }
+        make_snapshot_entries(root, BASE_ID, "app", &base_files);
+        make_snapshot_entries(root, NEW_ID, "app", &new_files);
+        let project = open(root, "app");
+        let base = read_snapshot(&project, BASE_ID);
+        let new = read_snapshot(&project, NEW_ID);
+        project.write_application(base.clone()).unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "-qm", "record"]);
+        let record_before = std::fs::read(root.join(".toha.json")).unwrap();
+        let index_before = std::fs::read(root.join(".git/index")).unwrap();
+        // Deletions run after writes, so fail after both z.txt and the deletion.
+        if operation != "refused" {
+            super::inject_fail::arm(if operation == "delete" { 2 } else { 1 });
+        }
+        let result = merge_into_worktree(
+            &project,
+            &Base::Application(base),
+            &new,
+            &MergeOptions {
+                trusted: true,
+                dry_run: false,
+            },
+        );
+        super::inject_fail::disarm();
+        if operation == "refused" {
+            assert!(
+                matches!(result, Err(MergeError::Io(ref message)) if !message.contains("injected")),
+                "{result:?}"
+            );
+        } else {
+            assert!(
+                matches!(result, Err(MergeError::Io(ref message)) if message == "injected transaction failure after push"),
+                "{operation}: {result:?}"
+            );
+            let observed = super::inject_fail::observed();
+            assert!(
+                observed.iter().any(|(path, bytes)| path == "app/a.txt"
+                    && if operation == "delete" {
+                        bytes.is_none()
+                    } else {
+                        bytes.as_deref() == Some(b"second")
+                    }),
+                "write/deletion reached: {operation}: {observed:?}"
+            );
+        }
+        assert_eq!(
+            std::fs::read(root.join(".git/index")).unwrap(),
+            index_before,
+            "{operation}"
+        );
+        assert_eq!(
+            std::fs::read(root.join(".toha.json")).unwrap(),
+            record_before,
+            "{operation}"
+        );
+        if operation == "add" {
+            assert!(std::fs::symlink_metadata(root.join("app/a.txt")).is_err());
+        } else {
+            assert_eq!(
+                std::fs::read_link(root.join("app/a.txt")).unwrap(),
+                Path::new("first"),
+                "{operation}"
+            );
+        }
+        assert_eq!(std::fs::read(root.join("app/z.txt")).unwrap(), b"before\n");
+        assert_eq!(
+            std::fs::read(root.join("outside.txt")).unwrap(),
+            b"operator\n"
+        );
+        assert!(
+            git(root, &["status", "--porcelain"]).is_empty(),
+            "{operation}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn refused_symlink_creation_preserves_existing_operator_node() {
+    let dir = tempfile::tempdir().unwrap();
+    let full = dir.path().join("node");
+    for link in [false, true] {
+        if link {
+            std::os::unix::fs::symlink("operator", &full).unwrap();
+        } else {
+            std::fs::write(&full, b"operator\n").unwrap();
+        }
+        let result = write_atomically(
+            dir.path(),
+            "node",
+            b"invalid\0target",
+            gix::index::entry::Mode::SYMLINK,
+        );
+        assert!(matches!(result, Err(MergeError::Io(_))), "{result:?}");
+        if link {
+            assert_eq!(std::fs::read_link(&full).unwrap(), Path::new("operator"));
+        } else {
+            assert_eq!(std::fs::read(&full).unwrap(), b"operator\n");
+        }
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        std::fs::remove_file(&full).unwrap();
+    }
+}
+
+#[test]
+fn symlink_blob_bytes_bypass_worktree_text_conversion() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q", "-b", "main"]);
+    write(&root.join(".gitattributes"), b"link text eol=crlf\n");
+    git(root, &["add", "."]);
+    git(root, &["commit", "-qm", "example"]);
+    let repo = gix::open(root).unwrap();
+    let (mut pipeline, _) = repo.filter_pipeline(None).unwrap();
+    let id = repo.write_blob(b"target\n").unwrap().detach();
+    // Prove that this attribute would transform a regular file's bytes.
+    assert_eq!(
+        worktree_bytes(
+            &repo,
+            &mut pipeline,
+            id,
+            "link",
+            gix::index::entry::Mode::FILE
+        )
+        .unwrap(),
+        b"target\r\n"
+    );
+    assert_eq!(
+        worktree_bytes(
+            &repo,
+            &mut pipeline,
+            id,
+            "link",
+            gix::index::entry::Mode::SYMLINK
+        )
+        .unwrap(),
+        b"target\n"
+    );
 }
