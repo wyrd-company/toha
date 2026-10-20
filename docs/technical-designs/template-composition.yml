@@ -1,0 +1,265 @@
+$schema: https://refinery.systems/ontology/technical-design
+relationships:
+  realizes: toha
+  implements:
+    - template-format
+    - snapshot
+    - command-line-interface
+    - interview-protocol
+  related-to:
+    - architecture
+    - project-updates
+    - content-injection
+    - hook-review-trust
+    - installed-trust
+objective: >-
+  Let a child template contribute to a file a parent template owns, render the
+  parent and its children as one application, and keep every contribution
+  through `apply --from` updates, so that a release workflow template accepts
+  publication child templates and an organization can read which templates a
+  repository applied.
+terms:
+  composition: >-
+    One application of a parent template and zero or more child templates into
+    one target, rendered as one plan and recorded in one snapshot. A template
+    applied alone is a composition with no children.
+  parent-template: >-
+    The template that declares a composition contract. It owns the files its
+    extension points feed.
+  child-template: >-
+    A template that declares contributions to a composition contract. A child
+    applies only as a member of a composition.
+  member: >-
+    One template in a composition, identified by its source. A source occurs at
+    most once in a composition.
+  composition-contract: >-
+    A name and an integer major version that a parent declares and a child
+    names. It defines the extension points and exports a child may use.
+  extension-point: >-
+    A named list in the parent's render context that children fill with
+    contributions.
+  contribution: >-
+    One keyed value or text a child gives to one extension point.
+  export: >-
+    A value the parent computes after its interview and gives to every child.
+  document-question: >-
+    A question whose answer is a JSON value validated by a JSON Schema the
+    template ships. A contract document is routed to it by the document's
+    `$schema` identifier.
+design-challenges:
+  one-owner-per-byte: >-
+    A workflow file that two templates edit has two writers, and every update
+    must decide whose bytes win. Contributions enter the parent's render as data
+    and the parent alone writes the file, so ownership, three-way merge and
+    retraction keep their single-template rules.
+  yaml-without-typed-edits: >-
+    GitHub workflows are YAML, and Toha has no YAML typed edit. Composition does
+    not need one: the parent emits the YAML, and `toyaml` serializes each
+    contributed value with sorted keys. Region rules still inject into YAML
+    files a composition does not own.
+  coupling-without-addresses: >-
+    A child that names its parent by source address breaks on a fork, a rename
+    or a mirror. A child names a contract instead, so any parent that declares
+    the contract at a compatible version accepts it.
+  identity-readable-without-git: >-
+    Airlock reads snapshots over the GitHub API and must not link Git plumbing.
+    The snapshot document, its parser and its IO-free validation live in a
+    shared crate without Gitoxide, file-system or network dependencies.
+proposed-design:
+  high-level-overview: >-
+    A parent's `template.yml` declares `composition`: a contract name and
+    version, exports, and extension points. A child declares `contributes`: the
+    contract, the versions it accepts, and contributions. `apply` builds a
+    composition from the named template, `--with` and `--without` change
+    membership, and the shared interview runs each member in order. Plan
+    building renders contributions, binds them into the parent's context and
+    produces one plan. Apply, capture, merge and the transaction run over that
+    plan unchanged. The snapshot records every member's identity, revision,
+    submissions and owned paths.
+  parent-declaration: >-
+    `composition.contract` is a name matching `^[a-z0-9][a-z0-9.-]*$`, and
+    `composition.version` is a positive integer. `composition.exports` maps an
+    export name, a Jinja identifier, to an expression that evaluates over the
+    parent's completed answers, computed values and data. `composition
+    .extension-points` lists entries with an `id`, a Jinja identifier unique in
+    the template, and a `shape` of `value` or `text`. An optional
+    `key-pattern` is a regular expression every contribution key must match.
+    An optional `schema` names a JSON Schema file in the template root that
+    validates each `value` contribution. A template that declares
+    `composition` cannot also declare `contributes`.
+  child-declaration: >-
+    `contributes.contract` names a contract, and `contributes.version` is an
+    integer or a list of integers that the child accepts. `contributes.to` lists
+    contributions. Each contribution names an `extension-point`, a `key`
+    template and an optional `when`. A `value` contribution carries `value`, a
+    JSON-compatible value whose string leaves are templates, as `struct.value`
+    is. A `text` contribution carries inline `content` or a `source` support
+    file, rendered as an injection body is. A contribution reads no hook
+    result. A child is otherwise an ordinary template: its interview, source
+    subdirectory, `files`, `inject`, hooks and messages behave as they do
+    alone.
+  membership: >-
+    A fresh apply names the parent as TEMPLATE, and each `--with <TEMPLATE>`,
+    repeatable, adds a child. An update names any member as TEMPLATE with
+    `--from`. In the same render, `--with` adds a child or, for a member's
+    source, replaces that member's formal name, and `--without <TEMPLATE>`
+    removes a member. `--without` matches a member by source and does not
+    fetch or load the removed template. Membership is valid when every child's contract name equals the
+    parent's and one of its versions equals the parent's version. Toha refuses
+    before any question when a child names another contract, accepts no version
+    of the parent's, repeats a member's source, or applies without a parent. A
+    refusal for a child named alone directs the caller to name the parent and
+    `--with` the child, or to update a composition snapshot. `--without` of the
+    parent is refused, and the message names `snapshots clean`. `--like` with
+    `--with` or `--without` is a usage error.
+  member-order: >-
+    The parent comes first, then children in ascending source order. Order does
+    not depend on the order of `--with` flags or on when a child joined, so a
+    composition renders the same bytes however it was built.
+  answers-flow: >-
+    Each member has its own answer namespace: ids, computed values, data and
+    hook results do not cross members, and two members may use the same id. The
+    interview runs the parent's nodes, then evaluates exports, then runs each
+    child's nodes in member order. The reserved variable `toha_parent` holds the
+    exports in every child render surface, including its interview, and is
+    `none` in a parent or a template applied alone. A child question default
+    can read `toha_parent`. A child cannot give values to the parent's
+    interview; its only output into the parent is its contributions. No
+    template writes answers for another composition.
+  contributions-in-context: >-
+    After the last child's interview, Toha renders each child's contributions
+    in that child's context. The reserved variable `toha_contributions` is an
+    object keyed by extension point id. Each value is a list of
+    `{key, value, template}` objects sorted by key, where `template` is the
+    contributing member's source; a declared point with no contributions is an
+    empty list. The parent reads `toha_contributions` in file bodies, file
+    paths, `files` rules, `inject` rules, hooks and the `after-apply` message,
+    and in no interview surface. Children and a template without extension
+    points see an empty object. `toha_parent` and `toha_contributions` join the
+    reserved names, so a data key, id or `each` binding that equals one is a load
+    error.
+  contribution-validation: >-
+    Plan building refuses, naming the member, the extension point and the key, a
+    contribution to an id the parent does not declare, a shape that differs from
+    the declared shape, a key that is empty, fails `key-pattern` or repeats
+    another contribution's key in the same point, and a value that fails the
+    point's schema. Schema failures report the failing instance path without
+    the value.
+  path-ownership: >-
+    Every planned path has one owning member. Two members that both plan a whole
+    file at one path, or a child `inject` rule whose target another member
+    plans, are planning errors naming both members; the message directs the
+    child author to an extension point. A member's `inject` into a path no member
+    plans keeps today's rules. Unchanged rendering, whole-file conflicts,
+    `--force` and atomic per-file replacement apply to the composition plan as
+    they do to one template.
+  document-questions: >-
+    A question with `type: document` takes a JSON value. Its `schema` names one
+    JSON Schema file in the template root, or a list of them; each file's `$id`
+    is a schema identifier the question accepts, and two files with one `$id`
+    are a load error. An answer validates against the schema whose `$id` equals
+    the answer's `$schema` member, or against the only schema when the answer
+    has no `$schema`. A document answer is recorded and replayed like any other
+    submission. `apply` and `stage` accept `--input FILE`, repeatable, and
+    `continue PATH --input FILE` submits one to a staged interview. Each reads
+    a contract document: a JSON object whose `$schema` member is a schema
+    identifier. Toha submits it to every document question, in every member,
+    that accepts that identifier. An input that no question accepts is a usage
+    error. An answers document can also answer a document question by id. A
+    person is asked for a file path and Toha reads that file. On an update, an
+    input replaces the recorded answer, as a route submission replaces a
+    recorded value today.
+  hooks-and-trust: >-
+    Each member keeps its own executable surface and approval digest. An apply
+    runs hooks only when every member that has hooks is trusted, by a recorded
+    approval that matches its installed surface or by `--trust` for the run.
+    `--trust` covers every member of that run. The hook listing groups
+    invocations by member, and an untrusted result names each untrusted member
+    and the `templates trust` command for it. A parent's approval never covers a
+    child, and a child's never covers the parent. Interview hooks run at their
+    position in each member's interview. Top-level hooks run after all files are
+    written: the parent's list first, then each child's in member order.
+  snapshot-record: >-
+    A snapshot of a composition with children uses format version 2. The
+    top-level identity, revision, submissions and paths are the parent's, as in
+    format 1. `children` lists each child in member order with `template`,
+    `source`, `commit`, optional `content_digest`, `submissions` and `paths`, in
+    the same forms as the top level. A composition without children writes
+    format 1. Reading accepts formats 1 and 2. Validation also requires a child
+    source to differ from every other member's source, each captured path to
+    occur in exactly one member's `paths`, and the union of every member's
+    `paths` to equal the `files/` subtree. `created`, `generated`, `project`,
+    `target` and `built_from` stay composition-wide; every member renders with
+    the one frozen instant.
+  update-resolution: >-
+    An update builds the candidate from the whole composition. Every member
+    resolves through its recorded formal name, the way a single-template update
+    resolves its template today. When TEMPLATE or a `--with` names a member's
+    source with a different reference, that formal name replaces the recorded
+    one. Each member replays its recorded submissions, and only questions that a
+    new revision added are asked. The result document and the person summary
+    list each member with its prior and resolved revision. A member that does not
+    resolve stops the update before candidate construction, naming the member
+    and `--without`.
+  update-behavior: >-
+    A parent update re-renders the parent's files with the current
+    contributions and merges them three-way. A parent whose contract version
+    changes refuses every child that does not accept the new version, and the
+    message names each one. The caller gives each a compatible formal name with
+    `--with`, or removes it with `--without`, in the same render. A child
+    update changes its contributions, and the parent's re-render carries them.
+    An added child adds its contributions to the parent's files and its own
+    files to the candidate. A removed child is absent
+    from the candidate: its contributions leave the parent's render, its whole
+    files leave the template side so the merge removes the unmodified ones and
+    reports a modify/delete conflict for edited ones, and its edit-owned paths
+    follow the existing retraction and release rules. Base selection, merge,
+    conflict stages, preview, already-current and the transaction are those of
+    project updates.
+  staging-and-protocol: >-
+    A staged composition records the parent, each added and removed member and
+    each member's accepted submissions, so `continue` and `apply PATH` rebuild
+    the same composition. A `questions` batch belongs to one member, and its
+    `context.template` is that member's formal name. `--answers` is repeatable:
+    each document's `template` selects the member it answers by exact formal
+    name. A document that names no member is refused as an identity mismatch.
+    Result documents list members in member order.
+  shared-document-crate: >-
+    The workspace crate `toha-documents`, published to crates.io with Toha,
+    holds document types and their parsers with no Gitoxide, file-system,
+    process or network dependency. Module `snapshot` holds `SnapshotId`,
+    `RepoPath`, `CommitId`, `ContentDigest`, `Revision`, `ProjectPoint`,
+    `FrozenNow`, `Timestamp`, `Origin`, `PathOwnership`, `AppliedTemplate`
+    (one member's formal name, source, revision, submissions and paths),
+    `SnapshotDocument` (formats 1 and 2, parent and children),
+    `SNAPSHOT_REF_PREFIX`, `SnapshotRef` (parses a ref name into its id),
+    `TreeEntryKind` and `DocumentError`. `SnapshotDocument::from_json` parses
+    and validates a `snapshot.json`; `to_json_bytes` writes the canonical bytes
+    `from_json` accepts; `check_tree` validates a listing of path and
+    `TreeEntryKind` pairs; `templates` yields the parent then each child; and
+    `current` selects the current snapshot of each lineage. Module `answers`
+    holds `AnswersDocument`, Toha's identity envelope, and `ContractDocument`,
+    a JSON object read with its `$schema` identifier. The `toha` crate depends
+    on `toha-documents` and adds Git storage, capture and merge. The crate holds
+    no Intentional release-model types.
+  identity-reading: >-
+    A reader lists `refs/toha/snapshots/`, reads each commit's `snapshot.json`
+    and parses it with the shared crate. A composition's lineage is its parent
+    source and target. The current snapshot of a lineage is its greatest id.
+    The crate exposes that selection so every reader applies one rule. Each
+    current snapshot yields the parent and every child as source, formal name
+    and revision.
+  out-of-scope: >-
+    YAML typed edits, one source applied twice in one composition, children that
+    contribute to other children, `--like` across compositions, and pushing
+    snapshot refs. Toha keeps writing no push configuration; publishing snapshot
+    refs to a remote stays an operator or workflow step.
+open-agreements: >-
+  The answers contract design for Intentional and this design meet at three
+  points, and each needs one statement agreed by both: the release-model
+  document carries its schema identifier, including its major version, in a
+  top-level `$schema` member; Toha routes that document to document questions
+  by that identifier, never by template formal name; and `toha-documents`
+  holds the routing types while Intentional owns its release-model types. The
+  crate, module and type names above are the shape this design proposes for
+  that agreement.
