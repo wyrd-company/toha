@@ -3,7 +3,6 @@ mod cli {
     pub mod guidance;
     pub mod like;
     pub mod resolve;
-    pub mod snapshots;
     pub mod templates;
 }
 mod update;
@@ -326,49 +325,6 @@ enum Command {
         /// Omit the value to choose an application in a terminal.
         #[arg(long, value_name = "SELECTOR", num_args = 0..=1, conflicts_with_all = ["update", "baseline"])]
         like: Option<Option<String>>,
-    },
-    /// Manage the project's update snapshots.
-    Snapshots {
-        #[command(subcommand)]
-        command: SnapshotsCommand,
-    },
-    /// Configure the repository to fetch update snapshots from a remote.
-    Init {
-        /// Target directory (default: the current directory).
-        path: Option<PathBuf>,
-        /// The remote to add the snapshot fetch refspec to.
-        #[arg(long, default_value = "origin")]
-        remote: String,
-    },
-}
-
-#[derive(Subcommand)]
-enum SnapshotsCommand {
-    /// List the target's snapshots, newest first, marking a likely base.
-    List {
-        /// Target directory (default: the current directory).
-        path: Option<PathBuf>,
-        /// Write one JSON document instead of a human-readable list.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Remove snapshots named in a JSON document (the script and agent route).
-    ///
-    /// `--remove FILE` (or `-`) reads `{ "remove": ["<id>", ...] }` and acts
-    /// immediately, writing one JSON result. A request that would remove every
-    /// snapshot of a source is refused unless `--force`.
-    Clean {
-        /// Target directory (default: the current directory).
-        path: Option<PathBuf>,
-        /// Preselect all but the newest N per source (the person route).
-        #[arg(long, value_name = "N")]
-        keep: Option<usize>,
-        /// A JSON document naming the exact snapshots to remove; - reads stdin.
-        #[arg(long, value_name = "FILE")]
-        remove: Option<String>,
-        /// Allow removing every snapshot of a source.
-        #[arg(long)]
-        force: bool,
     },
 }
 
@@ -905,26 +861,8 @@ fn resolve_like_seed(
     let project = toha::applied::Project::open(target).map_err(project_reject)?;
     match selector {
         Some(cli::like::LikeSelector::Reference(reference)) => {
-            if reference == "latest" {
-                return cli::like::legacy_seed(target, source, &reference)
-                    .map(Some)
-                    .map_err(|message| LikeReject {
-                        message,
-                        usage: false,
-                    });
-            }
-            match cli::like::find_required(project.as_ref(), source, &reference) {
-                Ok(application) => Ok(Some(cli::like::seed(&application))),
-                Err(_error) if cli::like::is_legacy_reference(&reference) => {
-                    cli::like::legacy_seed(target, source, &reference)
-                        .map(Some)
-                        .map_err(|message| LikeReject {
-                            message,
-                            usage: false,
-                        })
-                }
-                Err(error) => Err(error.into()),
-            }
+            let application = cli::like::find_required(project.as_ref(), source, &reference)?;
+            Ok(Some(cli::like::seed(&application)))
         }
         // Bare, interactive: the person picker. No project or no candidate means
         // there is nothing to offer, so proceed with a normal apply.
@@ -2857,34 +2795,6 @@ fn main() -> ExitCode {
             })
             .finish()
         }
-        Command::Init { path, remote } => {
-            snapshot_outcome(cli::snapshots::init(path, &remote)).finish()
-        }
-        Command::Snapshots { command } => {
-            let output = match command {
-                SnapshotsCommand::List { path, json } => cli::snapshots::list(path, json),
-                SnapshotsCommand::Clean {
-                    path,
-                    keep: _,
-                    remove: Some(file),
-                    force,
-                } => cli::snapshots::clean_remove(path, &file, force),
-                SnapshotsCommand::Clean { remove: None, .. } => cli::snapshots::SnapshotOutput::Error(
-                    "snapshots clean needs --remove FILE for the script route; the interactive person route is not yet available"
-                        .to_owned(),
-                ),
-            };
-            snapshot_outcome(output).finish()
-        }
-    }
-}
-
-/// Map a snapshot command's output to the shared `Outcome`.
-fn snapshot_outcome(output: cli::snapshots::SnapshotOutput) -> Outcome {
-    match output {
-        cli::snapshots::SnapshotOutput::Lines(lines) => Outcome::Written(lines),
-        cli::snapshots::SnapshotOutput::Document(value) => Outcome::Document(value, 0),
-        cli::snapshots::SnapshotOutput::Error(message) => Outcome::Error(message),
     }
 }
 

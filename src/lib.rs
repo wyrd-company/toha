@@ -47,6 +47,3 @@ pub use review::{
 pub use template::{
     FlowAction, FlowNode, Id, LoadError, Node, Problem, Question, QuestionKind, SkipScope, Template,
 };
-
-/// Legacy snapshot-ref readers and management commands.
-pub mod snapshot;
