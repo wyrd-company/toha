@@ -1,5 +1,5 @@
 use super::*;
-use crate::snapshot::Project;
+use crate::applied::{FrozenNow, Project};
 use crate::staging::canonical_target;
 use std::path::Path;
 use std::process::Command;
@@ -50,65 +50,40 @@ fn hash_object(repo: &Path, bytes: &[u8]) -> String {
         .to_owned()
 }
 
-/// Build a snapshot ref whose files/ holds `files` (target-relative path, bytes),
-/// with the given id and target. Origins are all toha for merge tests.
+thread_local! { static APPLICATIONS: std::cell::RefCell<std::collections::BTreeMap<(std::path::PathBuf,String),Application>> = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) }; }
 fn make_snapshot(dir: &Path, id: &str, target: &str, files: &[(&str, &[u8])]) {
-    let index = dir.join(format!(".idx-{id}"));
-    let _ = std::fs::remove_file(&index);
-    let git_idx = |args: &[&str]| {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(args)
-            .env("GIT_INDEX_FILE", &index)
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_AUTHOR_NAME", "U")
-            .env("GIT_AUTHOR_EMAIL", "u@x.invalid")
-            .env("GIT_COMMITTER_NAME", "U")
-            .env("GIT_COMMITTER_EMAIL", "u@x.invalid")
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
+    let mut paths = Vec::new();
+    let mut entries = std::collections::BTreeMap::new();
+    for (path, bytes) in files {
+        let oid = gix::ObjectId::from_hex(hash_object(dir, bytes).as_bytes()).unwrap();
+        paths.push(
+            crate::applied::PathOwnership::new(
+                crate::TargetPath::parse(path).unwrap(),
+                Origin::Toha,
+            )
+            .with_blob(oid)
+            .with_mode(EntryKind::Blob),
         );
-        String::from_utf8_lossy(&out.stdout).trim().to_owned()
-    };
-    let paths_json: String = files
-        .iter()
-        .map(|(p, _)| format!("    \"{p}\": {{ \"origin\": \"toha\" }}"))
-        .collect::<Vec<_>>()
-        .join(",\n");
-    let json = format!(
-        "{{\n  \"snapshot\": 1,\n  \"id\": \"{id}\",\n  \"template\": \"forge:catalog/receipt@stable\",\n  \"source\": \"forge:catalog/receipt\",\n  \"commit\": \"8be0d41c2f0000000000000000000000000000a1\",\n  \"target\": \"{target}\",\n  \"created\": \"2026-09-30T04:12:00Z\",\n  \"generated\": \"2026-03-14T09:26:53+00:00[UTC]\",\n  \"project\": {{ \"commit\": \"a41c0de00000000000000000000000000000beef\", \"branch\": \"main\" }},\n  \"built_from\": null,\n  \"submissions\": [],\n  \"paths\": {{\n{paths_json}\n  }}\n}}"
-    );
-    let json_oid = hash_object(dir, json.as_bytes());
-    git_idx(&[
-        "update-index",
-        "--add",
-        "--cacheinfo",
-        &format!("100644,{json_oid},snapshot.json"),
-    ]);
-    for (p, bytes) in files {
-        let oid = hash_object(dir, bytes);
-        git_idx(&[
-            "update-index",
-            "--add",
-            "--cacheinfo",
-            &format!("100644,{oid},files/{p}"),
-        ]);
+        entries.insert((*path).to_owned(), (oid, gix::objs::tree::EntryKind::Blob));
     }
-    let tree = git_idx(&["write-tree"]);
-    let commit = git(dir, &["commit-tree", &tree, "-m", "snapshot"]);
-    git(
-        dir,
-        &["update-ref", &format!("refs/toha/snapshots/{id}"), &commit],
+    let mut application = Application::new(
+        "forge:catalog/receipt@stable".into(),
+        Revision::Commit(
+            crate::applied::CommitId::parse("8be0d41c2f0000000000000000000000000000a1").unwrap(),
+        ),
+        RepoPath::parse(target).unwrap(),
+        FrozenNow::parse("2026-03-14T09:26:53+00:00[UTC]").unwrap(),
+        Default::default(),
+        Default::default(),
+        vec![],
+        paths,
     );
-    let _ = std::fs::remove_file(&index);
+    application.files = entries;
+    APPLICATIONS.with(|apps| {
+        apps.borrow_mut()
+            .insert((dir.to_owned(), id.to_owned()), application)
+    });
 }
-
 fn open(dir: &Path, sub: &str) -> Project {
     let target = canonical_target(&dir.join(sub)).unwrap();
     Project::open(&target).unwrap().unwrap()
@@ -153,7 +128,7 @@ fn a_clean_three_way_merge_keeps_operator_and_template_lines() {
     let new = read_snapshot(&project, NEW_ID);
     let result = merge_into_worktree(
         &project,
-        &Base::Snapshot(base),
+        &Base::Application(base),
         &new,
         &MergeOptions {
             trusted: true,
@@ -203,7 +178,7 @@ fn a_template_removed_file_edited_by_the_operator_is_a_modify_delete_conflict() 
     let new = read_snapshot(&project, NEW_ID);
     merge_into_worktree(
         &project,
-        &Base::Snapshot(base),
+        &Base::Application(base),
         &new,
         &MergeOptions {
             trusted: true,
@@ -253,7 +228,7 @@ fn an_occupied_path_refuses_and_cleans_up_the_candidate_ref() {
     let new = read_snapshot(&project, NEW_ID);
     let result = merge_into_worktree(
         &project,
-        &Base::Snapshot(base),
+        &Base::Application(base),
         &new,
         &MergeOptions {
             trusted: true,
@@ -271,16 +246,20 @@ fn an_occupied_path_refuses_and_cleans_up_the_candidate_ref() {
         "operator's own\n"
     );
     let refs = git(root, &["for-each-ref", "refs/toha/snapshots/"]);
-    assert!(refs.contains(BASE_ID), "base ref preserved");
+    assert!(refs.is_empty(), "no refs are created");
     assert!(
         !refs.contains(NEW_ID),
         "candidate ref removed on unsuccessful exit: {refs}"
     );
 }
 
-fn read_snapshot(project: &Project, id: &str) -> Snapshot {
-    let sid: SnapshotId = id.parse().unwrap();
-    project.find(&sid.to_string()).unwrap()
+fn read_snapshot(project: &Project, id: &str) -> Application {
+    APPLICATIONS.with(|apps| {
+        apps.borrow()
+            .get(&(project.repo().workdir().unwrap().to_owned(), id.to_owned()))
+            .unwrap()
+            .clone()
+    })
 }
 
 #[test]
@@ -305,7 +284,7 @@ fn a_target_changed_since_the_start_refuses_with_nothing_written() {
     let new = read_snapshot(&project, NEW_ID);
     let result = merge_into_worktree(
         &project,
-        &Base::Snapshot(base),
+        &Base::Application(base),
         &new,
         &MergeOptions {
             trusted: true,
@@ -367,7 +346,7 @@ fn an_unrelated_dirty_file_in_the_target_fails_the_locked_re_check() {
     let new = read_snapshot(&project, NEW_ID);
     let result = merge_into_worktree(
         &project,
-        &Base::Snapshot(base),
+        &Base::Application(base),
         &new,
         &MergeOptions {
             trusted: true,
@@ -423,7 +402,7 @@ fn a_dirty_target_refuses_at_the_prewrite_recheck_and_writes_nothing() {
     let new = read_snapshot(&project, NEW_ID);
     let result = merge_into_worktree(
         &project,
-        &Base::Snapshot(base),
+        &Base::Application(base),
         &new,
         &MergeOptions {
             trusted: true,
@@ -500,7 +479,7 @@ fn a_failure_after_a_write_but_before_commit_rolls_the_transaction_back() {
     super::inject_fail::arm(1);
     let result = merge_into_worktree(
         &project,
-        &Base::Snapshot(base),
+        &Base::Application(base),
         &new,
         &MergeOptions {
             trusted: true,
@@ -557,7 +536,7 @@ fn a_failure_after_a_write_but_before_commit_rolls_the_transaction_back() {
     // The candidate ref was cleaned up (ref-map restored to just the base).
     let refs = git(root, &["for-each-ref", "refs/toha/snapshots/"]);
     assert!(
-        !refs.contains(NEW_ID) && refs.contains(BASE_ID),
+        refs.is_empty(),
         "candidate ref removed, base preserved: {refs}"
     );
 }
@@ -593,7 +572,7 @@ fn the_write_index_drops_the_stale_cache_tree_extension() {
     let new = read_snapshot(&project, NEW_ID);
     let result = merge_into_worktree(
         &project,
-        &Base::Snapshot(base),
+        &Base::Application(base),
         &new,
         &MergeOptions {
             trusted: true,
@@ -629,7 +608,7 @@ fn run_merge(root: &Path) -> Merged {
     let new = read_snapshot(&project, NEW_ID);
     merge_into_worktree(
         &project,
-        &Base::Snapshot(base),
+        &Base::Application(base),
         &new,
         &MergeOptions {
             trusted: true,
@@ -787,94 +766,6 @@ fn a_driver_attributed_path_is_a_driver_conflict_keeping_operator_bytes() {
 
 /// Set up an occupied-path failure scenario with a base and new snapshot plus a
 /// foreign third snapshot, returning the project ready to merge.
-fn occupied_scenario(root: &Path) {
-    git(root, &["init", "-q", "-b", "main"]);
-    write(&root.join("app/keep.txt"), b"k\n");
-    git(root, &["add", "-A"]);
-    git(root, &["commit", "-q", "-m", "operator"]);
-    write(&root.join("app/added.txt"), b"operator's own\n"); // occupies the add path
-    make_snapshot(root, BASE_ID, "app", &[("keep.txt", b"k\n")]);
-    make_snapshot(
-        root,
-        NEW_ID,
-        "app",
-        &[("keep.txt", b"k\n"), ("added.txt", b"template\n")],
-    );
-}
-
-const FOREIGN_ID: &str = "01JA2B8M4R0C7W1Y5F3H9K2S71";
-
-#[test]
-fn behavior_31_ref_map_unchanged_except_candidate_on_unsuccessful_exit() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
-    occupied_scenario(root);
-    // A foreign snapshot of another source must survive the failed merge.
-    make_snapshot(root, FOREIGN_ID, "app", &[("keep.txt", b"k\n")]);
-
-    let before = git(root, &["for-each-ref", "refs/toha/snapshots/"]);
-    let project = open(root, "app");
-    let base = read_snapshot(&project, BASE_ID);
-    let new = read_snapshot(&project, NEW_ID);
-    let result = merge_into_worktree(
-        &project,
-        &Base::Snapshot(base),
-        &new,
-        &MergeOptions {
-            trusted: true,
-            dry_run: false,
-        },
-    );
-    assert!(matches!(result, Err(MergeError::Occupied(_))));
-
-    let after = git(root, &["for-each-ref", "refs/toha/snapshots/"]);
-    // The candidate ref is gone; base and the foreign ref remain unchanged.
-    assert!(
-        before.contains(NEW_ID) && !after.contains(NEW_ID),
-        "candidate removed"
-    );
-    assert!(after.contains(BASE_ID), "base preserved");
-    assert!(after.contains(FOREIGN_ID), "foreign snapshot preserved");
-    // Only the candidate line differs.
-    let before_no_cand: Vec<&str> = before.lines().filter(|l| !l.contains(NEW_ID)).collect();
-    assert_eq!(
-        before_no_cand,
-        after.lines().collect::<Vec<_>>(),
-        "ref map unchanged except the candidate"
-    );
-}
-
-#[test]
-fn behavior_31_cleanup_preserves_a_ref_replaced_since_publication() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
-    git(root, &["init", "-q", "-b", "main"]);
-    write(&root.join("app/keep.txt"), b"k\n");
-    git(root, &["add", "-A"]);
-    git(root, &["commit", "-q", "-m", "operator"]);
-    make_snapshot(root, NEW_ID, "app", &[("keep.txt", b"k\n")]);
-
-    let project = open(root, "app");
-    let id: SnapshotId = NEW_ID.parse().unwrap();
-    let current = super::published_commit(&project, &id).unwrap();
-    let unrelated = gix::ObjectId::from_hex(git(root, &["rev-parse", "HEAD"]).as_bytes()).unwrap();
-    assert_ne!(current, unrelated, "the commits differ");
-
-    // Cleanup with a stale "published" commit (a concurrent replacement) preserves the ref.
-    super::remove_candidate(&project, &id, unrelated).unwrap();
-    assert!(
-        git(root, &["for-each-ref", "refs/toha/snapshots/"]).contains(NEW_ID),
-        "a ref replaced since publication is preserved"
-    );
-
-    // Cleanup with the real published commit removes it.
-    super::remove_candidate(&project, &id, current).unwrap();
-    assert!(
-        !git(root, &["for-each-ref", "refs/toha/snapshots/"]).contains(NEW_ID),
-        "the exact candidate is removed"
-    );
-}
-
 #[test]
 fn behavior_31_a_held_index_lock_refuses_and_removes_the_candidate() {
     let dir = tempfile::tempdir().unwrap();
@@ -894,7 +785,7 @@ fn behavior_31_a_held_index_lock_refuses_and_removes_the_candidate() {
     let new = read_snapshot(&project, NEW_ID);
     let result = merge_into_worktree(
         &project,
-        &Base::Snapshot(base),
+        &Base::Application(base),
         &new,
         &MergeOptions {
             trusted: true,
@@ -908,10 +799,7 @@ fn behavior_31_a_held_index_lock_refuses_and_removes_the_candidate() {
         "base\n"
     );
     let refs = git(root, &["for-each-ref", "refs/toha/snapshots/"]);
-    assert!(
-        !refs.contains(NEW_ID) && refs.contains(BASE_ID),
-        "candidate removed, base preserved"
-    );
+    assert!(refs.is_empty(), "candidate removed, base preserved");
     assert!(
         root.join(".git/index.lock").exists(),
         "the foreign lock is left in place"
@@ -922,34 +810,30 @@ fn behavior_31_a_held_index_lock_refuses_and_removes_the_candidate() {
 // The shared candidate-tree builder end to end (checkout -> apply -> capture -> merge).
 // --------------------------------------------------------------------------
 
-fn capture_inputs_id(head: &str, seed: u8) -> crate::snapshot::capture::CaptureInputs {
-    use crate::snapshot::record::{CommitId, FrozenNow, ProjectPoint, Revision, Timestamp};
-    crate::snapshot::capture::CaptureInputs {
-        id: SnapshotId::from_parts(seed as u64, [seed; 10]),
+fn capture_inputs_id(_head: &str, _seed: u8) -> crate::applied::capture::CaptureInputs {
+    crate::applied::capture::CaptureInputs {
         template: "forge:catalog/receipt@stable".to_owned(),
         revision: Revision::Commit(
-            CommitId::parse("8be0d41c2f0000000000000000000000000000a1").unwrap(),
+            crate::applied::CommitId::parse("8be0d41c2f0000000000000000000000000000a1").unwrap(),
         ),
         generated: FrozenNow::parse("2026-03-14T09:26:53+00:00[UTC]").unwrap(),
-        created: Timestamp::parse("2026-09-30T04:12:00Z").unwrap(),
-        project: ProjectPoint::new(CommitId::parse(head).unwrap(), Some("main".to_owned())),
-        submissions: vec![],
+        answers: Default::default(),
+        context: Default::default(),
+        parts: vec![],
     }
 }
 
-fn capture_inputs(head: &str) -> crate::snapshot::capture::CaptureInputs {
+fn capture_inputs(head: &str) -> crate::applied::capture::CaptureInputs {
     capture_inputs_id(head, 9)
 }
 
-fn snapshot_inputs() -> crate::snapshot::SnapshotInputs {
-    use crate::snapshot::record::{CommitId, FrozenNow, Revision};
-    crate::snapshot::SnapshotInputs {
+fn snapshot_inputs() -> crate::applied::RecordInputs {
+    use crate::applied::record::{CommitId, Revision};
+    crate::applied::RecordInputs {
         template: "forge:catalog/receipt@stable".to_owned(),
         revision: Revision::Commit(
             CommitId::parse("8be0d41c2f0000000000000000000000000000a1").unwrap(),
         ),
-        generated: FrozenNow::parse("2026-03-14T09:26:53+00:00[UTC]").unwrap(),
-        submissions: vec![],
     }
 }
 
@@ -967,6 +851,7 @@ fn plan_file(src_dir: &Path, path: &str, content: &str) -> crate::plan::PlannedF
 
 fn plan_of(files: Vec<crate::plan::PlannedFile>) -> crate::plan::Plan {
     crate::plan::Plan {
+        record: None,
         files,
         edits: vec![],
         conflicts: vec![],
@@ -1013,7 +898,7 @@ fn the_candidate_builder_and_merge_apply_a_from_update_end_to_end() {
     let runner = crate::hook::ProcessRunner;
     let new = super::build_candidate(
         &project,
-        &Base::Snapshot(base),
+        &Base::Application(base),
         plan,
         capture_inputs(&head),
         true,
@@ -1021,23 +906,20 @@ fn the_candidate_builder_and_merge_apply_a_from_update_end_to_end() {
     )
     .unwrap();
 
-    // The new snapshot captured template v2's both.txt (built through the checkout).
     assert_eq!(
-        git(
-            root,
-            &[
-                "show",
-                &format!("refs/toha/snapshots/{}:files/both.txt", new.id())
-            ]
-        ),
-        "one\ntwo\nthree\nfour\nFIVE",
+        project
+            .repo()
+            .find_blob(new.files["both.txt"].0)
+            .unwrap()
+            .data,
+        b"one\ntwo\nthree\nfour\nFIVE\n"
     );
 
     // Merge the update into the operator: line 1 (operator) and line 5 (template) both apply.
     let base2 = read_snapshot(&project, BASE_ID);
     let result = merge_into_worktree(
         &project,
-        &Base::Snapshot(base2),
+        &Base::Application(base2),
         &new,
         &MergeOptions {
             trusted: true,
@@ -1078,7 +960,7 @@ fn a_successful_update_preserves_the_committed_snapshot_ref_and_reports_it() {
     // Template v2 changes only line 5 — a clean merge with the operator's line 1.
     let new = super::build_candidate(
         &project,
-        &Base::Snapshot(read_snapshot(&project, BASE_ID)),
+        &Base::Application(read_snapshot(&project, BASE_ID)),
         plan_of(vec![plan_file(
             src.path(),
             "both.txt",
@@ -1089,17 +971,10 @@ fn a_successful_update_preserves_the_committed_snapshot_ref_and_reports_it() {
         &crate::hook::ProcessRunner,
     )
     .unwrap();
-    let new_id = *new.id();
-
-    let before = git(root, &["for-each-ref", "refs/toha/snapshots/"]);
-    assert!(
-        before.contains(&new_id.to_string()) && before.contains(BASE_ID),
-        "the candidate ref exists before the merge: {before}"
-    );
-
+    assert!(git(root, &["for-each-ref", "refs/toha/"]).is_empty());
     let result = merge_into_worktree(
         &project,
-        &Base::Snapshot(read_snapshot(&project, BASE_ID)),
+        &Base::Application(read_snapshot(&project, BASE_ID)),
         &new,
         &MergeOptions {
             trusted: true,
@@ -1108,25 +983,10 @@ fn a_successful_update_preserves_the_committed_snapshot_ref_and_reports_it() {
     )
     .unwrap();
 
-    // The reported snapshot equals the captured candidate.
-    match &result {
-        Merged::Written { snapshot, .. } => {
-            assert_eq!(*snapshot, new_id, "the report names the committed snapshot")
-        }
-        other => panic!("expected a written update, got {other:?}"),
-    }
-
-    // Post-commit: the candidate ref is preserved (a successful exit never cleans
-    // it up), alongside the base — no ref was lost by the successful commit.
-    let after = git(root, &["for-each-ref", "refs/toha/snapshots/"]);
-    assert!(
-        after.contains(&new_id.to_string()),
-        "the committed snapshot ref is preserved: {after}"
-    );
-    assert!(
-        after.contains(BASE_ID),
-        "the base ref is preserved: {after}"
-    );
+    assert!(matches!(result, Merged::Written { .. }));
+    let record = project.read_record().unwrap();
+    assert_eq!(record.applications()[0].to_value(), new.to_value());
+    assert!(git(root, &["for-each-ref", "refs/toha/"]).is_empty());
 
     // The committed result is consistent: staging the merged worktree and
     // committing succeeds with no unmerged paths, and the merged bytes are on disk.
@@ -1160,7 +1020,7 @@ fn an_already_current_update_reports_no_change_and_carries_the_frozen_instant() 
     // A plan that reproduces the same content builds a snapshot equal to the base.
     let new = super::build_candidate(
         &project,
-        &Base::Snapshot(read_snapshot(&project, BASE_ID)),
+        &Base::Application(read_snapshot(&project, BASE_ID)),
         plan_of(vec![plan_file(src.path(), "app.txt", "v1\n")]),
         capture_inputs_id(&head, 5),
         true,
@@ -1171,39 +1031,31 @@ fn an_already_current_update_reports_no_change_and_carries_the_frozen_instant() 
     // Behavior 16: the new snapshot carries the frozen `generated` instant.
     assert_eq!(
         new.generated().to_string(),
-        snapshot_inputs().generated.to_string()
+        "2026-03-14T09:26:53+00:00[UTC]"
     );
     // Behavior 15: it is already current.
-    assert!(
-        super::is_already_current(
-            &project,
-            &read_snapshot(&project, BASE_ID),
-            &new,
-            &snapshot_inputs()
-        )
-        .unwrap()
-    );
+    assert!(super::is_already_current(
+        &read_snapshot(&project, BASE_ID),
+        &new,
+        &snapshot_inputs()
+    ));
 
     // A different (edited) template output is NOT already current.
     let src2 = tempfile::tempdir().unwrap();
     let new2 = super::build_candidate(
         &project,
-        &Base::Snapshot(read_snapshot(&project, BASE_ID)),
+        &Base::Application(read_snapshot(&project, BASE_ID)),
         plan_of(vec![plan_file(src2.path(), "app.txt", "v2\n")]),
         capture_inputs_id(&head, 6),
         true,
         &crate::hook::ProcessRunner,
     )
     .unwrap();
-    assert!(
-        !super::is_already_current(
-            &project,
-            &read_snapshot(&project, BASE_ID),
-            &new2,
-            &snapshot_inputs()
-        )
-        .unwrap()
-    );
+    assert!(!super::is_already_current(
+        &read_snapshot(&project, BASE_ID),
+        &new2,
+        &snapshot_inputs()
+    ));
 }
 
 #[test]
@@ -1227,7 +1079,7 @@ fn a_dry_run_previews_the_change_and_saves_nothing() {
     plan.hooks.push(failing_hook());
     let new = super::build_candidate(
         &project,
-        &Base::Snapshot(read_snapshot(&project, BASE_ID)),
+        &Base::Application(read_snapshot(&project, BASE_ID)),
         plan,
         capture_inputs_id(&head, 7),
         false,
@@ -1235,24 +1087,18 @@ fn a_dry_run_previews_the_change_and_saves_nothing() {
     )
     .unwrap();
 
-    // The candidate's own captured tree carries the new render, not the base's
-    // stale bytes: a dry run must still produce an accurate preview, it just
-    // must not run the hook.
-    let captured = git(
-        root,
-        &[
-            "show",
-            &format!("{SNAPSHOT_REF_PREFIX}{}:files/app.txt", new.id()),
-        ],
-    );
     assert_eq!(
-        captured, "v2",
-        "the candidate must capture the new render, not the base's v1"
+        project
+            .repo()
+            .find_blob(new.files["app.txt"].0)
+            .unwrap()
+            .data,
+        b"v2\n"
     );
 
     let result = merge_into_worktree(
         &project,
-        &Base::Snapshot(read_snapshot(&project, BASE_ID)),
+        &Base::Application(read_snapshot(&project, BASE_ID)),
         &new,
         &MergeOptions {
             trusted: true,
@@ -1269,10 +1115,8 @@ fn a_dry_run_previews_the_change_and_saves_nothing() {
         std::fs::read_to_string(root.join("app/app.txt")).unwrap(),
         "v1\n"
     );
-    // A dry run saves nothing: removing the candidate (as merge_apply does) leaves no ref.
-    let published = super::published_commit(&project, new.id()).unwrap();
-    super::remove_candidate(&project, new.id(), published).unwrap();
-    assert!(!git(root, &["for-each-ref", "refs/toha/snapshots/"]).contains(&new.id().to_string()));
+    assert!(git(root, &["for-each-ref", "refs/toha/"]).is_empty());
+    assert!(!root.join(".toha.json").exists());
 }
 
 struct FailingRunner;
@@ -1323,7 +1167,7 @@ fn a_hook_failure_leaves_the_project_unchanged_and_saves_no_ref() {
     // The hook fails in the throwaway checkout.
     let result = super::build_candidate(
         &project,
-        &Base::Snapshot(read_snapshot(&project, BASE_ID)),
+        &Base::Application(read_snapshot(&project, BASE_ID)),
         plan,
         capture_inputs_id(&head, 8),
         true,
@@ -1341,9 +1185,9 @@ fn a_hook_failure_leaves_the_project_unchanged_and_saves_no_ref() {
         "v1\n"
     );
     let refs = git(root, &["for-each-ref", "refs/toha/snapshots/"]);
-    assert!(refs.contains(BASE_ID), "base preserved");
+    assert!(refs.is_empty(), "no Toha refs");
     // Only the base ref exists (the candidate was never published).
-    assert_eq!(refs.lines().count(), 1, "no candidate ref saved: {refs}");
+    assert!(refs.is_empty(), "no candidate ref saved: {refs}");
 }
 
 #[test]

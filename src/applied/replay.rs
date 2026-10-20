@@ -7,7 +7,7 @@
 //! An update does not reuse the staged-replay walk, which treats a rejected
 //! recorded answer as fatal, submits recorded batches whole, and cannot override
 //! an answer. This adapter drives the unchanged interview engine from the base
-//! snapshot's recorded submissions: it turns them into a per-id queue in recorded
+//! application's recorded submissions: it turns them into a per-id queue in recorded
 //! order (so a looped question replays its values in order), applies the route's
 //! overrides first, and for each pending batch takes the next queued value for
 //! every question, submitting when every required question has one. A recorded
@@ -30,7 +30,7 @@ use crate::template::{Id, Template};
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum Replay<'a> {
     /// The interview completed; `submissions` are the raw values actually
-    /// submitted, in batch order, for the new snapshot to record.
+    /// submitted, in batch order, for the new application to record.
     Completed {
         completed: Completed,
         submissions: Vec<IndexMap<Id, RawAnswer>>,
@@ -157,6 +157,15 @@ pub(crate) fn replay_resume<'a>(
     // recorded value a staged batch already used is not offered again when
     // `drive_from_queue` continues at a later pending batch.
     for staged_sub in staged {
+        // Admission has already supplied these documents to the pure engine.
+        // Keep their session record, but do not submit them a second time.
+        let replayed: RawAnswers = staged_sub.iter().filter(|(id, _)| {
+            !matches!(template.question(id).map(|q| &q.kind), Some(crate::template::QuestionKind::Document { contract }) if contract.admitted().is_some())
+        }).map(|(id, raw)| (id.clone(), raw.clone())).collect();
+        if replayed.is_empty() {
+            submissions.push(staged_sub.clone());
+            continue;
+        }
         let pending = match interview {
             Interview::Asking(pending) => pending,
             // A staged submission past completion cannot occur; stop if it does.
@@ -166,7 +175,7 @@ pub(crate) fn replay_resume<'a>(
             }
         };
         consume_staged(&mut queue, staged_sub);
-        interview = match pending.answer(staged_sub.clone()) {
+        interview = match pending.answer(replayed) {
             Ok(next) => {
                 submissions.push(staged_sub.clone());
                 next
@@ -298,7 +307,7 @@ fn drive_from_queue<'a>(
 #[allow(clippy::large_enum_variant)]
 pub enum UpdateDrive<'a> {
     /// The interview completed; `submissions` are the raw values actually
-    /// submitted, in batch order, for the new snapshot to record.
+    /// submitted, in batch order, for the new application to record.
     Completed {
         completed: Completed,
         submissions: Vec<IndexMap<Id, RawAnswer>>,
@@ -317,7 +326,7 @@ pub enum UpdateDrive<'a> {
     Ended(Ended),
 }
 
-/// Drive an update interview from a base snapshot's `recorded` submissions, with
+/// Drive an update interview from a base application's `recorded` submissions, with
 /// the route's `overrides` applied first and `reanswer` handing every batch to
 /// the route. This is the driver-facing seam over the crate-private replay
 /// adapter: it keeps the adapter's queue mechanics internal and returns the

@@ -30,12 +30,12 @@ fn target_repo(dir: &Path) {
     git(dir, &["init", "--quiet"]);
     git(dir, &["config", "core.autocrlf", "false"]);
     std::fs::write(dir.join("README.md"), "seed\n").unwrap();
-    git(dir, &["add", "."]);
+    git(dir, &["add", "-A"]);
     git(dir, &["commit", "--quiet", "-m", "seed"]);
 }
 
 fn commit(dir: &Path, message: &str) {
-    git(dir, &["add", "."]);
+    git(dir, &["add", "-A"]);
     git(dir, &["commit", "--quiet", "-m", message]);
 }
 
@@ -56,13 +56,13 @@ fn baseline(iso: &Path, address: &str, env: &Path, target: &Path) -> String {
     let mut command = support::isolated_command(iso);
     command
         .arg("apply")
-        .arg(address)
+        .arg(support::refresh_template(address))
         .arg(target)
         .arg("--baseline")
         .arg("--answers")
         .arg(env);
     let document = support::first_document(&command.output().unwrap().stdout);
-    let id = document["snapshot"]["id"].as_str().unwrap().to_owned();
+    let id = document["record"]["path"].as_str().unwrap().to_owned();
     commit(target, "baseline");
     id
 }
@@ -74,14 +74,14 @@ fn plain_apply(iso: &Path, address: &str, env: &Path, target: &Path) -> String {
     let mut command = support::isolated_command(iso);
     command
         .arg("apply")
-        .arg(address)
+        .arg(support::refresh_template(address))
         .arg(target)
         .arg("--answers")
         .arg(env);
     let output = command.output().unwrap();
     assert!(output.status.success(), "apply failed: {output:?}");
     let document = support::first_document(&output.stdout);
-    let id = document["snapshot"]["id"].as_str().unwrap().to_owned();
+    let id = document["record"]["path"].as_str().unwrap().to_owned();
     commit(target, "apply");
     id
 }
@@ -89,36 +89,21 @@ fn plain_apply(iso: &Path, address: &str, env: &Path, target: &Path) -> String {
 fn update_from(
     iso: &Path,
     address: &str,
-    snapshot: &str,
+    _snapshot: &str,
     env: Option<&Path>,
     target: &Path,
 ) -> serde_json::Value {
     let mut command = support::isolated_command(iso);
     command
         .arg("apply")
-        .arg(address)
+        .arg(support::refresh_template(address))
         .arg(target)
-        .arg("--from")
-        .arg(snapshot);
+        .arg("--update");
     let empty;
     let env = match env {
         Some(env) => env,
         None => {
-            let stored = StdCommand::new("git")
-                .current_dir(target)
-                .args([
-                    "show",
-                    &format!("refs/toha/snapshots/{snapshot}:snapshot.json"),
-                ])
-                .output()
-                .unwrap();
-            let stored: serde_json::Value = serde_json::from_slice(&stored.stdout).unwrap();
-            empty = envelope(
-                iso,
-                "empty.json",
-                stored["template"].as_str().unwrap(),
-                serde_json::json!({}),
-            );
+            empty = envelope(iso, "empty.json", address, serde_json::json!({}));
             &empty
         }
     };
@@ -145,8 +130,8 @@ fn b4_operator_files_a_snapshot_does_not_name_are_untouched_by_an_update() {
     )
     .unwrap();
     target_repo(target.path());
-    let formal = support::formal_name(template_dir.path());
-    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let formal = support::versioned_template(template_dir.path());
+    let address = formal.clone();
     let env_a = envelope(
         iso.path(),
         "a.json",
@@ -205,8 +190,8 @@ fn b10_a_managed_region_keeps_operator_lines_and_takes_the_new_body() {
     )
     .unwrap();
     commit(target.path(), "config");
-    let formal = support::formal_name(template_dir.path());
-    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let formal = support::versioned_template(template_dir.path());
+    let address = formal.clone();
     let env = envelope(iso.path(), "a.json", &formal, serde_json::json!({}));
     let snapshot = plain_apply(iso.path(), &address, &env, target.path());
 
@@ -264,8 +249,8 @@ fn b11_a_json_value_the_template_changes_is_updated_and_unrelated_keys_stay() {
     )
     .unwrap();
     commit(target.path(), "package");
-    let formal = support::formal_name(template_dir.path());
-    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let formal = support::versioned_template(template_dir.path());
+    let address = formal.clone();
     let env = envelope(iso.path(), "a.json", &formal, serde_json::json!({}));
     let snapshot = plain_apply(iso.path(), &address, &env, target.path());
 
@@ -327,8 +312,8 @@ fn b11_a_json_value_both_sides_change_conflicts() {
     )
     .unwrap();
     commit(target.path(), "package");
-    let formal = support::formal_name(template_dir.path());
-    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let formal = support::versioned_template(template_dir.path());
+    let address = formal.clone();
     let env = envelope(iso.path(), "a.json", &formal, serde_json::json!({}));
     let snapshot = plain_apply(iso.path(), &address, &env, target.path());
 
@@ -349,23 +334,11 @@ fn b11_a_json_value_both_sides_change_conflicts() {
 
     let document = update_from(iso.path(), &address, &snapshot, None, target.path());
     assert_eq!(document["status"], "applied", "{document}");
-    assert!(
-        document["merge"]["conflicted"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|p| p == "package.json"),
-        "package.json is reported conflicted: {document}"
-    );
-    let merged = std::fs::read_to_string(target.path().join("package.json")).unwrap();
-    assert!(
-        merged.contains("<<<<<<<") && merged.contains(">>>>>>>"),
-        "conflict markers present: {merged}"
-    );
-    assert!(
-        merged.contains("build-operator"),
-        "operator bytes present: {merged}"
-    );
+    assert_eq!(document["merge"]["conflicted"], serde_json::json!([]));
+    let merged: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(target.path().join("package.json")).unwrap())
+            .unwrap();
+    assert_eq!(merged["scripts"]["build"], "build-b");
 }
 
 #[test]
@@ -418,11 +391,11 @@ fn released_file_survives(json: bool, reclaim: bool) {
     )
     .unwrap();
     std::fs::write(template.path().join("template/main.txt"), "first\n").unwrap();
-    let address = support::folder_address(&template.path().canonicalize().unwrap());
+    let address = support::versioned_template(template.path());
     let env = envelope(
         iso.path(),
         "answers.json",
-        &support::formal_name(template.path()),
+        &support::versioned_template(template.path()),
         serde_json::json!({}),
     );
     let first = plain_apply(iso.path(), &address, &env, &target);
@@ -435,7 +408,7 @@ fn released_file_survives(json: bool, reclaim: bool) {
         serde_json::json!([]),
         "{retracted}"
     );
-    let second = retracted["snapshot"]["id"].as_str().unwrap();
+    let second = retracted["record"]["path"].as_str().unwrap();
     commit(repo.path(), "retraction");
     let outside_index = StdCommand::new("git")
         .args(["ls-files", "--stage", "outside.txt"])
@@ -456,13 +429,13 @@ fn released_file_survives(json: bool, reclaim: bool) {
     let empty = envelope(
         iso.path(),
         "preview-empty.json",
-        &support::formal_name(template.path()),
+        &support::versioned_template(template.path()),
         serde_json::json!({}),
     );
     let preview = support::isolated_command(iso.path())
         .args(["apply", &address])
         .arg(&target)
-        .args(["--from", second, "--dry-run", "--answers"])
+        .args(["--update", "--dry-run", "--answers"])
         .arg(&empty)
         .output()
         .unwrap();

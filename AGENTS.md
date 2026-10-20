@@ -30,12 +30,14 @@ Toha generates files from reusable templates and lets people, scripts, and agent
 - **Alias:** A user-chosen template name.
 - **Trust:** Permission to run template hooks.
 - **Plan:** The files and conflicts computed before writing.
-- **Snapshot:** The stored output of one apply, kept as a parentless git commit under a Toha-owned ref (`refs/toha/snapshots/<id>`), holding the rendered files and the answers that produced them.
-- **Base snapshot:** The snapshot an update merges from, three-way, to carry a template's changes into a project while the operator's edits survive.
-- **Baseline:** An apply that adopts an existing project against an empty base, recording the first snapshot without a prior one.
-- **Generator:** An apply pattern that writes one template repeatedly into project subpaths, each application carrying its own answers and identity `(source, target)`; not a `template.yml` object.
-- **Seed selector:** The `--like` value that names a snapshot whose recorded answers pre-fill a new application's defaults — `latest`, a snapshot id or prefix, or a person-route picker.
-- **Snapshot-seeded default:** A default that enters the interview engine as a `Snapshot` bank entry, folded from a selected snapshot's submissions; a route answer still overrides it and a wrong-kind value is dropped.
+- **Applied record:** The committed `.toha.json` at the repository root, or the `TOHA_RECORD` path, recording each template application's identity, answers, parts, context and ownership.
+- **Application:** One source and target pair in the applied record.
+- **Merge base:** The ancestor bytes used in a three-way update, rendered from the application's recorded inputs and verified against its blob identities.
+- **Baseline:** An adoption against an empty merge base that writes an application entry.
+- **Re-baseline:** An explicit `--baseline` adoption when an application has no reproducible merge base.
+- **Generator:** An apply pattern that writes one template into project subpaths; each source and target pair has its own application entry.
+- **Seed selector:** The `--like` target naming another application of the same source, or a bare person-route picker.
+- **Application-seeded default:** A raw answer copied from the seed application; a route answer overrides it and a wrong-kind value is dropped.
 
 ## Thar be dragons
 

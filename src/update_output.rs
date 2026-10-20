@@ -5,7 +5,7 @@
 // ---
 //! Completion output for person and staged-agent project updates.
 use crate::Outcome;
-use toha::snapshot::UpdateReport;
+use toha::applied::UpdateReport;
 
 pub(crate) fn text_outcome(outcome: Outcome, report: &UpdateReport, dry_run: bool) -> Outcome {
     let Outcome::Document(document, 0) = outcome else {
@@ -63,14 +63,14 @@ pub(crate) fn text_outcome(outcome: Outcome, report: &UpdateReport, dry_run: boo
         if document["trusted"] == false {
             lines.push("Hooks need trust; rerun with --trust after reviewing them.".into());
         }
-        lines.push("No snapshot saved: preview.".into());
+        lines.push("No applied record written: preview.".into());
     } else if status == "already-current" {
-        lines.push("No snapshot saved: already current.".into());
+        lines.push("No applied record written: already current.".into());
         if dry_run {
             lines.push("Preview only; no changes written.".into());
         }
-    } else if let Some(id) = document["snapshot"]["id"].as_str() {
-        lines.push(format!("Saved snapshot {id}"));
+    } else if let Some(id) = document["record"]["path"].as_str() {
+        lines.push(format!("Saved applied record {id}"));
     }
     if document["merge"]["conflicted"]
         .as_array()
@@ -99,7 +99,7 @@ mod tests {
     fn update_summary_lists_actions_conflicts_and_snapshot() {
         let text = lines(
             json!({"context":{"template":"sample-template","target":"/sample"},
-            "status":"applied", "snapshot":{"id":"sample-id"}, "merge":{
+            "status":"applied", "record":{"path":"sample-id"}, "merge":{
             "changes":[{"action":"added","path":"a.txt"},{"action":"updated","path":"b.txt"},
             {"action":"merged","path":"c.txt"},{"action":"deleted","path":"d.txt"},
             {"action":"conflicted","path":"e.txt","conflict":"content"},
@@ -118,7 +118,7 @@ mod tests {
                 "Deleted d.txt",
                 "Conflicted e.txt (content)",
                 "Not previewed f.txt",
-                "Saved snapshot sample-id",
+                "Saved applied record sample-id",
                 "Resolve conflicts in these files before committing."
             ]
         );
@@ -139,18 +139,26 @@ mod tests {
                 .iter()
                 .any(|s| s == "Hooks need trust; rerun with --trust after reviewing them.")
         );
-        assert!(planned.iter().any(|s| s == "No snapshot saved: preview."));
+        assert!(
+            planned
+                .iter()
+                .any(|s| s == "No applied record written: preview.")
+        );
         let current = lines(
-            json!({"context":{},"status":"already-current","snapshot":{"id":"base-id"}}),
+            json!({"context":{},"status":"already-current","record":{"path":"base-id"}}),
             true,
         );
         assert!(current.iter().any(|s| s == "Already current."));
         assert!(
             current
                 .iter()
-                .any(|s| s == "No snapshot saved: already current.")
+                .any(|s| s == "No applied record written: already current.")
         );
-        assert!(!current.iter().any(|s| s.starts_with("Saved snapshot ")));
+        assert!(
+            !current
+                .iter()
+                .any(|s| s.starts_with("Saved applied record "))
+        );
         assert!(
             current
                 .iter()

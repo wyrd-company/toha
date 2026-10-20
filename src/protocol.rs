@@ -58,7 +58,7 @@ fn context_value(context: &Context) -> Value {
 /// The shared shell of a result document — `protocol`, `status`, and `context` —
 /// that a caller extends with the members of a specific status. The update route
 /// uses it to build the `applied`, `planned`, and `already-current` documents
-/// with their `snapshot` and `merge` members.
+/// with their `record` and `merge` members.
 pub fn shell(status: &str, context: &Context) -> Value {
     json!({ "protocol": 1, "status": status, "context": context_value(context) })
 }
@@ -321,7 +321,7 @@ pub enum ErrorKind {
     Ambiguous,
     /// A `--like` seed selector could not be honoured (unknown, ambiguous,
     /// wrong-source, absent, or no project). Exit 1.
-    Snapshot,
+    Record,
     /// A program the template `requires` is not on `PATH`. Exit 1.
     Requirement,
     /// The `git` question's repository could not be set up: the remote already
@@ -341,7 +341,7 @@ impl ErrorKind {
             Self::Render => "render",
             Self::Hook => "hook",
             Self::Ambiguous => "ambiguous",
-            Self::Snapshot => "snapshot",
+            Self::Record => "record",
             Self::Requirement => "requirement",
             Self::Git => "git",
         }
@@ -549,7 +549,7 @@ pub fn answer_document_once<'a>(
 
 /// Verify an answers envelope's identity against `expected_template` and return
 /// its raw answer map. The update route uses this to read override answers and to
-/// enforce that an update document names the base snapshot's template: the same
+/// enforce that an update document names the base application's template: the same
 /// exact-string identity check the scripted route applies, before any evaluation.
 pub fn verify_answers(
     expected_template: &str,

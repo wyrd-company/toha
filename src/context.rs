@@ -69,10 +69,21 @@ pub const ENVIRONMENT_NAMES: [&str; 5] = [
 /// A current context projects the seventeen reserved names; a legacy context
 /// (restored from a pre-context staged record) projects none of them and keeps
 /// the pre-context Jinja contract.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct InvocationContext {
     target: CanonicalTarget,
     contract: ContextContract,
+    recorded: BTreeMap<String, Value>,
+}
+
+impl std::fmt::Debug for InvocationContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InvocationContext")
+            .field("target", &self.target)
+            .field("contract", &self.contract)
+            .field("recorded", &self.recorded.keys().collect::<Vec<_>>())
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -116,6 +127,7 @@ impl InvocationContext {
         }
         Ok(Self {
             target,
+            recorded: BTreeMap::new(),
             contract: ContextContract::Current(CurrentContext {
                 selected,
                 host,
@@ -131,6 +143,7 @@ impl InvocationContext {
     pub(crate) fn legacy(target: CanonicalTarget) -> Self {
         Self {
             target,
+            recorded: BTreeMap::new(),
             contract: ContextContract::Legacy,
         }
     }
@@ -146,6 +159,7 @@ impl InvocationContext {
     pub fn for_target(target: CanonicalTarget) -> Self {
         Self {
             target,
+            recorded: BTreeMap::new(),
             contract: ContextContract::Current(CurrentContext {
                 selected: SelectedTemplate::new(
                     "template".to_owned(),
@@ -212,6 +226,7 @@ impl InvocationContext {
                 environment,
             } => Self {
                 target,
+                recorded: BTreeMap::new(),
                 contract: ContextContract::Current(CurrentContext {
                     selected: SelectedTemplate {
                         formal_name: formal_name.to_owned(),
@@ -225,6 +240,12 @@ impl InvocationContext {
                 }),
             },
         }
+    }
+
+    /// Restore the inputs that the recorded template read for a merge-base render.
+    pub fn with_recorded(mut self, values: BTreeMap<String, Value>) -> Self {
+        self.recorded = values;
+        self
     }
 
     /// Inserts the seventeen reserved names into a Jinja evaluation context. A
@@ -289,6 +310,7 @@ impl InvocationContext {
         set("toha_env_editor", optional(env.field(EnvField::Editor)));
         set("toha_env_shell", optional(env.field(EnvField::Shell)));
         set("toha_env_visual", optional(env.field(EnvField::Visual)));
+        out.extend(self.recorded.clone());
     }
 }
 

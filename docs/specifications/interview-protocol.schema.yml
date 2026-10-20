@@ -70,28 +70,21 @@ $defs:
       `overwrite` an existing one, refuse it as a `conflict` in a dry run, or
       `inject`/`update` a region or value of a target.
     enum: [ create, overwrite, conflict, inject, update ]
-  snapshot_outcome:
-    description: >-
-      What the apply did about its snapshot: the `id` it saved, the reason it
-      `skipped` the save, or a capture `error` after the files were written.
+  record_outcome:
+    description: The committed applied record path, or not-git outside a work tree.
     type: object
     additionalProperties: false
     properties:
-      id:
-        type: string
-      skipped:
-        enum: [ not-git, no-commit, dirty, nothing-changed, dry-run ]
-      error:
-        type: string
+      path: {type: string, minLength: 1}
+      skipped: {const: not-git}
     oneOf:
-      - required: [ id ]
-      - required: [ skipped ]
-      - required: [ error ]
+      - required: [path]
+      - required: [skipped]
   seed:
     description: >-
       Present only when `--like` seeded this interview's answer defaults from a
-      snapshot of a prior application of the same source. `from` is that
-      snapshot's id; the member carries no answer values.
+      prior application of the same source. `from` is its repository-relative
+      target; the member carries no answer values.
     type: object
     additionalProperties: false
     required: [ from ]
@@ -136,8 +129,7 @@ $defs:
           type: string
   already_current:
     description: >-
-      An update whose re-render equals the base snapshot: nothing is written and
-      no new snapshot is saved. `snapshot` names the base it is already at.
+      An update whose settled render inputs and output equal the recorded application. Nothing is written.
     type: object
     additionalProperties: false
     required: [ protocol, status, context ]
@@ -148,8 +140,8 @@ $defs:
         const: already-current
       context:
         $ref: "#/$defs/context"
-      snapshot:
-        $ref: "#/$defs/snapshot_outcome"
+      record:
+        $ref: "#/$defs/record_outcome"
   batch:
     type: object
     additionalProperties: false
@@ -193,7 +185,7 @@ $defs:
       success. Captured hook streams never appear here.
     type: object
     additionalProperties: false
-    required: [ protocol, status, context, files, messages, hooks, snapshot ]
+    required: [ protocol, status, context, files, messages, hooks, record ]
     properties:
       protocol:
         const: 1
@@ -227,8 +219,8 @@ $defs:
               type: [ integer, "null" ]
             success:
               type: boolean
-      snapshot:
-        $ref: "#/$defs/snapshot_outcome"
+      record:
+        $ref: "#/$defs/record_outcome"
       merge:
         $ref: "#/$defs/merge"
       seed:
@@ -343,7 +335,7 @@ $defs:
           - render
           - hook
           - ambiguous
-          - snapshot
+          - record
           - requirement
           - git
       message:

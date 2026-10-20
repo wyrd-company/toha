@@ -39,3 +39,5 @@ To isolate a run from the caller's configuration, registry, and staged interview
 - Windows: also `APPDATA`, `LOCALAPPDATA`, and `PROGRAMDATA`. `PROGRAMDATA` holds the system configuration and registry, so a system trusted entry applies unless it is set.
 
 On Linux and macOS the system files (`/etc/toha/config.yml`, `/usr/local/share/toha/templates.yml`) have no variable and always apply.
+
+`TOHA_RECORD` sets the applied record path relative to the Git repository root; the default is `.toha.json`. Absolute paths, `..` components and symbolic-link components are refused before the interview.

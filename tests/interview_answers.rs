@@ -1657,7 +1657,7 @@ fn a_snapshot_seeded_id_is_prepared_exactly_once_with_a_single_occupant() {
     // Snapshot, pushes the prompt twice (duplicate preparation); the batch then
     // holds two `style` prompts and the exactly-once assertion fails.
     use indexmap::IndexMap;
-    use toha::interview::{SnapshotSeed, configured_defaults};
+    use toha::interview::{ApplicationSeed, configured_defaults};
     use toha::{Id, Interview, Item, RawAnswer};
 
     let (_folder, template) = inline(
@@ -1670,7 +1670,7 @@ fn a_snapshot_seeded_id_is_prepared_exactly_once_with_a_single_occupant() {
     let now = seed().now;
     let mut defaults: IndexMap<Id, RawAnswer> = IndexMap::new();
     defaults.insert(Id::parse("style").unwrap(), RawAnswer(json!("panel")));
-    let snap_seed = SnapshotSeed {
+    let snap_seed = ApplicationSeed {
         defaults,
         from: "01J9Z4K7QX6M2V8R0T5B3N1P9D".to_owned(),
     };

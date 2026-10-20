@@ -87,33 +87,6 @@ impl Project {
         &self.rel
     }
 
-    /// The opened repository, with drivers already stripped. Crate-internal seams
-    /// (capture, merge) read and write git objects through it.
-    pub(crate) fn repo(&self) -> &gix::Repository {
-        &self.repo
-    }
-
-    /// Capture a snapshot of the applied target read at `source_dir` (the project
-    /// working tree for a plain apply, the throwaway checkout for `--from`),
-    /// against an optional `base` snapshot. Returns the saved id.
-    pub fn capture(
-        &self,
-        source_dir: &std::path::Path,
-        plan: &crate::plan::Plan,
-        base: Option<&Snapshot>,
-        inputs: crate::snapshot::capture::CaptureInputs,
-    ) -> Result<SnapshotId, SnapshotError> {
-        let plan_paths = crate::snapshot::capture::group_plan(plan);
-        crate::snapshot::capture::capture(
-            &self.repo,
-            source_dir,
-            &self.rel,
-            &plan_paths,
-            base,
-            inputs,
-        )
-    }
-
     /// Whether the target directory has no tracked modification, no staged
     /// change, and no untracked file git does not ignore. Dirt outside the
     /// target does not count.
@@ -610,117 +583,6 @@ impl Project {
         }
         Ok(())
     }
-
-    /// Decide and, when the rules allow, capture the snapshot of a plain apply.
-    /// A plain apply saves a snapshot when the target is inside a repository with
-    /// a commit, was clean before the apply, and the apply changed a path;
-    /// otherwise it saves nothing and names why. `was_clean` is the target's
-    /// cleanliness taken before the apply wrote. The apply wrote into the real
-    /// working tree at the project's target, so capture reads from the
-    /// repository working-tree root and addresses each file by its repo-relative
-    /// path (root and subpath targets alike), never by joining a target-relative
-    /// path onto the target directory. The caller reports [`SkipReason::NotGit`]
-    /// when there is no project and [`SkipReason::DryRun`] when nothing was
-    /// applied.
-    pub fn save_after_apply(
-        &self,
-        plan: &crate::plan::Plan,
-        template: String,
-        revision: crate::snapshot::Revision,
-        generated: crate::snapshot::FrozenNow,
-        submissions: Vec<indexmap::IndexMap<String, serde_json::Value>>,
-        was_clean: bool,
-    ) -> Result<SnapshotOutcome, SnapshotError> {
-        use crate::snapshot::record::{CommitId, ProjectPoint, Timestamp};
-
-        // The apply wrote into the working tree; capture reads from its root so a
-        // repo-relative path (`<target>/<file>`) resolves once, not doubled onto
-        // the target directory. Canonicalized to match `Project::open`'s `rel`.
-        let workdir = self
-            .repo
-            .workdir()
-            .ok_or_else(|| SnapshotError::Git("repository has no working tree".into()))?
-            .to_owned()
-            .canonicalize()
-            .map_err(|err| SnapshotError::Git(err.to_string()))?;
-
-        // No commit: there is no HEAD point to record.
-        let head = match self.repo.head_id() {
-            Ok(head) => head.detach(),
-            Err(_) => return Ok(SnapshotOutcome::Skipped(SkipReason::NoCommit)),
-        };
-        // A target that was dirty before the apply saves nothing.
-        if !was_clean {
-            return Ok(SnapshotOutcome::Skipped(SkipReason::Dirty));
-        }
-
-        let commit = CommitId::parse(&head.to_hex().to_string())
-            .map_err(|err| SnapshotError::Git(err.to_string()))?;
-        let branch = self
-            .repo
-            .head_name()
-            .map_err(|err| SnapshotError::Git(err.to_string()))?
-            .map(|name| name.shorten().to_string());
-        let inputs = crate::snapshot::capture::CaptureInputs {
-            id: SnapshotId::generate(),
-            template,
-            revision,
-            generated,
-            created: Timestamp::now(),
-            project: ProjectPoint::new(commit, branch),
-            submissions,
-        };
-        // Nothing changed: no captured path differs from HEAD, so save nothing.
-        // The test is scoped to the paths the apply owns, not whole-target
-        // cleanliness, so an unrelated edit never makes a snapshot and an ignored
-        // output never hides a real one.
-        let plan_paths = crate::snapshot::capture::group_plan(plan);
-        match crate::snapshot::capture::capture_if_changed(
-            &self.repo,
-            &workdir,
-            &self.rel,
-            &plan_paths,
-            inputs,
-        )? {
-            Some(id) => Ok(SnapshotOutcome::Saved(id)),
-            None => Ok(SnapshotOutcome::Skipped(SkipReason::NothingChanged)),
-        }
-    }
-}
-
-/// What a plain apply did about its snapshot: saved one, or skipped it and why.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SnapshotOutcome {
-    Saved(SnapshotId),
-    Skipped(SkipReason),
-}
-
-/// Why a plain apply saved no snapshot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SkipReason {
-    /// The target is not inside a git repository.
-    NotGit,
-    /// The repository has no commit yet.
-    NoCommit,
-    /// The target had uncommitted changes before the apply.
-    Dirty,
-    /// The apply changed no path.
-    NothingChanged,
-    /// The apply was a dry run.
-    DryRun,
-}
-
-impl SkipReason {
-    /// The stable name of a skip reason for a result document.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            SkipReason::NotGit => "not-git",
-            SkipReason::NoCommit => "no-commit",
-            SkipReason::Dirty => "dirty",
-            SkipReason::NothingChanged => "nothing-changed",
-            SkipReason::DryRun => "dry-run",
-        }
-    }
 }
 
 /// One entry from [`Project::snapshots`]: a valid snapshot, or a ref that could
@@ -861,6 +723,3 @@ pub enum ProjectError {
     #[error(transparent)]
     Snapshot(#[from] SnapshotError),
 }
-
-#[cfg(test)]
-mod tests;

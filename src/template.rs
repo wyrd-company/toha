@@ -85,6 +85,7 @@ pub struct Template {
     /// any compiled surface can observe a fixed environment value, and the first
     /// location that does.
     environment_need: EnvironmentNeed,
+    context_references: HashSet<String>,
     /// Every hook-result name a template author may read: each producer `id` and
     /// each declared `status_id`. A reference whose root is in this set is a hook
     /// result read, resolved by `settle_hook_results` at load, not an ordinary
@@ -114,6 +115,27 @@ pub enum SourceBody {
     NonUtf8,
 }
 impl Template {
+    /// Reserved host/environment values referenced on any compiled surface.
+    pub fn record_context(
+        &self,
+        context: Option<&crate::context::InvocationContext>,
+    ) -> std::collections::BTreeMap<String, Value> {
+        let mut values = std::collections::BTreeMap::new();
+        if let Some(context) = context {
+            context.project(&mut values);
+        }
+        values.retain(|name, _| {
+            self.context_references.contains(name)
+                && (name == "toha_target_name"
+                    || name == "toha_template_aliases"
+                    || name == "toha_template_source"
+                    || name.starts_with("toha_host_")
+                    || name.starts_with("toha_is_")
+                    || name.starts_with("toha_env_"))
+        });
+        values
+    }
+
     /// Combines the immutable render-program analysis with one caller decision,
     /// capturing the closed five-value environment snapshot exactly once when
     /// granted and never otherwise.
@@ -1704,7 +1726,7 @@ impl Template {
                 problems: b.problems,
             });
         }
-        let environment_need = compute_environment_need(
+        let (environment_need, context_references) = compute_environment_need(
             &interview,
             &files,
             &inject,
@@ -1732,6 +1754,7 @@ impl Template {
             render_program,
             reserves_context,
             environment_need,
+            context_references,
             result_ids: b.result_ids,
         })
     }
@@ -1883,7 +1906,7 @@ fn compute_environment_need(
     hooks: &[HookNode],
     messages: &ApplyMessages,
     render_program: &[SourceEntry],
-) -> EnvironmentNeed {
+) -> (EnvironmentNeed, HashSet<String>) {
     let mut find = NeedScan::default();
     find.nodes(interview, "interview");
     for (i, rule) in inject.iter().enumerate() {
@@ -1916,16 +1939,18 @@ fn compute_environment_need(
             find.file_tmpl(body, &label);
         }
     }
-    match find.found {
+    let need = match find.found {
         Some(origin) => EnvironmentNeed::Needed(origin),
         None => EnvironmentNeed::None,
-    }
+    };
+    (need, find.references)
 }
 
 /// Accumulates the first environment-need location across the render program.
 #[derive(Default)]
 struct NeedScan {
     found: Option<RenderOrigin>,
+    references: HashSet<String>,
 }
 impl NeedScan {
     fn mark(&mut self, label: &str, needed: bool) {
@@ -1934,12 +1959,14 @@ impl NeedScan {
         }
     }
     fn tmpl(&mut self, tmpl: &Tmpl, label: &str) {
+        self.references.extend(tmpl.references().iter().cloned());
         self.mark(label, tmpl.needs_environment());
     }
     /// A file body's need is transitive: it is true when the body or any partial
     /// it selects can observe a fixed value, so an environment read reached only
     /// through a nested include still marks the load.
     fn file_tmpl(&mut self, body: &FileTmpl, label: &str) {
+        self.references.extend(body.references().iter().cloned());
         self.mark(label, body.needs_environment());
     }
     fn opt_tmpl(&mut self, tmpl: Option<&Tmpl>, label: &str) {
@@ -1948,6 +1975,7 @@ impl NeedScan {
         }
     }
     fn expr(&mut self, expr: &Expr, label: &str) {
+        self.references.extend(expr.references().iter().cloned());
         self.mark(label, expr.needs_environment());
     }
     fn opt_expr(&mut self, expr: Option<&Expr>, label: &str) {
@@ -1956,6 +1984,7 @@ impl NeedScan {
         }
     }
     fn typed<T: Clone + serde::de::DeserializeOwned>(&mut self, typed: &Typed<T>, label: &str) {
+        self.references.extend(typed.references().iter().cloned());
         self.mark(label, typed.needs_environment());
     }
     fn opt_typed<T: Clone + serde::de::DeserializeOwned>(

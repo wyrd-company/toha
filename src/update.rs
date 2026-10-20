@@ -2,19 +2,19 @@
 // relationships:
 //   implements: architecture
 // ---
-//! The template-update route: `apply --from ID` and `apply --baseline`.
+//! The template-update route: `apply --update` and `apply --baseline`.
 //!
 //! An update re-renders a template and merges the difference into the target,
-//! three-way against a base. `--from` reads the base from a stored snapshot and
+//! three-way against a base. `--update` reads the base from a stored application and
 //! replays its recorded answers through the unchanged interview engine; the
 //! `--answers` envelope supplies overrides and `--reanswer` re-asks every answer.
 //! `--baseline` merges the whole render against an empty base, so unrelated local
-//! edits survive. An update refuses a dirty target, a snapshot taken for another
-//! target, and a template whose source is not the snapshot's (identity 17). At a
+//! edits survive. An update refuses a dirty target, an application taken for another
+//! target, and a template whose source is not the application's. At a
 //! terminal a one-shot update prompts the questions the recorded answers do not
-//! settle; the agent stages it with `stage --from` (see `update_stage`).
+//! settle; the agent stages it with `stage --update` (see `update_stage`).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use indexmap::IndexMap;
 use serde_json::{Value, json};
@@ -23,12 +23,11 @@ use toha::context::InvocationContext;
 use toha::hook::ProcessRunner;
 use toha::interview::Seed;
 
-use toha::protocol::Context;
-use toha::snapshot::{
-    Action, Base, Change, Cleanliness, ConflictKind, FrozenNow, MergeOptions, Merged, Project,
-    RepoPath, Snapshot, SnapshotInputs, UpdateDrive, drive_update, drive_update_resume,
-    merge_apply_reported,
+use toha::applied::{
+    Action, Application, Base, Change, Cleanliness, ConflictKind, MergeOptions, Merged, Project,
+    RecordInputs, RepoPath, UpdateDrive, drive_update, drive_update_resume, merge_apply_reported,
 };
+use toha::protocol::Context;
 use toha::template::{Id, Template};
 use toha::{RawAnswer, RawAnswers};
 
@@ -41,13 +40,13 @@ use crate::{
 /// The base an update merges from.
 #[derive(Clone)]
 pub enum UpdateBase {
-    /// A stored snapshot, named by id or id prefix.
-    From(String),
+    /// The application matching this source and target.
+    Update,
     /// An empty base: the whole render is merged, three-way against nothing.
     Baseline,
 }
 
-/// `apply --from ID PATH [--answers FILE] [--reanswer]` and `apply --baseline
+/// `apply --update PATH [--answers FILE] [--reanswer]` and `apply --baseline
 /// TEMPLATE PATH --answers FILE`.
 #[allow(clippy::too_many_arguments)]
 pub fn run_update(
@@ -58,13 +57,14 @@ pub fn run_update(
     reanswer: bool,
     dry_run: bool,
     trust: bool,
+    input: &[PathBuf],
     dirs: &Dirs,
 ) -> Outcome {
     let (target, _store) = match setup(path, dirs) {
         Ok(value) => value,
         Err(error) => return Outcome::Error(error),
     };
-    let prep = match prepare(
+    let mut prep = match prepare(
         &base,
         template_arg,
         &target,
@@ -86,13 +86,27 @@ pub fn run_update(
                 Ok(value) => value,
                 Err(error) => return Outcome::Error(error),
             };
-            match toha::protocol::verify_answers(&prep.resolved.formal_name, &text) {
+            match toha::protocol::document_answers(&prep.resolved.formal_name, &text) {
                 Ok(value) => value,
                 Err(error) => return Outcome::Error(error.to_string()),
             }
         }
         None => IndexMap::new(),
     };
+
+    if let Err(error) =
+        toha::document::prepare(&mut prep.template, target.as_path(), input, &overrides)
+    {
+        let saved = crate::StagedRecord::new_with_context(
+            prep.context.clone(),
+            prep.resolved.commit.clone(),
+            prep.resolved.named,
+            prep.now.to_string(),
+            vec![],
+        );
+        let context = crate::context(&target, &saved);
+        return crate::document_input_error(error, answers.as_ref().map(|_| &context));
+    }
 
     // The person route (no `--answers`, a terminal) prompts the questions the
     // recorded answers do not settle, then merges; the script and agent route
@@ -128,7 +142,7 @@ pub fn run_update(
             if answers.is_none() {
                 return Outcome::Error(
                     "the update has questions the recorded answers do not settle; \
-                     stage it with `stage --from` to answer them"
+                     stage it with `stage --update` to answer them"
                         .to_owned(),
                 );
             }
@@ -222,7 +236,7 @@ fn person_update(
 pub(crate) struct Prepared {
     pub project: Project,
     pub merge_base: Base,
-    pub base_snapshot: Option<Snapshot>,
+    pub base_application: Option<Application>,
     pub resolved: ResolvedTemplate,
     pub template: Template,
     pub now: jiff::Zoned,
@@ -232,7 +246,7 @@ pub(crate) struct Prepared {
     pub trusted: bool,
 }
 
-/// Open the project, resolve the base snapshot and template, enforce the update
+/// Open the project, resolve the base application and template, enforce the update
 /// preconditions and identity (17), and build the render context and trust
 /// grant. Shared by the one-shot update route and the staged update flow.
 /// How `prepare` grants the environment and computes trust: an `apply` merges
@@ -263,82 +277,46 @@ pub(crate) fn prepare(
         Err(error) => return Err(Outcome::Error(error.to_string())),
     };
 
-    let (merge_base, base_snapshot) = match base {
-        UpdateBase::From(prefix) => match project.find(prefix) {
-            Ok(snapshot) => (Base::Snapshot(snapshot.clone()), Some(snapshot)),
-            Err(error) => return Err(Outcome::Error(error.to_string())),
-        },
-        UpdateBase::Baseline => (Base::Empty, None),
-    };
-
-    // Preconditions: the target must be clean, and a base snapshot must have been
-    // taken for this same target (identity 17, target side).
-    if let Some(snapshot) = &base_snapshot
-        && snapshot.target() != project.target()
-    {
-        return Err(Outcome::Error(format!(
-            "the snapshot was taken for target {:?}, not {:?}",
-            snapshot.target().as_str(),
-            project.target().as_str()
-        )));
-    }
+    project
+        .ensure_record_clean()
+        .map_err(|e| Outcome::Error(e.to_string()))?;
     match project.cleanliness() {
         Ok(Cleanliness::Clean) => {}
         Ok(Cleanliness::Dirty { .. }) => {
             return Err(Outcome::Error(
                 "the target has uncommitted changes; commit or discard them before an update"
-                    .to_owned(),
+                    .into(),
             ));
         }
         Err(error) => return Err(Outcome::Error(error.to_string())),
     }
-
     let cwd = std::env::current_dir().map_err(|e| Outcome::Error(e.to_string()))?;
     let (config, registry) = cli_context(dirs, &cwd)?;
-
-    let resolved = match (&base_snapshot, &template_arg) {
-        (Some(snapshot), None) => {
-            let formal = snapshot.template().to_owned();
-            match crate::cli::resolve::resume_snapshot_template(
-                &formal,
-                snapshot.revision(),
-                &config,
-                &registry,
-                dirs,
-                &cwd,
-            ) {
-                Ok(value) => value,
-                Err(error) => return Err(crate::resolve_error(error)),
-            }
-        }
-        (Some(snapshot), Some(arg)) => {
-            let resolved =
-                match crate::cli::resolve::resolve_template(arg, &config, &registry, dirs, &cwd) {
-                    Ok(value) => value,
-                    Err(error) => return Err(crate::resolve_error(error)),
-                };
-            if !source_identity_matches(&resolved.formal_name, snapshot.source()) {
-                return Err(Outcome::Error(format!(
-                    "the template's source {:?} is not the snapshot's source {:?}",
-                    source_of(&resolved.formal_name),
-                    snapshot.source()
-                )));
-            }
-            resolved
-        }
-        (None, Some(arg)) => {
-            match crate::cli::resolve::resolve_template(arg, &config, &registry, dirs, &cwd) {
-                Ok(value) => value,
-                Err(error) => return Err(crate::resolve_error(error)),
-            }
-        }
-        (None, None) => {
-            return Err(Outcome::Error(
-                "apply --baseline needs a template operand: apply TEMPLATE PATH --baseline"
-                    .to_owned(),
-            ));
-        }
+    let arg = template_arg.ok_or_else(|| {
+        Outcome::Error(
+            "apply --update and --baseline need a template operand: apply TEMPLATE PATH --update"
+                .into(),
+        )
+    })?;
+    let resolved = crate::cli::resolve::resolve_template(&arg, &config, &registry, dirs, &cwd)
+        .map_err(crate::resolve_error)?;
+    let base_application = match base {
+        UpdateBase::Update => Some(
+            project
+                .application(&source_of(&resolved.formal_name))
+                .map_err(|e| Outcome::Error(e.to_string()))?,
+        ),
+        UpdateBase::Baseline => None,
     };
+    let (merge_base, base_application) = restore_merge_base(
+        &project,
+        base_application,
+        target,
+        &config,
+        &registry,
+        dirs,
+        &cwd,
+    )?;
     // The scripted route (`--answers`) reports a missing requirement as its
     // `requirement` error document; the other routes report it as text.
     let template = match Template::load(&resolved.folder) {
@@ -358,8 +336,8 @@ pub(crate) fn prepare(
         Err(error) => return Err(Outcome::Error(error)),
     };
     let (configured_defaults, _) = resolution.into_flat_defaults();
-    let now = match &base_snapshot {
-        Some(snapshot) => snapshot.generated().get().clone(),
+    let now = match &base_application {
+        Some(application) => application.generated().get().clone(),
         None => runtime_now,
     };
 
@@ -387,15 +365,17 @@ pub(crate) fn prepare(
         Err(error) => return Err(Outcome::Error(error)),
     };
 
-    let recorded = match &base_snapshot {
-        Some(snapshot) => recorded_submissions(snapshot).map_err(Outcome::Error)?,
+    let recorded = match &base_application {
+        Some(application) => {
+            candidate_submissions(application, &template).map_err(Outcome::Error)?
+        }
         None => Vec::new(),
     };
 
     Ok(Prepared {
         project,
         merge_base,
-        base_snapshot,
+        base_application,
         resolved,
         template,
         now,
@@ -407,7 +387,7 @@ pub(crate) fn prepare(
 }
 
 /// Restore the pieces a staged-update resume needs from its record: reopen the
-/// project, re-resolve the template and base snapshot, restore the identity-
+/// project, re-resolve the template and base application, restore the identity-
 /// bearing context (not rebuilt), and recompute the trust grant for the apply.
 /// The target's cleanliness is re-checked so a merge never runs on a dirty tree.
 pub(crate) fn resume_prepared(
@@ -416,7 +396,7 @@ pub(crate) fn resume_prepared(
     target: &toha::staging::CanonicalTarget,
     dirs: &Dirs,
     trust: bool,
-) -> Result<(Prepared, Vec<IndexMap<Id, RawAnswer>>), Outcome> {
+) -> Result<Prepared, Outcome> {
     let project = match Project::open(target) {
         Ok(Some(project)) => project,
         Ok(None) => {
@@ -426,6 +406,9 @@ pub(crate) fn resume_prepared(
         }
         Err(error) => return Err(Outcome::Error(error.to_string())),
     };
+    project
+        .ensure_record_clean()
+        .map_err(|e| Outcome::Error(e.to_string()))?;
     match project.cleanliness() {
         Ok(Cleanliness::Clean) => {}
         Ok(Cleanliness::Dirty { .. }) => {
@@ -437,25 +420,38 @@ pub(crate) fn resume_prepared(
         Err(error) => return Err(Outcome::Error(error.to_string())),
     }
 
-    let (merge_base, base_snapshot) = match base {
-        UpdateBase::From(id) => match project.find(id) {
-            Ok(snapshot) => (Base::Snapshot(snapshot.clone()), Some(snapshot)),
-            Err(error) => return Err(Outcome::Error(error.to_string())),
-        },
-        UpdateBase::Baseline => (Base::Empty, None),
+    let base_application = match base {
+        UpdateBase::Update => {
+            let application = project
+                .application(&source_of(&saved.template))
+                .map_err(|e| Outcome::Error(e.to_string()))?;
+            let pinned: Value =
+                serde_json::from_str(saved.base.as_deref().unwrap_or("")).map_err(|_| {
+                    Outcome::Error(
+                        "invalid staged application; run stage TEMPLATE PATH --update".into(),
+                    )
+                })?;
+            if application.to_value() != pinned {
+                return Err(Outcome::Error(
+                    "the applied record entry changed; run stage TEMPLATE PATH --update".into(),
+                ));
+            }
+            Some(application)
+        }
+        UpdateBase::Baseline => None,
     };
-    if let Some(snapshot) = &base_snapshot
-        && snapshot.target() != project.target()
-    {
-        return Err(Outcome::Error(format!(
-            "the snapshot was taken for target {:?}, not {:?}",
-            snapshot.target().as_str(),
-            project.target().as_str()
-        )));
-    }
-
     let cwd = std::env::current_dir().map_err(|e| Outcome::Error(e.to_string()))?;
     let (config, registry) = cli_context(dirs, &cwd)?;
+    let (merge_base, base_application) = restore_merge_base(
+        &project,
+        base_application,
+        target,
+        &config,
+        &registry,
+        dirs,
+        &cwd,
+    )?;
+
     let resolved = match crate::cli::resolve::resume_template(
         &saved.template,
         &saved.commit,
@@ -487,31 +483,28 @@ pub(crate) fn resume_prepared(
         Err(error) => return Err(Outcome::Error(error.to_string())),
     };
     let trusted = apply_environment_grant(trust, &resolved, &template);
-    let recorded = match &base_snapshot {
-        Some(snapshot) => recorded_submissions(snapshot).map_err(Outcome::Error)?,
+    let recorded = match &base_application {
+        Some(application) => {
+            candidate_submissions(application, &template).map_err(Outcome::Error)?
+        }
         None => Vec::new(),
     };
-    let staged = to_raw_staged(&saved.submissions).map_err(Outcome::Error)?;
-
-    Ok((
-        Prepared {
-            project,
-            merge_base,
-            base_snapshot,
-            resolved,
-            template,
-            now,
-            context,
-            configured_defaults,
-            recorded,
-            trusted,
-        },
-        staged,
-    ))
+    Ok(Prepared {
+        project,
+        merge_base,
+        base_application,
+        resolved,
+        template,
+        now,
+        context,
+        configured_defaults,
+        recorded,
+        trusted,
+    })
 }
 
 /// A staged record's stored submissions as the interview's raw answers.
-fn to_raw_staged(
+pub(crate) fn to_raw_staged(
     stored: &[IndexMap<String, Value>],
 ) -> Result<Vec<IndexMap<Id, RawAnswer>>, String> {
     stored
@@ -537,13 +530,13 @@ pub(crate) fn effective_dry_run(dry_run: bool, completed: &toha::Completed) -> b
     dry_run || matches!(completed.step(), toha::Step::Plan { apply: false })
 }
 
-/// Build the snapshot inputs from a completed update interview and merge them
+/// Build the application inputs from a completed update interview and merge them
 /// into the project, mapping the merge result to an `Outcome`.
 pub(crate) fn finish_merge(
     prep: Prepared,
     target: &toha::staging::CanonicalTarget,
     completed: toha::Completed,
-    submissions: Vec<IndexMap<Id, RawAnswer>>,
+    _submissions: Vec<IndexMap<Id, RawAnswer>>,
     dry_run: bool,
     scripted: bool,
 ) -> Outcome {
@@ -558,28 +551,22 @@ pub(crate) fn finish_merge(
     );
     let ctx = crate::context(target, &saved);
     let base_id = prep
-        .base_snapshot
+        .base_application
         .as_ref()
-        .map(|snapshot| snapshot.id().to_string());
+        .map(|application| application.target().to_string());
 
     // Record the revision actually rendered, including a newly selected content
     // revision when the caller names the current template explicitly.
-    let revision = match crate::cli::resolve::snapshot_revision(
+    let revision = match crate::cli::resolve::applied_revision(
         &prep.resolved.formal_name,
         &prep.resolved.commit,
     ) {
         Ok(revision) => revision,
         Err(error) => return Outcome::Error(error.to_string()),
     };
-    let generated = match &prep.base_snapshot {
-        Some(snapshot) => snapshot.generated().clone(),
-        None => FrozenNow::new(completed.now.clone()),
-    };
-    let inputs = SnapshotInputs {
+    let inputs = RecordInputs {
         template: prep.resolved.formal_name.clone(),
         revision,
-        generated,
-        submissions: submissions.into_iter().map(raw_to_values).collect(),
     };
     let options = MergeOptions {
         trusted: prep.trusted,
@@ -620,23 +607,31 @@ fn cli_context(
 }
 
 /// A formal name's source identity: the name without its `@reference`, the same
-/// value a snapshot records as its `source`.
-fn source_of(formal: &str) -> &str {
-    formal.split_once('@').map_or(formal, |(source, _)| source)
+/// value an application records as its `source`.
+fn source_of(formal: &str) -> String {
+    toha::applied::source_identity(formal)
 }
 
-/// Whether a resolved template's source identity matches the snapshot's recorded
-/// source. The match is on the source identity — the formal name without its
-/// `@reference` — so the same source updates across template versions while a
-/// foreign source is refused. Comparing the full formal name (with its
-/// reference) instead would wrongly refuse a legitimate version bump.
-fn source_identity_matches(resolved_formal: &str, snapshot_source: &str) -> bool {
-    source_of(resolved_formal) == snapshot_source
+/// Only ordinary answers are replayed into a candidate. Documents are admitted
+/// from this run's inputs; recorded documents belong to the merge base alone.
+fn candidate_submissions(
+    application: &Application,
+    template: &Template,
+) -> Result<Vec<IndexMap<Id, RawAnswer>>, String> {
+    let documents = template.document_question_ids();
+    Ok(recorded_submissions(application)?
+        .into_iter()
+        .map(|mut submission| {
+            submission.retain(|id, _| !documents.contains(id));
+            submission
+        })
+        .filter(|submission| !submission.is_empty())
+        .collect())
 }
 
-/// The base snapshot's recorded submissions, as the interview's raw answers.
-fn recorded_submissions(snapshot: &Snapshot) -> Result<Vec<IndexMap<Id, RawAnswer>>, String> {
-    snapshot
+/// The base application's recorded submissions, as the interview's raw answers.
+fn recorded_submissions(application: &Application) -> Result<Vec<IndexMap<Id, RawAnswer>>, String> {
+    application
         .submissions()
         .iter()
         .map(|submission| {
@@ -652,25 +647,14 @@ fn recorded_submissions(snapshot: &Snapshot) -> Result<Vec<IndexMap<Id, RawAnswe
         .collect()
 }
 
-/// One replayed submission as the id→value map a snapshot records.
-fn raw_to_values(submission: IndexMap<Id, RawAnswer>) -> IndexMap<Id, Value> {
-    submission
-        .into_iter()
-        .map(|(id, raw)| (id, raw.0))
-        .collect()
-}
-
 /// Map a merge result to the caller's result document. An update reports the
 /// canonical `applied`/`planned`/`already-current` document with its `merge`
 /// member (the changed paths and any conflicts) and, when it saved one, a
-/// `snapshot` member.
-fn merged_outcome(merged: Merged, ctx: &Context, base_id: Option<&str>) -> Outcome {
+/// `record` member.
+fn merged_outcome(merged: Merged, ctx: &Context, _base_id: Option<&str>) -> Outcome {
     match merged {
         Merged::AlreadyCurrent => {
-            let mut document = toha::protocol::shell("already-current", ctx);
-            if let Some(id) = base_id {
-                document["snapshot"] = json!({ "id": id });
-            }
+            let document = toha::protocol::shell("already-current", ctx);
             Outcome::Document(document, 0)
         }
         // An untrusted update previews the plan and writes nothing, like a dry run.
@@ -693,7 +677,7 @@ fn merged_outcome(merged: Merged, ctx: &Context, base_id: Option<&str>) -> Outco
             Outcome::Document(document, 0)
         }
         Merged::Written {
-            snapshot,
+            record,
             changes,
             conflicted,
         } => {
@@ -701,7 +685,7 @@ fn merged_outcome(merged: Merged, ctx: &Context, base_id: Option<&str>) -> Outco
             document["files"] = json!([]);
             document["messages"] = json!([]);
             document["hooks"] = json!([]);
-            document["snapshot"] = json!({ "id": snapshot.to_string() });
+            document["record"] = json!({ "path": record });
             document["merge"] = merge_member(&changes, &conflicted);
             Outcome::Document(document, 0)
         }
@@ -746,37 +730,105 @@ fn conflict_name(kind: ConflictKind) -> &'static str {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{source_identity_matches, source_of};
-
-    #[test]
-    fn source_identity_matches_on_source_across_versions_and_refuses_a_foreign_source() {
-        // Behavior 17 (source side), at the identity boundary: the match is on the
-        // source identity, so the SAME source at a DIFFERENT version is accepted —
-        // comparing the full formal name (with its reference) would wrongly refuse
-        // this legitimate version bump. Generic versioned names, no hosted infra.
-        assert!(
-            source_identity_matches("forge:catalog/receipt@v2", "forge:catalog/receipt"),
-            "a new version of the same source is accepted"
-        );
-        assert!(
-            source_identity_matches("forge:catalog/receipt@a1b2c3d", "forge:catalog/receipt"),
-            "a commit-pinned reference of the same source is accepted"
-        );
-        // A bare (unversioned) name of the same source still matches.
-        assert!(source_identity_matches(
-            "forge:catalog/receipt",
-            "forge:catalog/receipt"
-        ));
-        // A foreign source is refused even at a plausible version.
-        assert!(
-            !source_identity_matches("forge:catalog/invoice@v2", "forge:catalog/receipt"),
-            "a different source is refused"
-        );
-        assert_eq!(
-            source_of("forge:catalog/receipt@v2"),
-            "forge:catalog/receipt"
-        );
+#[allow(clippy::too_many_arguments)]
+fn restore_merge_base(
+    project: &Project,
+    application: Option<Application>,
+    target: &toha::staging::CanonicalTarget,
+    config: &toha::config::Config,
+    registry: &toha::registry::Registry,
+    dirs: &Dirs,
+    cwd: &Path,
+) -> Result<(Base, Option<Application>), Outcome> {
+    let Some(mut application) = application else {
+        return Ok((Base::Empty, None));
+    };
+    let failure_source = application.source().to_owned();
+    let failure_revision = application.revision().clone();
+    let failure = |message: String| {
+        Outcome::Error(format!(
+            "cannot render merge base for {failure_source} at {failure_revision:?}: {message}; use apply TEMPLATE PATH --baseline to re-baseline"
+        ))
+    };
+    if matches!(application.revision(), toha::applied::Revision::Unversioned) {
+        return Err(failure("the template has no reproducible revision".into()));
     }
+    let resolved = crate::cli::resolve::resume_application_template(
+        application.template(),
+        application.revision(),
+        config,
+        registry,
+        dirs,
+        cwd,
+    )
+    .map_err(|e| failure(format!("{e:?}")))?;
+    let template = Template::load(&resolved.folder).map_err(|e| failure(e.to_string()))?;
+    let context = InvocationContext::new(
+        target.clone(),
+        toha::context::SelectedTemplate::new(
+            template.name.clone(),
+            application.template().into(),
+            vec![],
+            resolved.source.clone(),
+        ),
+        toha::context::HostFacts::new(String::new(), String::new(), None, None, vec![]),
+        toha::context::ExecutionFacts::new(false, false),
+        toha::context::EnvironmentSnapshot::Unavailable,
+    )
+    .map_err(|e| failure(e.to_string()))?
+    .with_recorded(application.context.clone());
+    if template
+        .record_context(Some(&context))
+        .keys()
+        .any(|key| !application.context.contains_key(key))
+    {
+        return Err(failure(
+            "a referenced render context value is missing from the record".into(),
+        ));
+    }
+    let seed = Seed {
+        now: application.generated().get().clone(),
+        defaults: IndexMap::new(),
+        context,
+    };
+    let mut interview =
+        toha::Interview::start(&template, seed).map_err(|e| failure(e.to_string()))?;
+    let mut remaining = recorded_submissions(&application)
+        .map_err(failure)?
+        .into_iter()
+        .flatten()
+        .collect::<IndexMap<_, _>>();
+    let completed = loop {
+        match interview {
+            toha::Interview::Complete(completed) => break completed,
+            toha::Interview::Ended(_) => {
+                return Err(failure("the recorded interview ended".into()));
+            }
+            toha::Interview::Asking(pending) => {
+                let values = pending
+                    .batch()
+                    .items
+                    .iter()
+                    .filter_map(|item| match item {
+                        toha::interview::Item::Prompt(p) => {
+                            remaining.shift_remove(&p.id).map(|v| (p.id.clone(), v))
+                        }
+                        _ => None,
+                    })
+                    .collect::<IndexMap<_, _>>();
+                if values.is_empty() {
+                    return Err(failure("a recorded question is unanswered".into()));
+                }
+                interview = pending
+                    .answer(values)
+                    .map_err(|_| failure("a recorded answer was rejected".into()))?;
+            }
+        }
+    };
+    let plan =
+        toha::Plan::build(&template, &completed, target).map_err(|e| failure(e.to_string()))?;
+    project
+        .restore_base(&mut application, plan)
+        .map_err(|e| failure(e.to_string()))?;
+    Ok((Base::Application(application.clone()), Some(application)))
 }

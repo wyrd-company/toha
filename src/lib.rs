@@ -3,6 +3,7 @@
 // relationships:
 //   implements: architecture
 // ---
+pub mod applied;
 pub mod apply;
 pub mod config;
 pub mod context;
@@ -18,7 +19,6 @@ pub mod protocol;
 pub mod registry;
 pub mod requirement;
 pub mod review;
-pub mod snapshot;
 pub mod source;
 pub mod staging;
 pub mod template;
@@ -47,3 +47,6 @@ pub use review::{
 pub use template::{
     FlowAction, FlowNode, Id, LoadError, Node, Problem, Question, QuestionKind, SkipScope, Template,
 };
+
+/// Legacy snapshot-ref readers and management commands.
+pub mod snapshot;

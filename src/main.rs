@@ -172,6 +172,7 @@ Environment:
   VISUAL, EDITOR    Editor for multiline answers, VISUAL first. Default: nano, or notepad
                     on Windows. When the editor is not found, answers end with a line of \".\".
   PATH              Directories searched for the editor and for the program of a run hook.
+  TOHA_RECORD       Applied record path relative to the Git repository root. Default: .toha.json.
   TOHA_NOW          Instant that now() returns for a new interview, such as
                     2026-01-02T03:04:05+00:00[UTC]. Default: the current time.
 
@@ -236,22 +237,18 @@ enum Command {
         /// visual) for this staged interview's templates that reference them.
         #[arg(long)]
         trust: bool,
-        /// Stage an update from a base snapshot: replay its recorded answers and
-        /// ask only what the new version needs. The value is a snapshot id.
-        #[arg(long, value_name = "ID", conflicts_with = "baseline")]
-        from: Option<String>,
+        /// Update from the applied record for this source and target.
+        #[arg(long, conflicts_with = "baseline")]
+        update: bool,
         /// Stage an update from an empty base.
         #[arg(long)]
         baseline: bool,
         /// Re-ask every recorded answer instead of replaying it.
-        #[arg(long, requires = "from")]
+        #[arg(long, requires = "update")]
         reanswer: bool,
-        /// Seed answer defaults from a snapshot of a prior application of the
-        /// same source (the generate axis). The optional value is `latest`, a
-        /// snapshot id or id prefix (>= 6 characters), or omitted to pick from a
-        /// list (the person route only). Mutually exclusive with --from and
-        /// --baseline.
-        #[arg(long, value_name = "SELECTOR", num_args = 0..=1, conflicts_with_all = ["from", "baseline"])]
+        /// Seed answer defaults from an application of the same source at TARGET.
+        /// Omit the value to choose an application in a terminal.
+        #[arg(long, value_name = "SELECTOR", num_args = 0..=1, conflicts_with_all = ["update", "baseline"])]
         like: Option<Option<String>>,
     },
     /// Continue a staged interview with an answers document or terminal prompts.
@@ -315,23 +312,19 @@ enum Command {
         /// Run the hooks of this template for this run.
         #[arg(long)]
         trust: bool,
-        /// Update from a base snapshot: re-render the template and merge the
-        /// difference into the target. The value is a snapshot id or id prefix.
-        #[arg(long, value_name = "ID", conflicts_with = "baseline")]
-        from: Option<String>,
+        /// Update from the applied record for this source and target.
+        #[arg(long, conflicts_with = "baseline")]
+        update: bool,
         /// Update from an empty base: merge the whole render into the target,
         /// three-way against nothing, so unrelated local edits survive.
         #[arg(long)]
         baseline: bool,
         /// Re-ask every recorded answer instead of replaying it.
-        #[arg(long, requires = "from")]
+        #[arg(long, requires = "update")]
         reanswer: bool,
-        /// Seed answer defaults from a snapshot of a prior application of the
-        /// same source (the generate axis). The optional value is `latest`, a
-        /// snapshot id or id prefix (>= 6 characters), or omitted to pick from a
-        /// list (the person route only). Mutually exclusive with --from and
-        /// --baseline.
-        #[arg(long, value_name = "SELECTOR", num_args = 0..=1, conflicts_with_all = ["from", "baseline"])]
+        /// Seed answer defaults from an application of the same source at TARGET.
+        /// Omit the value to choose an application in a terminal.
+        #[arg(long, value_name = "SELECTOR", num_args = 0..=1, conflicts_with_all = ["update", "baseline"])]
         like: Option<Option<String>>,
     },
     /// Manage the project's update snapshots.
@@ -850,9 +843,6 @@ impl LikeFlag {
         match like {
             None => LikeFlag::Absent,
             Some(None) => LikeFlag::Bare,
-            Some(Some(value)) if value == "latest" => {
-                LikeFlag::Select(cli::like::LikeSelector::Latest)
-            }
             Some(Some(value)) => LikeFlag::Select(cli::like::LikeSelector::Reference(value)),
         }
     }
@@ -861,10 +851,10 @@ impl LikeFlag {
     }
 }
 /// Why a `--like` request could not be resolved: a usage error (bare selector on
-/// a non-interactive route, exit 2) or a snapshot error (exit 1).
+/// a non-interactive route, exit 2) or a record error (exit 1).
 struct LikeReject {
     message: String,
-    /// `true` for a usage error (exit 2); `false` for a snapshot error (exit 1).
+    /// `true` for a usage error (exit 2); `false` for a record error (exit 1).
     usage: bool,
 }
 impl LikeReject {
@@ -883,9 +873,9 @@ impl From<cli::like::LikeError> for LikeReject {
         }
     }
 }
-/// A repository-open or read fault while resolving `--like` is a snapshot error
+/// A repository-open or read fault while resolving `--like` is a record error
 /// (exit 1), not a usage error.
-fn project_reject(error: toha::snapshot::ProjectError) -> LikeReject {
+fn project_reject(error: toha::applied::ProjectError) -> LikeReject {
     LikeReject {
         message: error.to_string(),
         usage: false,
@@ -893,7 +883,7 @@ fn project_reject(error: toha::snapshot::ProjectError) -> LikeReject {
 }
 /// Resolve a `--like` request against the target repository into a seed, or
 /// `None` when there is nothing to seed from and the request does not require a
-/// snapshot (flag absent, or a person-route picker with no candidates or a
+/// application (flag absent, or a person-route picker with no candidates or a
 /// "none" choice). `interactive` selects the person route, where a bare `--like`
 /// opens a picker; on every other route a bare `--like` is a usage error.
 fn resolve_like_seed(
@@ -906,29 +896,34 @@ fn resolve_like_seed(
         LikeFlag::Absent => return Ok(None),
         LikeFlag::Bare if !interactive => {
             return Err(LikeReject::usage(
-                "--like needs a selector here: name a snapshot id or `latest`",
+                "--like needs a selector here: name an application target",
             ));
         }
         LikeFlag::Bare => None, // the person picker
         LikeFlag::Select(selector) => Some(selector),
     };
-    let project = toha::snapshot::Project::open(target).map_err(project_reject)?;
+    let project = toha::applied::Project::open(target).map_err(project_reject)?;
     match selector {
         Some(cli::like::LikeSelector::Reference(reference)) => {
-            let snapshot = cli::like::find_required(project.as_ref(), source, &reference)?;
-            Ok(Some(cli::like::seed(&snapshot)))
-        }
-        Some(cli::like::LikeSelector::Latest) => {
-            let project = project
-                .as_ref()
-                .ok_or(cli::like::LikeError::NoProject)
-                .map_err(LikeReject::from)?;
-            let candidates = cli::like::candidates(project, source).map_err(project_reject)?;
-            match cli::like::latest(&candidates) {
-                Some(snapshot) => Ok(Some(cli::like::seed(snapshot))),
-                None => Err(LikeReject::from(cli::like::LikeError::Missing {
-                    source: source.to_owned(),
-                })),
+            if reference == "latest" {
+                return cli::like::legacy_seed(target, source, &reference)
+                    .map(Some)
+                    .map_err(|message| LikeReject {
+                        message,
+                        usage: false,
+                    });
+            }
+            match cli::like::find_required(project.as_ref(), source, &reference) {
+                Ok(application) => Ok(Some(cli::like::seed(&application))),
+                Err(_error) if cli::like::is_legacy_reference(&reference) => {
+                    cli::like::legacy_seed(target, source, &reference)
+                        .map(Some)
+                        .map_err(|message| LikeReject {
+                            message,
+                            usage: false,
+                        })
+                }
+                Err(error) => Err(error.into()),
             }
         }
         // Bare, interactive: the person picker. No project or no candidate means
@@ -941,46 +936,46 @@ fn resolve_like_seed(
             if candidates.is_empty() {
                 return Ok(None);
             }
-            match pick_snapshot(&candidates).map_err(LikeReject::usage)? {
+            match pick_application(&candidates).map_err(LikeReject::usage)? {
                 Some(index) => Ok(Some(cli::like::seed(&candidates[index]))),
                 None => Ok(None),
             }
         }
     }
 }
-/// Re-read the snapshot a staged generate pinned (`saved.seed`) and rebuild its
-/// engine seed, so a resumed interview seeds the identical defaults. The pin is
-/// an exact id, so a newer same-source snapshot added between stage and resume
-/// does not change it; a pinned snapshot that is now missing, invalid, or of a
-/// foreign source fails clearly (exit 1). `None` when nothing was pinned.
+/// Rebuild defaults from the application copied when `--like` was staged.
 fn resolve_pinned_seed(
-    pin: Option<&str>,
+    saved: &StagedRecord,
     source: &str,
-    target: &CanonicalTarget,
-) -> Result<Option<toha::interview::SnapshotSeed>, String> {
-    let Some(pin) = pin else {
-        return Ok(None);
+    _target: &CanonicalTarget,
+) -> Result<Option<toha::interview::ApplicationSeed>, String> {
+    let Some(pin) = &saved.seed_entry else {
+        return if saved.seed.is_some() {
+            Err("staged --like has no copied application; abort and stage again".into())
+        } else {
+            Ok(None)
+        };
     };
-    let project = toha::snapshot::Project::open(target).map_err(|error| error.to_string())?;
-    let snapshot = cli::like::find_required(project.as_ref(), source, pin)
-        .map_err(|error| error.to_string())?;
-    Ok(Some(cli::like::seed(&snapshot).engine))
+    let record = serde_json::json!({"$schema":toha::applied::SCHEMA_ID,"applications":[pin]});
+    let record = toha::applied::AppliedRecord::parse(&serde_json::to_vec(&record).unwrap())
+        .map_err(|e| e.to_string())?;
+    let application = &record.applications()[0];
+    if application.source() != source {
+        return Err("copied --like application has another source; abort and stage again".into());
+    }
+    if saved.seed.as_deref() != Some(application.target().as_str()) {
+        return Err("copied --like application has another target; abort and stage again".into());
+    }
+    Ok(Some(cli::like::seed(application).engine))
 }
-/// The person-route picker: list the source's applications newest first and let
+/// The person-route picker: list the source's applications in target order and let
 /// the person choose one to seed from, or "none". Returns the chosen index, or
 /// `None` for "none". Prompts only here; the pure selection functions never do.
-fn pick_snapshot(candidates: &[toha::snapshot::Snapshot]) -> Result<Option<usize>, String> {
+fn pick_application(candidates: &[toha::applied::Application]) -> Result<Option<usize>, String> {
     const NONE_LABEL: &str = "none (ask every question)";
     let mut options: Vec<String> = candidates
         .iter()
-        .map(|snapshot| {
-            format!(
-                "{} ({}, {})",
-                snapshot.id(),
-                snapshot.source(),
-                snapshot.target()
-            )
-        })
+        .map(|application| format!("{} ({})", application.target(), application.source()))
         .collect();
     options.push(NONE_LABEL.to_owned());
     let chosen = inquire::Select::new("Seed defaults from which application?", options.clone())
@@ -993,6 +988,11 @@ fn pick_snapshot(candidates: &[toha::snapshot::Snapshot]) -> Result<Option<usize
 }
 fn setup(path: &Path, dirs: &Dirs) -> Result<(staging::CanonicalTarget, Store), String> {
     let target = staging::canonical_target(path).map_err(|e| e.to_string())?;
+    if let Some(project) = toha::applied::Project::open(&target).map_err(|e| e.to_string())? {
+        project.read_record().map_err(|e| e.to_string())?;
+    } else {
+        toha::applied::validate_record_path(target.as_path()).map_err(|e| e.to_string())?;
+    }
     Ok((target, Store::new(dirs.state.clone())))
 }
 fn context(target: &staging::CanonicalTarget, record: &StagedRecord) -> Context {
@@ -1059,11 +1059,11 @@ fn progress(saved: &StagedRecord, scope: &Scope, target: &CanonicalTarget) -> Pr
         )
         .ok()?;
         report_config_warnings(resolution.warnings());
-        // A generate-staged record re-reads its pinned seed so the guidance
+        // A generate-staged record carries its copied seed so the guidance
         // reflects the same remaining questions the resume will show.
         let pinned_seed = resolve_pinned_seed(
-            saved.seed.as_deref(),
-            toha::snapshot::source_identity(&resolved.formal_name),
+            saved,
+            &toha::applied::source_identity(&resolved.formal_name),
             target,
         )
         .ok()?;
@@ -1190,7 +1190,7 @@ fn stage(
     let like_seed = match resolve_like_seed(
         LikeFlag::parse(like),
         interactive,
-        toha::snapshot::source_identity(&resolved.formal_name),
+        &toha::applied::source_identity(&resolved.formal_name),
         &target,
     ) {
         Ok(v) => v,
@@ -1203,9 +1203,10 @@ fn stage(
         }
     };
     if interactive && let Some(seed) = &like_seed {
-        println!("seed defaults from snapshot {}", seed.label);
+        println!("seed defaults from application {}", seed.label);
     }
     let seed_from = like_seed.as_ref().map(|seed| seed.id.to_string());
+    let seed_entry = like_seed.as_ref().map(|seed| seed.entry.clone());
     let mut saved = StagedRecord::new_with_context(
         invocation.clone(),
         resolved.commit.clone(),
@@ -1214,6 +1215,7 @@ fn stage(
         vec![],
     );
     saved.seed = seed_from.clone();
+    saved.seed_entry = seed_entry;
     save_document_answers(&template, &mut saved);
     let interview = match resolution.start_with_seed(
         &template,
@@ -1398,7 +1400,7 @@ fn continue_run(path: PathBuf, answers: Option<String>, input: &[PathBuf], dirs:
     };
     // A staged update resumes through the update replay adapter and merges.
     if update_stage::is_staged_update(&saved) {
-        return update_stage::continue_staged(saved, &path, answers, dirs);
+        return update_stage::continue_staged(saved, &path, answers, input, dirs);
     }
     let (config, registry, cwd) = match environment(dirs) {
         Ok(v) => v,
@@ -1436,8 +1438,8 @@ fn continue_run(path: PathBuf, answers: Option<String>, input: &[PathBuf], dirs:
     let installed = trustable(&resolved, &registry);
     // Re-read the pinned generate seed, if any, so the resumed defaults match.
     let pinned_seed = match resolve_pinned_seed(
-        saved.seed.as_deref(),
-        toha::snapshot::source_identity(&resolved.formal_name),
+        &saved,
+        &toha::applied::source_identity(&resolved.formal_name),
         &target,
     ) {
         Ok(v) => v,
@@ -1760,13 +1762,13 @@ fn instructions(outcome: &AgentOutcome, path: &Path) -> String {
 }
 /// One scripted `error` result document with its tabled exit code.
 /// The result document for a `--like` rejection on a document route: a usage
-/// error (exit 2) for a bare selector where one is required, or a snapshot error
+/// error (exit 2) for a bare selector where one is required, or a record error
 /// (exit 1) for an unknown, ambiguous, wrong-source, or absent selector.
 fn like_reject_document(reject: LikeReject, context: Option<&Context>) -> Outcome {
     let (kind, code) = if reject.usage {
         (ErrorKind::Input, 2)
     } else {
-        (ErrorKind::Snapshot, 1)
+        (ErrorKind::Record, 1)
     };
     Outcome::Document(
         protocol::error_document(
@@ -1907,7 +1909,7 @@ fn scripted_apply_error(error: toha::ApplyError, context: &Context) -> Outcome {
         E::Conflicts(_) | E::Drift(_) | E::Symlink(_) => ErrorKind::Conflict,
         E::Hook { .. } | E::HookIo { .. } | E::HookOutput { .. } => ErrorKind::Hook,
         E::Io { .. } | E::Deferred(_) | E::Region(_) | E::Json(_) => ErrorKind::Render,
-        E::Git(_) => ErrorKind::Git,
+        E::Git(_) | E::Record(_) => ErrorKind::Git,
     };
     scripted_error(kind, error.to_string(), vec![], Some(context))
 }
@@ -1993,7 +1995,7 @@ fn scripted(
     let like_seed = match resolve_like_seed(
         LikeFlag::parse(like),
         false,
-        toha::snapshot::source_identity(&resolved.formal_name),
+        &toha::applied::source_identity(&resolved.formal_name),
         &target,
     ) {
         Ok(v) => v,
@@ -2090,13 +2092,13 @@ fn scripted(
     }
 }
 /// The scripted `Completed` tail: build the plan, then report `planned` (dry run
-/// or untrusted hooks) or apply and report `applied`, capturing the snapshot of
+/// or untrusted hooks) or apply and report `applied`, writing the applied record for
 /// the apply when the project allows it.
 #[allow(clippy::too_many_arguments)]
 fn scripted_completed(
     template: &Template,
     completed: Completed,
-    accepted: Vec<indexmap::IndexMap<String, serde_json::Value>>,
+    _accepted: Vec<indexmap::IndexMap<String, serde_json::Value>>,
     target: &CanonicalTarget,
     resolved: &ResolvedTemplate,
     ctx: &Context,
@@ -2117,12 +2119,16 @@ fn scripted_completed(
             toha::evaluate_trust(resolved.approval.as_ref(), &live_surface),
             toha::Trust::Trusted
         );
-    let plan = match Plan::build(template, &completed, target) {
+    let mut plan = match Plan::build(template, &completed, target) {
         Ok(plan) => plan,
         Err(error) => {
             return scripted_error(ErrorKind::Render, error.to_string(), vec![], Some(ctx));
         }
     };
+    match cli::resolve::applied_revision(&resolved.formal_name, &resolved.commit) {
+        Ok(revision) => plan.record_identity(resolved.formal_name.clone(), revision),
+        Err(error) => return Outcome::Error(error.to_string()),
+    }
     let mut messages = completed.messages.clone();
     if let Some(before) = &plan.before_apply {
         messages.push(before.clone());
@@ -2156,14 +2162,6 @@ fn scripted_completed(
         .iter()
         .map(|entry| (entry.path.clone(), entry.action.clone()))
         .collect();
-    // The snapshot save rule reads cleanliness before the apply writes.
-    let project = open_project_for_snapshot(
-        toha::snapshot::Project::open(target),
-        &mut std::io::stderr(),
-    );
-    let was_clean = project
-        .as_ref()
-        .is_some_and(|p| matches!(p.cleanliness(), Ok(toha::snapshot::Cleanliness::Clean)));
     match plan.apply_reporting(
         target,
         ApplyOptions {
@@ -2180,6 +2178,7 @@ fn scripted_completed(
             hooks,
             after_apply,
             git,
+            record,
             ..
         }) => {
             if let Some(warning) = git.as_ref().and_then(|g| g.warning.clone()) {
@@ -2210,20 +2209,8 @@ fn scripted_completed(
                     .collect(),
                 git: git.as_ref().map(|g| g.setup.clone()),
             };
-            let project = project_after_git(project, git.as_ref(), target);
-            let snapshot = plain_apply_snapshot(
-                project.as_ref(),
-                was_clean,
-                target,
-                template,
-                &completed,
-                resolved,
-                accepted,
-            );
             let mut document = with_seed(protocol::applied_document(&report, ctx), seed_from);
-            if let Some(object) = document.as_object_mut() {
-                object.insert("snapshot".to_owned(), snapshot);
-            }
+            document["record"] = record_document(&record);
             Outcome::Document(document, 0)
         }
         // Trust was granted above, so an untrusted plan cannot occur here.
@@ -2234,122 +2221,6 @@ fn scripted_completed(
             Some(ctx),
         ),
         Err(error) => scripted_apply_error(error, ctx),
-    }
-}
-/// Open the repository to decide the snapshot save, distinguishing a genuine
-/// open fault from a target that is simply not inside a git repository. A
-/// `ProjectError` (a canonicalize IO error, a bare repository, a config/strip
-/// failure) is named on `warn` before the apply degrades to saving no snapshot;
-/// "not a git repo" (`Ok(None)`) degrades silently, as before. This adds a
-/// diagnostic only: it does not change the apply, its exit code, or its result
-/// document, and it does not narrow the not-git path.
-fn open_project_for_snapshot(
-    opened: Result<Option<toha::snapshot::Project>, toha::snapshot::ProjectError>,
-    warn: &mut dyn std::io::Write,
-) -> Option<toha::snapshot::Project> {
-    match opened {
-        Ok(project) => project,
-        Err(err) => {
-            let _ = writeln!(
-                warn,
-                "warning: cannot open the repository to save a snapshot: {err}"
-            );
-            None
-        }
-    }
-}
-
-/// The `snapshot` member of a plain apply's `applied` document: `{ "id": ... }`
-/// when the apply saved a snapshot, or `{ "skipped": "<reason>" }` when the save
-/// rule declined. The plan is rebuilt for the capture because `apply` consumes
-/// it; it renders the same mutation targets from the same template and answers.
-fn plain_apply_snapshot(
-    project: Option<&toha::snapshot::Project>,
-    was_clean: bool,
-    target: &CanonicalTarget,
-    template: &Template,
-    completed: &Completed,
-    resolved: &ResolvedTemplate,
-    submissions: Vec<indexmap::IndexMap<String, serde_json::Value>>,
-) -> serde_json::Value {
-    use toha::snapshot::{FrozenNow, SnapshotOutcome};
-
-    let Some(project) = project else {
-        return serde_json::json!({ "skipped": toha::snapshot::SkipReason::NotGit.as_str() });
-    };
-    let plan = match Plan::build(template, completed, target) {
-        Ok(plan) => plan,
-        Err(error) => return serde_json::json!({ "error": error.to_string() }),
-    };
-    let revision = match cli::resolve::snapshot_revision(&resolved.formal_name, &resolved.commit) {
-        Ok(revision) => revision,
-        Err(error) => return serde_json::json!({ "error": error.to_string() }),
-    };
-    let generated = FrozenNow::new(completed.now.clone());
-    match project.save_after_apply(
-        &plan,
-        resolved.formal_name.clone(),
-        revision,
-        generated,
-        submissions,
-        was_clean,
-    ) {
-        Ok(SnapshotOutcome::Saved(id)) => serde_json::json!({ "id": id.to_string() }),
-        Ok(SnapshotOutcome::Skipped(reason)) => {
-            serde_json::json!({ "skipped": reason.as_str() })
-        }
-        Err(error) => serde_json::json!({ "error": error.to_string() }),
-    }
-}
-/// The project a plain apply captures into: the repository opened before the
-/// apply, or the one the apply's `git` question initialized. A new repository
-/// has no commit, so its snapshot reports `no-commit` rather than `not-git`.
-/// Cleanliness is still the reading taken before the apply.
-fn project_after_git(
-    before: Option<toha::snapshot::Project>,
-    git: Option<&GitReport>,
-    target: &toha::staging::CanonicalTarget,
-) -> Option<toha::snapshot::Project> {
-    let initialized =
-        git.is_some_and(|g| matches!(g.setup, toha::git_target::GitSetup::Initialized { .. }));
-    if before.is_some() || !initialized {
-        return before;
-    }
-    open_project_for_snapshot(
-        toha::snapshot::Project::open(target),
-        &mut std::io::stderr(),
-    )
-}
-/// The plain apply's snapshot result as one human line for the person and agent
-/// routes, which report text: the id it saved, or the reason it saved none. The
-/// staged record carries the template identity, commit, and submissions.
-fn plain_apply_snapshot_line(
-    project: Option<&toha::snapshot::Project>,
-    was_clean: bool,
-    saved: &StagedRecord,
-    generated_now: &jiff::Zoned,
-    plan: &Plan,
-) -> Option<String> {
-    use toha::snapshot::{FrozenNow, SnapshotOutcome};
-
-    let project = project?;
-    let revision = match cli::resolve::snapshot_revision(&saved.template, &saved.commit) {
-        Ok(revision) => revision,
-        Err(error) => return Some(format!("snapshot not saved: {error}")),
-    };
-    match project.save_after_apply(
-        plan,
-        saved.template.clone(),
-        revision,
-        FrozenNow::new(generated_now.clone()),
-        saved.submissions.clone(),
-        was_clean,
-    ) {
-        Ok(SnapshotOutcome::Saved(id)) => Some(format!("saved snapshot {id}")),
-        Ok(SnapshotOutcome::Skipped(reason)) => {
-            Some(format!("no snapshot saved: {}", reason.as_str()))
-        }
-        Err(error) => Some(format!("snapshot not saved: {error}")),
     }
 }
 /// Maps a resolve failure on the scripted route to a `source` or `ambiguous`
@@ -2435,7 +2306,7 @@ fn run(
         && let Some(saved) = &existing
         && update_stage::is_staged_update(saved)
     {
-        return update_stage::apply_staged(saved.clone(), path, dry_run, trust, dirs);
+        return update_stage::apply_staged(saved.clone(), path, dry_run, trust, input, dirs);
     }
     let (config, registry, cwd) = match environment(dirs) {
         Ok(v) => v,
@@ -2536,14 +2407,14 @@ fn run(
             let like_seed = match resolve_like_seed(
                 like,
                 true,
-                toha::snapshot::source_identity(&resolved.formal_name),
+                &toha::applied::source_identity(&resolved.formal_name),
                 &target,
             ) {
                 Ok(v) => v,
                 Err(reject) => return Outcome::Error(reject.message),
             };
             if let Some(seed) = &like_seed {
-                println!("seed defaults from snapshot {}", seed.label);
+                println!("seed defaults from application {}", seed.label);
             }
             let mut saved = StagedRecord::new_with_context(
                 new_context.clone(),
@@ -2553,6 +2424,7 @@ fn run(
                 vec![],
             );
             saved.seed = like_seed.as_ref().map(|seed| seed.id.to_string());
+            saved.seed_entry = like_seed.as_ref().map(|seed| seed.entry.clone());
             save_document_answers(&template, &mut saved);
             let interview = match resolution.start_with_seed(
                 &template,
@@ -2629,8 +2501,8 @@ fn run(
             // Re-read the pinned seed, if the staged interview was generated with
             // `--like`, so the resumed defaults match the staged run exactly.
             let pinned_seed = match resolve_pinned_seed(
-                saved.seed.as_deref(),
-                toha::snapshot::source_identity(&resolved.formal_name),
+                &saved,
+                &toha::applied::source_identity(&resolved.formal_name),
                 &target,
             ) {
                 Ok(v) => v,
@@ -2726,7 +2598,7 @@ fn run(
     );
     // An approval that no longer matches marks the hooks changed since approval.
     let changed_since_approval = approval.is_some() && !registry_trusted;
-    let plan = match Plan::build(&template, &completed, &target) {
+    let mut plan = match Plan::build(&template, &completed, &target) {
         Ok(plan) => plan,
         Err(error) => return Outcome::Error(error.to_string()),
     };
@@ -2759,18 +2631,12 @@ fn run(
         );
         return Outcome::Saved(0);
     }
-    // The snapshot save of a plain apply (person and agent routes). The apply
-    // consumes its plan, so build a second for the capture, and read cleanliness
-    // before the apply writes. `completed` is not yet moved here.
-    let capture_plan = Plan::build(&template, &completed, &target).ok();
-    let capture_now = completed.now.clone();
-    let capture_project = open_project_for_snapshot(
-        toha::snapshot::Project::open(&target),
-        &mut std::io::stderr(),
-    );
-    let capture_was_clean = capture_project
-        .as_ref()
-        .is_some_and(|p| matches!(p.cleanliness(), Ok(toha::snapshot::Cleanliness::Clean)));
+    if let Some(saved) = &saved {
+        match cli::resolve::applied_revision(&saved.template, &saved.commit) {
+            Ok(revision) => plan.record_identity(saved.template.clone(), revision),
+            Err(error) => return Outcome::Error(error.to_string()),
+        }
+    }
     let before = plan.before_apply.clone();
     let preview = plan_lines(&plan, force, &[]);
     if !terminal_run {
@@ -2793,21 +2659,15 @@ fn run(
         &mut |file| println!("{file}"),
     ) {
         Ok(Applied::Written {
-            after_apply, git, ..
+            after_apply,
+            git,
+            record,
+            ..
         }) => {
             let mut lines = git.as_ref().map(GitReport::lines).unwrap_or_default();
             lines.extend(after_apply);
-            let capture_project = project_after_git(capture_project, git.as_ref(), &target);
-            if let (Some(sv), Some(cplan)) = (saved.as_ref(), capture_plan.as_ref())
-                && let Some(line) = plain_apply_snapshot_line(
-                    capture_project.as_ref(),
-                    capture_was_clean,
-                    sv,
-                    &capture_now,
-                    cplan,
-                )
-            {
-                lines.push(line);
+            if let toha::applied::RecordOutcome::Written(path) = record {
+                lines.push(format!("saved applied record {path}"));
             }
             if saved.is_some()
                 && let Err(e) = store.remove(&target)
@@ -2842,6 +2702,25 @@ fn main() -> ExitCode {
     if let Command::Skills { command } = command {
         return skills::run(command).finish();
     }
+    let record_target = match &command {
+        Command::Stage { path, .. } | Command::Continue { path, .. } => Some(path.clone()),
+        Command::Apply { paths, .. } => paths.last().map(PathBuf::from),
+        _ => None,
+    };
+    if let Some(path) = record_target {
+        let checked = staging::canonical_target(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|target| {
+                match toha::applied::Project::open(&target).map_err(|e| e.to_string())? {
+                    Some(project) => project.record_relative().map_err(|e| e.to_string()),
+                    None => toha::applied::validate_record_path(target.as_path())
+                        .map_err(|e| e.to_string()),
+                }
+            });
+        if let Err(error) = checked {
+            return Outcome::Usage(error).finish();
+        }
+    }
     let dirs = match Dirs::resolve() {
         Ok(v) => v,
         Err(e) => return Outcome::Error(e).finish(),
@@ -2854,17 +2733,18 @@ fn main() -> ExitCode {
             path,
             r#async,
             trust,
-            from,
+            update,
             baseline,
             reanswer,
             like,
         } => {
-            // A staged update (`stage --from`/`--baseline`) drives the update
+            // A staged update (`stage --update`/`--baseline`) drives the update
             // replay adapter; a plain stage starts a fresh interview.
-            if from.is_some() || baseline {
-                let base = match from {
-                    Some(id) => update::UpdateBase::From(id),
-                    None => update::UpdateBase::Baseline,
+            if update || baseline {
+                let base = if update {
+                    update::UpdateBase::Update
+                } else {
+                    update::UpdateBase::Baseline
                 };
                 return update_stage::stage(
                     base,
@@ -2873,6 +2753,7 @@ fn main() -> ExitCode {
                     r#async,
                     reanswer,
                     trust,
+                    &input,
                     &dirs,
                 )
                 .finish();
@@ -2931,7 +2812,7 @@ fn main() -> ExitCode {
             force,
             dry_run,
             trust,
-            from,
+            update,
             baseline,
             reanswer,
             like,
@@ -2941,13 +2822,14 @@ fn main() -> ExitCode {
                 [template, path] => (Some(template.clone()), PathBuf::from(path)),
                 _ => unreachable!("clap requires one or two operands"),
             };
-            if from.is_some() || baseline {
-                let base = match from {
-                    Some(id) => update::UpdateBase::From(id),
-                    None => update::UpdateBase::Baseline,
+            if update || baseline {
+                let base = if update {
+                    update::UpdateBase::Update
+                } else {
+                    update::UpdateBase::Baseline
                 };
                 return update::run_update(
-                    base, template, &path, answers, reanswer, dry_run, trust, &dirs,
+                    base, template, &path, answers, reanswer, dry_run, trust, &input, &dirs,
                 )
                 .finish();
             }
@@ -3330,7 +3212,7 @@ mod report_tests {
             serde_json::json!({
                 "protocol": 1,
                 "status": "applied",
-                "snapshot": { "id": "01J9Z8XR7Q" },
+                "record": { "path": ".toha.json" },
                 "merge": { "changes": [], "conflicted": [] }
             }),
             0,
@@ -3352,10 +3234,8 @@ mod report_tests {
         // snapshot ref-map — captured from the real update before the report —
         // must be byte-identical after the report fails.
         use indexmap::IndexMap;
+        use toha::applied::{Base, MergeOptions, Merged, Project, RecordInputs, Revision};
         use toha::interview::{Interview, Seed};
-        use toha::snapshot::{
-            Base, FrozenNow, MergeOptions, Merged, Project, Revision, SnapshotInputs,
-        };
         use toha::template::{Id, Template};
         use toha::{RawAnswer, RawAnswers};
 
@@ -3410,16 +3290,14 @@ mod report_tests {
             serde_json::json!("sample-value"),
         );
         let project = Project::open(&target).unwrap().unwrap();
-        let merged = toha::snapshot::merge_apply(
+        let merged = toha::applied::merge_apply(
             &project,
             Base::Empty,
             &template,
             &completed,
-            SnapshotInputs {
+            RecordInputs {
                 template: "forge:demo/greeter@stable".to_owned(),
                 revision: Revision::Unversioned,
-                generated: FrozenNow::new(completed.now.clone()),
-                submissions: vec![submission],
             },
             MergeOptions {
                 trusted: true,
@@ -3429,7 +3307,7 @@ mod report_tests {
         )
         .unwrap();
         let Merged::Written {
-            snapshot, changes, ..
+            record, changes, ..
         } = merged
         else {
             panic!("a baseline merge writes: {merged:?}");
@@ -3444,7 +3322,7 @@ mod report_tests {
             serde_json::json!({
                 "protocol": 1,
                 "status": "applied",
-                "snapshot": { "id": snapshot.to_string() },
+                "record": { "path": record },
                 "merge": { "changes": [], "conflicted": [] }
             }),
             0,
@@ -3464,10 +3342,8 @@ mod report_tests {
         let file_before = std::fs::read(root.join("greeting.txt")).unwrap();
         let index_before = std::fs::read(root.join(".git/index")).unwrap();
         let refmap_before = refmap(root);
-        assert!(
-            refmap_before.contains(&snapshot.to_string()),
-            "the update saved its snapshot ref: {refmap_before}"
-        );
+        assert!(refmap_before.is_empty(), "an update creates no Toha ref");
+        let record_before = std::fs::read(root.join(".toha.json")).unwrap();
 
         // Reporting to a failing writer surfaces the error (no panic, no swallow).
         let mut err = Vec::new();
@@ -3477,6 +3353,10 @@ mod report_tests {
             "a broken pipe at the report boundary surfaces as an error"
         );
 
+        assert_eq!(
+            std::fs::read(root.join(".toha.json")).unwrap(),
+            record_before
+        );
         // The real committed result is byte-identical after the failed report.
         assert_eq!(
             std::fs::read(root.join("greeting.txt")).unwrap(),
@@ -3513,38 +3393,10 @@ mod report_tests {
     }
 }
 
-#[cfg(test)]
-mod snapshot_open_tests {
-    use super::open_project_for_snapshot;
-    use toha::snapshot::ProjectError;
-
-    #[test]
-    fn a_genuine_open_fault_is_warned_and_degrades_to_no_snapshot() {
-        // Err(ProjectError) — a real open fault, not "not a git repo" — is named
-        // on the warn writer before degrading to None (the apply saves no
-        // snapshot). This is the distinction finding 5 restores.
-        let mut warn = Vec::new();
-        let project = open_project_for_snapshot(Err(ProjectError::Open("boom".into())), &mut warn);
-        assert!(project.is_none(), "a fault degrades to no snapshot");
-        let text = String::from_utf8(warn).unwrap();
-        assert!(
-            text.contains("warning"),
-            "the fault is named as a warning: {text}"
-        );
-        assert!(text.contains("boom"), "the warning names the fault: {text}");
-    }
-
-    #[test]
-    fn not_a_git_repository_degrades_silently() {
-        // Ok(None) — the target is simply not inside a repository — degrades to
-        // None with no diagnostic, as before.
-        let mut warn = Vec::new();
-        let project = open_project_for_snapshot(Ok(None), &mut warn);
-        assert!(project.is_none());
-        assert!(
-            warn.is_empty(),
-            "not-a-repo stays silent: {}",
-            String::from_utf8_lossy(&warn)
-        );
+fn record_document(record: &toha::applied::RecordOutcome) -> serde_json::Value {
+    match record {
+        toha::applied::RecordOutcome::Written(path) => serde_json::json!({"path":path}),
+        toha::applied::RecordOutcome::NotGit => serde_json::json!({"skipped":"not-git"}),
+        toha::applied::RecordOutcome::Internal => serde_json::Value::Null,
     }
 }
