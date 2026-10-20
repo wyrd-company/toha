@@ -7,7 +7,7 @@ relationships:
     - config
     - template-registry
     - command-line-interface
-    - snapshot
+    - applied-record
   related-to:
     - bundled-demo
     - template-defaults
@@ -70,23 +70,34 @@ proposed-design:
     documents. `source` parses template addresses and fetches git templates
     with gitoxide. `registry` reads and writes `templates.yml` layers and
     resolves a template argument. `config` reads and merges configuration
-    layers. `staging` stores staged interviews. `snapshot` records an apply's
-    output as a git snapshot, opens a project's repository, and merges a
-    template update from a base snapshot. `jinja` owns the minijinja
-    environment, the compiled value types, and the toha filters; it is
+    layers. `staging` stores staged interviews. `applied` reads and writes the
+    applied record, opens a project's repository, captures ownership, and merges
+    a template update from its recorded application entry. `jinja` owns the
+    minijinja environment, the compiled value types, and the toha filters; it is
     private to the library. The binary holds argument parsing, the terminal
     prompt driver, output formatting, the exit-code mapping, and the embedded
     skills.
 
-    The `snapshot` module opens the target's repository once through gitoxide
+    The `applied` module opens the target's repository once through gitoxide
     (gix features: worktree-mutation, revision, sha1, status, merge) and removes
     every configured merge and filter driver from the in-memory configuration so
-    no driver program starts during status, checkout, conversion, or merge. It
-    records a snapshot as a parentless commit under `refs/toha/snapshots/<id>`,
-    captures the applied files, and applies a template update by building a
-    candidate tree through a throwaway checkout and merging it three-way into the
-    working tree under an index lock. The update replay adapter, which drives the
-    interview engine from a base snapshot's recorded answers, is crate-private;
+    no driver program starts during status, checkout, conversion, or merge. The
+    applied record is `.toha.json` at the repository root; TOHA_RECORD overrides
+    its repository-relative path. It records applications keyed by source and
+    target. Each entry holds raw accepted answers, parts, frozen render time,
+    referenced render context
+    and ownership; whole-file and hook paths require a stored blob id and Git
+    mode. The module renders the merge base from the recorded revision and
+    inputs without hooks. Whole-file bytes must match the recorded blob or come
+    from its retained object; hook paths use only retained objects. Base entries
+    use recorded mode, never HEAD's mode. Missing base bytes preserve operator
+    files and conflict when candidate bytes differ or the path is removed.
+    The candidate tree uses a throwaway checkout and merges three-way into the
+    working tree under an index lock, with the new record entry written in the
+    same transaction. Toha creates, reads and lists no `refs/toha/` ref and
+    migrates no legacy ref contents; `--baseline` explicitly re-baselines a
+    project against an empty merge base. The update replay adapter drives the
+    interview engine from an application's recorded answers and is crate-private;
     the command driver reaches it through the `drive_update`/`drive_update_resume`
     seam, which returns the adapter's typed outcome over already-public interview
     types. `StagedRecord` carries optional `base` and `reanswer` members for a
@@ -174,30 +185,25 @@ proposed-design:
     rendered interview hooks in order, and the messages shown.
 
   generate-axis: >-
-    The generate axis (`--like`) seeds a new application's answer defaults from a
-    snapshot of a prior application of the same source. A crate-private CLI-side
-    boundary `src/cli/like.rs` is the only code outside `snapshot` that names a
-    `Snapshot` or `Project` on this axis; it is pure and reader-only and never
-    prompts. `candidates(project, source)` reads the repository-wide snapshot set
-    through the producer reader and keeps the valid ones of the source;
-    `latest(&[Snapshot])` returns the newest; `find_required(project, source,
-    reference)` resolves an id or prefix and verifies the source;
-    `fold_submissions(...)` folds a snapshot's recorded submissions to one raw
-    default per id. Snapshot types stop at this boundary: the fold yields an
-    `IndexMap<Id, RawAnswer>` that the engine consumes as defaults. The engine
-    seam is `Resolution::start_with_seed(template, now, context, Option<seed>) ->
+    The generate axis (`--like TARGET`) seeds a new application's defaults from
+    an application of the same source. The CLI-side boundary `src/cli/like.rs`
+    selects through `applied::Project::applications()`, validates source identity
+    and matches a repository-relative target. A bare flag lets the person route
+    pick an application; other routes require a target. The boundary converts the
+    entry's raw answers into `ApplicationSeed` and retains the target as provenance.
+    Application and repository types stop at this boundary; the engine consumes
+    raw defaults. The engine seam is
+    `Resolution::start_with_seed(template, now, context, Option<ApplicationSeed>) ->
     Result<(Interview, Vec<warning>), EvalError>`, a sibling of
-    `start_with_context`; with `None` it is byte-for-byte `start_with_context`, so
-    an absent seed uses the ordinary configured start. The seam is the single place generator
-    precedence is realized and the single-occupant default bank is built: it adds
-    a private `DefaultBankEntry::Snapshot { raw, from }` (mirrored by
-    `PreparedDefaultSource::Snapshot { from }`) that shadows a configured entry
-    for an id when the snapshot value matches the question's kind, drops a
-    wrong-kind value as a warning, without adding snapshot repository types to public `Seed`.
-    The `snapshot` reader exposes a repository-wide listing,
-    `Project::snapshots_all()`, the sibling of the target-scoped
-    `Project::snapshots()`. The staged
-    record carries an optional pinned snapshot id, re-read from git on resume.
+    `start_with_context`; with `None` it follows the ordinary configured start.
+    The seam builds the single-occupant default bank: a kind-matching
+    `DefaultBankEntry::Application { raw, from }`, mirrored by
+    `PreparedDefaultSource::Application { from }`, shadows the configured entry.
+    A wrong-kind value is dropped with a warning, revealing the configured or
+    template fallback. Explicit route answers win over seeded defaults. Staging
+    records the selected target in `seed` and copies the entry in `seed_entry`,
+    including answers and parts. Resume uses that copy without rereading the live
+    application. The seed stays separate from an update's copied base entry.
 
   answers: >-
     `Answer` is `Text(String)`, `Bool(bool)`, `List(Vec<String>)`, `None`, or
@@ -232,9 +238,12 @@ proposed-design:
   staging: >-
     Staged records persist invocation inputs: the canonical target text,
     selected formal identity and content version, originating context, frozen
-    time and ordered accepted raw submissions. Optional base, reanswer and seed
-    members describe update or generator input. Store validates the target against
-    the producer-created CanonicalTarget. Replay loads the recorded named/Git
+    time and ordered accepted raw submissions. Optional base and reanswer members
+    describe an update: base copies the application entry or marks an empty
+    baseline, and staged apply refuses a changed live application entry. The
+    seed and seed_entry members carry generator provenance and the copied
+    application. Store validates the target against the producer-created
+    CanonicalTarget. Replay loads the recorded named/Git
     version or current mutable folder, restores recorded context inside the
     record, resolves live configured defaults and submits accepted values through
     the shared engine. Legacy context-free records retain the legacy projection.

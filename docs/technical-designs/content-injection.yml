@@ -54,7 +54,7 @@ proposed-design:
     committed. Hooks execute after file writes.
   ownership-view: >-
     Plan::mutations exposes Whole(path), Region(path, region) and
-    JsonValue(path, json_path) from plan intent. Snapshot capture and update
+    JsonValue(path, json_path) from plan intent. Applied-record capture and update
     ownership transitions consume that view. Region checksums govern direct
     drift; JSON ownership converges. Project updates own three-way merge,
     retraction and release semantics. Marker rules reject JSON-family targets
