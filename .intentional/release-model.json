@@ -1,0 +1,56 @@
+{
+  "$schema": "https://intentional.foo/schemas/release-model/1",
+  "paths": {
+    "config": ".intentional/config.yml",
+    "intents": ".intentional/intents",
+    "model": ".intentional/release-model.json"
+  },
+  "release_groups": {
+    "fixed": [],
+    "linked": []
+  },
+  "release_units": {
+    "toha": {
+      "changelog": "CHANGELOG.md",
+      "depends_on": [],
+      "disposition": "managed",
+      "ecosystems": [
+        "cargo"
+      ],
+      "path": ".",
+      "projections": [
+        {
+          "adapter": "toml",
+          "file": "Cargo.toml",
+          "generic": true,
+          "mode": "committed",
+          "pointer": "/package/version",
+          "workspace_file": "Cargo.toml"
+        },
+        {
+          "adapter": "cargo",
+          "file": "Cargo.toml",
+          "generic": false,
+          "mode": "committed",
+          "native_identity": "toha",
+          "workspace_file": "Cargo.toml"
+        }
+      ],
+      "release_record": "required",
+      "sources": [
+        {
+          "detector": "cargo-package",
+          "path": "Cargo.toml"
+        }
+      ],
+      "tags": {
+        "primary": {
+          "role": "primary",
+          "tag_after": [],
+          "template": "{version}"
+        }
+      }
+    }
+  },
+  "workspace_tags": {}
+}
