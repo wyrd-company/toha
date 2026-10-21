@@ -1,21 +1,32 @@
-# ---
-# relationships:
-#   implements: architecture
-# ---
 $schema: https://intentional.foo/schemas/config.yml
 contract: contract-1
 settings:
   internal-dependency-bump: patch
   pre-1-0-bump-mapping: component
+discovery:
+  managed-paths:
+  - detector: cargo-package
+    path: Cargo.toml
+    release-unit: toha
+  excluded-paths:
+  - detector: npm-package
+    path: tests/fixtures/inject-struct/existing/package.json
+    evidence-digest: sha256:3739edaac1d58696bf2c94e822ed1cff7e35421ccee592ab27fd60388a88a0c9
+  - detector: npm-package
+    path: tests/fixtures/inject-struct/expected/package.json
+    evidence-digest: sha256:777f55ad84cda0c8fa11e492b14a042d1eab702b584933b15fa4febe71e14925
 release-units:
   toha:
     path: .
     projections:
-      - adapter: toml
-        file: Cargo.toml
-        pointer: /package/version
-        mode: committed
+    - adapter: toml
+      file: Cargo.toml
+      mode: committed
+      pointer: /package/version
+    - adapter: cargo
+      file: Cargo.toml
+      mode: committed
     tags:
       primary:
         role: primary
-        template: "{version}"
+        template: '{version}'
