@@ -73,7 +73,8 @@ proposed-design:
     The crate-private adapter queues recorded raw values per id, including loop
     values. Verified route overrides replace queued values. Each pending batch
     consumes its next usable values; rejected values become unanswered with
-    retained rejections. Recorded parts are queued only when the applied revision
+    retained rejections. Raw replay nulls remain empty answers and do not take
+    configured or template defaults; required questions reject them. Recorded parts are queued only when the applied revision
     had a part question, including an empty selection. A first-added part
     question is asked. Document answers are not queued. Person routes prompt,
     scripts report questions and agents save a stage carrying a copy of the

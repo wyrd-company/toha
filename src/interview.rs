@@ -603,7 +603,14 @@ fn render_default(
                 PreparedDefaultSource::Application { from: from.clone() },
             ),
         };
-        return parse_kind(id, kind, raw.0.clone())
+        // Raw replay values use answer semantics: explicit null is the empty
+        // answer, not a configured/template default or a fallback to one.
+        let answer = if raw.0.is_null() && matches!(source, PreparedDefaultSource::Seed) {
+            Ok(empty_answer(kind))
+        } else {
+            parse_kind(id, kind, raw.0.clone())
+        };
+        return answer
             .map(|answer| Some(PreparedDefault { answer, source }))
             .map_err(|e| eval_error(id, CONFIGURED_DEFAULT, e.message));
     }
