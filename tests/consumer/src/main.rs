@@ -145,6 +145,7 @@ fn update_environment<'a>(
     }
 }
 fn main() {
+    update_start_replay_contract();
     update_start_end_contract();
     fn assert_send<T: Send>() {}
     assert_send::<Template>();
@@ -1625,5 +1626,296 @@ fn update_start_end_contract() {
         );
         assert!(no_stage, "consumer_update_start_end_has_no_stage");
         assert!(ended, "consumer_update_start_end_lost");
+    }
+}
+
+/// The same raw start inputs must retain their outcome after an owned-record boundary.
+fn update_start_replay_contract() {
+    for new_question in [false, true] {
+        for value in ["x", "changed", "abort", "stop"] {
+            let temporary = tempfile::tempdir().unwrap();
+            let root = temporary.path().canonicalize().unwrap();
+            let source = root.join("source");
+            let target = root.join("target");
+            let label =
+                "  - {id: label, type: text, prompt: Label, required: true, validate: {min: 3}}\n";
+            write(
+                &source,
+                "template.yml",
+                format!("name: sample\ninterview:\n{label}"),
+            );
+            write(&source, "template/result.txt", "{{ label }}\n");
+            std::fs::create_dir_all(&target).unwrap();
+            git(&source, &["init", "-q"]);
+            commit(&source);
+            git(&target, &["init", "-q"]);
+            write(&target, "README.md", "operator\n");
+            commit(&target);
+            let paths = paths(&root);
+            let address = format!("file://{}", source.display());
+            let target_id = canonical_target(&target).unwrap();
+            let (config, registry, _) = toha::resolve::load_context(&paths, &root).unwrap();
+            let mut source_env = NoEnvironment;
+            let mut environment = update_environment(&config, &registry, &root, &mut source_env);
+            let prepared = updates::prepare(
+                &UpdateBase::Baseline,
+                &address,
+                &target_id,
+                &paths,
+                true,
+                PrepareMode::Apply,
+                false,
+                &mut environment,
+            )
+            .unwrap();
+            let baseline = UpdateSession::start(
+                prepared,
+                target_id.clone(),
+                UpdateBase::Baseline,
+                false,
+                Default::default(),
+                &[],
+                &raw("label", json!("example")),
+            )
+            .unwrap();
+            let completed = done(baseline.state().unwrap());
+            baseline
+                .apply(&completed, false, &FailingRunner, None)
+                .unwrap();
+            commit(&target);
+            let record_before = std::fs::read(target.join(".toha.json")).unwrap();
+            let result_before = std::fs::read(target.join("result.txt")).unwrap();
+            let id = if new_question { "color" } else { "label" };
+            let extra_question = if new_question {
+                "  - {id: color, type: text, prompt: Color, required: true, validate: {min: 3}}\n"
+            } else {
+                ""
+            };
+            write(
+                &source,
+                "template.yml",
+                format!(
+                    "name: sample\ninterview:\n{label}{extra_question}  - flow: abort\n    when: {id} == 'abort'\n  - flow: stop\n    when: {id} == 'stop'\n"
+                ),
+            );
+            write(&source, "template/extra.txt", format!("{{{{ {id} }}}}\n"));
+            commit(&source);
+            let prepared = updates::prepare(
+                &UpdateBase::Update,
+                &address,
+                &target_id,
+                &paths,
+                true,
+                PrepareMode::Apply,
+                false,
+                &mut environment,
+            )
+            .unwrap();
+            let invalid_parts = toha::parts::Selection {
+                with: vec!["extra".into()],
+                ..Default::default()
+            };
+            assert!(
+                matches!(
+                    UpdateSession::start(
+                        prepared,
+                        target_id.clone(),
+                        UpdateBase::Update,
+                        false,
+                        invalid_parts,
+                        &[],
+                        &RawAnswers::new()
+                    ),
+                    Err(updates::SessionError::Operation(
+                        toha::operations::OperationError::Parts(_)
+                    ))
+                ),
+                "consumer_update_parts_typed"
+            );
+            let prepared = updates::prepare(
+                &UpdateBase::Update,
+                &address,
+                &target_id,
+                &paths,
+                true,
+                PrepareMode::Apply,
+                false,
+                &mut environment,
+            )
+            .unwrap();
+            let mut session = UpdateSession::start(
+                prepared,
+                target_id.clone(),
+                UpdateBase::Update,
+                false,
+                Default::default(),
+                &[],
+                &raw(id, json!(value)),
+            )
+            .unwrap();
+            let store = Store::new(paths.state.clone());
+            let mut wire_before = None;
+            for reconstructed in [false, true] {
+                let state = session.state().unwrap();
+                // A broken state-to-apply driver must expose its writes before enum assertions.
+                if value == "x"
+                    && let SessionState::Completed(completed) = &state
+                {
+                    session
+                        .apply(completed, false, &FailingRunner, None)
+                        .unwrap();
+                    assert!(
+                        !target.join("extra.txt").exists(),
+                        "consumer_start_replay_rejected_no_write"
+                    );
+                    panic!("consumer_start_replay_rejected_completed");
+                }
+                match (&state, value) {
+                    (
+                        SessionState::Asking {
+                            document,
+                            rejections,
+                        },
+                        "x",
+                    ) => {
+                        assert!(
+                            rejections.iter().any(|r| r.id.as_str() == id),
+                            "consumer_start_replay_rejection_retained"
+                        );
+                        assert!(
+                            document["errors"].get(id).is_some(),
+                            "consumer_start_replay_error_document"
+                        );
+                        let properties = document["schema"]["properties"].as_object().unwrap();
+                        assert!(
+                            properties.contains_key(id),
+                            "consumer_start_replay_rejected_field_visible"
+                        );
+                        assert_eq!(
+                            properties.len(),
+                            1,
+                            "consumer_start_replay_only_uncovered_field"
+                        );
+                        match session.replay().unwrap() {
+                            toha::applied::UpdateDrive::Ask { rejections, .. } => assert!(
+                                rejections.iter().any(|r| r.id.as_str() == id),
+                                "consumer_start_replay_raw_rejections"
+                            ),
+                            _ => panic!("consumer_start_replay_raw_state"),
+                        }
+                    }
+                    (SessionState::Completed(_), "changed") => {}
+                    (SessionState::Ended(end), "abort") => {
+                        assert_eq!(end.kind(), toha::EndKind::Abort)
+                    }
+                    (SessionState::Ended(end), "stop") => {
+                        assert_eq!(end.kind(), toha::EndKind::Stop)
+                    }
+                    _ => panic!(
+                        "consumer_start_replay_outcome_matrix: new={new_question} value={value} rebuilt={reconstructed}: {state:?}"
+                    ),
+                }
+                assert!(
+                    !target.join("extra.txt").exists(),
+                    "consumer_start_replay_no_early_file"
+                );
+                assert_eq!(
+                    std::fs::read(target.join(".toha.json")).unwrap(),
+                    record_before,
+                    "consumer_start_replay_record_unchanged"
+                );
+                assert_eq!(
+                    std::fs::read(target.join("result.txt")).unwrap(),
+                    result_before,
+                    "consumer_start_replay_file_unchanged"
+                );
+                session.persist(&store).unwrap();
+                if matches!(value, "abort" | "stop") {
+                    assert!(
+                        store.load(&target_id).unwrap().is_none(),
+                        "consumer_start_replay_end_consumes_stage"
+                    );
+                } else {
+                    let saved =
+                        serde_json::to_vec(&store.load(&target_id).unwrap().unwrap()).unwrap();
+                    if let Some(before) = &wire_before {
+                        assert_eq!(&saved, before, "consumer_start_replay_persist_stable");
+                    }
+                    wire_before = Some(saved);
+                }
+                if !reconstructed {
+                    let wire = serde_json::to_vec(&session.record).unwrap();
+                    let frozen = (session.record.commit.clone(), session.record.now.clone());
+                    drop(session);
+                    let worker_root = root.clone();
+                    let worker_target = target_id.clone();
+                    let (record, state) = std::thread::spawn(move || {
+                        let record: StagedRecord = serde_json::from_slice(&wire).unwrap();
+                        let paths = crate::paths(&worker_root);
+                        let (config, registry, _) =
+                            toha::resolve::load_context(&paths, &worker_root).unwrap();
+                        let mut source = NoEnvironment;
+                        let mut environment =
+                            update_environment(&config, &registry, &worker_root, &mut source);
+                        let session = UpdateSession::resume(
+                            record,
+                            worker_target,
+                            &paths,
+                            true,
+                            &mut environment,
+                        )
+                        .unwrap();
+                        let state = session.state().unwrap();
+                        (session.record, state)
+                    })
+                    .join()
+                    .unwrap();
+                    if value == "x" {
+                        assert!(
+                            matches!(state, SessionState::Asking { ref rejections, .. } if rejections.iter().any(|r| r.id.as_str() == id)),
+                            "consumer_start_replay_worker_rejection"
+                        );
+                    }
+                    assert_eq!(
+                        (record.commit.clone(), record.now.clone()),
+                        frozen,
+                        "consumer_start_replay_pinned_record"
+                    );
+                    session = UpdateSession::resume(
+                        record,
+                        target_id.clone(),
+                        &paths,
+                        true,
+                        &mut environment,
+                    )
+                    .unwrap();
+                }
+            }
+            if value == "x" {
+                let completed = done(session.answer(raw(id, json!("corrected"))).unwrap());
+                session
+                    .apply(&completed, false, &FailingRunner, Some(&store))
+                    .unwrap();
+                assert_eq!(
+                    std::fs::read_to_string(target.join("extra.txt")).unwrap(),
+                    "corrected\n",
+                    "consumer_start_replay_correction_used"
+                );
+                assert!(
+                    store.load(&target_id).unwrap().is_none(),
+                    "consumer_start_replay_correction_consumes_stage"
+                );
+            } else if value == "changed" {
+                let completed = done(session.state().unwrap());
+                session
+                    .apply(&completed, false, &FailingRunner, Some(&store))
+                    .unwrap();
+                assert_eq!(
+                    std::fs::read_to_string(target.join("extra.txt")).unwrap(),
+                    "changed\n",
+                    "consumer_start_replay_valid_used"
+                );
+            }
+        }
     }
 }

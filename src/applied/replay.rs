@@ -84,52 +84,31 @@ fn consume_staged(
 /// values so the route falls back to them.
 pub(crate) fn replay<'a>(
     template: &'a Template,
-    mut seed: Seed,
+    seed: Seed,
     recorded: &[IndexMap<Id, RawAnswer>],
     overrides: RawAnswers,
     reanswer: bool,
 ) -> Result<Replay<'a>, EvalError> {
-    // On entry the seed carries the configured presets. They are the lowest
-    // priority: a question the base neither asked nor whose value a route
-    // overrides still takes its preset, so a new question with a preset is
-    // answered, not asked.
-    let presets = seed.defaults.clone();
+    replay_resume_with_overrides(template, seed, recorded, &[], &overrides, reanswer)
+}
 
-    // A per-id queue of recorded values, in recorded order.
+/// Recorded values with explicit overrides first and configured presets last.
+/// Both replay and the uncovered-question projection consume this same queue.
+fn update_queue(
+    recorded: &[RawAnswers],
+    overrides: &RawAnswers,
+    presets: &RawAnswers,
+) -> HashMap<Id, VecDeque<RawAnswer>> {
     let mut queue = build_queue(recorded);
-    // The route's overrides replace an id's queued value; an override for an id
-    // the new version does not ask is never consumed, so it is dropped.
-    for (id, raw) in &overrides {
+    for (id, raw) in overrides {
         queue.insert(id.clone(), VecDeque::from([raw.clone()]));
     }
-    // A configured preset fills an id neither recorded nor overridden.
-    for (id, raw) in &presets {
+    for (id, raw) in presets {
         queue
             .entry(id.clone())
             .or_insert_with(|| VecDeque::from([raw.clone()]));
     }
-
-    // The route falls back to the recorded (then overridden) values as defaults.
-    // They layer over any defaults the seed already carries — the configured
-    // presets — so a question the base never answered keeps its preset while a
-    // recorded value or an override wins for its own id.
-    for submission in recorded {
-        for (id, raw) in submission {
-            seed.defaults.insert(id.clone(), raw.clone());
-        }
-    }
-    for (id, raw) in overrides {
-        seed.defaults.insert(id, raw);
-    }
-
-    let interview = Interview::start(template, seed)?;
-    drive_from_queue(
-        interview,
-        queue,
-        template.part_question().map(|q| &q.id),
-        reanswer,
-        Vec::new(),
-    )
+    queue
 }
 
 /// Resume a staged update: rebuild the adapter from the base's `recorded`
@@ -138,24 +117,35 @@ pub(crate) fn replay<'a>(
 /// The seed carries the frozen instant, context, and configured presets.
 pub(crate) fn replay_resume<'a>(
     template: &'a Template,
-    mut seed: Seed,
-    recorded: &[IndexMap<Id, RawAnswer>],
-    staged: &[IndexMap<Id, RawAnswer>],
+    seed: Seed,
+    recorded: &[RawAnswers],
+    staged: &[RawAnswers],
     reanswer: bool,
 ) -> Result<Replay<'a>, EvalError> {
-    let presets = seed.defaults.clone();
-    let mut queue = build_queue(recorded);
-    for (id, raw) in &presets {
-        queue
-            .entry(id.clone())
-            .or_insert_with(|| VecDeque::from([raw.clone()]));
-    }
-    // The route falls back to the recorded values, then the presets, as defaults.
+    replay_resume_with_overrides(
+        template,
+        seed,
+        recorded,
+        staged,
+        &RawAnswers::new(),
+        reanswer,
+    )
+}
+
+fn replay_resume_with_overrides<'a>(
+    template: &'a Template,
+    mut seed: Seed,
+    recorded: &[RawAnswers],
+    staged: &[RawAnswers],
+    overrides: &RawAnswers,
+    reanswer: bool,
+) -> Result<Replay<'a>, EvalError> {
+    let mut queue = update_queue(recorded, overrides, &seed.defaults);
+    // Keep the same precedence in prompt defaults as in the replay queue.
     for submission in recorded {
-        for (id, raw) in submission {
-            seed.defaults.insert(id.clone(), raw.clone());
-        }
+        seed.defaults.extend(submission.clone());
     }
+    seed.defaults.extend(overrides.clone());
 
     let mut interview = Interview::start(template, seed)?;
     let mut submissions = Vec::new();
@@ -391,27 +381,42 @@ pub fn drive_update_resume<'a>(
     staged: &[IndexMap<Id, RawAnswer>],
     reanswer: bool,
 ) -> Result<UpdateDrive<'a>, EvalError> {
-    Ok(
-        match replay_resume(template, seed, recorded, staged, reanswer)? {
-            Replay::Completed {
-                completed,
-                submissions,
-            } => UpdateDrive::Completed {
-                completed,
-                submissions,
-            },
-            Replay::Ask {
-                pending,
-                rejections,
-                submissions,
-            } => UpdateDrive::Ask {
-                pending: *pending,
-                rejections,
-                submissions,
-            },
-            Replay::Ended(ended) => UpdateDrive::Ended(ended),
+    into_update_drive(replay_resume(template, seed, recorded, staged, reanswer))
+}
+
+pub(crate) fn drive_update_resume_with_overrides<'a>(
+    template: &'a Template,
+    seed: Seed,
+    recorded: &[RawAnswers],
+    staged: &[RawAnswers],
+    overrides: &RawAnswers,
+    reanswer: bool,
+) -> Result<UpdateDrive<'a>, EvalError> {
+    into_update_drive(replay_resume_with_overrides(
+        template, seed, recorded, staged, overrides, reanswer,
+    ))
+}
+
+fn into_update_drive(result: Result<Replay<'_>, EvalError>) -> Result<UpdateDrive<'_>, EvalError> {
+    Ok(match result? {
+        Replay::Completed {
+            completed,
+            submissions,
+        } => UpdateDrive::Completed {
+            completed,
+            submissions,
         },
-    )
+        Replay::Ask {
+            pending,
+            rejections,
+            submissions,
+        } => UpdateDrive::Ask {
+            pending: *pending,
+            rejections,
+            submissions,
+        },
+        Replay::Ended(ended) => UpdateDrive::Ended(ended),
+    })
 }
 
 #[cfg(test)]
@@ -424,18 +429,14 @@ pub(crate) fn covered_answers(
     pending: &Pending<'_>,
     recorded: &[RawAnswers],
     accepted: &[RawAnswers],
+    overrides: &RawAnswers,
     presets: &RawAnswers,
     reanswer: bool,
 ) -> Result<RawAnswers, EvalError> {
     if reanswer {
         return Ok(RawAnswers::new());
     }
-    let mut queue = build_queue(recorded);
-    for (id, raw) in presets {
-        queue
-            .entry(id.clone())
-            .or_insert_with(|| VecDeque::from([raw.clone()]));
-    }
+    let mut queue = update_queue(recorded, overrides, presets);
     for submission in accepted {
         consume_staged(&mut queue, submission);
     }

@@ -739,7 +739,6 @@ pub fn record(
 /// this operation there, and return its `Send` record/response across the worker boundary.
 /// Serialize `record` and rebuild through `resume` for each subsequent request.
 pub struct UpdateSession {
-    initial_rejections: crate::Rejections,
     ended: Option<crate::Ended>,
     pub prepared: Prepared,
     pub record: StagedRecord,
@@ -762,7 +761,9 @@ pub enum SessionError {
 }
 impl UpdateSession {
     /// Admit current document inputs and parts, then submit `overrides` together with
-    /// the recorded answers. Accepted submissions and any flow end are retained.
+    /// the recorded answers. The owned record retains initial overrides, including
+    /// rejected values, so state and structured rejections survive reconstruction.
+    /// Accepted submissions and any flow end are retained.
     /// Unlike [`crate::operations::Session::start`]'s admission-only answers,
     /// these values also answer the update interview. Use [`Self::state`] before
     /// acquiring more input or applying; an ended interview must not be applied.
@@ -785,9 +786,13 @@ impl UpdateSession {
         crate::document::prepare(&mut prepared.template, target.as_path(), inputs, overrides)
             .map_err(crate::operations::OperationError::from)?;
         crate::operations::admit_parts(&mut prepared.template, parts, None, overrides)
-            .map_err(UpdateError::Error)?;
+            .map_err(crate::operations::OperationError::Parts)?;
         let base = stored_base(&base, prepared.base_application.as_ref());
         let mut record = record(&prepared, &base, reanswer, vec![]);
+        record.update_overrides = overrides
+            .iter()
+            .map(|(id, raw)| (id.to_string(), raw.0.clone()))
+            .collect();
         let driven = crate::applied::drive_update(
             &prepared.template,
             Seed {
@@ -800,22 +805,15 @@ impl UpdateSession {
             reanswer,
         )?;
         let mut ended = None;
-        let initial_rejections = match driven {
+        match driven {
             crate::applied::UpdateDrive::Completed { submissions, .. } => {
                 record.submissions = to_stored(submissions);
-                vec![]
             }
-            crate::applied::UpdateDrive::Ask {
-                submissions,
-                rejections,
-                ..
-            } => {
+            crate::applied::UpdateDrive::Ask { submissions, .. } => {
                 record.submissions = to_stored(submissions);
-                rejections
             }
             crate::applied::UpdateDrive::Ended(end) => {
                 ended = Some(end);
-                vec![]
             }
         };
         crate::operations::save_document_answers(&prepared.template, &mut record);
@@ -824,7 +822,6 @@ impl UpdateSession {
             record,
             target,
             ended,
-            initial_rejections,
         })
     }
 
@@ -867,7 +864,6 @@ impl UpdateSession {
             record,
             target,
             ended: None,
-            initial_rejections: vec![],
         })
     }
     pub fn admit_documents(
@@ -905,12 +901,22 @@ impl UpdateSession {
         Ok(())
     }
 
+    fn overrides(&self) -> Result<RawAnswers, SessionError> {
+        Ok(
+            to_raw_staged(std::slice::from_ref(&self.record.update_overrides))
+                .map_err(UpdateError::Error)?
+                .into_iter()
+                .flatten()
+                .collect(),
+        )
+    }
+
     pub fn replay(&self) -> Result<crate::applied::UpdateDrive<'_>, SessionError> {
         if let Some(ended) = &self.ended {
             return Ok(crate::applied::UpdateDrive::Ended(ended.clone()));
         }
         let staged = to_raw_staged(&self.record.submissions).map_err(UpdateError::Error)?;
-        Ok(crate::applied::drive_update_resume(
+        Ok(crate::applied::drive_update_resume_with_overrides(
             &self.prepared.template,
             Seed {
                 now: self.prepared.now.clone(),
@@ -919,6 +925,7 @@ impl UpdateSession {
             },
             &self.prepared.recorded,
             &staged,
+            &self.overrides()?,
             self.record.reanswer,
         )?)
     }
@@ -939,16 +946,14 @@ impl UpdateSession {
     fn response(
         &self,
         pending: &crate::Pending<'_>,
-        mut rejections: crate::Rejections,
+        rejections: crate::Rejections,
         submissions: &[RawAnswers],
     ) -> Result<crate::operations::SessionState, SessionError> {
-        if rejections.is_empty() {
-            rejections = self.initial_rejections.clone();
-        }
         let covered = crate::applied::covered_answers(
             pending,
             &self.prepared.recorded,
             submissions,
+            &self.overrides()?,
             &self.prepared.configured_defaults,
             self.record.reanswer,
         )?;
@@ -989,6 +994,7 @@ impl UpdateSession {
                     &pending,
                     &self.prepared.recorded,
                     &submissions,
+                    &self.overrides()?,
                     &self.prepared.configured_defaults,
                     self.record.reanswer,
                 )?;
@@ -1018,7 +1024,6 @@ impl UpdateSession {
             }
             return Ok(state);
         }
-        self.initial_rejections.clear();
         self.record.submissions.extend(to_stored(vec![submitted]));
         let state = self.state()?;
         if let crate::operations::SessionState::Ended(ended) = &state {
