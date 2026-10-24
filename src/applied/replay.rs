@@ -416,3 +416,48 @@ pub fn drive_update_resume<'a>(
 
 #[cfg(test)]
 mod tests;
+
+/// Recorded values that can settle the current batch. The owned application
+/// driver uses this view to omit covered form fields while using this same
+/// queue and validator to submit their values beside a caller's new answers.
+pub(crate) fn covered_answers(
+    pending: &Pending<'_>,
+    recorded: &[RawAnswers],
+    accepted: &[RawAnswers],
+    presets: &RawAnswers,
+    reanswer: bool,
+) -> Result<RawAnswers, EvalError> {
+    if reanswer {
+        return Ok(RawAnswers::new());
+    }
+    let mut queue = build_queue(recorded);
+    for (id, raw) in presets {
+        queue
+            .entry(id.clone())
+            .or_insert_with(|| VecDeque::from([raw.clone()]));
+    }
+    for submission in accepted {
+        consume_staged(&mut queue, submission);
+    }
+    let mut covered = RawAnswers::new();
+    for item in &pending.batch().items {
+        let Item::Prompt(prompt) = item else {
+            continue;
+        };
+        let Some(raw) = queue
+            .get(&prompt.id)
+            .and_then(|values| values.front())
+            .cloned()
+        else {
+            continue;
+        };
+        match pending.check(&prompt.id, raw.clone()) {
+            Ok(_) => {
+                covered.insert(prompt.id.clone(), raw);
+            }
+            Err(CheckError::Rejected(_)) => {}
+            Err(CheckError::Eval(error)) => return Err(error),
+        }
+    }
+    Ok(covered)
+}

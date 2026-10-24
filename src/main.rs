@@ -1,5 +1,11 @@
+fn runtime_now() -> Result<jiff::Zoned, String> {
+    match std::env::var("TOHA_NOW") {
+        Ok(value) => value.parse().map_err(|e: jiff::Error| e.to_string()),
+        Err(std::env::VarError::NotPresent) => Ok(jiff::Zoned::now()),
+        Err(e) => Err(e.to_string()),
+    }
+}
 mod cli {
-    pub mod bundled;
     pub mod guidance;
     pub mod like;
     pub mod resolve;
@@ -35,7 +41,7 @@ use toha::{
     Template,
     context::{
         EnvironmentDecision, ExecutionFacts, FixedEnvironment, FixedEnvironmentSource, HostFacts,
-        InvocationContext, SelectedTemplate,
+        InvocationContext,
     },
     git_target::GitReport,
     hook::{ProcessRunner, ScriptedRunner},
@@ -99,41 +105,22 @@ fn build_context(
     decision: EnvironmentDecision,
     is_interactive: bool,
 ) -> Result<InvocationContext, String> {
-    let mut source = HostEnvironmentSource;
-    let environment = template
-        .admit_environment(decision, &mut source)
-        .map_err(|e| staging::stage_admission_error(e).to_string())?;
-    let selected = SelectedTemplate::new(
-        resolved.formal_name.clone(),
-        template.name.clone(),
-        resolved.aliases.clone(),
-        resolved.source.clone(),
-    );
-    InvocationContext::new(
-        target.clone(),
-        selected,
+    toha::operations::invocation_context(
+        target,
+        resolved,
+        template,
+        decision,
         HostFacts::capture(),
         ExecutionFacts::new(is_admin(), is_interactive),
-        environment,
+        &mut HostEnvironmentSource,
     )
-    .map_err(|e| e.to_string())
 }
 /// The effective-trust gate for a direct/new-apply environment decision: an
 /// explicit `--trust`, or a current registry approval that matches the live
 /// executable surface.
 fn apply_environment_grant(trust: bool, resolved: &ResolvedTemplate, template: &Template) -> bool {
-    if trust {
-        return true;
-    }
-    match toha::HookSurface::of(template) {
-        Ok(surface) => matches!(
-            toha::evaluate_trust(resolved.approval.as_ref(), &surface.digest()),
-            toha::Trust::Trusted
-        ),
-        Err(_) => false,
-    }
+    toha::operations::effective_trust(trust, resolved, template)
 }
-
 /// Generate projects and files from templates.
 #[derive(Parser)]
 #[command(
@@ -341,17 +328,7 @@ enum Command {
     },
 }
 
-#[derive(Clone)]
-pub(crate) struct Dirs {
-    system_config: PathBuf,
-    user_config: PathBuf,
-    local_config_override: Option<PathBuf>,
-    system_data: PathBuf,
-    user_data: PathBuf,
-    cache: PathBuf,
-    state: PathBuf,
-    home: PathBuf,
-}
+use toha::resolve::Paths as Dirs;
 /// The platform whose directory conventions `Dirs::from_env` follows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Platform {
@@ -371,7 +348,12 @@ impl Platform {
         }
     }
 }
-impl Dirs {
+trait RuntimeDirs: Sized {
+    fn resolve() -> Result<Self, String>;
+    fn from_env(platform: Platform, var: impl Fn(&str) -> Option<OsString>)
+    -> Result<Self, String>;
+}
+impl RuntimeDirs for Dirs {
     fn resolve() -> Result<Self, String> {
         Self::from_env(Platform::host(), |key| std::env::var_os(key))
     }
@@ -471,18 +453,8 @@ impl Dirs {
             home,
         })
     }
-    fn config_paths(&self) -> toha::config::ConfigPaths {
-        toha::config::ConfigPaths {
-            system_config: self.system_config.clone(),
-            user_config: self.user_config.clone(),
-            local_config_override: self.local_config_override.clone(),
-            system_data: self.system_data.clone(),
-            user_data: self.user_data.clone(),
-            cache: self.cache.clone(),
-            home: self.home.clone(),
-        }
-    }
 }
+
 enum Outcome {
     Written(Vec<String>),
     Error(String),
@@ -676,72 +648,9 @@ fn injection_report(
     Ok(lines)
 }
 
-fn admit_parts(
-    template: &mut Template,
-    mut parts: toha::parts::Selection,
-    prior: Option<&serde_json::Value>,
-    supplied: &toha::RawAnswers,
-) -> Result<(), String> {
-    parts.admit(template, supplied)?;
-    if let Some(prior) = prior {
-        parts.base = prior
-            .get("parts")
-            .and_then(|v| serde_json::from_value(v.clone()).ok());
-    }
-    template.part_selection = parts;
-    Ok(())
-}
-fn admitted_documents(template: &Template) -> indexmap::IndexMap<String, serde_json::Value> {
-    template
-        .document_question_ids()
-        .into_iter()
-        .filter_map(|id| {
-            let toha::QuestionKind::Document { contract } = &template.question(&id)?.kind else {
-                return None;
-            };
-            contract
-                .admitted()
-                .cloned()
-                .map(|value| (id.to_string(), value))
-        })
-        .collect()
-}
-fn save_document_answers(template: &Template, saved: &mut StagedRecord) {
-    let mut values = admitted_documents(template);
-    for submission in &mut saved.submissions {
-        for (id, value) in submission {
-            if let Some(new) = values.shift_remove(id) {
-                *value = new;
-            }
-        }
-    }
-    if !values.is_empty() {
-        saved.submissions.push(values);
-    }
-}
-fn recorded_answers(saved: &StagedRecord) -> toha::RawAnswers {
-    saved
-        .submissions
-        .iter()
-        .flat_map(|s| s.iter())
-        .filter_map(|(id, value)| {
-            toha::Id::parse(id)
-                .ok()
-                .map(|id| (id, toha::RawAnswer(value.clone())))
-        })
-        .collect()
-}
-fn prepare_staged_documents(
-    template: &mut Template,
-    target: &Path,
-    input: &[PathBuf],
-    incoming: &toha::RawAnswers,
-    saved: &mut StagedRecord,
-) -> Result<(), toha::document::PrepareError> {
-    toha::document::prepare_staged(template, target, input, &recorded_answers(saved), incoming)?;
-    save_document_answers(template, saved);
-    Ok(())
-}
+use toha::operations::{
+    admit_parts, admitted_documents, prepare_staged_documents, recorded_answers,
+};
 fn document_input_error(error: toha::document::PrepareError, context: Option<&Context>) -> Outcome {
     let usage = error.is_usage();
     let message = error.to_string();
@@ -799,11 +708,7 @@ fn resolution(
     template: &Template,
     config: &toha::config::Config,
 ) -> Result<(toha::interview::Resolution, jiff::Zoned), String> {
-    let now = match std::env::var("TOHA_NOW") {
-        Ok(value) => value.parse().map_err(|e: jiff::Error| e.to_string())?,
-        Err(std::env::VarError::NotPresent) => jiff::Zoned::now(),
-        Err(e) => return Err(e.to_string()),
-    };
+    let now = runtime_now()?;
     let resolution = toha::interview::configured_defaults(
         formal_name,
         template,
@@ -913,26 +818,9 @@ fn resolve_like_seed(
 fn resolve_pinned_seed(
     saved: &StagedRecord,
     source: &str,
-    _target: &CanonicalTarget,
+    target: &CanonicalTarget,
 ) -> Result<Option<toha::interview::ApplicationSeed>, String> {
-    let Some(pin) = &saved.seed_entry else {
-        return if saved.seed.is_some() {
-            Err("staged --like has no copied application; abort and stage again".into())
-        } else {
-            Ok(None)
-        };
-    };
-    let record = serde_json::json!({"$schema":toha::applied::SCHEMA_ID,"applications":[pin]});
-    let record = toha::applied::AppliedRecord::parse(&serde_json::to_vec(&record).unwrap())
-        .map_err(|e| e.to_string())?;
-    let application = &record.applications()[0];
-    if application.source() != source {
-        return Err("copied --like application has another source; abort and stage again".into());
-    }
-    if saved.seed.as_deref() != Some(application.target().as_str()) {
-        return Err("copied --like application has another target; abort and stage again".into());
-    }
-    Ok(Some(cli::like::seed(application).engine))
+    toha::operations::pinned_seed(saved, source, target).map_err(|error| error.to_string())
 }
 /// The person-route picker: list the source's applications in target order and let
 /// the person choose one to seed from, or "none". Returns the chosen index, or
@@ -988,7 +876,9 @@ fn environment(
 }
 fn resolve_error(error: ResolveError) -> Outcome {
     match error {
-        ResolveError::Error(message) => Outcome::Error(message),
+        error @ (ResolveError::Error(_)
+        | ResolveError::NotFound(_)
+        | ResolveError::StaleRevision { .. }) => Outcome::Error(error.to_string()),
         ResolveError::Ambiguous { name, matches } => Outcome::Ambiguous {
             name,
             matches,
@@ -1174,26 +1064,18 @@ fn stage(
         println!("seed defaults from application {}", seed.label);
     }
     let seed_from = like_seed.as_ref().map(|seed| seed.id.to_string());
-    let seed_entry = like_seed.as_ref().map(|seed| seed.entry.clone());
-    if let Err(error) = admit_parts(
+    let saved = match toha::operations::prepare_record(
         &mut template,
-        parts,
-        seed_entry.as_ref(),
-        &Default::default(),
-    ) {
-        return Outcome::Usage(error);
-    }
-    let mut saved = StagedRecord::new_with_context(
+        &resolved,
         invocation.clone(),
-        resolved.commit.clone(),
-        resolved.named,
-        now.to_string(),
-        vec![],
-    );
-    saved.seed = seed_from.clone();
-    saved.seed_entry = seed_entry;
-    saved.part_selection = template.part_selection.clone();
-    save_document_answers(&template, &mut saved);
+        &now,
+        parts,
+        &Default::default(),
+        like_seed.as_ref(),
+    ) {
+        Ok(saved) => saved,
+        Err(error) => return Outcome::Usage(error),
+    };
     let interview = match resolution.start_with_seed(
         &template,
         now,
@@ -1830,62 +1712,7 @@ fn document_error(error: SubmitDocumentError, expected: &str) -> ResultError {
         commands: vec![],
     }
 }
-/// Classifies each planned write against the target's current bytes before any
-/// write: `create`/`overwrite`/`conflict` for a whole-file rule, `inject`/
-/// `update` for an edit (by whether the region or value is present), carrying the
-/// region key or JSON path an edit governs. A whole-file rule that a path also
-/// edits keeps its create/overwrite action; the edit folds into the generated
-/// image and is not classified against the not-yet-written target. An unchanged
-/// edit is omitted, as it writes nothing.
-#[allow(clippy::result_large_err)]
-fn classify_paths(
-    plan: &Plan,
-    target: &CanonicalTarget,
-    force: bool,
-) -> Result<Vec<protocol::PlannedPath>, toha::ApplyError> {
-    use toha::{EditReport, PlannedEdit};
-    let mut paths = Vec::new();
-    for file in &plan.files {
-        let action = if plan.conflicts.contains(&file.path) {
-            if force { "overwrite" } else { "conflict" }
-        } else {
-            "create"
-        };
-        paths.push(protocol::PlannedPath {
-            path: file.path.to_string(),
-            action: action.to_string(),
-            owner: None,
-        });
-    }
-    for edit in &plan.edits {
-        if plan.files.iter().any(|file| file.path == *edit.path()) {
-            continue;
-        }
-        let full = target.as_path().join(edit.path().as_path());
-        let current = std::fs::read(&full).ok();
-        let (report, owner) = match edit {
-            PlannedEdit::Region(region) => (
-                toha::report_region_edit(current.as_deref(), region)?,
-                region.region.to_string(),
-            ),
-            PlannedEdit::JsonValue(json) => (
-                toha::report_json_edit(current.as_deref(), json)?,
-                json.json_path.to_string(),
-            ),
-        };
-        let action = match report {
-            EditReport::Inject => "inject",
-            EditReport::Update | EditReport::Drift => "update",
-            EditReport::Unchanged => continue,
-        };
-        paths.push(protocol::PlannedPath {
-            path: edit.path().to_string(),
-            action: action.to_string(),
-            owner: Some(owner),
-        });
-    }
-    Ok(paths)
-}
+use toha::operations::classify_paths;
 /// Maps an apply failure to a scripted `error` document by kind.
 fn scripted_apply_error(error: toha::ApplyError, context: &Context) -> Outcome {
     use toha::ApplyError as E;
@@ -2112,16 +1939,21 @@ fn scripted_completed(
             toha::evaluate_trust(resolved.approval.as_ref(), &live_surface),
             toha::Trust::Trusted
         );
-    let mut plan = match Plan::build(template, &completed, target) {
+    let plan = match toha::operations::build_plan(
+        template,
+        &completed,
+        target,
+        &resolved.formal_name,
+        &resolved.commit,
+    ) {
         Ok(plan) => plan,
+        Err(toha::operations::OperationError::Record(error)) => {
+            return Outcome::Error(error.to_string());
+        }
         Err(error) => {
             return scripted_error(ErrorKind::Render, error.to_string(), vec![], Some(ctx));
         }
     };
-    match cli::resolve::applied_revision(&resolved.formal_name, &resolved.commit) {
-        Ok(revision) => plan.record_identity(resolved.formal_name.clone(), revision),
-        Err(error) => return Outcome::Error(error.to_string()),
-    }
     let metadata = parts_output::metadata(
         None,
         &plan.record.as_ref().expect("plan record").revision,
@@ -2249,7 +2081,11 @@ fn scripted_resolve_error(
     trust: bool,
 ) -> Outcome {
     match error {
-        ResolveError::Error(message) => scripted_error(ErrorKind::Source, message, vec![], None),
+        error @ (ResolveError::Error(_)
+        | ResolveError::NotFound(_)
+        | ResolveError::StaleRevision { .. }) => {
+            scripted_error(ErrorKind::Source, error.to_string(), vec![], None)
+        }
         ResolveError::Ambiguous { name, matches } => {
             let commands = matches
                 .iter()
@@ -2438,25 +2274,18 @@ fn run(
             if let Some(seed) = &like_seed {
                 println!("seed defaults from application {}", seed.label);
             }
-            let mut saved = StagedRecord::new_with_context(
-                new_context.clone(),
-                resolved.commit.clone(),
-                resolved.named,
-                now.to_string(),
-                vec![],
-            );
-            saved.seed = like_seed.as_ref().map(|seed| seed.id.to_string());
-            saved.seed_entry = like_seed.as_ref().map(|seed| seed.entry.clone());
-            if let Err(error) = admit_parts(
+            let mut saved = match toha::operations::prepare_record(
                 &mut template,
+                &resolved,
+                new_context.clone(),
+                &now,
                 parts,
-                saved.seed_entry.as_ref(),
                 &Default::default(),
+                like_seed.as_ref(),
             ) {
-                return Outcome::Usage(error);
-            }
-            saved.part_selection = template.part_selection.clone();
-            save_document_answers(&template, &mut saved);
+                Ok(saved) => saved,
+                Err(error) => return Outcome::Usage(error),
+            };
             let interview = match resolution.start_with_seed(
                 &template,
                 now,
@@ -2629,16 +2458,21 @@ fn run(
     );
     // An approval that no longer matches marks the hooks changed since approval.
     let changed_since_approval = approval.is_some() && !registry_trusted;
-    let mut plan = match Plan::build(&template, &completed, &target) {
+    let plan = match saved.as_ref() {
+        Some(saved) => toha::operations::build_plan(
+            &template,
+            &completed,
+            &target,
+            &saved.template,
+            &saved.commit,
+        ),
+        None => Plan::build(&template, &completed, &target)
+            .map_err(toha::operations::OperationError::from),
+    };
+    let plan = match plan {
         Ok(plan) => plan,
         Err(error) => return Outcome::Error(error.to_string()),
     };
-    if let Some(saved) = &saved {
-        match cli::resolve::applied_revision(&saved.template, &saved.commit) {
-            Ok(revision) => plan.record_identity(saved.template.clone(), revision),
-            Err(error) => return Outcome::Error(error.to_string()),
-        }
-    }
     let metadata = parts_output::metadata(
         None,
         &plan.record.as_ref().expect("plan record").revision,

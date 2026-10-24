@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use indexmap::IndexMap;
 use serde_json::Value;
 use toha::RawAnswer;
-use toha::applied::{Application, UpdateDrive, drive_update, drive_update_resume};
+use toha::applied::{UpdateDrive, drive_update, drive_update_resume};
 use toha::interview::Seed;
 use toha::template::Id;
 
@@ -30,76 +30,8 @@ use crate::staging::{CanonicalTarget, StagedRecord, Store};
 use crate::update::{self, PrepareMode, Prepared, UpdateBase};
 use crate::{AgentOutcome, Dirs, Outcome, context, instructions, setup};
 
-/// The baseline marker is distinct from a serialized application object.
-pub(crate) const BASELINE_MARKER: &str = "@baseline";
-
-/// Whether a staged record is an update (it carries a base).
-pub fn is_staged_update(saved: &StagedRecord) -> bool {
-    saved.base.is_some()
-}
-
-/// The stored base value for a staged record: the copied application, or the baseline
-/// marker.
-fn stored_base(base: &UpdateBase, base_application: Option<&Application>) -> String {
-    match base {
-        UpdateBase::Update => serde_json::to_string(
-            &base_application
-                .expect("--update resolves an application")
-                .to_value(),
-        )
-        .expect("application serializes"),
-        UpdateBase::Baseline => BASELINE_MARKER.to_owned(),
-    }
-}
-fn base_of(saved: &StagedRecord) -> Result<UpdateBase, String> {
-    let value = saved.base.as_deref().ok_or("record is not an update")?;
-    if value == BASELINE_MARKER {
-        Ok(UpdateBase::Baseline)
-    } else {
-        serde_json::from_str::<Value>(value).map_err(|_| {
-            "invalid staged application; run stage TEMPLATE PATH --update".to_owned()
-        })?;
-        Ok(UpdateBase::Update)
-    }
-}
-
-/// The interview's raw submissions, in batch order.
+pub use toha::updates::{base_of, is_staged_update, record, stored_base, to_stored};
 type Submissions = Vec<IndexMap<Id, RawAnswer>>;
-
-/// The interview's raw submissions as the string-keyed maps a record stores.
-fn to_stored(submissions: Vec<IndexMap<Id, RawAnswer>>) -> Vec<IndexMap<String, Value>> {
-    submissions
-        .into_iter()
-        .map(|submission| {
-            submission
-                .into_iter()
-                .map(|(id, raw)| (id.as_str().to_owned(), raw.0))
-                .collect()
-        })
-        .collect()
-}
-
-/// Build the staged record for an update from `prep`, the base value, the
-/// `reanswer` flag, and the submissions accepted so far.
-fn record(
-    prep: &Prepared,
-    base: &str,
-    reanswer: bool,
-    submissions: Vec<IndexMap<Id, RawAnswer>>,
-) -> StagedRecord {
-    let mut record = StagedRecord::new_with_context(
-        prep.context.clone(),
-        prep.resolved.commit.clone(),
-        prep.resolved.named,
-        prep.now.to_string(),
-        to_stored(submissions),
-    );
-    record.base = Some(base.to_owned());
-    record.reanswer = reanswer;
-    record.part_selection = prep.template.part_selection.clone();
-    crate::save_document_answers(&prep.template, &mut record);
-    record
-}
 
 /// `stage --update`/`--baseline` `[--reanswer]` `PATH` `[--async FILE]`. The
 /// person route (no `--async`) prompts and saves each batch; the agent route

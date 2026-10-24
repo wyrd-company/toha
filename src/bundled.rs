@@ -6,7 +6,7 @@
 //!
 //! `toha-demo` is a reserved fallback name. Registry resolution always wins; the
 //! bundled demo answers only when every registry layer returns `NotFound` for
-//! exactly this name. All embedding lives here, behind the `cli` feature: the
+//! exactly this name. All template embedding lives here, independently of the `cli` feature: the
 //! interview engine, `Template`, `Plan`, `apply`, `protocol`, and `staging`
 //! learn nothing new, and `ResolvedTemplate` gains no field or variant.
 use std::{
@@ -16,13 +16,13 @@ use std::{
     sync::LazyLock,
 };
 
+use crate::source;
 use include_dir::{Dir, DirEntry, File, include_dir};
 use sha2::{Digest, Sha256};
-use toha::source;
 
-use crate::Dirs;
+use crate::resolve::Paths as Dirs;
 
-use super::resolve::{ResolveError, ResolvedTemplate};
+use crate::resolve::{ResolveError, ResolvedTemplate};
 
 /// The one reserved resolution token and the demo's stable formal name.
 /// Distinct from the demo template's own short name (`name: demo`).
@@ -90,10 +90,12 @@ pub fn resume(
         return None;
     }
     if commit_arg != commit() {
-        return Some(Err(ResolveError::text(format!(
-            "the bundled {RESERVED} changed since this interview was staged; \
+        return Some(Err(ResolveError::StaleRevision {
+            message: format!(
+                "the bundled {RESERVED} changed since this interview was staged; \
              stage {RESERVED} again"
-        ))));
+            ),
+        }));
     }
     Some(resolve(dirs))
 }
@@ -277,7 +279,7 @@ mod tests {
         let stale = "0".repeat(64);
         let result = resume(RESERVED, &stale, &dirs).expect("bundled identity");
         match result {
-            Err(ResolveError::Error(message)) => {
+            Err(ResolveError::StaleRevision { message }) => {
                 assert!(message.contains("stage toha-demo again"), "{message}");
             }
             other => panic!("expected a stale-commit error, got {other:?}"),

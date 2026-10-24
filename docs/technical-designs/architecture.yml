@@ -74,9 +74,23 @@ proposed-design:
     applied record, opens a project's repository, captures ownership, and merges
     a template update from its recorded application entry. `jinja` owns the
     minijinja environment, the compiled value types, and the toha filters; it is
-    private to the library. The binary holds argument parsing, the terminal
-    prompt driver, output formatting, the exit-code mapping, and the embedded
-    skills.
+    private to the library. `resolve` combines source fetching, caching and
+    pinned template selection with explicit caller paths. `catalog` owns installed
+    template transactions and returns structured events. `operations` owns
+    application context, session documents, owned replay and application plans;
+    `updates` prepares and finishes baseline and recorded-application updates.
+    `bundled` and `assets` expose embedded templates and guidance without terminal
+    dependencies. The binary holds argument and environment interpretation, the
+    terminal prompt driver, output formatting and exit-code mapping.
+
+    A caller carries the serializable StagedRecord between requests, including
+    its pinned template/base identity, frozen context and admitted documents.
+    Loaded operations rebuild borrowed interviews inside one request. Owned
+    request inputs and results are Send. A loaded Git-bound update retains a
+    thread-local repository and stays within a blocking worker; callers construct,
+    consume and drop it there. The caller supplies HookRunner on each apply.
+    Operations emit no terminal output themselves; hook runners and the existing
+    Git transport retain their own I/O contracts.
 
     The `applied` module opens the target's repository once through gitoxide
     (gix features: worktree-mutation, revision, sha1, status, merge) and removes
@@ -312,13 +326,17 @@ proposed-design:
     Result<Entry, ResolveError>`, where `ResolveError::Ambiguous` carries
     every matching formal name so the binary prints the `templates alias`
     commands. `add`, `update`, `remove`, and `alias` are methods on the user
-    layer that return the new layer; the binary writes it atomically.
+    layer that return the new layer. The catalog service combines them with
+    source installation and writes the user registry atomically, returning
+    structured events for the caller to render.
 
   configuration-boundary: >-
     The binary resolves every environment variable and platform directory
     once, into a `Dirs` value holding the configuration, data, state, and
     system paths, and passes it to `config`, `registry`, and `staging`. The
-    library reads no environment variables. `config::load(&Dirs, cwd) ->
+    orchestration library receives those paths and the caller's working
+    directory explicitly. Existing record-path overrides and Git transport
+    environment remain part of their lower-level contracts. `config::load(&Dirs, cwd) ->
     Result<Config, ConfigError>` validates each layer against the embedded
     configuration schema and merges them by the rules in the configuration
     specification. `ConfigEntry<T>` keeps each winning value and origin
@@ -344,8 +362,9 @@ proposed-design:
     serde_json and toml for data; serde_norway for YAML, whose tagged values
     carry `!include` into the loader; jsonschema for schema validation; globset for ignore and
     static globs; sha2 for staged file names; etcetera for platform
-    directories; clap for arguments, inquire for prompts, and include_dir for
-    embedded skills and the bundled demo, behind the `cli` feature; and dist for
+    directories; clap for arguments and inquire for prompts behind the `cli`
+    feature; include_dir for library-accessible embedded skills and the bundled
+    demo; and dist for
     release installers.
 
   fixture-suite: >-

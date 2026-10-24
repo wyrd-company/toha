@@ -87,6 +87,8 @@ pub enum ConflictKind {
 pub enum MergeError {
     #[error("git error during merge: {0}")]
     Git(String),
+    #[error("git error during merge: apply: {0}")]
+    Apply(Box<crate::ApplyError>),
     #[error("a path the update would write is occupied: {0:?}")]
     Occupied(Vec<RepoPath>),
     #[error("the target or index changed during the update")]
@@ -278,7 +280,7 @@ fn build_candidate_reported(
             },
             runner,
         )
-        .map_err(|e| MergeError::Git(format!("apply: {e}")))?
+        .map_err(|e| MergeError::Apply(Box::new(e)))?
     {
         crate::apply::Applied::Written {
             hooks, after_apply, ..

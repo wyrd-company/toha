@@ -88,8 +88,13 @@ fn make_snapshot_entries(dir: &Path, id: &str, target: &str, files: &[(&str, &[u
     );
     application.files = entries;
     APPLICATIONS.with(|apps| {
-        apps.borrow_mut()
-            .insert((dir.to_owned(), id.to_owned()), application)
+        apps.borrow_mut().insert(
+            (
+                dir.canonicalize().expect("canonical fixture repository"),
+                id.to_owned(),
+            ),
+            application,
+        )
     });
 }
 fn open(dir: &Path, sub: &str) -> Project {
@@ -1437,4 +1442,22 @@ fn a_dangling_operator_link_is_occupied_before_any_update_write() {
         !refs.contains(NEW_ID),
         "candidate ref removed on unsuccessful exit: {refs}"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn snapshot_fixture_keys_follow_canonical_repository_identity() {
+    let container = tempfile::tempdir().unwrap();
+    let real = container.path().join("real");
+    std::fs::create_dir(&real).unwrap();
+    git(&real, &["init", "-q", "-b", "main"]);
+    write(&real.join("seed.txt"), b"seed\n");
+    git(&real, &["add", "."]);
+    git(&real, &["commit", "-q", "-m", "seed"]);
+    let alias = container.path().join("alias");
+    std::os::unix::fs::symlink(&real, &alias).unwrap();
+    make_snapshot(&alias, BASE_ID, "app", &[("note.txt", b"base\n")]);
+    let project = open(&alias, "app");
+    let application = read_snapshot(&project, BASE_ID);
+    assert_eq!(application.target().as_str(), "app");
 }

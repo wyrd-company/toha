@@ -137,3 +137,67 @@ In-memory callers that build answers directly still use `Pending::answer` with
 `RawAnswers` and the raw headless walk; the envelope is only for external JSON.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development and changes.
+
+
+### Application operations
+
+The library also owns template resolution, installed-template transactions,
+owned interview replay and project updates. These APIs accept explicit paths
+and return data. They do not parse arguments, prompt or print command reports.
+
+- `resolve::Paths` and `resolve::{load_context, resolve_template,
+  resume_template}` load configuration, fetch/cache templates and restore pins.
+- `catalog::Catalog` loads one registry snapshot. Load a fresh snapshot for each
+  mutation; `catalog::{add, list, update, remove, alias, trust, untrust}` return
+  structured events and errors.
+- `operations::Session` owns a loaded template and a serializable `StagedRecord`.
+  `state` returns a question document, completion or an ended interview; `answer`
+  returns per-question rejections without changing rejected state. `plan` and
+  `apply` use the existing planner and caller-supplied `HookRunner`.
+- `updates::prepare` opens and verifies an update or baseline. `UpdateSession`
+  admits current document inputs, pins the application and replays old answers.
+  Its question document omits answers already covered by valid recorded values.
+  `resume` checks that the pinned application still matches; `apply` accepts
+  the caller's runner and preserves staged state on preview or failure.
+- `bundled` exposes the offline demo; `assets` lists, reads and exports the
+  embedded agent guidance without enabling the CLI feature.
+
+Persist or return the session's `record`, then drop the loaded request. Rebuild
+with `Session::resume` or `UpdateSession::resume` for each subsequent request.
+The record includes the exact template/base, context, time, document values and
+accepted submissions. A bare submissions list does not carry all replay inputs.
+Document answers are read fresh when starting an update and stay fixed within
+that update session.
+
+Owned request inputs, records and `SessionState` results can cross a worker
+boundary. A loaded update retains a thread-local Git repository and is not
+`Send` with the current Git dependency features. Construct, consume and drop
+that operation inside `spawn_blocking`; return the owned response/record. No
+unsafe `Send` implementation or globally shared repository is needed.
+
+`HookRunner::run` receives `PlannedHook` and the absolute target. The hook has
+argv/program, target-relative working directory, template root and capture
+metadata; the runner returns status and optional raw captured streams. There is
+no per-hook environment map. Choose the runner and trust decision explicitly.
+Operation-owned reports are silent; runners retain their own I/O contract. The
+existing Git SSH transport starts the configured/default `ssh` executable and
+can forward SSH diagnostics to stderr.
+
+Run the complete direct-library recipe from a repository checkout:
+
+```sh
+task test:consumer
+```
+
+[`tests/consumer/src/main.rs`](tests/consumer/src/main.rs) is a separate Cargo
+consumer using `default-features = false`. It creates and resumes an interview,
+records a generation with a custom hook runner, rebuilds an update inside a
+worker thread, admits a fresh document, previews and applies it, preserves
+operator edits, removes a part and resolves an older pinned template. It also
+exercises template management and embedded assets.
+
+For a reviewed integration commit, Cargo supports a Git dependency with
+`git = "https://github.com/wyrd-company/toha"`, the full accepted commit in
+`rev`, and `default-features = false`. Use the exact accepted commit from the
+handoff; a branch name does not freeze the API. This route does not require a
+registry release.
