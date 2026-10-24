@@ -447,6 +447,18 @@ fn main() {
     assert_eq!(application["context"]["toha_host_os"], "linux");
     assert!(application["paths"]["result.txt"]["blob"].is_string());
     assert!(application["paths"]["optional.txt"]["blob"].is_string());
+    let mut seed_record = session.record.clone();
+    seed_record.submissions.clear();
+    seed_record.seed = Some(".".into());
+    let mut seed_entry = application.clone();
+    seed_entry["answers"]["label"] = json!(42);
+    seed_record.seed_entry = Some(seed_entry);
+    let seeded = Session::resume(
+        seed_record, target_id.clone(), &paths, config.clone(), &registry, &root,
+    ).unwrap();
+    let seed_warnings = seeded.seed_warnings().unwrap();
+    assert!(seed_warnings.iter().any(|warning| warning.contains("label") && warning.contains("does not match")),
+        "consumer_wrong_kind_seed_warning");
     let generated = application["generated"].clone();
     commit(&target);
     let clean_record = std::fs::read(target.join(".toha.json")).unwrap();

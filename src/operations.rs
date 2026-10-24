@@ -394,6 +394,25 @@ impl Session {
         }
     }
 
+    /// Wrong-kind application defaults omitted by the shared replay engine. Report once on
+    /// a fresh application; configured-default warnings are returned separately by `warnings`.
+    pub fn seed_warnings(&self) -> Result<Vec<String>, OperationError> {
+        let resolution = crate::interview::configured_defaults(
+            &self.resolved.formal_name,
+            &self.template,
+            &self.config.presets,
+            &self.config.template_defaults,
+        )?;
+        let seed = pinned_seed(
+            &self.record,
+            &crate::applied::source_identity(&self.resolved.formal_name),
+        )?;
+        Ok(self
+            .record
+            .replay_with_seed_reporting(&self.template, resolution, seed, &self.target)?
+            .1)
+    }
+
     pub fn warnings(&self) -> Result<Vec<String>, OperationError> {
         configuration_warnings(&self.resolved.formal_name, &self.template, &self.config)
     }
