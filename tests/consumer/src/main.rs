@@ -381,7 +381,10 @@ fn main() {
         ApplicationResult::Applied(Applied::NeedsTrust(_)) => {}
         _ => panic!("untrusted hook was admitted"),
     };
-    assert!(store.load(&target_id).unwrap().is_some());
+    assert!(
+        store.load(&target_id).unwrap().is_some(),
+        "consumer_fresh_trust_retains_stage"
+    );
     assert!(!target.join("result.txt").exists());
     assert!(matches!(
         session.apply(
@@ -396,7 +399,10 @@ fn main() {
         ),
         Err(toha::operations::OperationError::Apply(_))
     ));
-    assert!(store.load(&target_id).unwrap().is_some());
+    assert!(
+        store.load(&target_id).unwrap().is_some(),
+        "consumer_fresh_failure_retains_stage"
+    );
     assert!(!target.join(".toha.json").exists());
     match session
         .apply(
@@ -414,7 +420,10 @@ fn main() {
         ApplicationResult::Applied(Applied::Written { .. }) => {}
         _ => panic!("not applied"),
     };
-    assert!(store.load(&target_id).unwrap().is_none());
+    assert!(
+        store.load(&target_id).unwrap().is_none(),
+        "consumer_fresh_apply_consumes_stage"
+    );
     assert_eq!(runner.calls.borrow().len(), 1);
     assert!(target.join("optional.txt").is_file());
     assert!(target.join(".toha.json").is_file());
@@ -771,7 +780,10 @@ fn main() {
     let preview = upgrade
         .apply(&completed, true, &runner, Some(&store))
         .unwrap();
-    assert!(matches!(preview.0, toha::applied::Merged::Planned { .. }));
+    assert!(
+        matches!(preview.0, toha::applied::Merged::Planned { .. }),
+        "consumer_update_preview_disposition"
+    );
     assert_eq!(
         std::fs::read(target.join("result.txt")).unwrap(),
         before_file
@@ -780,7 +792,10 @@ fn main() {
         std::fs::read(target.join(".toha.json")).unwrap(),
         before_record
     );
-    assert!(store.load(&target_id).unwrap().is_some());
+    assert!(
+        store.load(&target_id).unwrap().is_some(),
+        "consumer_update_preview_retains_stage"
+    );
     let mut environment = update_environment(&config, &registry, &root, &mut env_source);
     let failed = UpdateSession::resume(
         serde_json::from_slice(&wire).unwrap(),
@@ -854,7 +869,10 @@ fn main() {
         2,
         "update bypassed the caller's hook runner"
     );
-    assert!(store.load(&target_id).unwrap().is_none());
+    assert!(
+        store.load(&target_id).unwrap().is_none(),
+        "consumer_update_apply_consumes_stage"
+    );
     commit(&target);
     {
         let mut environment = update_environment(&config, &registry, &root, &mut env_source);
@@ -1045,6 +1063,8 @@ fn main() {
     assert!(!toha::assets::list().unwrap().is_empty());
     abort_contract();
     domain_diagnostics();
+    warning_refusal_contract();
+    flow_preview_contract();
     println!(
         "external consumer passed: replay, Send, document refresh, runner, preview, update, parts and pins"
     );
@@ -1177,7 +1197,7 @@ fn abort_contract() {
             None,
         )
         .unwrap();
-    let store = Store::new(paths.state);
+    let store = Store::new(paths.state.clone());
     session.persist(&store).unwrap();
     let previous = session.record.submissions.len();
     assert!(
@@ -1196,6 +1216,53 @@ fn abort_contract() {
     assert!(
         matches!(session.state().unwrap(), SessionState::Ended(_)),
         "consumer_abort_remains_terminal"
+    );
+}
+
+fn warning_refusal_contract() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().canonicalize().unwrap();
+    let source = root.join("source");
+    let target = root.join("target");
+    write(
+        &source,
+        "template.yml",
+        "name: sample\ninterview:\n  - {id: label, type: text, prompt: Label}\n",
+    );
+    write(&source, "template/result.txt", "{{ toha_env_user }}\n");
+    write(&target, "README.md", "operator\n");
+    git(&target, &["init", "-q"]);
+    commit(&target);
+    let paths = paths(&root);
+    write(
+        &root,
+        "user/config.yml",
+        format!(
+            "template-defaults:\n  {:?}:\n    removed_question: unused\n",
+            source.to_str().unwrap()
+        ),
+    );
+    let (config, registry, _) = toha::resolve::load_context(&paths, &root).unwrap();
+    let mut source_env = NoEnvironment;
+    let mut environment = update_environment(&config, &registry, &root, &mut source_env);
+    let failure = updates::prepare(
+        &UpdateBase::Baseline,
+        source.to_str().unwrap(),
+        &canonical_target(&target).unwrap(),
+        &paths,
+        false,
+        PrepareMode::Stage,
+        false,
+        &mut environment,
+    )
+    .unwrap_err();
+    let updates::UpdateError::WithWarnings { warnings, source } = failure else {
+        panic!("consumer_warning_refusal_is_structured");
+    };
+    assert_eq!(warnings.len(), 1, "consumer_warning_survives_refusal");
+    assert!(
+        matches!(*source, updates::UpdateError::Admission(_)),
+        "consumer_admission_retains_typed_source"
     );
 }
 
@@ -1235,4 +1302,68 @@ fn domain_diagnostics() {
         "the staged seed has no copied application",
         "consumer_seed_display"
     );
+}
+
+fn flow_preview_contract() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().canonicalize().unwrap();
+    let source = root.join("source");
+    let target = root.join("target");
+    write(
+        &source,
+        "template.yml",
+        "name: sample\ninterview:\n  - flow: dry-run\n",
+    );
+    write(&source, "template/result.txt", "preview\n");
+    std::fs::create_dir_all(&target).unwrap();
+    let paths = paths(&root);
+    let (config, registry, _) = toha::resolve::load_context(&paths, &root).unwrap();
+    let resolved =
+        resolve_template(source.to_str().unwrap(), &config, &registry, &paths, &root).unwrap();
+    let preparation = toha::operations::Preparation::new(
+        Template::load(&resolved.folder).unwrap(),
+        resolved,
+        canonical_target(&target).unwrap(),
+        &[],
+        &RawAnswers::new(),
+    )
+    .unwrap();
+    let context = preparation
+        .context(
+            EnvironmentDecision::GrantIfNeeded,
+            HostFacts::new("linux".into(), "x86_64".into(), None, None, vec![]),
+            ExecutionFacts::new(false, false),
+            &mut NoEnvironment,
+        )
+        .unwrap();
+    let session = preparation
+        .start(
+            context,
+            "2026-01-02T03:04:05+00:00[UTC]".parse().unwrap(),
+            config,
+            Default::default(),
+            &RawAnswers::new(),
+            None,
+        )
+        .unwrap();
+    let completed = done(session.state().unwrap());
+    assert!(
+        matches!(
+            session
+                .apply(
+                    &completed,
+                    ApplyOptions {
+                        force: false,
+                        trusted: true
+                    },
+                    false,
+                    &FailingRunner,
+                    None
+                )
+                .unwrap(),
+            ApplicationResult::Planned(_)
+        ),
+        "consumer_flow_dry_run_suppresses_write"
+    );
+    assert!(!target.join("result.txt").exists());
 }

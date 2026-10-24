@@ -411,6 +411,26 @@ fn update_library_and_cli_agree_on_replay_trust_retry_and_merge() {
         serde_json::to_value(&initial).unwrap(),
         "shared_update_initial_record"
     );
+    store.save(&target, &initial).unwrap();
+    let abort_answers = f.root.path().join("abort-update.json");
+    std::fs::write(
+        &abort_answers,
+        json!({"template":address,"answers":{"color":"cancel"}}).to_string(),
+    )
+    .unwrap();
+    let abort = f
+        .command()
+        .arg("continue")
+        .arg(&f.target)
+        .arg(abort_answers)
+        .output()
+        .unwrap();
+    assert_eq!(abort.status.code(), Some(1));
+    assert!(
+        store.load(&target).unwrap().is_none(),
+        "shared_cli_update_abort_consumes_stage"
+    );
+    store.save(&target, &initial).unwrap();
     let mut abort_environment = updates::Environment {
         config: &config,
         registry: &registry,
@@ -439,25 +459,6 @@ fn update_library_and_cli_agree_on_replay_trust_retry_and_merge() {
     assert!(
         store.load(&target).unwrap().is_none(),
         "shared_update_abort_consumes_stage"
-    );
-    store.save(&target, &initial).unwrap();
-    let abort_answers = f.root.path().join("abort-update.json");
-    std::fs::write(
-        &abort_answers,
-        json!({"template":address,"answers":{"color":"cancel"}}).to_string(),
-    )
-    .unwrap();
-    let abort = f
-        .command()
-        .arg("continue")
-        .arg(&f.target)
-        .arg(abort_answers)
-        .output()
-        .unwrap();
-    assert_eq!(abort.status.code(), Some(1));
-    assert!(
-        store.load(&target).unwrap().is_none(),
-        "shared_cli_update_abort_consumes_stage"
     );
     store.save(&target, &initial).unwrap();
     let SessionState::Completed(_) = session.answer(raw("color", json!("blue"))).unwrap() else {
@@ -803,5 +804,40 @@ fn initial_stop_creates_no_saved_progress_for_either_driver() {
     assert!(
         store.load(&session.target).unwrap().is_none(),
         "shared_cli_initial_stop_has_no_stage"
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn cli_warning_survives_environment_refusal() {
+    let f = Fixture::new("name: sample\ninterview:\n  - {id: label, type: text, prompt: Label}\n");
+    std::fs::write(
+        f.source.join("template/result.txt"),
+        "{{ toha_env_user }}\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(f.paths.user_config.parent().unwrap()).unwrap();
+    std::fs::write(
+        &f.paths.user_config,
+        format!(
+            "template-defaults:\n  {:?}:\n    removed_question: unused\n",
+            f.source.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+    let output = f
+        .command()
+        .arg("stage")
+        .arg(&f.source)
+        .arg(&f.target)
+        .arg("--baseline")
+        .arg("--async")
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        text.contains("removed_question") && text.contains("warning:") && text.contains("trust"),
+        "cli_warning_survives_refusal: {text}"
     );
 }
