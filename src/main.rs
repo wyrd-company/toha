@@ -2752,7 +2752,7 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod dirs_tests {
-    use super::{Dirs, Platform};
+    use super::{Dirs, Platform, RuntimeDirs};
 
     const HOME_UNAVAILABLE: &str =
         "home directory unavailable: set HOME (or USERPROFILE on Windows) to an absolute path";
