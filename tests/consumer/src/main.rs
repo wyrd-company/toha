@@ -602,7 +602,8 @@ fn main() {
     let original_submissions = aborted.record.submissions.clone();
     store.save(&target_id, &aborted.record).unwrap();
     assert!(
-        matches!(aborted.answer(raw("new_answer", json!("cancel"))).unwrap(), SessionState::Ended(ended) if ended.kind() == toha::EndKind::Abort)
+        matches!(aborted.answer(raw("new_answer", json!("cancel"))).unwrap(), SessionState::Ended(ended) if ended.kind() == toha::EndKind::Abort),
+        "consumer_update_abort_rebuild_restores_documents"
     );
     assert_eq!(
         aborted.record.submissions, original_submissions,

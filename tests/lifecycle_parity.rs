@@ -757,10 +757,9 @@ fn fresh_admission_checks_requirements_and_documents_before_environment() {
         canonical_target(&f.target).unwrap(),
         &[f.root.path().join("missing.json")],
         &RawAnswers::new(),
-    )
-    .unwrap_err();
+    );
     assert!(
-        matches!(document, toha::operations::OperationError::Document(_)),
+        matches!(document, Err(toha::operations::OperationError::Document(_))),
         "shared_library_document_before_environment"
     );
     let refused = f
