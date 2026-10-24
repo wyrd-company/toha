@@ -203,6 +203,8 @@ pub enum OperationError {
     #[error("{0}")]
     Input(String),
     #[error("{0}")]
+    Parts(String),
+    #[error("{0}")]
     Seed(#[from] SeedError),
     #[error("{0}")]
     Resolve(#[from] crate::resolve::ResolveError),
@@ -311,7 +313,7 @@ impl Session {
             admission_answers,
             seed.as_ref(),
         )
-        .map_err(OperationError::Input)?;
+        .map_err(OperationError::Parts)?;
         Ok(Self {
             template,
             resolved,
