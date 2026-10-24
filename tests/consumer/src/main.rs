@@ -293,13 +293,28 @@ fn main() {
         _ => panic!("initial question missing"),
     }
     let invalid_parts = Session::start(
-        Template::load(&session.resolved.folder).unwrap(), session.resolved.clone(), target_id.clone(),
+        Template::load(&session.resolved.folder).unwrap(),
+        session.resolved.clone(),
+        target_id.clone(),
         session.record.invocation_context(&target_id).unwrap(),
-        "2026-01-02T03:04:05+00:00[UTC]".parse().unwrap(), config.clone(),
-        toha::parts::Selection { with: vec!["missing".into()], without: vec![], base: None },
-        &[], &RawAnswers::new(), None,
+        "2026-01-02T03:04:05+00:00[UTC]".parse().unwrap(),
+        config.clone(),
+        toha::parts::Selection {
+            with: vec!["missing".into()],
+            without: vec![],
+            base: None,
+        },
+        &[],
+        &RawAnswers::new(),
+        None,
     );
-    assert!(matches!(invalid_parts, Err(toha::operations::OperationError::Parts(_))), "consumer_parts_admission_has_domain_error");
+    assert!(
+        matches!(
+            invalid_parts,
+            Err(toha::operations::OperationError::Parts(_))
+        ),
+        "consumer_parts_admission_has_domain_error"
+    );
     let record_before = serde_json::to_vec(&session.record).unwrap();
     let rejected = session.answer(raw("label", json!(42))).unwrap();
     match rejected {
@@ -462,11 +477,21 @@ fn main() {
     seed_entry["answers"]["label"] = json!(42);
     seed_record.seed_entry = Some(seed_entry);
     let seeded = Session::resume(
-        seed_record, target_id.clone(), &paths, config.clone(), &registry, &root,
-    ).unwrap();
+        seed_record,
+        target_id.clone(),
+        &paths,
+        config.clone(),
+        &registry,
+        &root,
+    )
+    .unwrap();
     let seed_warnings = seeded.seed_warnings().unwrap();
-    assert!(seed_warnings.iter().any(|warning| warning.contains("label") && warning.contains("does not match")),
-        "consumer_wrong_kind_seed_warning");
+    assert!(
+        seed_warnings
+            .iter()
+            .any(|warning| warning.contains("label") && warning.contains("does not match")),
+        "consumer_wrong_kind_seed_warning"
+    );
     let generated = application["generated"].clone();
     commit(&target);
     let clean_record = std::fs::read(target.join(".toha.json")).unwrap();
