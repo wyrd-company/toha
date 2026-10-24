@@ -285,6 +285,13 @@ fn main() {
         None,
     )
     .unwrap();
+    match session.state().unwrap() {
+        SessionState::Asking { document, .. } => assert!(
+            document.get("errors").is_none(),
+            "consumer_fresh_initial_batch_omits_empty_errors"
+        ),
+        _ => panic!("initial question missing"),
+    }
     let record_before = serde_json::to_vec(&session.record).unwrap();
     let rejected = session.answer(raw("label", json!(42))).unwrap();
     match rejected {
@@ -560,6 +567,10 @@ fn main() {
     .unwrap();
     match upgrade.state().unwrap() {
         SessionState::Asking { document, .. } => {
+            assert!(
+                document.get("errors").is_none(),
+                "consumer_update_initial_batch_omits_empty_errors"
+            );
             let properties = document["schema"]["properties"].as_object().unwrap();
             assert_eq!(
                 properties.len(),

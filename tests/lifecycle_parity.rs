@@ -151,6 +151,13 @@ fn fresh_library_and_cli_agree_across_reconstruction_refusal_and_apply() {
         "name: sample\ninterview:\n  - {id: label, type: text, prompt: Label, required: true}\n  - {id: approval, type: confirm, prompt: Approve, required: true, when: \"label == 'example'\"}\n",
     );
     let mut session = f.session();
+    let SessionState::Asking { document, .. } = session.state().unwrap() else {
+        panic!("initial batch missing")
+    };
+    assert!(
+        document.get("errors").is_none(),
+        "shared_fresh_initial_batch_omits_empty_errors"
+    );
     let target = session.target.clone();
     let store = Store::new(f.paths.state.clone());
     session.persist(&store).unwrap();

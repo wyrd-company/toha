@@ -387,7 +387,7 @@ impl Session {
                 document: crate::protocol::batch_document(
                     pending.batch(),
                     &crate::protocol::Context::new(&self.target, &self.record),
-                    Some(&rejections),
+                    (!rejections.is_empty()).then_some(&rejections),
                 ),
                 rejections,
             },
