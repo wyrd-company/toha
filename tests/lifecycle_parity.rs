@@ -588,6 +588,46 @@ fn update_library_and_cli_agree_on_replay_trust_retry_and_merge() {
     // refuse before a newly broken config, clock, or answers path is acquired.
     git(&f.target, &["add", "."]);
     git(&f.target, &["commit", "-qm", "accepted update"]);
+    let current = f
+        .command()
+        .arg("stage")
+        .arg(&address)
+        .arg(&f.target)
+        .arg("--update")
+        .arg("--trust")
+        .arg("--async")
+        .output()
+        .unwrap();
+    assert_eq!(current.status.code(), Some(0), "{current:?}");
+    let preview = f
+        .command()
+        .arg("apply")
+        .arg(&f.target)
+        .arg("--dry-run")
+        .arg("--trust")
+        .output()
+        .unwrap();
+    assert_eq!(preview.status.code(), Some(0), "{preview:?}");
+    assert!(
+        String::from_utf8_lossy(&preview.stdout).contains("Already current"),
+        "cli_already_current_preview_disposition: {preview:?}"
+    );
+    assert!(
+        store.load(&target).unwrap().is_some(),
+        "cli_already_current_preview_retains_stage"
+    );
+    let current = f
+        .command()
+        .arg("apply")
+        .arg(&f.target)
+        .arg("--trust")
+        .output()
+        .unwrap();
+    assert_eq!(current.status.code(), Some(0), "{current:?}");
+    assert!(
+        store.load(&target).unwrap().is_none(),
+        "cli_already_current_real_consumes_stage"
+    );
     store.save(&target, &completed_record).unwrap();
     assert!(
         matches!(
