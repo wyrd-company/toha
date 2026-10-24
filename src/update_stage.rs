@@ -93,11 +93,17 @@ fn questions(session: &UpdateSession) -> Result<Value, toha::updates::SessionErr
         SessionState::Asking { rejections, .. } => rejections,
         _ => vec![],
     };
+    full_batch(session, &rejections)
+}
+fn full_batch(
+    session: &UpdateSession,
+    rejections: &toha::Rejections,
+) -> Result<Value, toha::updates::SessionError> {
     match session.replay()? {
         toha::applied::UpdateDrive::Ask { pending, .. } => Ok(toha::protocol::batch_document(
             pending.batch(),
             &context(&session.target, &session.record),
-            Some(&rejections),
+            (!rejections.is_empty()).then_some(rejections),
         )),
         _ => unreachable!("asking update session"),
     }
@@ -232,13 +238,13 @@ pub fn continue_staged(
         Ok(v) => v,
         Err(e) => return session_error(e),
     };
-    if let SessionState::Asking {
-        document,
-        rejections,
-    } = &state
+    if let SessionState::Asking { rejections, .. } = &state
         && !rejections.is_empty()
     {
-        return Outcome::Document(document.clone(), 4);
+        return match full_batch(&session, rejections) {
+            Ok(document) => Outcome::Document(document, 4),
+            Err(e) => session_error(e),
+        };
     }
     if let Err(e) = session.persist(&store) {
         return session_error(e);

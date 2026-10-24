@@ -1106,9 +1106,20 @@ fn stage(
     }
 }
 
+fn seed_diagnostic(error: &toha::operations::SeedError) -> String {
+    use toha::operations::SeedError;
+    let message = match error {
+        SeedError::MissingCopy => "staged --like has no copied application",
+        SeedError::WrongSource => "copied --like application has another source",
+        SeedError::WrongTarget => "copied --like application has another target",
+        SeedError::Record(_) => return error.to_string(),
+        _ => return format!("{error}; abort and stage again"),
+    };
+    format!("{message}; abort and stage again")
+}
 fn replay_diagnostic(error: &toha::operations::OperationError) -> String {
     match error {
-        toha::operations::OperationError::Seed(error) => format!("{error}; abort and stage again"),
+        toha::operations::OperationError::Seed(error) => seed_diagnostic(error),
         other => other.to_string(),
     }
 }
@@ -1117,9 +1128,7 @@ fn operation_error(error: toha::operations::OperationError, ctx: Option<&Context
         toha::operations::OperationError::Document(error) => document_input_error(error, ctx),
         toha::operations::OperationError::Parts(error) => Outcome::Usage(error),
         toha::operations::OperationError::Resolve(error) => resolve_error(error),
-        toha::operations::OperationError::Seed(error) => {
-            Outcome::Error(format!("{error}; abort and stage again"))
-        }
+        toha::operations::OperationError::Seed(error) => Outcome::Error(seed_diagnostic(&error)),
         other => Outcome::Error(other.to_string()),
     }
 }
@@ -1376,7 +1385,11 @@ fn continue_run(path: PathBuf, answers: Option<String>, input: &[PathBuf], dirs:
                 }
             }
             Outcome::Agent {
-                document: Some(with_seed(document, session.record.seed.as_deref())),
+                document: Some(if input.is_empty() {
+                    with_seed(document, session.record.seed.as_deref())
+                } else {
+                    document
+                }),
                 instructions: instructions(
                     &AgentOutcome::Batch {
                         template: &session.record.template,
@@ -1651,6 +1664,9 @@ fn scripted(
             return Outcome::Document(protocol::error_document(&error, Some(&ctx)), 1);
         }
     };
+    if let Err(error) = parts.admit(&template, &supplied) {
+        return Outcome::Usage(error);
+    }
     let mut session = match toha::operations::Session::start(
         template,
         resolved,
@@ -2953,5 +2969,40 @@ fn record_document(record: &toha::applied::RecordOutcome) -> serde_json::Value {
         toha::applied::RecordOutcome::Written(path) => serde_json::json!({"path":path}),
         toha::applied::RecordOutcome::NotGit => serde_json::json!({"skipped":"not-git"}),
         toha::applied::RecordOutcome::Internal => serde_json::Value::Null,
+    }
+}
+
+#[cfg(test)]
+mod seed_diagnostic_tests {
+    #[test]
+    fn seed_refusals_keep_cli_guidance() {
+        use toha::operations::{OperationError, SeedError};
+        for (error, expected) in [
+            (
+                SeedError::MissingCopy,
+                "staged --like has no copied application; abort and stage again",
+            ),
+            (
+                SeedError::WrongSource,
+                "copied --like application has another source; abort and stage again",
+            ),
+            (
+                SeedError::WrongTarget,
+                "copied --like application has another target; abort and stage again",
+            ),
+        ] {
+            assert_eq!(
+                super::replay_diagnostic(&OperationError::Seed(error)),
+                expected,
+                "cli_seed_replay_text"
+            );
+        }
+        match super::operation_error(OperationError::Seed(SeedError::MissingCopy), None) {
+            super::Outcome::Error(message) => assert_eq!(
+                message, "staged --like has no copied application; abort and stage again",
+                "cli_seed_operation_text"
+            ),
+            _ => panic!("seed error changed category"),
+        }
     }
 }

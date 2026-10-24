@@ -108,6 +108,16 @@ pub enum Revision {
     Unversioned,
 }
 
+impl fmt::Display for Revision {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Commit(id) => f.write_str(id.as_str()),
+            Self::Content(digest) => f.write_str(digest.as_str()),
+            Self::Unversioned => f.write_str("unversioned"),
+        }
+    }
+}
+
 /// The instant every render of a project uses, frozen at the first application so a
 /// template that renders a date stays byte-stable across updates.
 #[derive(Debug, Clone, PartialEq, Eq)]

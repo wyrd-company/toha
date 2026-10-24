@@ -145,6 +145,7 @@ fn update_environment<'a>(
     }
 }
 fn main() {
+    update_start_end_contract();
     fn assert_send<T: Send>() {}
     assert_send::<Template>();
     assert_send::<Session>();
@@ -1393,6 +1394,31 @@ fn warning_refusal_contract() {
 
 fn domain_diagnostics() {
     use toha::{catalog::CatalogError, resolve::ResolveError};
+    let commit = "0123456789abcdef0123456789abcdef01234567";
+    for (revision, expected) in [
+        (
+            toha::applied::Revision::Commit(toha::applied::CommitId::parse(commit).unwrap()),
+            commit.to_string(),
+        ),
+        (
+            toha::applied::Revision::Content(
+                toha::applied::ContentDigest::parse(&"a".repeat(64)).unwrap(),
+            ),
+            "a".repeat(64),
+        ),
+        (toha::applied::Revision::Unversioned, "unversioned".into()),
+    ] {
+        let error = updates::UpdateError::Base {
+            template: "sample".into(),
+            revision,
+            reason: "unavailable".into(),
+        };
+        assert_eq!(
+            error.to_string(),
+            format!("cannot render merge base for sample at {expected}: unavailable"),
+            "consumer_update_base_display"
+        );
+    }
     let ambiguous = ResolveError::Ambiguous {
         name: "sample".into(),
         matches: vec!["first".into(), "second".into()],
@@ -1491,4 +1517,113 @@ fn flow_preview_contract() {
         "consumer_flow_dry_run_suppresses_write"
     );
     assert!(!target.join("result.txt").exists());
+}
+
+// A direct-library request follows the same state-to-apply convention as a CLI driver.
+fn update_start_end_contract() {
+    for flow in ["abort", "stop"] {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let source = root.join("source");
+        let target = root.join("target");
+        write(
+            &source,
+            "template.yml",
+            format!(
+                "name: sample\ninterview:\n  - {{id: label, type: text, prompt: Label, required: true}}\n  - flow: {flow}\n    when: label == 'cancel'\n"
+            ),
+        );
+        write(&source, "template/result.txt", "{{ label }}\n");
+        std::fs::create_dir_all(&target).unwrap();
+        git(&source, &["init", "-q"]);
+        commit(&source);
+        git(&target, &["init", "-q"]);
+        write(&target, "README.md", "operator\n");
+        commit(&target);
+        let paths = paths(&root);
+        let address = format!("file://{}", source.display());
+        let target_id = canonical_target(&target).unwrap();
+        let (config, registry, _) = toha::resolve::load_context(&paths, &root).unwrap();
+        let mut source_env = NoEnvironment;
+        let mut environment = update_environment(&config, &registry, &root, &mut source_env);
+        let prepared = updates::Preparation::new(
+            &UpdateBase::Baseline,
+            &address,
+            &target_id,
+            &paths,
+            &config,
+            &registry,
+            &root,
+        )
+        .unwrap()
+        .finish(true, PrepareMode::Apply, false, &mut environment)
+        .unwrap();
+        let session = UpdateSession::start(
+            prepared,
+            target_id.clone(),
+            UpdateBase::Baseline,
+            false,
+            Default::default(),
+            &[],
+            &raw("label", json!("example")),
+        )
+        .unwrap();
+        let completed = done(session.state().unwrap());
+        session
+            .apply(&completed, false, &FailingRunner, None)
+            .unwrap();
+        commit(&target);
+        let record_before = std::fs::read(target.join(".toha.json")).unwrap();
+        let result_before = std::fs::read(target.join("result.txt")).unwrap();
+        write(&source, "template/extra.txt", "extra\n");
+        commit(&source);
+        let prepared = updates::prepare(
+            &UpdateBase::Update,
+            &address,
+            &target_id,
+            &paths,
+            true,
+            PrepareMode::Apply,
+            false,
+            &mut environment,
+        )
+        .unwrap();
+        let mut session = UpdateSession::start(
+            prepared,
+            target_id.clone(),
+            UpdateBase::Update,
+            false,
+            Default::default(),
+            &[],
+            &raw("label", json!("cancel")),
+        )
+        .unwrap();
+        let state = session.state().unwrap();
+        let ended = matches!(&state, SessionState::Ended(end) if end.kind() == if flow == "abort" { toha::EndKind::Abort } else { toha::EndKind::Stop });
+        let store = Store::new(paths.state.clone());
+        session.persist(&store).unwrap();
+        let no_stage = store.load(&target_id).unwrap().is_none();
+        // Exercise the real damage path too, rather than asserting only the enum.
+        if let SessionState::Completed(completed) = state {
+            session
+                .apply(&completed, false, &FailingRunner, None)
+                .unwrap();
+        }
+        assert!(
+            !target.join("extra.txt").exists(),
+            "consumer_update_start_end_wrote_extra"
+        );
+        assert_eq!(
+            std::fs::read(target.join("result.txt")).unwrap(),
+            result_before,
+            "consumer_update_start_end_target_changed"
+        );
+        assert_eq!(
+            std::fs::read(target.join(".toha.json")).unwrap(),
+            record_before,
+            "consumer_update_start_end_record_changed"
+        );
+        assert!(no_stage, "consumer_update_start_end_has_no_stage");
+        assert!(ended, "consumer_update_start_end_lost");
+    }
 }

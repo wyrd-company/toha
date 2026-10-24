@@ -71,7 +71,7 @@ impl std::fmt::Display for UpdateError {
                 reason,
             } => write!(
                 f,
-                "cannot render merge base for {template} at {revision:?}: {reason}"
+                "cannot render merge base for {template} at {revision}: {reason}"
             ),
         }
     }
@@ -138,109 +138,184 @@ pub fn prepare(
     interactive: bool,
     environment: &mut Environment<impl crate::context::FixedEnvironmentSource>,
 ) -> Result<Prepared, UpdateError> {
-    let project = open_project(target)?;
-    let cwd = environment.cwd;
-    let config = environment.config;
-    let registry = environment.registry;
-    let resolved = crate::resolve::resolve_template(template, config, registry, dirs, cwd)
-        .map_err(UpdateError::Resolve)?;
-    let base_application = match base {
-        UpdateBase::Update => Some(
-            project
-                .application(&crate::applied::source_identity(&resolved.formal_name))
-                .map_err(|e| UpdateError::Error(e.to_string()))?,
-        ),
-        UpdateBase::Baseline => None,
-    };
-    let (merge_base, base_application, prior_part_question) = restore_merge_base(
-        &project,
-        base_application,
+    Preparation::new(
+        base,
+        template,
         target,
-        config,
-        registry,
         dirs,
-        cwd,
-    )?;
-    // The scripted route (`--answers`) reports a missing requirement as its
-    // `requirement` error document; the other routes report it as text.
-    let template = match Template::load(&resolved.folder) {
-        Ok(value) => value,
-        Err(error) => return Err(UpdateError::Error(error.to_string())),
-    };
-    if let Err(error) = crate::requirement::check(&template) {
-        return Err(UpdateError::Requirements(error));
+        environment.config,
+        environment.registry,
+        environment.cwd,
+    )?
+    .finish(trust, mode, interactive, environment)
+}
+
+/// Resolved update inputs with the merge base, requirements and configured defaults admitted.
+/// Construct this before acquiring fallible clock or environment inputs. Like [`Prepared`],
+/// it retains a request-local Git handle and must stay inside its blocking worker.
+pub struct Preparation {
+    project: Project,
+    merge_base: Base,
+    base_application: Option<Application>,
+    resolved: ResolvedTemplate,
+    template: Template,
+    target: crate::staging::CanonicalTarget,
+    prior_part_question: bool,
+    configured_defaults: RawAnswers,
+    warnings: Vec<String>,
+}
+impl Preparation {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        base: &UpdateBase,
+        template: &str,
+        target: &crate::staging::CanonicalTarget,
+        dirs: &Dirs,
+        config: &crate::config::Config,
+        registry: &crate::registry::Registry,
+        cwd: &Path,
+    ) -> Result<Self, UpdateError> {
+        let project = open_project(target)?;
+        let resolved = crate::resolve::resolve_template(template, config, registry, dirs, cwd)
+            .map_err(UpdateError::Resolve)?;
+        let base_application = match base {
+            UpdateBase::Update => Some(
+                project
+                    .application(&crate::applied::source_identity(&resolved.formal_name))
+                    .map_err(|e| UpdateError::Error(e.to_string()))?,
+            ),
+            UpdateBase::Baseline => None,
+        };
+        let (merge_base, base_application, prior_part_question) = restore_merge_base(
+            &project,
+            base_application,
+            target,
+            config,
+            registry,
+            dirs,
+            cwd,
+        )?;
+        // The scripted route (`--answers`) reports a missing requirement as its
+        // `requirement` error document; the other routes report it as text.
+        let template = match Template::load(&resolved.folder) {
+            Ok(value) => value,
+            Err(error) => return Err(UpdateError::Error(error.to_string())),
+        };
+        if let Err(error) = crate::requirement::check(&template) {
+            return Err(UpdateError::Requirements(error));
+        }
+
+        let resolution = crate::interview::configured_defaults(
+            &resolved.formal_name,
+            &template,
+            &config.presets,
+            &config.template_defaults,
+        )
+        .map_err(|e| UpdateError::Error(e.to_string()))?;
+        let (configured_defaults, warnings) = resolution.into_flat_defaults();
+        Ok(Self {
+            project,
+            merge_base,
+            base_application,
+            resolved,
+            template,
+            target: target.clone(),
+            prior_part_question,
+            configured_defaults,
+            warnings,
+        })
     }
 
-    let resolution = crate::interview::configured_defaults(
-        &resolved.formal_name,
-        &template,
-        &config.presets,
-        &config.template_defaults,
-    )
-    .map_err(|e| UpdateError::Error(e.to_string()))?;
-    let (configured_defaults, warnings) = resolution.into_flat_defaults();
-    let runtime_now = environment.now.clone();
-    let now = match &base_application {
-        Some(application) => application.generated().get().clone(),
-        None => runtime_now,
-    };
+    pub fn finish(
+        self,
+        trust: bool,
+        mode: PrepareMode,
+        interactive: bool,
+        environment: &mut Environment<impl crate::context::FixedEnvironmentSource>,
+    ) -> Result<Prepared, UpdateError> {
+        let Self {
+            project,
+            merge_base,
+            base_application,
+            resolved,
+            template,
+            target,
+            prior_part_question,
+            configured_defaults,
+            warnings,
+        } = self;
+        let runtime_now = environment.now.clone();
+        let now = match &base_application {
+            Some(application) => application.generated().get().clone(),
+            None => runtime_now,
+        };
 
-    // The environment decision and trust grant. An apply grants env values when
-    // the template is already trusted (an approval or `--trust`). A stage
-    // captures the fixed five when `--trust` is given, discovers the references
-    // upfront, and refuses before any batch when one needs trust it lacks, so the
-    // grant carries through every later batch and the apply.
-    let (decision, trusted) = match mode {
-        PrepareMode::Apply => {
-            let trusted = crate::operations::effective_trust(trust, &resolved, &template);
-            (EnvironmentDecision::grant_if_needed(trusted), trusted)
-        }
-        PrepareMode::Stage => {
-            let decision = if trust {
-                EnvironmentDecision::CarryStageGrant
-            } else {
-                EnvironmentDecision::RequireStageGrant
-            };
-            (decision, trust)
-        }
-    };
-    let context = match crate::operations::invocation_context(
-        target,
-        &resolved,
-        &template,
-        decision,
-        environment.host.clone(),
-        crate::context::ExecutionFacts::new(environment.is_admin, interactive),
-        environment.source,
-    ) {
-        Ok(value) => value,
-        Err(error) => {
-            return Err(UpdateError::WithWarnings {
-                warnings,
-                source: Box::new(UpdateError::Admission(Box::new(error))),
-            });
-        }
-    };
+        // The environment decision and trust grant. An apply grants env values when
+        // the template is already trusted (an approval or `--trust`). A stage
+        // captures the fixed five when `--trust` is given, discovers the references
+        // upfront, and refuses before any batch when one needs trust it lacks, so the
+        // grant carries through every later batch and the apply.
+        let (decision, trusted) = match mode {
+            PrepareMode::Apply => {
+                let trusted = crate::operations::effective_trust(trust, &resolved, &template);
+                (EnvironmentDecision::grant_if_needed(trusted), trusted)
+            }
+            PrepareMode::Stage => {
+                let decision = if trust {
+                    EnvironmentDecision::CarryStageGrant
+                } else {
+                    EnvironmentDecision::RequireStageGrant
+                };
+                (decision, trust)
+            }
+        };
+        let context = match crate::operations::invocation_context(
+            &target,
+            &resolved,
+            &template,
+            decision,
+            environment.host.clone(),
+            crate::context::ExecutionFacts::new(environment.is_admin, interactive),
+            environment.source,
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                return Err(UpdateError::WithWarnings {
+                    warnings,
+                    source: Box::new(UpdateError::Admission(Box::new(error))),
+                });
+            }
+        };
 
-    let recorded = match &base_application {
-        Some(application) => candidate_submissions(application, &template, prior_part_question)
-            .map_err(UpdateError::Error)?,
-        None => Vec::new(),
-    };
+        let recorded = match &base_application {
+            Some(application) => candidate_submissions(application, &template, prior_part_question)
+                .map_err(UpdateError::Error)?,
+            None => Vec::new(),
+        };
 
-    Ok(Prepared {
-        project,
-        merge_base,
-        base_application,
-        resolved,
-        template,
-        now,
-        context,
-        configured_defaults,
-        recorded,
-        trusted,
-        warnings,
-    })
+        Ok(Prepared {
+            project,
+            merge_base,
+            base_application,
+            resolved,
+            template,
+            now,
+            context,
+            configured_defaults,
+            recorded,
+            trusted,
+            warnings,
+        })
+    }
+}
+impl std::fmt::Debug for Preparation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Preparation")
+            .field("resolved", &self.resolved)
+            .field("target", &self.target)
+            .field("warnings", &self.warnings)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Restore the pieces a staged-update resume needs from its record: reopen the
@@ -686,7 +761,11 @@ pub enum SessionError {
     Evaluation(#[from] crate::EvalError),
 }
 impl UpdateSession {
-    /// Admit current document inputs once and pin the base before returning a first batch.
+    /// Admit current document inputs and parts, then submit `overrides` together with
+    /// the recorded answers. Accepted submissions and any flow end are retained.
+    /// Unlike [`crate::operations::Session::start`]'s admission-only answers,
+    /// these values also answer the update interview. Use [`Self::state`] before
+    /// acquiring more input or applying; an ended interview must not be applied.
     #[allow(clippy::result_large_err)]
     pub fn start(
         mut prepared: Prepared,
@@ -695,7 +774,7 @@ impl UpdateSession {
         reanswer: bool,
         parts: crate::parts::Selection,
         inputs: &[std::path::PathBuf],
-        answers: &RawAnswers,
+        overrides: &RawAnswers,
     ) -> Result<Self, SessionError> {
         if prepared.context.target() != &target {
             return Err(crate::operations::OperationError::Input(
@@ -703,9 +782,9 @@ impl UpdateSession {
             )
             .into());
         }
-        crate::document::prepare(&mut prepared.template, target.as_path(), inputs, answers)
+        crate::document::prepare(&mut prepared.template, target.as_path(), inputs, overrides)
             .map_err(crate::operations::OperationError::from)?;
-        crate::operations::admit_parts(&mut prepared.template, parts, None, answers)
+        crate::operations::admit_parts(&mut prepared.template, parts, None, overrides)
             .map_err(UpdateError::Error)?;
         let base = stored_base(&base, prepared.base_application.as_ref());
         let mut record = record(&prepared, &base, reanswer, vec![]);
@@ -717,9 +796,10 @@ impl UpdateSession {
                 context: prepared.context.clone(),
             },
             &prepared.recorded,
-            answers.clone(),
+            overrides.clone(),
             reanswer,
         )?;
+        let mut ended = None;
         let initial_rejections = match driven {
             crate::applied::UpdateDrive::Completed { submissions, .. } => {
                 record.submissions = to_stored(submissions);
@@ -733,14 +813,17 @@ impl UpdateSession {
                 record.submissions = to_stored(submissions);
                 rejections
             }
-            crate::applied::UpdateDrive::Ended(_) => vec![],
+            crate::applied::UpdateDrive::Ended(end) => {
+                ended = Some(end);
+                vec![]
+            }
         };
         crate::operations::save_document_answers(&prepared.template, &mut record);
         Ok(Self {
             prepared,
             record,
             target,
-            ended: None,
+            ended,
             initial_rejections,
         })
     }
