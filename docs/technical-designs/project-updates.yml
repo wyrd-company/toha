@@ -148,7 +148,9 @@ proposed-design:
     admits the project, source, merge base, requirements and configured defaults
     before the caller acquires clock and environment facts; finish captures those
     facts. UpdateSession.start admits and submits overrides alongside recorded
-    answers and retains any resulting abort or stop. UpdateSession
+    answers and retains any resulting rejection, abort or stop. Its owned record
+    keeps initial override values separate from accepted batches so replay cannot
+    fall back to an older answer after a rejection. UpdateSession
     holds one loaded request and an owned StagedRecord. The record crosses request
     boundaries; the loaded Git-bound operation is constructed and consumed inside
     one blocking worker. Its question form omits valid covered answers, using the

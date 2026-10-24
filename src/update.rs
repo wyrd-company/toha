@@ -77,6 +77,11 @@ pub fn run_update(
         None => IndexMap::new(),
     };
 
+    // One-shot part flags are usage errors before lazy document-file admission.
+    if let Err(error) = parts.admit(&prep.template, &overrides) {
+        return Outcome::Usage(error);
+    }
+
     let document_context =
         Context::for_template(&target, &prep.resolved.formal_name, &prep.resolved.commit);
     let mut session = match toha::updates::UpdateSession::start(

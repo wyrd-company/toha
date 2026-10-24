@@ -78,7 +78,7 @@ pub fn stage(
     if let Err(e) = session.persist(&store) {
         return session_error(e);
     }
-    report(&session, output, path)
+    report_initial(&session, output, path)
 }
 fn session_error(e: toha::updates::SessionError) -> Outcome {
     match e {
@@ -108,7 +108,18 @@ fn full_batch(
         _ => unreachable!("asking update session"),
     }
 }
+fn report_initial(session: &UpdateSession, output: Option<Option<String>>, path: &Path) -> Outcome {
+    report_with_questions(session, output, path, true)
+}
 fn report(session: &UpdateSession, output: Option<Option<String>>, path: &Path) -> Outcome {
+    report_with_questions(session, output, path, false)
+}
+fn report_with_questions(
+    session: &UpdateSession,
+    output: Option<Option<String>>,
+    path: &Path,
+    initial: bool,
+) -> Outcome {
     match session.state() {
         Ok(SessionState::Completed(_)) => Outcome::Agent {
             document: None,
@@ -123,10 +134,16 @@ fn report(session: &UpdateSession, output: Option<Option<String>>, path: &Path) 
             ))
         }
         Ok(SessionState::Asking { .. }) => {
-            let doc = match questions(session) {
+            let mut doc = match questions(session) {
                 Ok(v) => v,
                 Err(e) => return session_error(e),
             };
+            if initial {
+                doc.as_object_mut()
+                    .expect("batch document")
+                    .entry("errors")
+                    .or_insert_with(|| serde_json::json!({}));
+            }
             let instructions = instructions(
                 &AgentOutcome::Batch {
                     template: &session.record.template,

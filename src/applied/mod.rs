@@ -37,4 +37,4 @@ pub fn validate_record_path(root: &std::path::Path) -> Result<String, ProjectErr
     project::record_relative(root)
 }
 
-pub(crate) use replay::covered_answers;
+pub(crate) use replay::{covered_answers, drive_update_resume_with_overrides};

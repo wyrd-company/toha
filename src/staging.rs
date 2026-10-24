@@ -29,6 +29,10 @@ pub struct StagedRecord {
     pub named: bool,
     pub now: String,
     pub submissions: Vec<IndexMap<String, Value>>,
+    /// Original update inputs, including values awaiting correction. Accepted batches
+    /// consume these values during replay; they are not accepted submissions.
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub(crate) update_overrides: IndexMap<String, Value>,
     /// The serialized application selected for this update, or the baseline
     /// marker. Resume checks that the selected application still matches.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -348,6 +352,7 @@ impl StagedRecord {
             named,
             now,
             submissions,
+            update_overrides: IndexMap::new(),
             base: None,
             reanswer: false,
             part_selection: Default::default(),
@@ -375,6 +380,7 @@ impl StagedRecord {
             named,
             now,
             submissions,
+            update_overrides: IndexMap::new(),
             base: None,
             reanswer: false,
             part_selection: Default::default(),
