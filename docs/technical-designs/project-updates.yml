@@ -144,7 +144,11 @@ proposed-design:
 
   library-operations: >-
     The updates module prepares the base, selected revision, configured defaults,
-    context and recorded answer queue from explicit caller inputs. UpdateSession
+    context and recorded answer queue from explicit caller inputs. Preparation
+    admits the project, source, merge base, requirements and configured defaults
+    before the caller acquires clock and environment facts; finish captures those
+    facts. UpdateSession.start admits and submits overrides alongside recorded
+    answers and retains any resulting abort or stop. UpdateSession
     holds one loaded request and an owned StagedRecord. The record crosses request
     boundaries; the loaded Git-bound operation is constructed and consumed inside
     one blocking worker. Its question form omits valid covered answers, using the

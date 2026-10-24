@@ -692,6 +692,7 @@ fn continue_input_saves_document_while_other_required_questions_remain() {
         .unwrap();
     assert_eq!(out.status.code(), Some(4), "{}", error_text(&out));
     let batch = support::first_document(&out.stdout);
+    assert!(batch.get("seed").is_none(), "cli_continue_input_omits_seed");
     assert!(batch["schema"]["properties"].get("catalog").is_none());
     assert!(batch["schema"]["properties"].get("note").is_some());
     let answers = f.answers(json!({"note":"Entered"}));
@@ -1002,4 +1003,90 @@ fn person_input_routing_error_exits_two() {
         WaitStatus::Exited(_, 2)
     ));
     assert!(!f.target.join("result.txt").exists());
+}
+
+#[test]
+fn seeded_continue_input_omits_seed_but_stage_and_answered_batch_keep_it() {
+    let f = Fixture::new();
+    let body = fs::read_to_string(f.template.join("template.yml")).unwrap();
+    fs::write(
+        f.template.join("template.yml"),
+        format!("{body}  - {{id: note, type: text, prompt: Note, required: true}}\n"),
+    )
+    .unwrap();
+    let input = f.doc("input.json", "Selected");
+    for args in [
+        vec!["init", "-q"],
+        vec!["add", "."],
+        vec!["commit", "-qm", "fixture", "--allow-empty"],
+    ] {
+        let out = std::process::Command::new("git")
+            .current_dir(&f.target)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Example User")
+            .env("GIT_AUTHOR_EMAIL", "user@example.invalid")
+            .env("GIT_COMMITTER_NAME", "Example User")
+            .env("GIT_COMMITTER_EMAIL", "user@example.invalid")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+    }
+    let answers = f.answers(json!({"note":"Example"}));
+    assert_success(&f.apply(&[
+        "--answers",
+        answers.to_str().unwrap(),
+        "--input",
+        input.to_str().unwrap(),
+    ]));
+    let nested = f.target.join("nested");
+    let staged = support::isolated_command(f.root.path())
+        .arg("stage")
+        .arg(support::folder_address(&f.template))
+        .arg(&nested)
+        .arg("--like")
+        .arg(".")
+        .arg("--async")
+        .output()
+        .unwrap();
+    assert_eq!(staged.status.code(), Some(4), "{}", error_text(&staged));
+    assert_eq!(
+        support::first_document(&staged.stdout)["seed"]["from"],
+        ".",
+        "seeded_stage_has_seed"
+    );
+    let continued = support::isolated_command(f.root.path())
+        .arg("continue")
+        .arg(&nested)
+        .arg("--input")
+        .arg(&input)
+        .output()
+        .unwrap();
+    assert_eq!(
+        continued.status.code(),
+        Some(4),
+        "{}",
+        error_text(&continued)
+    );
+    let doc = support::first_document(&continued.stdout);
+    assert!(
+        doc["schema"]["properties"].get("note").is_some(),
+        "seeded_input_keeps_pending_question"
+    );
+    assert!(
+        doc.get("seed").is_none(),
+        "cli_seeded_continue_input_omits_seed"
+    );
+    let bad = f.answers(json!({"note":42}));
+    let rejected = support::isolated_command(f.root.path())
+        .arg("continue")
+        .arg(&nested)
+        .arg(bad)
+        .output()
+        .unwrap();
+    assert_eq!(rejected.status.code(), Some(4), "{}", error_text(&rejected));
+    assert_eq!(
+        support::first_document(&rejected.stdout)["seed"]["from"],
+        ".",
+        "seeded_answered_batch_keeps_seed"
+    );
 }

@@ -163,7 +163,9 @@ and return data. They do not parse arguments, prompt or print command reports.
   returns dropped application-default warnings as data for the caller to report.
   `plan` and
   `apply` use the existing planner and caller-supplied `HookRunner`.
-- `updates::prepare` opens and verifies an update or baseline. `UpdateSession`
+- `updates::prepare` opens and verifies an update or baseline.
+  `updates::Preparation` splits source/base admission from clock/environment
+  acquisition when the caller needs deferred inputs. `UpdateSession`
   admits current document inputs, pins the application and replays old answers.
   Its question document omits answers already covered by valid recorded values.
   `resume` checks that the pinned application still matches; `apply` accepts
@@ -176,7 +178,7 @@ with `Session::resume` or `UpdateSession::resume` for each subsequent request.
 The record includes the exact template/base, context, time, document values and
 accepted submissions. A bare submissions list does not carry all replay inputs.
 Reconstruction does not read new document paths. Inspect `state` before acquiring
-new submissions or call `admit_documents` to admit new inputs. `Preparation`
+new submissions or call `admit_documents` to admit new inputs. `operations::Preparation`
 checks requirements and documents before its environment-context admission;
 `Session::start` accepts an already captured context. Its `admission_answers`
 argument admits document values and parts; `answer`/`answer_all` submit answers.
@@ -200,6 +202,10 @@ isolation: gix can read global Git configuration through HOME/XDG, executable
 requirements and the process runner use PATH, and applied-record operations
 retain the TOHA_RECORD process override.
 
+`UpdateSession::start` admits and submits its `overrides` alongside the recorded
+answers. In contrast, `Session::start` uses `admission_answers` only to admit
+documents and parts; call `answer` or `answer_all` to submit interview values.
+
 Run the complete direct-library recipe from a repository checkout:
 
 ```sh
@@ -215,6 +221,6 @@ exercises template management and embedded assets.
 
 For a reviewed integration commit, Cargo supports a Git dependency with
 `git = "https://github.com/wyrd-company/toha"`, the full accepted commit in
-`rev`, and `default-features = false`. Use the exact accepted commit from the
-handoff; a branch name does not freeze the API. This route does not require a
+`rev`, and `default-features = false`. Pin a full 40-hex commit in `rev`; a branch
+name does not freeze the API. This route does not require a
 registry release.

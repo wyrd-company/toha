@@ -168,14 +168,24 @@ pub(crate) fn prepare(
     scripted: bool,
 ) -> Result<Prepared, Outcome> {
     toha::updates::open_project(target).map_err(|e| update_error(e, false))?;
+    let cwd = std::env::current_dir().map_err(|e| Outcome::Error(e.to_string()))?;
+    let (config, registry) = cli_context(dirs, &cwd)?;
     let template_arg = template_arg.ok_or_else(|| {
         Outcome::Error(
             "apply --update and --baseline need a template operand: apply TEMPLATE PATH --update"
                 .into(),
         )
     })?;
-    let cwd = std::env::current_dir().map_err(|e| Outcome::Error(e.to_string()))?;
-    let (config, registry) = cli_context(dirs, &cwd)?;
+    let preparation = toha::updates::Preparation::new(
+        base,
+        &template_arg,
+        target,
+        dirs,
+        &config,
+        &registry,
+        &cwd,
+    )
+    .map_err(|e| update_error(e, scripted))?;
     let now = crate::runtime_now().map_err(Outcome::Error)?;
     let mut source = crate::HostEnvironmentSource;
     let mut environment = toha::updates::Environment {
@@ -187,17 +197,9 @@ pub(crate) fn prepare(
         is_admin: crate::is_admin(),
         source: &mut source,
     };
-    let result = toha::updates::prepare(
-        base,
-        &template_arg,
-        target,
-        dirs,
-        trust,
-        mode,
-        interactive,
-        &mut environment,
-    )
-    .map_err(|e| update_error(e, scripted))?;
+    let result = preparation
+        .finish(trust, mode, interactive, &mut environment)
+        .map_err(|e| update_error(e, scripted))?;
     crate::report_config_warnings(&result.warnings);
     Ok(result)
 }
