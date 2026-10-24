@@ -2009,6 +2009,9 @@ fn run(
                 Ok(v) => v,
                 Err(e) => return Outcome::Error(e.to_string()),
             };
+            if let Err(e) = toha::requirement::check(&template) {
+                return Outcome::Error(e.to_string());
+            }
             if let Err(e) = parts.admit(&template, &Default::default()) {
                 return Outcome::Usage(e);
             }
