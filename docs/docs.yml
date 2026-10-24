@@ -22,3 +22,5 @@ install:
     command: paru -S toha-bin
 assets:
   - assets/demo.gif
+  - assets/applied-record.gif
+  - specifications/applied-record-1.schema.yml

@@ -1,0 +1,7 @@
+$schema: https://refinery.systems/ontology/term
+title: Applied record
+description: >-
+  The committed file `.toha.json`, at the repository root unless `TOHA_RECORD`
+  names another path. For each application in the repository it holds the
+  template identity, selected parts, answers and path ownership, from which an
+  update renders its merge base.

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://wyrd.foo/toha/schemas/applied-record/1",
+  "applications": [
+    {
+      "answers": {
+        "contract": {
+          "$schema": "https://example.invalid/schemas/contract/1",
+          "names": [
+            "example"
+          ]
+        },
+        "label": "Example"
+      },
+      "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "generated": "2026-01-02T03:04:05+00:00[UTC]",
+      "parts": [
+        "optional"
+      ],
+      "paths": {
+        "config.json": {
+          "origin": "edit",
+          "regions": [],
+          "values": [
+            "/example"
+          ]
+        },
+        "hook.txt": {
+          "blob": "cccccccccccccccccccccccccccccccccccccccc",
+          "origin": "hook",
+          "mode": "100644"
+        },
+        "note.txt": {
+          "blob": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "origin": "toha",
+          "mode": "100644"
+        }
+      },
+      "source": "forge:example/document",
+      "target": ".",
+      "template": "forge:example/document@stable"
+    }
+  ]
+}

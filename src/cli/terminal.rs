@@ -2,13 +2,16 @@
 // relationships:
 //   implements: architecture
 // ---
+#[cfg(test)]
 use indexmap::IndexMap;
 use inquire::{Confirm, Editor, MultiSelect, Select, Text};
 use serde_json::{Value, json};
 use toha::{
-    Answer, AnswerError, CheckError, Completed, Ended, Interview, Item, Pending, Prompt,
-    PromptKind, RawAnswer, RawAnswers,
+    Answer, CheckError, Completed, Ended, Item, Pending, Prompt, PromptKind, RawAnswer, RawAnswers,
 };
+
+#[cfg(test)]
+use toha::{AnswerError, Interview};
 
 /// The terminal outcome of a driven interview: a normal completion, or a flow
 /// `stop`/`abort` that ended it.
@@ -161,6 +164,41 @@ fn print_error(line: &str) -> Result<(), String> {
 
 fn ask_value(ask: &mut impl Ask, prompt: &Prompt) -> Result<Value, String> {
     let value = match prompt.kind {
+        PromptKind::Document => {
+            let mut path_prompt = Prompt {
+                id: prompt.id.clone(),
+                kind: PromptKind::Text,
+                title: prompt.title.clone(),
+                description: prompt.description.clone(),
+                placeholder: prompt.placeholder.clone(),
+                default: prompt
+                    .document
+                    .as_ref()
+                    .map(|d| Answer::Text(d.input.display().to_string())),
+                options: vec![],
+                constraints: Default::default(),
+                document: None,
+            };
+            path_prompt.constraints.required = true;
+            loop {
+                let path = ask.text(&path_prompt, &prompt.title)?;
+                let document = prompt.document.as_ref().unwrap();
+                let path = if path.is_empty() {
+                    document.input.clone()
+                } else {
+                    path.into()
+                };
+                let path = document
+                    .target
+                    .as_deref()
+                    .unwrap_or(std::path::Path::new("."))
+                    .join(path);
+                match toha::document::read(&path) {
+                    Ok(value) => break value,
+                    Err(error) => print_error(&error)?,
+                }
+            }
+        }
         PromptKind::Text | PromptKind::Git => json!(ask.text(prompt, &prompt.title)?),
         PromptKind::Multiline => json!(ask.multiline(prompt)?),
         PromptKind::Confirm => json!(ask.confirm(prompt)?),
@@ -201,6 +239,7 @@ fn ask_value(ask: &mut impl Ask, prompt: &Prompt) -> Result<Value, String> {
     Ok(value)
 }
 
+#[cfg(test)]
 pub(crate) fn drive<'a>(
     interview: Interview<'a>,
     ask: &mut impl Ask,
@@ -244,6 +283,7 @@ pub(crate) fn prompt_batch(
     Ok(submission)
 }
 
+#[cfg(test)]
 fn drive_to<'a>(
     mut interview: Interview<'a>,
     ask: &mut impl Ask,
@@ -442,6 +482,67 @@ mod tests {
             Ok(Session::Completed(completed)) => Ok(completed),
             Ok(Session::Ended(_)) => panic!("unexpected flow end"),
             Err(error) => Err(error),
+        }
+    }
+
+    #[test]
+    fn terminal_document_default_path_resolves_against_target() {
+        let folder = tempfile::tempdir().unwrap();
+        let mut template = Template::load(std::path::Path::new("docs/examples/document")).unwrap();
+        toha::document::prepare(&mut template, folder.path(), &[], &Default::default()).unwrap();
+        let interview = start(&template);
+        // The file appears while the person is answering the pending prompt.
+        fs::write(
+            folder.path().join("catalog.json"),
+            json!({"title":"Entered"}).to_string(),
+        )
+        .unwrap();
+        let mut ask = Script::new(json!({}));
+        let completed = driven(interview, &mut ask, |_| Ok(())).unwrap();
+        assert_eq!(
+            completed.answers[&toha::Id::parse("catalog").unwrap()].to_json()["title"],
+            "Entered"
+        );
+    }
+
+    #[test]
+    fn typed_document_path_errors_reask_without_losing_earlier_answers() {
+        for invalid in [None, Some("not JSON"), Some("[]")] {
+            let folder = tempfile::tempdir().unwrap();
+            let root = folder.path().join("template");
+            fs::create_dir(&root).unwrap();
+            support::copy_tree(std::path::Path::new("docs/examples/document"), &root);
+            let yaml = fs::read_to_string(root.join("template.yml")).unwrap().replace("interview:\n", "interview:\n  - id: note\n    type: text\n    prompt: Note\n    required: true\n");
+            fs::write(root.join("template.yml"), yaml).unwrap();
+            let target = folder.path().join("target");
+            fs::create_dir(&target).unwrap();
+            let mut template = Template::load(&root).unwrap();
+            toha::document::prepare(&mut template, &target, &[], &Default::default()).unwrap();
+            let interview = start(&template);
+            if let Some(text) = invalid {
+                fs::write(target.join("invalid.json"), text).unwrap();
+            }
+            fs::write(
+                target.join("valid.json"),
+                json!({"title":"Selected"}).to_string(),
+            )
+            .unwrap();
+            let mut ask = Script::new(json!({}));
+            ask.text_responses = VecDeque::from([
+                "Remembered".into(),
+                "invalid.json".into(),
+                "valid.json".into(),
+            ]);
+            let completed = driven(interview, &mut ask, |_| Ok(())).unwrap();
+            assert_eq!(
+                completed.answers[&toha::Id::parse("note").unwrap()].to_json(),
+                "Remembered"
+            );
+            assert_eq!(
+                completed.answers[&toha::Id::parse("catalog").unwrap()].to_json()["title"],
+                "Selected"
+            );
+            assert_eq!(ask.attempts, 3);
         }
     }
 

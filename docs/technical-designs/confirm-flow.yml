@@ -29,7 +29,7 @@ proposed-design:
     DryRun raises a sticky disposition while the interview continues normally.
     Completed exposes the planning disposition through step. Drivers compose
     that disposition with the CLI dry-run flag by union. A preview computes the
-    complete plan and suppresses file writes, hooks and snapshot publication.
+    complete plan and suppresses file writes, hooks and applied-record writes.
     The same suppression governs direct apply, staged apply and project-update
     adapters. A staged preview retains the record for a later apply.
   scoped-skip: >-

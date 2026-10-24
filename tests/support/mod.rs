@@ -333,6 +333,7 @@ pub const ENVIRONMENT: &[&str] = &[
     "EDITOR",
     "PATH",
     "TOHA_NOW",
+    "TOHA_RECORD",
 ];
 
 /// Builds `RawAnswers` from a bare JSON answers map, for in-memory engine and
@@ -492,4 +493,55 @@ pub fn diagnostic_text(document: &serde_json::Value) -> String {
         }
     }
     text
+}
+
+/// Commit a local Git template fixture before resolving its current revision.
+#[allow(dead_code)]
+pub fn versioned_template(path: &Path) -> String {
+    let url = file_url(&path.canonicalize().unwrap());
+    refresh_template(&url)
+}
+#[allow(dead_code)]
+pub fn refresh_template(url: &str) -> String {
+    let Some(path) = url.strip_prefix("file://") else {
+        return url.to_owned();
+    };
+    #[cfg(windows)]
+    let path = path.strip_prefix('/').unwrap_or(path);
+    let path = Path::new(path);
+    if !path.join("template.yml").exists() {
+        return url.to_owned();
+    }
+    let run = |args: &[&str]| {
+        Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Example User")
+            .env("GIT_AUTHOR_EMAIL", "user@example.invalid")
+            .env("GIT_COMMITTER_NAME", "Example User")
+            .env("GIT_COMMITTER_EMAIL", "user@example.invalid")
+            .output()
+            .unwrap()
+    };
+    if !path.join(".git").exists() {
+        assert!(run(&["init", "-q", "-b", "main"]).status.success());
+    }
+    if path.join("template").is_dir()
+        && std::fs::read_dir(path.join("template"))
+            .unwrap()
+            .next()
+            .is_none()
+    {
+        std::fs::write(path.join("template/.keep"), "").unwrap();
+    }
+    assert!(run(&["add", "-A"]).status.success());
+    if !run(&["diff", "--cached", "--quiet"]).status.success() {
+        assert!(
+            run(&["commit", "-q", "-m", "template fixture"])
+                .status
+                .success()
+        );
+    }
+    url.to_owned()
 }

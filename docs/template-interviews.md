@@ -55,6 +55,77 @@ fallback when an editor is unavailable.
 
 The answer is still one string. Toha keeps its newlines when it renders a file.
 
+### `document`: a JSON file
+
+![Passing a JSON document to an interview](assets/document-input.gif)
+
+Use `document` to accept a complete JSON object, such as a catalog. Name the
+schema URI and a default file relative to the target:
+
+```yaml
+name: catalog-view
+schemas: schemas
+interview:
+  - id: catalog
+    type: document
+    prompt: Catalog file
+    schema: https://schemas.example.test/catalog/1
+    input: catalog.json
+```
+
+Vendor the schema as `schemas/catalog.yml` (JSON works too):
+
+```yaml
+$id: https://schemas.example.test/catalog/1
+type: object
+required: [title]
+properties:
+  title:
+    type: string
+```
+
+The input document can be:
+
+```json
+{"$schema":"https://schemas.example.test/catalog/1","title":"Sample catalog"}
+```
+
+A generated file can use `{{ catalog.title }}`. The answer keeps the entire
+object. For an unanswered question, Toha reads `catalog.json` from the target
+at the start of the run.
+The path can reach a parent directory inside the target repository; without
+Git it must stay inside the target. A missing file leaves the question
+unanswered. An invalid default file stops the run before it writes output.
+
+Use `toha apply ./catalog-view ./output --input ./another-catalog.json` to
+select a different file for one run. Repeat `--input` for different schemas.
+The `$schema` string routes the file to every question that accepts that URI.
+It overrides a value for `catalog` in an answers document, which overrides the
+default file when the question is unanswered. `stage --async --input FILE`
+and `continue PATH --input FILE` accept the same document. Once a staged
+interview records an answer, it keeps that document for the session. A later
+default file cannot replace it. To change a recorded answer, abort and stage
+again. A missing `$schema`, an unaccepted URI, or two inputs for one question
+is a usage error (exit 2).
+
+If you type an unreadable path or select a file that is not a JSON object,
+Toha reports the error and asks for a path again. It keeps your earlier answers.
+
+A question can name a list of accepted schema URIs. The document's `$schema`
+selects one by exact string equality; it can be absent only when the question
+accepts one schema. Toha indexes YAML and JSON schemas by `$id`, including
+nested directories, and resolves schema references from that index first.
+Missing or duplicate `$id` values stop template loading.
+
+Vendoring is the working path. An unvendored URI requires an HTTPS fetch;
+that fetch must succeed before the interview starts. Hosted schema URIs such
+as `https://intentional.foo/schemas/release-model/1` do not resolve until their
+hosting exists. The example URI above needs its vendored schema.
+
+The runnable example is in `docs/examples/document`.
+The integration tests in `tests/document_questions.rs` cover these examples,
+precedence, batches, and invalid-file refusals.
+
 ### `git`: a repository for the target
 
 Use `git` when the generated project should be a git repository. The person

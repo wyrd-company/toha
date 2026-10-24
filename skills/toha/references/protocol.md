@@ -115,6 +115,10 @@ answer '{"summary":"Short text","status":"draft"}' | "$TOHA_BIN" continue "$TOHA
 {"errors":{"slug":["must match ^[a-z0-9-]+$"]},"questions":["slug","tags"],"status":"questions"}
 {"questions":["has_summary"],"status":"questions"}
 {"questions":["status","summary"],"status":"questions","status_options":[{"enum":["draft","review","final"]},{"type":"null"}]}
+Prior revision: unversioned
+Resolved revision: unversioned
+Parts added: none
+Parts removed: none
 create sample-note.txt
 ```
 

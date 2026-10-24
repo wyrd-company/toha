@@ -45,6 +45,7 @@ pub struct Seed {
 struct InterviewSeed {
     now: jiff::Zoned,
     defaults: IndexMap<Id, DefaultBankEntry>,
+    part_selection: crate::parts::Selection,
     /// The invocation context, or `None` for the pre-context legacy projection
     /// route used by [`Resolution::start`], which projects none of the reserved
     /// names.
@@ -54,24 +55,24 @@ struct InterviewSeed {
 enum DefaultBankEntry {
     Seed(RawAnswer),
     Configured(ResolvedDefault),
-    /// A default sourced from a snapshot's recorded answers (the generate axis's
-    /// `--like`). Carries the snapshot id as provenance so a prompt or a
+    /// A default sourced from an application's recorded answers (the generate axis's
+    /// `--like`). Carries the application target as provenance so a prompt or a
     /// rejection can name where the default came from. Precedence is resolved
-    /// before the bank is built, so a `Snapshot` entry and a `Configured` entry
+    /// before the bank is built, so an `Application` entry and a `Configured` entry
     /// never coexist for one id: the bank still holds exactly one occupant per id.
-    Snapshot {
+    Application {
         raw: RawAnswer,
         from: String,
     },
 }
-/// A snapshot-sourced seed for [`Resolution::start_with_seed`]: the folded
-/// defaults (one raw answer per id) and the snapshot id they came from. Built at
-/// the CLI-side boundary from a selected snapshot; the engine never sees a
-/// `Snapshot`, a `Project`, or any gitoxide type.
+/// An application-sourced seed for [`Resolution::start_with_seed`]: the folded
+/// defaults (one raw answer per id) and the application target they came from. Built at
+/// the CLI-side boundary from a selected application; the engine never sees a
+/// `Application`, a `Project`, or any gitoxide type.
 #[derive(Debug, Clone)]
-pub struct SnapshotSeed {
+pub struct ApplicationSeed {
     pub defaults: IndexMap<Id, RawAnswer>,
-    /// The snapshot id, for prompt and rejection provenance and the result docs.
+    /// The application target, for prompt and rejection provenance and the result docs.
     pub from: String,
 }
 #[derive(Debug)]
@@ -106,7 +107,7 @@ pub enum Step {
     Plan { apply: bool },
 }
 /// A stop or abort. Carries only what a driver prints; nothing a plan consumes.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Ended {
     /// `Abort` instructs the driver to remove the target's staged record.
     pub kind: EndKind,
@@ -145,7 +146,7 @@ pub struct Pending<'a> {
 pub struct Completed {
     pub answers: Answers,
     /// The accepted EFFECTIVE RAW value per id BEFORE formatting — the submitted
-    /// raw for an answered id, or the pre-format default (incl. a snapshot seed)
+    /// raw for an answered id, or the pre-format default (incl. an application seed)
     /// for a defaulted id. An internal in-process readback seam; not serialized.
     accepted_raw: IndexMap<Id, RawAnswer>,
     /// Every message reached, in interview order.
@@ -167,7 +168,7 @@ pub struct Completed {
 type Skipped = IndexMap<Id, usize>;
 impl Completed {
     /// The accepted effective raw values (pre-format) per id, including the
-    /// snapshot-seeded defaults the interview applied.
+    /// application-seeded defaults the interview applied.
     pub fn accepted_raw(&self) -> &IndexMap<Id, RawAnswer> {
         &self.accepted_raw
     }
@@ -296,6 +297,8 @@ pub struct Batch {
     pub errors: Rejections,
     default_sources: IndexMap<Id, PreparedDefaultSource>,
 }
+// Keep the public prompt variant inline; document metadata adds one pointer.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum Item {
     Prompt(Prompt),
@@ -311,6 +314,13 @@ pub struct Prompt {
     pub default: Option<Answer>,
     pub options: Vec<String>,
     pub constraints: Constraints,
+    pub document: Option<Box<DocumentPrompt>>,
+}
+#[derive(Debug, Clone)]
+pub struct DocumentPrompt {
+    pub target: Option<std::path::PathBuf>,
+    pub schemas: Vec<String>,
+    pub input: std::path::PathBuf,
 }
 #[derive(Debug)]
 struct PreparedPrompt {
@@ -330,13 +340,14 @@ enum PreparedDefaultSource {
     },
     Configured(ConfiguredDefaultOrigin),
     Seed,
-    /// A snapshot-seeded default, naming the snapshot it came from.
-    Snapshot {
+    /// An application-seeded default, naming the application it came from.
+    Application {
         from: String,
     },
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptKind {
+    Document,
     Text,
     Multiline,
     /// A one-line remote URL for the target repository; answered as text.
@@ -511,6 +522,7 @@ fn question_ready(q: &Question, a: &Answers, t: &Template, seed: &InterviewSeed)
     }
     let override_default = seed.defaults.contains_key(&q.id);
     match &q.kind {
+        QuestionKind::Document { .. } => true,
         QuestionKind::Text { default }
         | QuestionKind::Multiline { default }
         | QuestionKind::Git { default } => {
@@ -547,6 +559,7 @@ fn default_ready(q: &Question, a: &Answers, t: &Template, seed: &InterviewSeed) 
         return true;
     }
     match &q.kind {
+        QuestionKind::Document { .. } => true,
         QuestionKind::Text { default }
         | QuestionKind::Multiline { default }
         | QuestionKind::Git { default }
@@ -566,7 +579,18 @@ fn render_default(
     seed: &InterviewSeed,
 ) -> Result<Option<PreparedDefault>, EvalError> {
     let id = &q.id;
+    if matches!(q.kind, QuestionKind::Document { .. }) {
+        return Ok(None);
+    }
     let kind = prompt_kind(q);
+    if q.parts
+        && let Some(parts) = &seed.part_selection.base
+    {
+        return Ok(Some(PreparedDefault {
+            answer: Answer::List(parts.clone()),
+            source: PreparedDefaultSource::Seed,
+        }));
+    }
     if let Some(entry) = seed.defaults.get(id) {
         let (raw, source) = match entry {
             DefaultBankEntry::Seed(raw) => (raw, PreparedDefaultSource::Seed),
@@ -574,16 +598,25 @@ fn render_default(
                 &value.raw,
                 PreparedDefaultSource::Configured(value.origin.clone()),
             ),
-            DefaultBankEntry::Snapshot { raw, from } => {
-                (raw, PreparedDefaultSource::Snapshot { from: from.clone() })
-            }
+            DefaultBankEntry::Application { raw, from } => (
+                raw,
+                PreparedDefaultSource::Application { from: from.clone() },
+            ),
         };
-        return parse_kind(id, kind, raw.0.clone())
+        // Raw replay values use answer semantics: explicit null is the empty
+        // answer, not a configured/template default or a fallback to one.
+        let answer = if raw.0.is_null() && matches!(source, PreparedDefaultSource::Seed) {
+            Ok(empty_answer(kind))
+        } else {
+            parse_kind(id, kind, raw.0.clone())
+        };
+        return answer
             .map(|answer| Some(PreparedDefault { answer, source }))
             .map_err(|e| eval_error(id, CONFIGURED_DEFAULT, e.message));
     }
     let ctx = context(t, a, seed);
     match &q.kind {
+        QuestionKind::Document { .. } => Ok(None),
         QuestionKind::Text { default }
         | QuestionKind::Multiline { default }
         | QuestionKind::Git { default }
@@ -654,7 +687,8 @@ fn make_prompt(
                 .map_err(|e| fault(id, "placeholder", Some(v.source()), e))
         })
         .transpose()?;
-    let required = eval_typed(&q.required, &ctx, id, "required")?;
+    let required = matches!(q.kind, QuestionKind::Document { .. })
+        || eval_typed(&q.required, &ctx, id, "required")?;
     let min = q
         .validate
         .min
@@ -671,6 +705,7 @@ fn make_prompt(
     let mut loop_min = None;
     let mut loop_max = None;
     let kind = match &q.kind {
+        QuestionKind::Document { .. } => PromptKind::Document,
         QuestionKind::Text { .. } => PromptKind::Text,
         QuestionKind::Multiline { .. } => PromptKind::Multiline,
         QuestionKind::Git { .. } => PromptKind::Git,
@@ -696,7 +731,16 @@ fn make_prompt(
         }
     };
     let prepared = render_default(q, t, a, seed)?;
+    let document = match &q.kind {
+        QuestionKind::Document { contract } => Some(Box::new(DocumentPrompt {
+            target: contract.target.clone(),
+            schemas: contract.schemas.clone(),
+            input: contract.input.clone(),
+        })),
+        _ => None,
+    };
     let mut prompt = Prompt {
+        document,
         id: id.clone(),
         kind,
         title,
@@ -745,11 +789,11 @@ fn make_prompt(
                     ),
                 ));
             }
-            // A snapshot-seeded default is an optional default, like a replay
+            // An application-seeded default is an optional default, like a replay
             // seed: keep it shown so the person can accept or override, and
             // let the headless walk re-ask (exit 4) rather than writing an
             // invalid value. It is never a hard error.
-            PreparedDefaultSource::Seed | PreparedDefaultSource::Snapshot { .. } => {}
+            PreparedDefaultSource::Seed | PreparedDefaultSource::Application { .. } => {}
         }
     }
     Ok(PreparedPrompt {
@@ -761,6 +805,13 @@ fn make_prompt(
 fn parse_kind(id: &Id, kind: PromptKind, value: Value) -> Result<Answer, Rejection> {
     let fail = |msg: &str| rejection(id, msg);
     match kind {
+        PromptKind::Document => {
+            if value.is_object() {
+                Ok(Answer::Value(value))
+            } else {
+                Err(fail("must be a JSON object"))
+            }
+        }
         PromptKind::Text | PromptKind::Multiline | PromptKind::Git | PromptKind::Select => value
             .as_str()
             .map(|v| Answer::Text(v.into()))
@@ -795,6 +846,7 @@ fn count(n: u32, one: &str, many: &str) -> String {
 /// absent or not yet known.
 struct Rules<'q> {
     kind: PromptKind,
+    document: Option<&'q crate::document::DocumentQuestion>,
     required: Option<bool>,
     min: Option<u32>,
     max: Option<u32>,
@@ -808,6 +860,10 @@ impl<'q> Rules<'q> {
         let c = &prompt.constraints;
         Self {
             kind: prompt.kind,
+            document: match &q.kind {
+                QuestionKind::Document { contract } => Some(contract),
+                _ => None,
+            },
             required: Some(c.required),
             min: c.min,
             max: c.max,
@@ -833,7 +889,15 @@ impl<'q> Rules<'q> {
         };
         Self {
             kind: prompt_kind(q),
-            required: q.required.literal().copied(),
+            document: match &q.kind {
+                QuestionKind::Document { contract } => Some(contract),
+                _ => None,
+            },
+            required: if matches!(q.kind, QuestionKind::Document { .. }) {
+                Some(true)
+            } else {
+                q.required.literal().copied()
+            },
             min: literal(&q.validate.min),
             max: literal(&q.validate.max),
             loop_min,
@@ -876,6 +940,10 @@ impl<'q> Rules<'q> {
         };
         Ok(Self {
             kind: prompt_kind(q),
+            document: match &q.kind {
+                QuestionKind::Document { contract } => Some(contract),
+                _ => None,
+            },
             required,
             min: number("validate.min", &q.validate.min)?,
             max: number("validate.max", &q.validate.max)?,
@@ -920,6 +988,7 @@ fn skipped_default(
 }
 fn prompt_kind(q: &Question) -> PromptKind {
     match q.kind {
+        QuestionKind::Document { .. } => PromptKind::Document,
         QuestionKind::Text { .. } => PromptKind::Text,
         QuestionKind::Multiline { .. } => PromptKind::Multiline,
         QuestionKind::Git { .. } => PromptKind::Git,
@@ -938,6 +1007,9 @@ fn validate(id: &Id, rules: &Rules, value: Value) -> Result<Answer, Rejection> {
             return fail("is required".into());
         }
         return Ok(empty_answer(rules.kind));
+    }
+    if let Some(contract) = rules.document {
+        contract.validate(&value).map_err(|e| rejection(id, e))?;
     }
     let answer = parse_kind(id, rules.kind, value)?;
     if rules.required == Some(true)
@@ -1077,6 +1149,7 @@ impl Resolution {
         Interview::start_with_bank(
             template,
             InterviewSeed {
+                part_selection: template.part_selection.clone(),
                 now,
                 defaults: self
                     .defaults
@@ -1101,6 +1174,7 @@ impl Resolution {
         Interview::start_with_bank(
             template,
             InterviewSeed {
+                part_selection: template.part_selection.clone(),
                 now,
                 defaults: self
                     .defaults
@@ -1112,20 +1186,20 @@ impl Resolution {
         )
     }
 
-    /// Start an interview with snapshot-sourced defaults layered over the
+    /// Start an interview with application-sourced defaults layered over the
     /// configured defaults (the generate axis, `--like`). For each question the
     /// template defines, precedence resolves at this seam, before the bank is
     /// built, so the single-occupant invariant holds:
     ///
-    ///   1. a snapshot value that parses to the question's kind → a `Snapshot`
+    ///   1. an application value that parses to the question's kind → an `Application`
     ///      entry, shadowing any configured entry for that id;
     ///   2. else the configured default (this `Resolution`) → a `Configured` entry;
     ///   3. else the template's own `default` expression (no bank entry);
     ///   4. else the question is asked.
     ///
-    /// A snapshot value whose kind no longer matches the question is dropped and
+    /// An application value whose kind no longer matches the question is dropped and
     /// returned as a warning; it falls through to (2)/(3) and is never a hard
-    /// error and never forces an invalid value. A snapshot value for an id the
+    /// error and never forces an invalid value. An application value for an id the
     /// template no longer defines is silently ignored (ordinary template
     /// evolution). With `seed == None` this is byte-for-byte `start_with_context`,
     /// so the no-`--like` path and every driver's parity are unchanged.
@@ -1134,14 +1208,43 @@ impl Resolution {
         template: &'a Template,
         now: jiff::Zoned,
         context: InvocationContext,
-        seed: Option<SnapshotSeed>,
+        seed: Option<ApplicationSeed>,
+    ) -> Result<(Interview<'a>, Vec<String>), EvalError> {
+        self.start_with_selection(
+            template,
+            now,
+            context,
+            seed,
+            template.part_selection.clone(),
+        )
+    }
+
+    pub(crate) fn start_with_selection<'a>(
+        self,
+        template: &'a Template,
+        now: jiff::Zoned,
+        context: InvocationContext,
+        seed: Option<ApplicationSeed>,
+        part_selection: crate::parts::Selection,
     ) -> Result<(Interview<'a>, Vec<String>), EvalError> {
         let Some(seed) = seed else {
             // None ≡ start_with_context: the configured defaults enter the bank
             // exactly as they do without a seed, and no warning is produced.
-            return self
-                .start_with_context(template, now, context)
-                .map(|interview| (interview, Vec::new()));
+            let defaults = self
+                .defaults
+                .into_iter()
+                .map(|(id, value)| (id, DefaultBankEntry::Configured(value)))
+                .collect();
+            return Interview::start_with_bank(
+                template,
+                InterviewSeed {
+                    now,
+                    defaults,
+                    context: Some(context),
+                    part_selection,
+                },
+            )
+            .map(|interview| (interview, Vec::new()));
         };
         let mut defaults: IndexMap<Id, DefaultBankEntry> = self
             .defaults
@@ -1150,26 +1253,26 @@ impl Resolution {
             .collect();
         let mut warnings = Vec::new();
         for (id, raw) in seed.defaults {
-            // A snapshot value for an id the template no longer defines is
+            // An application value for an id the template no longer defines is
             // ignored: templates evolve, and a seed is optional.
             let Some(question) = question_by_id(&template.interview, &id) else {
                 continue;
             };
             // Only a kind-matching value becomes a default; a wrong-kind value is
             // dropped with a warning and the id falls back to its configured or
-            // template default. The bank keeps one occupant per id: a Snapshot
+            // template default. The bank keeps one occupant per id: a Application
             // entry replaces the configured entry for that id in place.
             if parse_kind(&id, prompt_kind(question), raw.0.clone()).is_ok() {
                 defaults.insert(
                     id,
-                    DefaultBankEntry::Snapshot {
+                    DefaultBankEntry::Application {
                         raw,
                         from: seed.from.clone(),
                     },
                 );
             } else {
                 warnings.push(format!(
-                    "snapshot {} default for \"{id}\" does not match the question's type; ignored",
+                    "application {} default for \"{id}\" does not match the question's type; ignored",
                     seed.from
                 ));
             }
@@ -1177,6 +1280,7 @@ impl Resolution {
         Interview::start_with_bank(
             template,
             InterviewSeed {
+                part_selection,
                 now,
                 defaults,
                 context: Some(context),
@@ -1330,7 +1434,22 @@ fn check_answer(
     if empty {
         return Ok(answer);
     }
-    format_answer(template, answers, seed, q, prompt.kind, answer).map_err(CheckError::Eval)
+    let answer =
+        format_answer(template, answers, seed, q, prompt.kind, answer).map_err(CheckError::Eval)?;
+    if q.parts {
+        let Answer::List(parts) = validate(id, &Rules::of_prompt(prompt, q), answer.to_json())?
+        else {
+            unreachable!("parts is multiselect")
+        };
+        return Ok(Answer::List(
+            crate::parts::options(q)
+                .iter()
+                .filter(|p| parts.contains(p))
+                .cloned()
+                .collect(),
+        ));
+    }
+    Ok(answer)
 }
 /// Applies the `format` expression of `q` to a non-empty `answer`.
 fn format_answer(
@@ -1440,6 +1559,7 @@ fn expressions(node: &Node) -> (Id, Vec<Expression<'_>>) {
                 out.push((field, source, refs));
             }
             match &q.kind {
+                QuestionKind::Document { .. } => {}
                 QuestionKind::Text { default }
                 | QuestionKind::Multiline { default }
                 | QuestionKind::Git { default } => {
@@ -1657,15 +1777,27 @@ impl<'a> Advance<'a> {
                     if active {
                         let prepared = make_prompt(q, self.template, &self.answers, &self.seed)?;
                         let prompt = prepared.prompt;
-                        if let Some(raw) = self.held.shift_remove(&q.id) {
+                        let selected = if q.parts && self.seed.part_selection.is_present() {
+                            let default = match &prompt.default {
+                                Some(Answer::List(parts)) => parts.clone(),
+                                _ => vec![],
+                            };
+                            Some(RawAnswer(serde_json::json!(
+                                self.seed.part_selection.settle(default)
+                            )))
+                        } else {
+                            None
+                        };
+                        if let Some(raw) = selected.or_else(|| self.held.shift_remove(&q.id)) {
                             match check_answer(
                                 self.template,
                                 &self.answers,
                                 &self.seed,
                                 &prompt,
-                                raw,
+                                raw.clone(),
                             ) {
                                 Ok(answer) => {
+                                    self.accepted_raw.insert(q.id.clone(), raw);
                                     self.answers.insert(q.id.clone(), answer);
                                     continue;
                                 }
@@ -1987,9 +2119,18 @@ fn probe_skips(mut state: Advance<'_>) -> (Skipped, bool) {
 }
 impl<'a> Interview<'a> {
     pub fn start(template: &'a Template, seed: Seed) -> Result<Self, EvalError> {
+        Self::start_with_selection(template, seed, template.part_selection.clone())
+    }
+
+    pub(crate) fn start_with_selection(
+        template: &'a Template,
+        seed: Seed,
+        part_selection: crate::parts::Selection,
+    ) -> Result<Self, EvalError> {
         Self::start_with_bank(
             template,
             InterviewSeed {
+                part_selection,
                 now: seed.now,
                 defaults: seed
                     .defaults
@@ -2007,7 +2148,7 @@ impl<'a> Interview<'a> {
             seed,
             answers: Answers::new(),
             accepted_raw: IndexMap::new(),
-            held: RawAnswers::new(),
+            held: crate::document::admitted(template),
             skipped: Skipped::new(),
             messages: vec![],
             step_start: 0,
@@ -2162,25 +2303,25 @@ impl<'a> Pending<'a> {
                                 e => e,
                             })
                     }
-                    // A snapshot-seeded default the new template rejects on a
+                    // An application-seeded default the new template rejects on a
                     // constraint re-asks (the rejection stands, exit 4); it is
-                    // never written. The message names the snapshot it came from.
+                    // never written. The message names the application it came from.
                     Some(v)
                         if matches!(
                             self.batch.default_sources.get(&p.id),
-                            Some(PreparedDefaultSource::Snapshot { .. })
+                            Some(PreparedDefaultSource::Application { .. })
                         ) =>
                     {
                         let from = match self.batch.default_sources.get(&p.id) {
-                            Some(PreparedDefaultSource::Snapshot { from }) => from.clone(),
-                            _ => unreachable!("matched a snapshot default source"),
+                            Some(PreparedDefaultSource::Application { from }) => from.clone(),
+                            _ => unreachable!("matched an application default source"),
                         };
                         self.check_inner(&p.id, RawAnswer(v.to_json()))
                             .map_err(|e| match e {
                                 CheckError::Rejected(r) => rejection(
                                     &p.id,
                                     format!(
-                                        "default {} from snapshot {from} is not allowed: {}",
+                                        "default {} from application {from} is not allowed: {}",
                                         v.to_json(),
                                         r.message
                                     ),

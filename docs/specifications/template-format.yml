@@ -14,8 +14,50 @@ description: >-
   `source: .` makes the template root the source; `template.yml` itself is then
   never rendered. Files outside the source subdirectory are support material:
   toha reads them only when `template.yml` references them. Every path in
-  `template.yml` is relative to the template root, except `ignore` and `static`
-  globs, which are relative to the source subdirectory.
+  `template.yml` is relative to the template root, except document `input`,
+  which is relative to the target, and `ignore` and `static` globs, which are
+  relative to the source subdirectory.
+
+  Parts. At most one top-level multiselect question has parts: true. It has
+  no when, precedes every flow node, and has literal unique option strings
+  matching ^[a-z0-9][a-z0-9_-]*$. Each option names one part; there are no
+  separate files, hooks or interviews for a part. The answer renders in option
+  order. --with and --without settle it through the ordinary question
+  constraints. The applied record holds it in parts, outside answers. Evidence:
+  invalid_part_declarations_are_load_errors and
+  part_answers_and_flags_render_in_option_order_and_flags_override_reanswer
+  in tests/parts.rs.
+
+  Document questions. A `document` question takes a whole JSON object. Its
+  required `schema` is one URI or a non-empty list of accepted URIs; required
+  `input` is a literal relative default-file path resolved against the target.
+  It stays inside the target repository, or inside the target without a
+  repository. A document's `$schema` must equal an accepted URI, compared as
+  an exact string; without `$schema`, only a single-schema question accepts it.
+  The object validates against that schema. The answer retains every member.
+  A document question does not use `required`, `default`, `format`, `validate`, or `loop`.
+
+  Vendored schemas. `schemas` names a directory inside the template root and
+  outside the source subdirectory. Every `.json`, `.yml`, and `.yaml` file in
+  its tree is parsed and indexed by its string `$id`; other extensions are
+  ignored. A missing `$id`, malformed file, or duplicate `$id` is a load error
+  naming its files. Question schemas and external `$ref` resources resolve
+  by exact `$id` lookup first, then by HTTPS fetch. A fetch reads at most 1 MiB
+  of JSON and requires `$id` equal to the requested URI. Resolution and schema
+  compilation finish before the interview. A fetch or schema error names the
+  URI and stops the run before any output write. No fetched schema is cached.
+
+  Document inputs. On each run a question takes an accepted `--input` document,
+  then its answers-document value, then its default file when it is unanswered.
+  A staged answer persists for the session and is not replaced by later input
+  or a default file. A missing default
+  leaves it unanswered. An existing invalid default file stops the run and names its
+  path; no output is written and no replacement path is requested. A person
+  supplies a file path with `input` as the default. An unreadable typed path,
+  malformed JSON, or a non-object typed file is reported and asked again while
+  earlier answers remain accepted. A script or agent receives
+  an object question in a batch. The named integration tests in
+  `tests/document_questions.rs` exercise admission, precedence, and refusals.
 
   Includes. The YAML tag `!include <path>` is valid on any value in
   `template.yml`. It is replaced by the content of the file at `<path>`, parsed
@@ -105,7 +147,7 @@ description: >-
   fields or forcing an unavailable dynamic constraint.
 
   Questions. `type` is one of `text`, `multiline`, `git`, `confirm`, `select`,
-  and `multiselect`. `prompt` is required. `description` and `placeholder` are
+  `multiselect`, and `document`. `prompt` is required. `description` and `placeholder` are
   optional. `required: true` rejects an empty answer. `default` has the answer
   type: string for `text`, `multiline`, `git`, and `select`; boolean for `confirm`;
   array of strings for `multiselect` and for a looped `text`. `options` on

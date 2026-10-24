@@ -73,6 +73,23 @@ description: >-
   its options in `anyOf: [{enum: [...]}, {type: null}]` instead of `enum`, so
   the enum lists only the options.
 
+  Document questions. `x-toha-type: document` describes an object answer;
+  `x-toha-schemas` lists its accepted schema URIs, and `x-toha-input` names its
+  default file relative to the target. The question remains required while
+  no document is present. A submitted value is the whole JSON object, including
+  its `$schema`. The engine validates against the accepted URI's resolved
+  schema, or the sole accepted schema without `$schema`. The answers envelope
+  retains its existing shape. See `missing_default_stays_unanswered_in_script_and_stage_batches`
+  and `document_answer_reaches_completed_raw_and_rendering_without_losing_members`.
+
+  Recorded staged document answers persist for the session. The input,
+  answers-document, and default-file precedence applies when an unanswered
+  question takes an answer. It never replaces a recorded staged answer.
+  A default file that appears or changes later does not replace that answer;
+  a later `--input` with a different value is refused as already answered.
+  See `recorded_staged_answer_survives_later_default_and_input` and
+  `incoming_staged_answer_takes_precedence_over_new_default_file`.
+
   Answers. The `answers` member of an answers document is a JSON object keyed by
   question id, wrapped in the identity envelope described above. `continue PATH
   FILE` reads the document from a file or from standard input. Answers for
@@ -212,40 +229,32 @@ description: >-
 
 
   Staged updates. A staged update carries two more members: `base`, the id of
-  the snapshot the update merges from, or the reserved marker `@baseline` for an
-  update from an empty base; and `reanswer`, whether the update re-asks every
-  recorded answer. The marker begins with `@`, which a snapshot id never
-  contains, so it is unambiguous. A record without a `base` is a plain interview.
-  A staged update replays the base snapshot's recorded answers through the
-  update replay adapter and asks only what the new version needs; resuming
-  replays the staged submissions the same way, so its position is derived, not
-  stored. `continue` answers the next batch; `apply <PATH>` resumes a completed
-  staged update and merges it from the base.
+  the application entry the update merges from, serialized as JSON, or
+  @baseline for an empty merge base. reanswer controls replay. Apply refuses a
+  changed entry and names stage TEMPLATE PATH --update. A staged --like run
+  stores its selected target in seed and copies the entry in seed_entry;
+  resume uses that copy.
 
+  Update result. Scripted updates report applied, planned or already-current.
+  merge lists changed paths, actions and conflicts. A written result's record
+  member names the applied record path; outside Git a plain apply reports
+  record.skipped as not-git. Preview and already-current write no record.
+  Person and completed staged-agent updates report equivalent completion prose.
+  Completion results have an application member with prior_revision and
+  resolved_revision (null, {commit: SHA}, or {content_digest: SHA256}), and
+  parts_added and parts_removed arrays. A fresh apply has no prior revision
+  and lists its selected parts as added. Previews describe the proposed
+  selection. A staged interview carries part_selection: with and without
+  arrays and the copied base selection, so resume settles the same answer.
+  Evidence: parts_add_update_remove_shared_workflow_and_retract_and_release_edits,
+  staged_part_flags_survive_new_questions_continue_and_apply, and
+  fresh_stage_part_flags_and_like_parts_survive_resume in tests/parts.rs.
 
-  Update results. A scripted update reports an `applied` or `planned` document with a
-  `merge` member — each changed path with its action (`added`, `updated`,
-  `merged`, `deleted`, `conflicted`, `not-previewed`), the kind of any conflict,
-  and the paths left conflicted — and, when it saved one, a `snapshot` member
-  naming the id. A scripted re-render equal to the base reports an `already-current`
-  document and writes nothing. An untrusted scripted update reports `planned` with
-  `trusted: false` and writes nothing, as a dry run does.
-
-  Person and completed staged-agent updates print the human-readable completion
-  specified by command-line-interface, with no JSON result document.
-
-  Generator seed. When an application is seeded from a snapshot with `--like`
-  (the generate axis), its `questions` and `applied` documents carry
-  an optional `seed` member, `{ "from": "<snapshot id>" }`, naming the snapshot
-  whose recorded answers pre-filled the defaults; the member holds no answer
-  values and is absent when `--like` did not seed. The staged record carries the
-  same pinned snapshot id in an optional `seed` field (distinct from the update
-  axis's `base` and never set together with it), re-read from git on resume so a
-  newer same-source snapshot does not change the seed. A seeded default enters
-  the interview as an ordinary default: a route answer overrides it, and a
-  seeded value the new template version rejects on a constraint is re-asked or
-  returned as a remaining question, never written. A `--like` selector that
-  cannot be honoured reports an `error` document of the `snapshot` kind.
+  Generator seed. A seeded questions or applied document carries seed.from,
+  naming the selected application's target. It carries no answer values. Route
+  answers override seeded defaults; kind mismatches are dropped and constraint
+  failures are asked again. A selector error has kind record; a bare --like on
+  a non-interactive route is a usage error.
 format: json-schema
 validation-criteria: >-
   Every batch and result document that toha emits validates against

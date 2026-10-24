@@ -1,0 +1,27 @@
+{
+  "$schema": "https://wyrd.foo/toha/schemas/applied-record/1",
+  "applications": [
+    {
+      "answers": {
+        "contract": {
+          "$schema": "https://example.invalid/schemas/contract/1",
+          "names": [
+            "example"
+          ]
+        },
+        "label": "Example"
+      },
+      "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "context": {
+        "toha_host_os": "linux"
+      },
+      "generated": "2026-01-02T03:04:05+00:00[UTC]",
+      "parts": [
+        "optional"
+      ],
+      "source": "forge:example/document",
+      "target": ".",
+      "template": "forge:example/document@stable"
+    }
+  ]
+}

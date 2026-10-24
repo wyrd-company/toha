@@ -34,6 +34,12 @@ commands:
         value:
           type: directory
     options:
+      - name: input
+        flags: [ --input ]
+        kind: option
+        description: Read a JSON contract document and route by its exact $schema URI. Repeatable.
+        value:
+          type: path
       - name: async
         flags: [ -a, --async ]
         kind: option
@@ -53,17 +59,35 @@ commands:
           visual) this staged interview's templates reference. The grant is
           discovered before any batch and carries through every later batch and
           the apply.
-      - name: from
-        flags: [ --from ]
+      - name: with
+        flags: [ --with ]
         kind: option
-        conflicts-with: [ baseline ]
         description: >-
-          Stage an update from a base snapshot: replay its recorded answers and
-          ask only what the new version needs. The person route prompts; the
-          agent route (with --async) reports the batch. The value is a snapshot
-          id.
+          Repeatable. Add a part to the default selection on a fresh apply, the
+          seed selection with --like, or the recorded selection on update.
+          Settles the part question even with --reanswer. The settled answer
+          must meet the question constraints.
         value:
           type: string
+      - name: without
+        flags: [ --without ]
+        kind: option
+        description: >-
+          Repeatable. Remove a part from the same selection as --with. Reject
+          unknown parts, a part named by both flags, a template without parts,
+          or a part answer supplied with either flag, before any question.
+          Stage preserves the flags and their selection through resume.
+        value:
+          type: string
+      - name: update
+        flags: [ --update ]
+        kind: flag
+        conflicts-with: [ baseline ]
+        description: >-
+          Update the application's source and target from its applied record.
+          Replay its recorded answers and merge the requested revision against
+          a verified merge base. Requires a clean target and record. A missing
+          entry or unreproducible revision names --baseline.
       - name: baseline
         flags: [ --baseline ]
         kind: flag
@@ -71,20 +95,17 @@ commands:
       - name: reanswer
         flags: [ --reanswer ]
         kind: flag
-        requires: [ from ]
+        requires: [ update ]
         description: Re-ask every recorded answer instead of replaying it.
       - name: like
         flags: [ --like ]
         kind: option
-        conflicts-with: [ from, baseline ]
+        conflicts-with: [ update, baseline ]
         description: >-
-          Seed this application's answer defaults from a snapshot of a prior
-          application of the same source (the generate axis). The optional value
-          is `latest`, a snapshot id or a prefix of at least six characters, or
-          omitted to pick from a list (the person route only; a bare --like is a
-          usage error on the agent route). The snapshot is selected
-          repository-wide and filtered by source identity; the staged record
-          pins the chosen snapshot id and re-reads it on resume.
+          Seed defaults from an application of the same source at the named
+          repository-relative target. A bare flag opens a person-route picker;
+          other routes require a target. Staging copies the entry's answers and
+          parts. Seeded result documents name the seed target.
         value:
           type: string
           required: false
@@ -113,10 +134,12 @@ commands:
             the path; the message names the commands that finish or replace it.
             Or a `--like` selector could not be honoured while staging (it is
             resolved and pinned at stage time) — unknown, ambiguous, wrong-source,
-            no snapshot of the source, or a target not in git with an explicit
-            selector — reported as an `error` document of kind `snapshot`.
+            no application of the source, or a target not in git with an explicit
+            selector — reported as an `error` document of kind `record`.
         - code: 2
-          meaning: Invalid command line.
+          meaning: >-
+            Invalid command line, or --input has no string $schema, an
+            unaccepted URI, or a duplicate route (exit 2).
         - code: 4
           meaning: The interview is staged and a question batch was emitted.
         - code: 5
@@ -142,6 +165,13 @@ commands:
           standard input (the agent route). When absent, toha prompts in the
           terminal for every remaining question (the person route) and shows the
           dry-run plan at completion.
+        value:
+          type: path
+    options:
+      - name: input
+        flags: [ --input ]
+        kind: option
+        description: Read a JSON contract document and route by its exact $schema URI. Repeatable.
         value:
           type: path
     output:
@@ -176,9 +206,11 @@ commands:
             followed by `stage`. Or an expression in the template failed to
             evaluate while answering; the message starts with `template error
             in` and names the field and the expression. Or the staged record
-            pinned a `--like` snapshot that is now missing or invalid when it is
-            re-read from git on resume; the staged interview cannot be resumed and
-            an `error` document of kind `snapshot` is reported.
+            copied an invalid `--like` application; the staged interview cannot be
+            resumed and an `error` document of kind `record` is reported. A seed
+            removed from the live applied record still resumes from its copy.
+        - code: 2
+          meaning: An --input has no string $schema, an unaccepted URI, or a duplicate route.
         - code: 4
           meaning: Questions remain or answers were rejected; the result holds the batch.
   - name: apply
@@ -205,6 +237,12 @@ commands:
         value:
           type: directory
     options:
+      - name: input
+        flags: [ --input ]
+        kind: option
+        description: Read a JSON contract document and route by its exact $schema URI. Repeatable.
+        value:
+          type: path
       - name: dry-run
         flags: [ -d, --dry-run ]
         kind: flag
@@ -228,44 +266,56 @@ commands:
           interview is staged at the path.
         value:
           type: path
-      - name: from
-        flags: [ --from ]
+      - name: with
+        flags: [ --with ]
         kind: option
-        conflicts-with: [ baseline ]
         description: >-
-          Update the project from a base snapshot: re-render the template,
-          replay the snapshot's recorded answers, ask only what the new version
-          needs, and merge the difference three-way into the target so the
-          operator's edits survive. The value is a snapshot id. Refuses a dirty
-          target, a snapshot taken for another target, and a template whose
-          source is not the snapshot's.
+          Repeatable. Add a part to the default selection on a fresh apply, the
+          seed selection with --like, or the recorded selection on update.
+          Settles the part question even with --reanswer. The settled answer
+          must meet the question constraints.
         value:
           type: string
+      - name: without
+        flags: [ --without ]
+        kind: option
+        description: >-
+          Repeatable. Remove a part from the same selection as --with. Reject
+          unknown parts, a part named by both flags, a template without parts,
+          or a part answer supplied with either flag, before any question.
+          Stage preserves the flags and their selection through resume.
+        value:
+          type: string
+      - name: update
+        flags: [ --update ]
+        kind: flag
+        conflicts-with: [ baseline ]
+        description: >-
+          Update the application's source and target from its applied record.
+          Replay its recorded answers and merge the requested revision against
+          a verified merge base. Requires a clean target and record. A missing
+          entry or unreproducible revision names --baseline.
       - name: baseline
         flags: [ --baseline ]
         kind: flag
         description: >-
           Update from an empty base: merge the whole render into the target,
           three-way against nothing, adopting an existing project and recording
-          its first snapshot.
+          its application entry.
       - name: reanswer
         flags: [ --reanswer ]
         kind: flag
-        requires: [ from ]
+        requires: [ update ]
         description: Re-ask every recorded answer instead of replaying it.
       - name: like
         flags: [ --like ]
         kind: option
-        conflicts-with: [ from, baseline ]
+        conflicts-with: [ update, baseline ]
         description: >-
-          Seed this application's answer defaults from a snapshot of a prior
-          application of the same source (the generate axis), pre-filling the new
-          application's defaults without merging. The optional value is `latest`,
-          a snapshot id or a prefix of at least six characters, or omitted to
-          pick from a list (the person route only; a bare --like is a usage error
-          on the script and agent routes). The snapshot is selected
-          repository-wide and filtered by source identity. A seeded `applied` or
-          `questions` document carries a `seed` member naming the snapshot.
+          Seed defaults from an application of the same source at the named
+          repository-relative target. A bare flag opens a person-route picker;
+          other routes require a target. Staging copies the entry's answers and
+          parts. Seeded result documents name the seed target.
         value:
           type: string
           required: false
@@ -276,8 +326,8 @@ commands:
             The person route (`apply TEMPLATE PATH`) and the applied agent route
             (`apply PATH` on a complete interview): prompts and messages as
             needed, each written path as its file is written, then hook output.
-            Updates (--from or --baseline) print template and target, merge actions
-            and conflict kinds, messages, allowed hook failures, snapshot outcome,
+            Updates (--update or --baseline) print template and target, merge actions
+            and conflict kinds, messages, allowed hook failures, applied record outcome,
             preview or already-current notices, and conflict resolution guidance.
             They emit no JSON completion document.
           machine-readable: false
@@ -294,8 +344,8 @@ commands:
             `planned`, `questions`, `error`, or `ended` — and nothing else. An
             uncaptured hook's stdout is forwarded to standard error so the result
             document stays alone on standard output. A plain apply's `applied`
-            document carries a `snapshot` member; an update (`--from` or
-            `--baseline`) carries a `snapshot` and a `merge` member, and reports
+            document carries a `record` member; an update (`--update` or
+            `--baseline`) carries a `record` and a `merge` member, and reports
             `already-current` when the re-render equals the base.
           machine-readable: true
       exit-codes:
@@ -307,8 +357,9 @@ commands:
             document; other routes print the plan). An untrusted project update
             previews without writing and exits 0; scripted updates emit planned
             with trusted: false, while person and staged-agent updates print
-            completion prose and trust guidance on standard output. A flow stop/abort ended the
-            run or a flow dry-run showed the plan: the scripted route emits the
+            completion prose and trust guidance on standard output. A flow
+            stop/abort ended a fresh generation; or a flow
+            dry-run showed the plan: the scripted route emits the
             `ended` or `planned` document and other routes print a one-line notice
             on standard error; nothing is written and an abort removes the staged
             record.
@@ -318,12 +369,14 @@ commands:
             staged at the path; an interview for another template is staged at
             the path; the scripted route found an interview already staged (an
             `error` document of kind `staged`); a flow abort could not remove the
-            staged record; the staged record does not replay against its
+            staged record; a flow stop/abort ended a one-shot project update
+            (--update or --baseline), which reports the ended interview as an
+            error without writing; the staged record does not replay against its
             template, and the message names `abort` followed by `stage`; or a
             `--like` selector could not be honoured — unknown, ambiguous,
-            wrong-source, no snapshot of the source, or a target not in git with
+            wrong-source, no application of the source, or a target not in git with
             an explicit selector — reported as an `error` document of kind
-            `snapshot`; or a program the template `requires` is not on `PATH`,
+            `record`; or a program the template `requires` is not on `PATH`,
             reported before the first question, and as an `error` document of
             kind `requirement` on the scripted route. The scripted route
             reports every failure as an `error`
@@ -333,10 +386,12 @@ commands:
           meaning: >-
             Invalid command line: a bare `--like` without a selector on the
             script or agent route (a selector is required off the person route),
-            or `--like` combined with `--from` or `--baseline`.
+            or `--like` combined with `--update` or `--baseline`; or an `--input`
+            has no string `$schema`, an unaccepted URI, or a duplicate route.
+            Scripted input usage errors retain kind `input` in the error document.
         - code: 3
           meaning: >-
-            A plain application (without --from or --baseline) has hooks and is
+            A plain application (without --update or --baseline) has hooks and is
             not trusted. The scripted route emits a
             `planned` document with `trusted: false`; the person and agent routes
             print the plan and name the `--trust` command on standard error.
@@ -349,333 +404,3 @@ commands:
           meaning: >-
             The template name is ambiguous; the scripted route emits an `error`
             document of kind `ambiguous` listing the matches.
-  - name: init
-    summary: Configure a repository to fetch update snapshots from a remote.
-    mode: non-interactive
-    positional-arguments:
-      - name: path
-        position: 0
-        required: false
-        description: Target directory; the current directory by default.
-        value:
-          type: directory
-    options:
-      - name: remote
-        flags: [ --remote ]
-        kind: option
-        description: The remote to add the snapshot fetch refspec to; `origin` by default.
-        value:
-          type: string
-    output:
-      modes:
-        - name: human-readable
-          description: A line stating the fetch refspec was added, or already present.
-          machine-readable: false
-      exit-codes:
-        - code: 0
-          meaning: The fetch refspec is present.
-        - code: 1
-          meaning: The target is not inside a git repository, or the remote does not exist.
-  - name: snapshots
-    summary: List or remove the update snapshots of a target.
-    mode: non-interactive
-    subcommands:
-      - name: list
-        summary: List the target's snapshots, newest first, marking a likely base.
-        positional-arguments:
-          - name: path
-            position: 0
-            required: false
-            description: Target directory; the current directory by default.
-            value:
-              type: directory
-        options:
-          - name: json
-            flags: [ --json ]
-            kind: flag
-            description: Write one JSON document instead of a human-readable list.
-        output:
-          modes:
-            - name: human-readable
-              description: One line per snapshot, newest first, marking a likely base.
-              machine-readable: false
-            - name: result
-              description: >-
-                With --json, the `snapshots list` document validated against
-                `#/$defs/list` in `docs/specifications/snapshot.schema.yml`.
-              machine-readable: true
-          exit-codes:
-            - code: 0
-              meaning: The snapshots were listed.
-            - code: 1
-              meaning: The target is not inside a git repository.
-      - name: clean
-        summary: Remove snapshots named in a JSON document (the script and agent route).
-        positional-arguments:
-          - name: path
-            position: 0
-            required: false
-            description: Target directory; the current directory by default.
-            value:
-              type: directory
-        options:
-          - name: remove
-            flags: [ --remove ]
-            kind: option
-            description: >-
-              A JSON document `{ "remove": ["<id>", ...] }` naming the exact
-              snapshots to remove; `-` reads standard input. Removes the refs in
-              process and reports the `git push --delete` commands; it never
-              pushes.
-            value:
-              type: path
-          - name: force
-            flags: [ --force ]
-            kind: flag
-            description: Allow removing every snapshot of a source.
-        output:
-          modes:
-            - name: result
-              description: >-
-                The `snapshots clean` document validated against `#/$defs/clean`
-                in `docs/specifications/snapshot.schema.yml`.
-              machine-readable: true
-          exit-codes:
-            - code: 0
-              meaning: The named snapshots were removed or reported not found.
-            - code: 1
-              meaning: >-
-                The target is not inside a git repository, the document is
-                malformed, or `--remove` was not given.
-  - name: abort
-    summary: Delete the staged interview for a target directory.
-    mode: non-interactive
-    positional-arguments:
-      - name: path
-        position: 0
-        required: true
-        description: Target directory of the staged interview.
-        value:
-          type: directory
-    output:
-      exit-codes:
-        - code: 0
-          meaning: The staged interview was deleted, or none existed.
-  - name: templates
-    summary: Manage installed templates.
-    subcommands:
-      - name: add
-        summary: Install every template in a repository, or the one template at `#<path>`.
-        mode: non-interactive
-        positional-arguments:
-          - name: address
-            position: 0
-            required: true
-            description: Git address or local folder.
-            value:
-              type: string
-        options:
-          - name: alias
-            flags: [ -a, --alias ]
-            kind: option
-            description: >-
-              Alias for the template. Fails when the address holds more than one template.
-            value:
-              type: string
-          - name: trust
-            flags: [ --trust ]
-            kind: flag
-            description: Approve the added templates' current hooks in the user registry.
-        output:
-          exit-codes:
-            - code: 0
-              meaning: The templates were installed; shared short names are reported.
-            - code: 1
-              meaning: >-
-                The address holds no template, the clone failed, or --alias was given for more than
-                one template.
-      - name: list
-        summary: List available templates with formal name, short name, aliases, and trust.
-        mode: non-interactive
-        options:
-          - name: local
-            flags: [ -l, --local ]
-            kind: flag
-            description: Only templates from the local layer.
-          - name: system
-            flags: [ -s, --system ]
-            kind: flag
-            description: Only templates from the system layer.
-          - name: user
-            flags: [ -u, --user ]
-            kind: flag
-            description: Only templates from the user layer.
-          - name: json
-            flags: [ --json ]
-            kind: flag
-            description: Print the list as JSON.
-        groups:
-          - name: layer
-            members: [ local, system, user ]
-            rule: mutually-exclusive
-        output:
-          modes:
-            - name: human-readable
-              machine-readable: false
-            - name: json
-              machine-readable: true
-      - name: update
-        summary: Move installed git templates that follow a branch to its newest commit.
-        mode: non-interactive
-        positional-arguments:
-          - name: template
-            position: 0
-            required: false
-            description: Template to update. All installed git templates when absent.
-            value:
-              type: string
-        output:
-          exit-codes:
-            - code: 0
-              meaning: Every selected template is at the newest commit of its branch.
-            - code: 1
-              meaning: A fetch failed, or no installed template matches.
-            - code: 5
-              meaning: The template name is ambiguous.
-      - name: remove
-        summary: Uninstall a template and delete its entry from the user registry.
-        mode: non-interactive
-        positional-arguments:
-          - name: template
-            position: 0
-            required: true
-            description: Template to uninstall.
-            value:
-              type: string
-        output:
-          exit-codes:
-            - code: 0
-              meaning: The template was removed.
-            - code: 1
-              meaning: No installed template matches.
-            - code: 5
-              meaning: The template name is ambiguous.
-      - name: alias
-        summary: Add or remove an alias in the user registry.
-        mode: non-interactive
-        positional-arguments:
-          - name: template
-            position: 0
-            required: false
-            description: Formal or short name of the template.
-            value:
-              type: string
-          - name: alias
-            position: 1
-            required: false
-            description: Alias to add.
-            value:
-              type: string
-        options:
-          - name: remove
-            flags: [ -r, --remove ]
-            kind: option
-            description: Alias to remove.
-            value:
-              type: string
-        groups:
-          - name: add-alias
-            members: [ template, alias ]
-            rule: all-or-none
-          - name: operation
-            members: [ template, remove ]
-            rule: exactly-one
-        notes:
-          - An alias that equals a short name of another template is added with a warning.
-        output:
-          exit-codes:
-            - code: 0
-              meaning: The alias was added or removed.
-            - code: 1
-              meaning: The alias is in use, or the alias to remove does not exist.
-            - code: 5
-              meaning: The template name is ambiguous.
-      - name: trust
-        summary: Approve the installed hooks of a template so its apply runs them.
-        mode: non-interactive
-        positional-arguments:
-          - name: template
-            position: 0
-            required: true
-            description: Formal, short, or alias name of an installed template.
-            value:
-              type: string
-        output:
-          exit-codes:
-            - code: 0
-              meaning: Trust was granted, or was already granted.
-            - code: 1
-              meaning: >-
-                The template is not in the user registry, or its installed executable surface is
-                missing, unreadable, or escapes the template folder.
-            - code: 2
-              meaning: Invalid command line.
-            - code: 5
-              meaning: The template name is ambiguous.
-      - name: untrust
-        summary: Revoke approval of a template's hooks.
-        mode: non-interactive
-        positional-arguments:
-          - name: template
-            position: 0
-            required: true
-            description: Formal, short, or alias name of an installed template.
-            value:
-              type: string
-        output:
-          exit-codes:
-            - code: 0
-              meaning: Trust was revoked, or was already absent.
-            - code: 1
-              meaning: The template is not in the user registry.
-            - code: 2
-              meaning: Invalid command line.
-            - code: 5
-              meaning: The template name is ambiguous.
-  - name: skills
-    summary: Read the agent skills embedded in toha.
-    subcommands:
-      - name: list
-        summary: List the embedded skills as JSON objects with name and description.
-        mode: non-interactive
-        output:
-          modes:
-            - name: json
-              machine-readable: true
-      - name: view
-        summary: Print the SKILL.md of a skill, or another file of it.
-        mode: non-interactive
-        positional-arguments:
-          - name: name
-            position: 0
-            required: true
-            description: Name of the skill.
-            value:
-              type: string
-        options:
-          - name: path
-            flags: [ -p, --path ]
-            kind: option
-            description: Path of a file inside the skill.
-            value:
-              type: path
-          - name: export
-            flags: [ -e, --export ]
-            kind: option
-            description: Write the whole skill directory to `<PATH>/<NAME>/`.
-            value:
-              type: directory
-        groups:
-          - name: target
-            members: [ path, export ]
-            rule: mutually-exclusive

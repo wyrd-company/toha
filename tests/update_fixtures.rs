@@ -63,8 +63,8 @@ fn the_update_conflict_fixture_merges_as_expect_yml_states() {
     let work = tempfile::tempdir().unwrap();
     let template = work.path().join("template");
     install_version(&fixture.join("template-a"), &template);
-    let formal = support::formal_name(&template);
-    let address = support::folder_address(&template.canonicalize().unwrap());
+    let formal = support::versioned_template(&template);
+    let address = formal.clone();
 
     // A git target with the seed file the operator later removes.
     let target = work.path().join("target");
@@ -86,12 +86,12 @@ fn the_update_conflict_fixture_merges_as_expect_yml_states() {
     let mut apply = support::isolated_command(iso.path());
     apply
         .arg("apply")
-        .arg(&address)
+        .arg(support::refresh_template(&address))
         .arg(&target)
         .arg("--answers")
         .arg(&envelope);
     let applied = support::first_document(&apply.output().unwrap().stdout);
-    let snapshot = applied["snapshot"]["id"].as_str().unwrap().to_owned();
+    let _snapshot = applied["record"]["path"].as_str().unwrap().to_owned();
     git(&target, &["add", "."]);
     git(&target, &["commit", "--quiet", "-m", "apply A"]);
 
@@ -121,10 +121,9 @@ fn the_update_conflict_fixture_merges_as_expect_yml_states() {
     let mut update = support::isolated_command(iso.path());
     update
         .arg("apply")
-        .arg(&address)
+        .arg(support::refresh_template(&address))
         .arg(&target)
-        .arg("--from")
-        .arg(&snapshot)
+        .arg("--update")
         .arg("--answers")
         .arg(&envelope);
     let output = update.output().unwrap();

@@ -67,8 +67,8 @@ fn update_result_documents_validate_and_mutations_are_rejected() {
     let target = tempfile::tempdir().unwrap();
     write_template(template_dir.path());
     target_repo(target.path());
-    let formal = support::formal_name(template_dir.path());
-    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let formal = support::versioned_template(template_dir.path());
+    let address = formal.clone();
     let schema = validator();
 
     // 1. A baseline apply emits an `applied` document with snapshot and merge.
@@ -81,7 +81,7 @@ fn update_result_documents_validate_and_mutations_are_rejected() {
     let mut baseline = support::isolated_command(iso.path());
     baseline
         .arg("apply")
-        .arg(&address)
+        .arg(support::refresh_template(&address))
         .arg(target.path())
         .arg("--baseline")
         .arg("--answers")
@@ -90,7 +90,7 @@ fn update_result_documents_validate_and_mutations_are_rejected() {
     assert_eq!(applied["status"], "applied", "{applied}");
     assert!(schema.is_valid(&applied), "applied invalid: {applied}");
     assert!(applied["merge"]["changes"].is_array(), "{applied}");
-    let snapshot = applied["snapshot"]["id"].as_str().unwrap().to_owned();
+    let _snapshot = applied["record"]["path"].as_str().unwrap().to_owned();
     git(target.path(), &["add", "."]);
     git(target.path(), &["commit", "--quiet", "-m", "baseline"]);
 
@@ -110,7 +110,7 @@ fn update_result_documents_validate_and_mutations_are_rejected() {
     // report its snapshot decision, so the schema requires `snapshot`. Prove that
     // existing requirement with a negative: dropping `snapshot` is rejected.
     let mut no_snapshot = applied.clone();
-    no_snapshot.as_object_mut().unwrap().remove("snapshot");
+    no_snapshot.as_object_mut().unwrap().remove("record");
     assert!(
         !schema.is_valid(&no_snapshot),
         "an applied document without its snapshot decision must be rejected"
@@ -129,9 +129,9 @@ fn update_result_documents_validate_and_mutations_are_rejected() {
     let mut current = support::isolated_command(iso.path());
     current
         .arg("apply")
+        .arg(support::refresh_template(&address))
         .arg(target.path())
-        .arg("--from")
-        .arg(&snapshot)
+        .arg("--update")
         .arg("--answers")
         .arg(&env_first);
     let document = support::first_document(&current.output().unwrap().stdout);
@@ -157,9 +157,9 @@ fn update_result_documents_validate_and_mutations_are_rejected() {
     );
     let mut dry = support::isolated_command(iso.path());
     dry.arg("apply")
+        .arg(support::refresh_template(&address))
         .arg(target.path())
-        .arg("--from")
-        .arg(&snapshot)
+        .arg("--update")
         .arg("--answers")
         .arg(&env_revised)
         .arg("--dry-run");

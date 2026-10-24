@@ -1,0 +1,1023 @@
+// ---
+// relationships:
+//   verifies: template-composition
+// ---
+#[allow(dead_code)]
+mod support;
+use serde_json::{Value, json};
+use std::{path::Path, process::Command};
+use toha::applied::{AppliedRecord, SCHEMA_ID};
+
+fn git(root: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .env("GIT_AUTHOR_NAME", "Example User")
+        .env("GIT_AUTHOR_EMAIL", "user@example.invalid")
+        .env("GIT_COMMITTER_NAME", "Example User")
+        .env("GIT_COMMITTER_EMAIL", "user@example.invalid")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env(
+            "GIT_CONFIG_GLOBAL",
+            if cfg!(windows) { "NUL" } else { "/dev/null" },
+        )
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap().trim().into()
+}
+fn repository(root: &Path) {
+    git(root, &["init", "-q", "-b", "main"]);
+    std::fs::write(root.join("seed.txt"), "seed\n").unwrap();
+    commit(root);
+}
+fn commit(root: &Path) {
+    git(root, &["add", "."]);
+    git(root, &["commit", "-q", "--allow-empty", "-m", "example"]);
+}
+fn template(root: &Path, interview: &str, body: &str) {
+    std::fs::create_dir_all(root.join("template")).unwrap();
+    std::fs::write(
+        root.join("template.yml"),
+        format!("name: example\ndescription: Example\ninterview:\n{interview}"),
+    )
+    .unwrap();
+    std::fs::write(root.join("template/result.txt"), body).unwrap();
+}
+fn run(
+    iso: &Path,
+    address: &str,
+    target: &Path,
+    answers: Value,
+    flags: &[&str],
+) -> std::process::Output {
+    let file = iso.join("answers.json");
+    std::fs::write(
+        &file,
+        serde_json::to_vec(&json!({"template":address,"answers":answers})).unwrap(),
+    )
+    .unwrap();
+    support::isolated_command(iso)
+        .arg("apply")
+        .arg(address)
+        .arg(target)
+        .arg("--answers")
+        .arg(file)
+        .args(flags)
+        .env("TOHA_NOW", "2026-01-02T03:04:05+00:00[UTC]")
+        .output()
+        .unwrap()
+}
+fn document(out: &std::process::Output) -> Value {
+    assert!(
+        out.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let result = support::first_document(&out.stdout);
+    let schema: Value = serde_norway::from_str(include_str!(
+        "../docs/specifications/interview-protocol.schema.yml"
+    ))
+    .unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    assert!(validator.is_valid(&result), "{result}");
+    result
+}
+fn record(root: &Path, path: &str) -> Value {
+    let bytes = std::fs::read(root.join(path)).unwrap();
+    AppliedRecord::parse(&bytes).unwrap();
+    let value: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(value["$schema"], SCHEMA_ID);
+    assert!(bytes.ends_with(b"\n"));
+    value
+}
+const QUESTION: &str = "  - id: label\n    type: text\n    prompt: Label\n    required: true\n";
+
+const PARTS: &str = "  - id: targets\n    type: multiselect\n    parts: true\n    prompt: Parts\n    options: [core, extra]\n    default: [core]\n";
+fn parts_template(root: &Path) {
+    template(
+        root,
+        PARTS,
+        "name: example\njobs:\n  core: first\n{% if 'extra' in targets %}  extra: enabled\n{% endif %}",
+    );
+    let mut config = std::fs::read_to_string(root.join("template.yml")).unwrap();
+    config.push_str("files:\n  - each: \"['optional'] as item\"\n    source: optional.txt\n    path: optional.txt\n    when: \"'extra' in targets\"\ninject:\n  - into: settings.toml\n    region: optional\n    content: 'optional = true'\n    anchor: {after: '[settings]', occurrence: only}\n    when: \"'extra' in targets\"\n");
+    std::fs::write(root.join("template.yml"), config).unwrap();
+    std::fs::write(root.join("optional.txt"), "optional\n").unwrap();
+}
+#[test]
+fn parts_add_update_remove_shared_workflow_and_retract_and_release_edits() {
+    let iso = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    parts_template(source.path());
+    repository(source.path());
+    repository(root.path());
+    std::fs::write(
+        root.path().join("settings.toml"),
+        "[settings]\noperator = true\n",
+    )
+    .unwrap();
+    commit(root.path());
+    let address = support::file_url(source.path());
+    let initial = document(&run(iso.path(), &address, root.path(), json!({}), &[]));
+    assert_eq!(initial["application"]["parts_added"], json!(["core"]));
+    assert_eq!(
+        record(root.path(), ".toha.json")["applications"][0]["parts"],
+        json!(["core"])
+    );
+    assert!(
+        record(root.path(), ".toha.json")["applications"][0]["answers"]
+            .get("targets")
+            .is_none()
+    );
+    commit(root.path());
+    let added = document(&run(
+        iso.path(),
+        &address,
+        root.path(),
+        json!({}),
+        &["--update", "--with", "extra"],
+    ));
+    assert_eq!(added["application"]["parts_added"], json!(["extra"]));
+    assert!(root.path().join("optional.txt").exists());
+    assert!(
+        std::fs::read_to_string(root.path().join("result.txt"))
+            .unwrap()
+            .contains("extra: enabled")
+    );
+    commit(root.path());
+    let prior = git(source.path(), &["rev-parse", "HEAD"]);
+    std::fs::write(source.path().join("template/result.txt"), "name: example\njobs:\n  core: second\n{% if 'extra' in targets %}  extra: enabled\n{% endif %}").unwrap();
+    commit(source.path());
+    let resolved = git(source.path(), &["rev-parse", "HEAD"]);
+    let next = format!("{address}@{resolved}");
+    let updated = document(&run(
+        iso.path(),
+        &next,
+        root.path(),
+        json!({}),
+        &["--update"],
+    ));
+    assert_eq!(
+        updated["application"]["prior_revision"],
+        json!({"commit":prior})
+    );
+    assert_eq!(
+        updated["application"]["resolved_revision"],
+        json!({"commit":resolved})
+    );
+    assert!(
+        std::fs::read_to_string(root.path().join("result.txt"))
+            .unwrap()
+            .contains("extra: enabled")
+    );
+    commit(root.path());
+    let removed = document(&run(
+        iso.path(),
+        &next,
+        root.path(),
+        json!({}),
+        &["--update", "--without", "extra"],
+    ));
+    assert_eq!(removed["application"]["parts_removed"], json!(["extra"]));
+    assert!(!root.path().join("optional.txt").exists());
+    assert!(
+        !std::fs::read_to_string(root.path().join("result.txt"))
+            .unwrap()
+            .contains("extra: enabled")
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("settings.toml")).unwrap(),
+        "[settings]\noperator = true\n"
+    );
+    commit(root.path());
+    document(&run(
+        iso.path(),
+        &next,
+        root.path(),
+        json!({}),
+        &["--update"],
+    ));
+    commit(root.path());
+    document(&run(
+        iso.path(),
+        &next,
+        root.path(),
+        json!({}),
+        &["--update"],
+    ));
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("settings.toml")).unwrap(),
+        "[settings]\noperator = true\n"
+    );
+}
+#[test]
+fn removing_a_part_conflicts_with_an_edited_whole_file() {
+    let iso = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    parts_template(source.path());
+    repository(source.path());
+    repository(root.path());
+    std::fs::write(root.path().join("settings.toml"), "[settings]\n").unwrap();
+    commit(root.path());
+    let address = support::file_url(source.path());
+    document(&run(
+        iso.path(),
+        &address,
+        root.path(),
+        json!({}),
+        &["--with", "extra"],
+    ));
+    commit(root.path());
+    std::fs::write(root.path().join("optional.txt"), "operator\n").unwrap();
+    commit(root.path());
+    let result = document(&run(
+        iso.path(),
+        &address,
+        root.path(),
+        json!({}),
+        &["--update", "--without", "extra"],
+    ));
+    assert_eq!(result["merge"]["conflicted"], json!(["optional.txt"]));
+    assert_eq!(
+        result["merge"]["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["path"] == "optional.txt")
+            .unwrap()["conflict"],
+        "modify-delete"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("optional.txt")).unwrap(),
+        "operator\n"
+    );
+}
+#[test]
+fn part_answers_and_flags_render_in_option_order_and_flags_override_reanswer() {
+    let iso = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    template(source.path(), PARTS, "{{ targets|join(',') }}\n");
+    repository(source.path());
+    repository(root.path());
+    let address = support::file_url(source.path());
+    document(&run(
+        iso.path(),
+        &address,
+        root.path(),
+        json!({"targets":["extra", "core"]}),
+        &[],
+    ));
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("result.txt")).unwrap(),
+        "core,extra\n"
+    );
+    commit(root.path());
+    document(&run(
+        iso.path(),
+        &address,
+        root.path(),
+        json!({}),
+        &["--update", "--reanswer", "--without", "core"],
+    ));
+    assert_eq!(
+        record(root.path(), ".toha.json")["applications"][0]["parts"],
+        json!(["extra"])
+    );
+}
+#[test]
+fn part_flags_reject_usage_before_questions_and_validate_the_settled_answer() {
+    let iso = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    template(source.path(), PARTS, "{{ targets }}\n");
+    let address = support::formal_name(source.path());
+    for (answers, flags) in [
+        (json!({}), vec!["--with", "missing"]),
+        (json!({}), vec!["--with", "core", "--without", "core"]),
+        (json!({"targets":[]}), vec!["--with", "extra"]),
+    ] {
+        let out = run(iso.path(), &address, root.path(), answers, &flags);
+        assert_eq!(out.status.code(), Some(2), "{out:?}");
+        assert!(!root.path().join("result.txt").exists());
+    }
+    template(
+        source.path(),
+        &(PARTS.to_owned() + "    required: true\n    validate: {min: 1, max: 1}\n"),
+        "{{ targets }}\n",
+    );
+    for flags in [vec!["--without", "core"], vec!["--with", "extra"]] {
+        let out = run(iso.path(), &address, root.path(), json!({}), &flags);
+        assert_eq!(out.status.code(), Some(4), "{out:?}");
+        assert!(!root.path().join("result.txt").exists());
+    }
+    template(source.path(), QUESTION, "{{ label }}\n");
+    assert_eq!(
+        run(
+            iso.path(),
+            &address,
+            root.path(),
+            json!({}),
+            &["--with", "core"]
+        )
+        .status
+        .code(),
+        Some(2)
+    );
+}
+#[test]
+fn invalid_part_declarations_are_load_errors() {
+    let source = tempfile::tempdir().unwrap();
+    for interview in [
+        PARTS
+            .replace("multiselect", "select")
+            .replace("default: [core]", "default: core"),
+        PARTS.replace("[core, extra]", "\"['core', 'extra']\""),
+        PARTS.replace("[core, extra]", "[core, core]"),
+        PARTS.replace("[core, extra]", "[Upper]"),
+        PARTS.to_owned() + "    when: 'true'\n",
+        format!(
+            "{PARTS}{}",
+            PARTS.replace("id: targets", "id: other_targets")
+        ),
+        format!("  - flow: dry-run\n{PARTS}"),
+        format!(
+            "  - group: optional\n    nodes:\n{}",
+            PARTS
+                .lines()
+                .map(|l| format!("    {l}\n"))
+                .collect::<String>()
+        ),
+    ] {
+        template(source.path(), &interview, "sample\n");
+        assert!(toha::Template::load(source.path()).is_err(), "{interview}");
+    }
+}
+#[test]
+fn staged_part_flags_survive_new_questions_continue_and_apply() {
+    let iso = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    template(source.path(), PARTS, "{{ targets|join(',') }}\n");
+    repository(source.path());
+    repository(root.path());
+    let address = support::file_url(source.path());
+    document(&run(iso.path(), &address, root.path(), json!({}), &[]));
+    commit(root.path());
+    template(
+        source.path(),
+        &(PARTS.to_owned() + QUESTION),
+        "{{ targets|join(',') }} {{ label }}\n",
+    );
+    commit(source.path());
+    let next = format!("{address}@{}", git(source.path(), &["rev-parse", "HEAD"]));
+    let stage = support::isolated_command(iso.path())
+        .arg("stage")
+        .arg(&next)
+        .arg(root.path())
+        .args(["--update", "--with", "extra", "--async"])
+        .output()
+        .unwrap();
+    assert!(
+        [Some(0), Some(4)].contains(&stage.status.code()),
+        "{stage:?}"
+    );
+    let file = iso.path().join("continue.json");
+    std::fs::write(
+        &file,
+        json!({"template":next,"answers":{"label":"sample"}}).to_string(),
+    )
+    .unwrap();
+    let continued = support::isolated_command(iso.path())
+        .arg("continue")
+        .arg(root.path())
+        .arg(&file)
+        .output()
+        .unwrap();
+    assert!(continued.status.success(), "{continued:?}");
+    let applied = support::isolated_command(iso.path())
+        .arg("apply")
+        .arg(root.path())
+        .output()
+        .unwrap();
+    assert!(applied.status.success(), "{applied:?}");
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("result.txt")).unwrap(),
+        "core,extra sample\n"
+    );
+    assert_eq!(
+        record(root.path(), ".toha.json")["applications"][0]["parts"],
+        json!(["core", "extra"])
+    );
+    let summary = String::from_utf8_lossy(&applied.stdout);
+    assert!(summary.contains("Parts added: extra"));
+    assert!(summary.contains("Prior revision: "));
+    assert!(summary.contains(&format!(
+        "Resolved revision: {}",
+        git(source.path(), &["rev-parse", "HEAD"])
+    )));
+    assert!(summary.contains("Parts removed: none"));
+}
+#[test]
+fn fresh_stage_part_flags_and_like_parts_survive_resume() {
+    let iso = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    template(source.path(), PARTS, "{{ targets|join(',') }}\n");
+    repository(source.path());
+    repository(root.path());
+    let address = support::file_url(source.path());
+    document(&run(
+        iso.path(),
+        &address,
+        root.path(),
+        json!({}),
+        &["--with", "extra", "--without", "core"],
+    ));
+    commit(root.path());
+    let target = root.path().join("child");
+    let stage = support::isolated_command(iso.path())
+        .arg("stage")
+        .arg(&address)
+        .arg(&target)
+        .args(["--like", ".", "--with", "core", "--async"])
+        .output()
+        .unwrap();
+    assert!(
+        [Some(0), Some(4)].contains(&stage.status.code()),
+        "{stage:?}"
+    );
+    let applied = support::isolated_command(iso.path())
+        .arg("apply")
+        .arg(&target)
+        .output()
+        .unwrap();
+    assert!(applied.status.success(), "{applied:?}");
+    assert_eq!(
+        std::fs::read_to_string(target.join("result.txt")).unwrap(),
+        "core,extra\n"
+    );
+}
+#[test]
+fn unversioned_folder_update_refuses_and_names_baseline() {
+    let iso = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    template(source.path(), PARTS, "{{ targets }}\n");
+    repository(root.path());
+    let address = support::formal_name(source.path());
+    document(&run(iso.path(), &address, root.path(), json!({}), &[]));
+    commit(root.path());
+    let before = std::fs::read(root.path().join(".toha.json")).unwrap();
+    let out = run(iso.path(), &address, root.path(), json!({}), &["--update"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--baseline"));
+    assert_eq!(
+        std::fs::read(root.path().join(".toha.json")).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn unavailable_recorded_commit_refuses_before_questions_and_names_baseline() {
+    let iso = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    template(source.path(), PARTS, "{{ targets }}\n");
+    repository(source.path());
+    repository(root.path());
+    let address = support::file_url(source.path());
+    document(&run(iso.path(), &address, root.path(), json!({}), &[]));
+    commit(root.path());
+    let mut value = record(root.path(), ".toha.json");
+    let missing = "f".repeat(40);
+    value["applications"][0]["commit"] = json!(missing);
+    std::fs::write(
+        root.path().join(".toha.json"),
+        serde_json::to_vec(&value).unwrap(),
+    )
+    .unwrap();
+    commit(root.path());
+    let before = std::fs::read(root.path().join(".toha.json")).unwrap();
+    let out = run(iso.path(), &address, root.path(), json!({}), &["--update"]);
+    assert!(!out.status.success());
+    let error = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        error.contains("--baseline") && error.contains(&address) && error.contains(&missing),
+        "{out:?}"
+    );
+    assert!(out.stdout.is_empty());
+    assert_eq!(
+        std::fs::read(root.path().join(".toha.json")).unwrap(),
+        before
+    );
+}
+#[test]
+fn content_digest_updates_use_the_bundled_resolver_and_reject_different_content() {
+    let iso = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    repository(root.path());
+    document(&run(
+        iso.path(),
+        "toha-demo",
+        root.path(),
+        json!({"title":"Sample Title","topic":"Sample Topic"}),
+        &[],
+    ));
+    commit(root.path());
+    let result = document(&run(
+        iso.path(),
+        "toha-demo",
+        root.path(),
+        json!({}),
+        &["--update"],
+    ));
+    assert_eq!(result["status"], "already-current");
+    assert!(result["application"]["prior_revision"]["content_digest"].is_string());
+    let mut value = record(root.path(), ".toha.json");
+    value["applications"][0]["content_digest"] = json!("f".repeat(64));
+    std::fs::write(
+        root.path().join(".toha.json"),
+        serde_json::to_vec(&value).unwrap(),
+    )
+    .unwrap();
+    commit(root.path());
+    let before = std::fs::read(root.path().join(".toha.json")).unwrap();
+    let out = run(
+        iso.path(),
+        "toha-demo",
+        root.path(),
+        json!({}),
+        &["--update"],
+    );
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--baseline"));
+    assert_eq!(
+        std::fs::read(root.path().join(".toha.json")).unwrap(),
+        before
+    );
+}
+#[test]
+fn a_removed_part_option_is_rejected_on_replay_without_writes() {
+    let iso = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    template(source.path(), PARTS, "{{ targets }}\n");
+    repository(source.path());
+    repository(root.path());
+    let address = support::file_url(source.path());
+    document(&run(
+        iso.path(),
+        &address,
+        root.path(),
+        json!({}),
+        &["--with", "extra"],
+    ));
+    commit(root.path());
+    template(
+        source.path(),
+        &PARTS.replace("[core, extra]", "[core]"),
+        "{{ targets }}\n",
+    );
+    commit(source.path());
+    let next = format!("{address}@{}", git(source.path(), &["rev-parse", "HEAD"]));
+    let before = std::fs::read(root.path().join(".toha.json")).unwrap();
+    let out = run(iso.path(), &next, root.path(), json!({}), &["--update"]);
+    assert_eq!(out.status.code(), Some(4), "{out:?}");
+    assert_eq!(
+        std::fs::read(root.path().join(".toha.json")).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn part_flags_settle_dynamic_defaults_after_earlier_answers() {
+    let iso = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    template(
+        source.path(),
+        &(QUESTION.to_owned()
+            + &PARTS.replace(
+                "default: [core]",
+                "default: \"['core'] if label == 'first' else ['extra']\"",
+            )),
+        "{{ targets|join(',') }}\n",
+    );
+    let address = support::formal_name(source.path());
+    document(&run(
+        iso.path(),
+        &address,
+        root.path(),
+        json!({"label":"sample"}),
+        &["--with", "core"],
+    ));
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("result.txt")).unwrap(),
+        "core,extra\n"
+    );
+}
+#[test]
+fn applying_without_a_staged_interview_refuses_part_flags_as_usage() {
+    let iso = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let applied = support::isolated_command(iso.path())
+        .arg("apply")
+        .arg(root.path())
+        .args(["--with", "core"])
+        .output()
+        .unwrap();
+    assert_eq!(applied.status.code(), Some(2), "{applied:?}");
+    assert!(String::from_utf8_lossy(&applied.stderr).contains("stage TEMPLATE PATH --update"));
+    assert!(applied.stdout.is_empty(), "{applied:?}");
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+    assert!(!support::staged_dir(iso.path()).exists());
+}
+
+#[test]
+fn applying_a_staged_update_refuses_new_part_flags() {
+    let iso = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    template(source.path(), PARTS, "{{ targets }}\n");
+    repository(source.path());
+    repository(root.path());
+    let address = support::file_url(source.path());
+    document(&run(iso.path(), &address, root.path(), json!({}), &[]));
+    commit(root.path());
+    let stage = support::isolated_command(iso.path())
+        .arg("stage")
+        .arg(&address)
+        .arg(root.path())
+        .args(["--update", "--async"])
+        .output()
+        .unwrap();
+    assert!(stage.status.success());
+    let applied = support::isolated_command(iso.path())
+        .arg("apply")
+        .arg(root.path())
+        .args(["--with", "extra"])
+        .output()
+        .unwrap();
+    assert_eq!(applied.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&applied.stderr).contains("stage TEMPLATE PATH --update"));
+}
+
+#[test]
+fn a_parts_format_cannot_hide_an_invalid_settled_selection() {
+    let iso = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    template(
+        source.path(),
+        &(PARTS.to_owned() + "    format: \"['missing']\"\n"),
+        "{{ targets }}\n",
+    );
+    let address = support::formal_name(source.path());
+    let out = run(
+        iso.path(),
+        &address,
+        root.path(),
+        json!({}),
+        &["--with", "extra"],
+    );
+    assert_eq!(out.status.code(), Some(4), "{out:?}");
+    assert!(!root.path().join("result.txt").exists());
+}
+
+#[test]
+fn public_staged_replay_apis_restore_parts_from_the_serialized_record() {
+    let source = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    template(source.path(), PARTS, "{{ targets }}\n");
+    let template = toha::Template::load(source.path()).unwrap();
+    let target = toha::staging::canonical_target(root.path()).unwrap();
+    let mut saved = toha::staging::StagedRecord::new(
+        &target,
+        "example".into(),
+        "".into(),
+        false,
+        "2026-01-02T03:04:05+00:00[UTC]".into(),
+        vec![],
+    );
+    assert!(
+        serde_json::to_value(&saved)
+            .unwrap()
+            .get("part_selection")
+            .is_none()
+    );
+    saved.part_selection = toha::parts::Selection {
+        with: vec!["extra".into()],
+        without: vec!["core".into()],
+        base: Some(vec!["core".into()]),
+    };
+    let bytes = serde_json::to_vec(&saved).unwrap();
+    let mut saved: toha::staging::StagedRecord = serde_json::from_slice(&bytes).unwrap();
+    let resolution = || {
+        toha::interview::configured_defaults(
+            "example",
+            &template,
+            &Default::default(),
+            &Default::default(),
+        )
+        .unwrap()
+    };
+    let replayed = [
+        saved.replay(&template, &target).unwrap(),
+        saved
+            .replay_with_defaults(&template, Default::default(), &target)
+            .unwrap(),
+        saved
+            .replay_with_resolution(&template, resolution(), &target)
+            .unwrap(),
+        saved
+            .replay_with_seed(&template, resolution(), None, &target)
+            .unwrap(),
+        saved
+            .replay_with_seed(
+                &template,
+                resolution(),
+                Some(toha::interview::ApplicationSeed {
+                    defaults: Default::default(),
+                    from: ".".into(),
+                }),
+                &target,
+            )
+            .unwrap(),
+    ];
+    for replay in replayed {
+        let toha::Interview::Complete(completed) = replay else {
+            panic!("parts should be settled from the record")
+        };
+        assert_eq!(template.selected_parts(&completed), vec!["extra"]);
+    }
+    saved.part_selection = toha::parts::Selection {
+        base: Some(vec!["extra".into()]),
+        ..Default::default()
+    };
+    let toha::Interview::Asking(pending) = saved.replay(&template, &target).unwrap() else {
+        panic!("an unflagged fresh part question is asked")
+    };
+    let toha::Interview::Complete(completed) = pending.answer(Default::default()).unwrap() else {
+        panic!("the copied default should complete")
+    };
+    assert_eq!(template.selected_parts(&completed), vec!["extra"]);
+}
+
+fn part_question_transition(staged: bool, previously_asked: bool) {
+    let iso = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    template(
+        source.path(),
+        if previously_asked { PARTS } else { QUESTION },
+        "before\n",
+    );
+    repository(source.path());
+    repository(root.path());
+    let address = support::file_url(source.path());
+    document(&run(
+        iso.path(),
+        &address,
+        root.path(),
+        if previously_asked {
+            json!({"targets":[]})
+        } else {
+            json!({"label":"sample"})
+        },
+        &[],
+    ));
+    let prior = git(source.path(), &["rev-parse", "HEAD"]);
+    commit(root.path());
+    template(source.path(), PARTS, "selected: {{ targets|join(',') }}\n");
+    commit(source.path());
+    let revision = git(source.path(), &["rev-parse", "HEAD"]);
+    let next = format!("{address}@{revision}");
+    let selected = if previously_asked {
+        json!([])
+    } else {
+        json!(["extra"])
+    };
+    let applied = if staged {
+        let stage = support::isolated_command(iso.path())
+            .arg("stage")
+            .arg(&next)
+            .arg(root.path())
+            .args(["--update", "--async"])
+            .output()
+            .unwrap();
+        assert_eq!(
+            stage.status.code(),
+            Some(if previously_asked { 0 } else { 4 }),
+            "first-added question asks; recorded empty selection replays: {stage:?}"
+        );
+        if !previously_asked {
+            assert!(
+                String::from_utf8_lossy(&stage.stdout).contains("targets"),
+                "first-added part question must be asked: {stage:?}"
+            );
+            let questions = support::first_document(&stage.stdout);
+            assert!(
+                questions.to_string().contains("targets"),
+                "first-added part question must be asked: {questions}"
+            );
+            // A separate command reloads the serialized staged record before answering.
+            let file = iso.path().join("continue.json");
+            std::fs::write(
+                &file,
+                json!({"template":next,"answers":{"targets":selected}}).to_string(),
+            )
+            .unwrap();
+            let continued = support::isolated_command(iso.path())
+                .arg("continue")
+                .arg(root.path())
+                .arg(file)
+                .output()
+                .unwrap();
+            assert!(continued.status.success(), "{continued:?}");
+        } else {
+            assert!(
+                !String::from_utf8_lossy(&stage.stdout).contains("\"questions\""),
+                "recorded empty selection must replay: {stage:?}"
+            );
+        }
+        let applied = support::isolated_command(iso.path())
+            .arg("apply")
+            .arg(root.path())
+            .output()
+            .unwrap();
+        assert!(applied.status.success(), "{applied:?}");
+        let summary = String::from_utf8_lossy(&applied.stdout);
+        assert!(
+            summary.contains(&format!("Prior revision: {prior}")),
+            "{summary}"
+        );
+        assert!(
+            summary.contains(&format!("Resolved revision: {revision}")),
+            "{summary}"
+        );
+        assert!(
+            summary.contains(if previously_asked {
+                "Parts added: none"
+            } else {
+                "Parts added: extra"
+            }),
+            "{summary}"
+        );
+        None
+    } else {
+        let unanswered = run(iso.path(), &next, root.path(), json!({}), &["--update"]);
+        if previously_asked {
+            Some(document(&unanswered))
+        } else {
+            assert_eq!(
+                unanswered.status.code(),
+                Some(4),
+                "first-added part question must be asked: {unanswered:?}"
+            );
+            let questions = support::first_document(&unanswered.stdout);
+            assert!(questions.to_string().contains("targets"), "{questions}");
+            assert_eq!(
+                std::fs::read_to_string(root.path().join("result.txt")).unwrap(),
+                "before\n"
+            );
+            Some(document(&run(
+                iso.path(),
+                &next,
+                root.path(),
+                json!({"targets":selected}),
+                &["--update"],
+            )))
+        }
+    };
+    if let Some(applied) = applied {
+        assert_eq!(
+            applied["application"]["prior_revision"],
+            json!({"commit":prior})
+        );
+        assert_eq!(
+            applied["application"]["resolved_revision"],
+            json!({"commit":revision})
+        );
+        assert_eq!(applied["application"]["parts_added"], selected);
+        assert_eq!(applied["application"]["parts_removed"], json!([]));
+    }
+    assert_eq!(
+        record(root.path(), ".toha.json")["applications"][0]["parts"],
+        selected
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("result.txt")).unwrap(),
+        if previously_asked {
+            "selected: \n"
+        } else {
+            "selected: extra\n"
+        }
+    );
+}
+#[test]
+fn direct_update_asks_first_added_part_question() {
+    part_question_transition(false, false);
+}
+#[test]
+fn staged_update_asks_first_added_part_question_after_resume() {
+    part_question_transition(true, false);
+}
+#[test]
+fn direct_update_replays_genuinely_recorded_empty_parts() {
+    part_question_transition(false, true);
+}
+#[test]
+fn staged_update_replays_genuinely_recorded_empty_parts() {
+    part_question_transition(true, true);
+}
+#[test]
+fn person_apply_rejects_unknown_part_before_prompting() {
+    let iso = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    template(source.path(), PARTS, "{{ targets }}\n");
+    let out = support::isolated_command(iso.path())
+        .arg("apply")
+        .arg(source.path())
+        .arg(root.path())
+        .args(["--with", "missing"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "person_part_admission_precedes_terminal: {out:?}"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("unknown part"),
+        "{out:?}"
+    );
+    assert!(out.stdout.is_empty(), "no question before usage error");
+    assert!(!root.path().join("result.txt").exists());
+}
+
+#[test]
+fn direct_and_staged_without_core_preserve_recorded_extra() {
+    for staged in [false, true] {
+        let iso = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        template(source.path(), PARTS, "{{ targets|join(',') }}\n");
+        repository(source.path());
+        repository(root.path());
+        let address = support::file_url(source.path());
+        document(&run(
+            iso.path(),
+            &address,
+            root.path(),
+            json!({"targets":["core","extra"]}),
+            &[],
+        ));
+        commit(root.path());
+        if staged {
+            let stage = support::isolated_command(iso.path())
+                .arg("stage")
+                .arg(&address)
+                .arg(root.path())
+                .args(["--update", "--without", "core", "--async"])
+                .output()
+                .unwrap();
+            assert!(stage.status.success(), "{stage:?}");
+            let applied = support::isolated_command(iso.path())
+                .arg("apply")
+                .arg(root.path())
+                .output()
+                .unwrap();
+            assert!(applied.status.success(), "{applied:?}");
+            assert!(String::from_utf8_lossy(&applied.stdout).contains("Parts removed: core"));
+        } else {
+            let applied = document(&run(
+                iso.path(),
+                &address,
+                root.path(),
+                json!({}),
+                &["--update", "--without", "core"],
+            ));
+            assert_eq!(applied["application"]["parts_removed"], json!(["core"]));
+        }
+        assert_eq!(
+            record(root.path(), ".toha.json")["applications"][0]["parts"],
+            json!(["extra"])
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("result.txt")).unwrap(),
+            "extra\n"
+        );
+    }
+}

@@ -411,35 +411,41 @@ fn baseline_refuses_while_a_program_is_absent() {
 fn baselined(case: &Case) -> String {
     case.provide();
     target_repo(case.target.path());
-    let template = support::folder_address(&missing_fixture());
-    let answers = case.answers();
+    let source = case.state.path().join("update-template");
+    fs::create_dir_all(&source).unwrap();
+    support::copy_tree(&missing_fixture(), &source);
+    let address = support::versioned_template(&source);
+    let answers = case.state.path().join("answers.json");
+    fs::write(
+        &answers,
+        serde_json::to_vec(&serde_json::json!({"template":address,"answers":{"title":"Example"}}))
+            .unwrap(),
+    )
+    .unwrap();
     let baseline = case.run(&[
         "apply",
-        &template,
+        &address,
         case.target(),
         "--baseline",
         "--answers",
-        &answers,
+        answers.to_str().unwrap(),
     ]);
     assert_code(&baseline, 0);
-    let document = support::first_document(&baseline.stdout);
-    let id = document["snapshot"]["id"].as_str().unwrap().to_owned();
     git(case.target.path(), &["add", "."]);
     git(case.target.path(), &["commit", "--quiet", "-m", "baseline"]);
-    id
+    address
 }
 
 #[test]
 fn staged_update_continue_refuses_when_a_program_left_path() {
     let case = Case::new();
-    let id = baselined(&case);
-    let template = support::folder_address(&missing_fixture());
+    let address = baselined(&case);
+    let template = address.clone();
     let staged = case.run(&[
         "stage",
         &template,
         case.target(),
-        "--from",
-        &id,
+        "--update",
         "--reanswer",
         "--async",
     ]);
@@ -460,10 +466,17 @@ fn staged_update_continue_refuses_when_a_program_left_path() {
 #[test]
 fn update_refuses_when_a_program_left_path_after_the_baseline() {
     let case = Case::new();
-    let id = baselined(&case);
-    let answers = case.answers();
+    let address = baselined(&case);
+    let answers = case.state.path().join("answers.json");
     fs::remove_dir_all(case.bin.path()).unwrap();
-    let output = case.run(&["apply", case.target(), "--from", &id, "--answers", &answers]);
+    let output = case.run(&[
+        "apply",
+        &address,
+        case.target(),
+        "--update",
+        "--answers",
+        answers.to_str().unwrap(),
+    ]);
     assert_requirement_error(&output);
 }
 
@@ -646,5 +659,24 @@ fn a_path_with_no_absolute_entry_left_searches_no_directory() {
     install_marker(&caller, PROGRAM);
     let output = apply_with_path(&caller, &case, template_dir.path(), OsStr::new("bin"));
     assert_requirement_error_for(&output, PROGRAM);
+    case.assert_target_empty();
+}
+
+#[test]
+fn person_requirements_are_checked_before_terminal_admission() {
+    let case = Case::new();
+    let address = support::folder_address(&missing_fixture());
+    let output = case.run(&["apply", &address, case.target()]);
+    assert_code(&output, 1);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(ABSENT),
+        "person_requirements_precede_terminal: {output:?}"
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "no questions before requirement refusal"
+    );
+    case.assert_nothing_staged();
     case.assert_target_empty();
 }

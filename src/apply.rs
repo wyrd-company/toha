@@ -32,9 +32,11 @@ pub struct HookReport {
     pub success: bool,
 }
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum Applied {
     Written {
         files: Vec<TargetPath>,
+        record: crate::applied::RecordOutcome,
         hooks_run: usize,
         hooks: Vec<HookReport>,
         after_apply: Option<String>,
@@ -109,8 +111,10 @@ pub enum ApplyError {
         id: Id,
         fault: OutputFault,
     },
-    /// The `git` question's repository could not be set up. A remote with
-    /// history stops the apply before any write.
+    /// The applied record could not be captured or written.
+    #[error("{0}")]
+    Record(String),
+    /// The `git` question's repository could not be set up.
     #[error("{0}")]
     Git(#[from] GitTargetError),
 }
@@ -217,6 +221,23 @@ impl Plan {
                 return Err(ApplyError::Symlink(cwd.clone()));
             }
         }
+        if self.record.is_some()
+            && let Some(project) = crate::applied::Project::open(target)
+                .map_err(|e| ApplyError::Record(e.to_string()))?
+        {
+            project
+                .read_record()
+                .map_err(|e| ApplyError::Record(e.to_string()))?;
+        }
+        let record_paths = crate::applied::capture::group_plan(&self);
+        let before = if self.record.is_some() {
+            Some(
+                crate::applied::capture::observe(target.as_path())
+                    .map_err(|e| ApplyError::Record(e.to_string()))?,
+            )
+        } else {
+            None
+        };
         // Resolve every injected target fully in memory before the first write, so
         // an unforced region drift, a parse or path error, or a missing target
         // leaves every file on disk unchanged.
@@ -369,7 +390,38 @@ impl Plan {
                 .render_message(&results)
                 .map_err(ApplyError::Deferred)?,
         };
+        let record = if let Some(inputs) = self.record {
+            match crate::applied::Project::open(target)
+                .map_err(|e| ApplyError::Record(e.to_string()))?
+            {
+                None => crate::applied::RecordOutcome::NotGit,
+                Some(project) => {
+                    let root = project.repo().workdir().expect("project has worktree");
+                    let application = crate::applied::capture::capture(
+                        project.repo(),
+                        root,
+                        project.target(),
+                        &record_paths,
+                        None,
+                        inputs,
+                        before.as_ref(),
+                    )
+                    .map_err(|e| ApplyError::Record(e.to_string()))?;
+                    project
+                        .write_application(application)
+                        .map_err(|e| ApplyError::Record(e.to_string()))?;
+                    crate::applied::RecordOutcome::Written(
+                        project
+                            .record_relative()
+                            .map_err(|e| ApplyError::Record(e.to_string()))?,
+                    )
+                }
+            }
+        } else {
+            crate::applied::RecordOutcome::Internal
+        };
         Ok(Applied::Written {
+            record,
             files: written,
             hooks_run,
             hooks: hook_reports,
@@ -605,6 +657,7 @@ mod tests {
     /// `hooks` hooks.
     fn plan(source: &Path, paths: &[&str], hooks: usize) -> Plan {
         Plan {
+            record: None,
             files: paths
                 .iter()
                 .map(|path| PlannedFile {

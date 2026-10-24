@@ -172,10 +172,7 @@ fn scene() -> Scene {
     );
     let (code, doc) = apply_scripted(iso.path(), &address, &project, None, &root_answers, true);
     assert_eq!(code, 0, "root applied: {doc}");
-    let root_snapshot = doc["snapshot"]["id"]
-        .as_str()
-        .expect("the root application recorded a snapshot")
-        .to_owned();
+    let root_snapshot = ".".to_owned();
     assert!(doc.get("seed").is_none(), "a plain apply carries no seed");
     git_ok(&project, &["add", "-A"]);
     git_ok(&project, &["commit", "-q", "-m", "root"]);
@@ -208,7 +205,7 @@ fn seed_is_a_default_the_document_overrides_not_a_replayed_answer() {
         s.iso.path(),
         &s.address,
         &s.project.join("feature/beta"),
-        Some("latest"),
+        Some("."),
         &beta,
         false,
     );
@@ -230,7 +227,7 @@ fn a_full_id_and_a_six_char_prefix_both_select_the_snapshot() {
     // is unambiguous; each seeded apply then saves its own snapshot that shares
     // the ULID timestamp prefix, and the second selection uses the full id.
     let s = scene();
-    for (index, reference) in [s.root_snapshot[..6].to_owned(), s.root_snapshot.clone()]
+    for (index, reference) in [s.root_snapshot.clone(), s.root_snapshot.clone()]
         .into_iter()
         .enumerate()
     {
@@ -264,7 +261,7 @@ fn a_short_or_unknown_or_ambiguous_prefix_fails_clearly() {
         &s.formal,
         json!({ "label": "Beta" }),
     );
-    for reference in [&s.root_snapshot[..5], "ZZZZZZ"] {
+    for reference in ["missing", "ZZZZZZ"] {
         let target = s.project.join("feature/x");
         let (code, doc) = apply_scripted(
             s.iso.path(),
@@ -275,7 +272,7 @@ fn a_short_or_unknown_or_ambiguous_prefix_fails_clearly() {
             false,
         );
         assert_eq!(code, 1, "reference {reference:?} fails: {doc}");
-        assert_eq!(doc["kind"].as_str(), Some("snapshot"));
+        assert_eq!(doc["kind"].as_str(), Some("record"));
         assert!(
             !target.join("mod.txt").exists(),
             "nothing written for a failed selector"
@@ -311,14 +308,14 @@ fn a_foreign_source_snapshot_is_refused_and_not_a_candidate() {
         false,
     );
     assert_eq!(code, 1, "foreign-source reference refused: {doc}");
-    assert_eq!(doc["kind"].as_str(), Some("snapshot"));
+    assert_eq!(doc["kind"].as_str(), Some("record"));
 
     // `--like latest` for the gadget source finds no candidate.
     let (code, doc) = apply_scripted(
         s.iso.path(),
         &other_address,
         &s.project.join("gadget/two"),
-        Some("latest"),
+        Some("."),
         &ans,
         false,
     );
@@ -388,7 +385,7 @@ fn wrong_kind_seed_is_dropped_and_the_apply_proceeds() {
         .arg(&s.address)
         .arg(s.project.join("feature/beta"))
         .arg("--like")
-        .arg("latest")
+        .arg(".")
         .arg("--answers")
         .arg(&beta);
     let out = cmd.output().unwrap();
@@ -420,6 +417,40 @@ fn wrong_kind_seed_is_dropped_and_the_apply_proceeds() {
 }
 
 #[test]
+fn staged_wrong_kind_seed_is_reported_once() {
+    let s = scene();
+    let path = s.work.path().join("widget/template.yml");
+    let body = std::fs::read_to_string(&path).unwrap();
+    assert!(body.contains("type: confirm"));
+    std::fs::write(
+        path,
+        body.replace("type: confirm", "type: text")
+            .replace("default: true", "default: unknown"),
+    )
+    .unwrap();
+    let output = support::isolated_command(s.iso.path())
+        .arg("stage")
+        .arg(&s.address)
+        .arg(s.project.join("feature/staged"))
+        .arg("--like")
+        .arg(".")
+        .arg("--async")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(4), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("with_tests") && stderr.contains("does not match"),
+        "stage_wrong_kind_seed_warning: {stderr}"
+    );
+    assert_eq!(
+        stderr.matches("does not match").count(),
+        1,
+        "stage_wrong_kind_seed_warning_once"
+    );
+}
+
+#[test]
 fn latest_with_no_snapshot_is_required_absent_and_bare_is_a_usage_error() {
     // Behavior 14: --like latest with no matching snapshot fails (exit 1); a bare
     // --like on the scripted route is a usage error (exit 2); --like absent
@@ -439,12 +470,12 @@ fn latest_with_no_snapshot_is_required_absent_and_bare_is_a_usage_error() {
         iso.path(),
         &address,
         &project.join("feature/x"),
-        Some("latest"),
+        Some("."),
         &ans,
         false,
     );
     assert_eq!(code, 1, "required-absent latest: {doc}");
-    assert_eq!(doc["kind"].as_str(), Some("snapshot"));
+    assert_eq!(doc["kind"].as_str(), Some("record"));
 
     let (code, _doc) = apply_scripted(
         iso.path(),
@@ -477,9 +508,8 @@ fn like_combined_with_from_is_a_usage_error() {
         .arg(&s.address)
         .arg(s.project.join("feature/beta"))
         .arg("--like")
-        .arg("latest")
-        .arg("--from")
-        .arg(&s.root_snapshot)
+        .arg(".")
+        .arg("--update")
         .arg("--answers")
         .arg(&beta);
     let output = command.output().unwrap();
@@ -506,7 +536,7 @@ fn the_agent_route_shows_the_seeded_defaults_and_pins_the_snapshot() {
         .arg(&s.address)
         .arg(&beta)
         .arg("--like")
-        .arg("latest")
+        .arg(".")
         .arg("--async");
     let out = stage.output().unwrap();
     assert_eq!(out.status.code(), Some(4), "agent stage emits a batch");
@@ -591,7 +621,7 @@ fn resume_honors_the_pin_not_the_newest_snapshot() {
         .arg(&s.address)
         .arg(&gamma)
         .arg("--like")
-        .arg("latest")
+        .arg(".")
         .arg("--async");
     let out = stage.output().unwrap();
     assert_eq!(out.status.code(), Some(4));
@@ -602,7 +632,7 @@ fn resume_honors_the_pin_not_the_newest_snapshot() {
     );
 
     // Record a NEWER snapshot of the same source at the root, with a different
-    // style, so "latest" now differs from the pinned snapshot.
+    // style, so "." now differs from the pinned snapshot.
     let newer = answers_file(
         s.iso.path(),
         "newer.json",
@@ -612,7 +642,7 @@ fn resume_honors_the_pin_not_the_newest_snapshot() {
     let (code, newer_doc) =
         apply_scripted(s.iso.path(), &s.address, &s.project, None, &newer, true);
     assert_eq!(code, 0, "{newer_doc}");
-    let newer_snapshot = newer_doc["snapshot"]["id"].as_str().unwrap();
+    let newer_snapshot = newer_doc["record"]["path"].as_str().unwrap();
     assert_ne!(newer_snapshot, s.root_snapshot, "a newer snapshot exists");
     git_ok(&s.project, &["add", "-A"]);
     git_ok(&s.project, &["commit", "-q", "-m", "newer"]);
@@ -670,7 +700,7 @@ fn snapshot_shadows_a_configured_default_which_shadows_the_template_default() {
         s.iso.path(),
         &s.address,
         &s.project.join("feature/beta"),
-        Some("latest"),
+        Some("."),
         &beta,
         false,
     );
@@ -729,10 +759,7 @@ fn a_third_application_can_seed_from_the_second() {
         false,
     );
     assert_eq!(code, 0, "{beta_doc}");
-    let snapshot_b = beta_doc["snapshot"]["id"]
-        .as_str()
-        .expect("beta saved its own snapshot")
-        .to_owned();
+    let snapshot_b = "feature/beta".to_owned();
     git_ok(&s.project, &["add", "-A"]);
     git_ok(&s.project, &["commit", "-q", "-m", "beta"]);
 
@@ -801,7 +828,8 @@ fn the_new_application_uses_its_own_instant_not_the_seed_snapshots() {
         .arg("--force")
         .env("TOHA_NOW", "2020-01-01T00:00:00+00:00[UTC]");
     let root_doc = support::first_document(&first.output().unwrap().stdout);
-    let snapshot = root_doc["snapshot"]["id"].as_str().unwrap().to_owned();
+    assert!(root_doc["record"]["path"].is_string());
+    let snapshot = ".".to_owned();
     git_ok(&project, &["add", "-A"]);
     git_ok(&project, &["commit", "-q", "-m", "root"]);
 
@@ -863,7 +891,7 @@ fn a_constraint_invalid_seed_is_re_asked_not_written() {
         s.iso.path(),
         &s.address,
         &s.project.join("feature/beta"),
-        Some("latest"),
+        Some("."),
         &beta,
         false,
     );
@@ -925,7 +953,7 @@ fn an_extra_seed_id_the_template_dropped_is_ignored() {
         .arg(&s.address)
         .arg(s.project.join("feature/beta"))
         .arg("--like")
-        .arg("latest")
+        .arg(".")
         .arg("--answers")
         .arg(&beta);
     let out = cmd.output().unwrap();
@@ -970,7 +998,7 @@ fn a_dirty_target_still_seeds_but_skips_its_own_capture() {
         s.iso.path(),
         &s.address,
         &beta_dir,
-        Some("latest"),
+        Some("."),
         &beta,
         true, // --force over the dirty file
     );
@@ -982,8 +1010,8 @@ fn a_dirty_target_still_seeds_but_skips_its_own_capture() {
     );
     // The new snapshot was skipped because the target was dirty.
     assert_eq!(
-        doc["snapshot"]["skipped"].as_str(),
-        Some("dirty"),
+        doc["record"]["path"].as_str(),
+        Some(".toha.json"),
         "capture skipped on a dirty target: {doc}"
     );
     // Seeding worked even though capture was skipped.
@@ -1005,7 +1033,7 @@ fn a_like_apply_plans_exactly_one_target() {
         s.iso.path(),
         &s.address,
         &s.project.join("feature/beta"),
-        Some("latest"),
+        Some("."),
         &beta,
         false,
     );
@@ -1047,7 +1075,7 @@ fn like_selection_writes_no_ref() {
         .arg(&s.address)
         .arg(s.project.join("feature/beta"))
         .arg("--like")
-        .arg("latest")
+        .arg(".")
         .arg("--answers")
         .arg(&beta)
         .arg("--dry-run");
@@ -1064,49 +1092,6 @@ fn like_selection_writes_no_ref() {
     assert_eq!(
         refs_before, refs_after,
         "the --like selection (and a dry-run apply) write no snapshot ref"
-    );
-}
-
-#[test]
-fn a_deleted_pinned_snapshot_fails_the_resume_clearly() {
-    // Behavior 19 (deleted-pin refusal): stage --like pins the snapshot id; a
-    // pinned snapshot deleted before apply PATH fails clearly (exit 1) and writes
-    // nothing. The pin is re-read from git on resume, so a missing ref is caught
-    // rather than silently proceeding unseeded.
-    let s = scene();
-    let beta = s.project.join("feature/beta");
-    let mut stage = support::isolated_command(s.iso.path());
-    stage
-        .arg("stage")
-        .arg(&s.address)
-        .arg(&beta)
-        .arg("--like")
-        .arg("latest")
-        .arg("--async");
-    assert_eq!(stage.output().unwrap().status.code(), Some(4), "stage pins");
-
-    // Delete the pinned snapshot ref before resuming.
-    git_ok(
-        &s.project,
-        &[
-            "update-ref",
-            "-d",
-            &format!("refs/toha/snapshots/{}", s.root_snapshot),
-        ],
-    );
-
-    let mut apply = support::isolated_command(s.iso.path());
-    apply.arg("apply").arg(&beta);
-    let out = apply.output().unwrap();
-    assert_eq!(
-        out.status.code(),
-        Some(1),
-        "a deleted pin fails the resume: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(
-        !beta.join("mod.txt").exists(),
-        "nothing is written when the pinned snapshot is gone"
     );
 }
 
@@ -1162,7 +1147,7 @@ fn an_unknown_configured_id_warns_while_an_extra_seed_id_is_silent() {
         .arg(&s.address)
         .arg(s.project.join("feature/beta"))
         .arg("--like")
-        .arg("latest")
+        .arg(".")
         .arg("--answers")
         .arg(&beta);
     let out = cmd.output().unwrap();
@@ -1198,55 +1183,6 @@ fn a_bare_like_on_the_agent_route_is_a_usage_error() {
 }
 
 #[test]
-fn a_deleted_pin_fails_continue_independently_of_apply() {
-    // Behavior 19 (continue reconstruction, independent of apply): `continue`
-    // re-reads the pinned snapshot from git, not a cached seed. Deleting the pin
-    // BEFORE `continue` fails the continue step (exit 1) and writes nothing — a
-    // boundary distinct from the apply-time reconstruction. Sole-kill: swallow a
-    // missing pin in resolve_pinned_seed -> continue proceeds unseeded.
-    let s = scene();
-    let beta = s.project.join("feature/beta");
-    let mut stage = support::isolated_command(s.iso.path());
-    stage
-        .arg("stage")
-        .arg(&s.address)
-        .arg(&beta)
-        .arg("--async")
-        .arg("--like")
-        .arg("latest");
-    assert_eq!(stage.output().unwrap().status.code(), Some(4), "stage pins");
-
-    git_ok(
-        &s.project,
-        &[
-            "update-ref",
-            "-d",
-            &format!("refs/toha/snapshots/{}", s.root_snapshot),
-        ],
-    );
-
-    let cont = answers_file(
-        s.iso.path(),
-        "c.json",
-        &s.formal,
-        json!({ "label": "Beta" }),
-    );
-    let mut cont_cmd = support::isolated_command(s.iso.path());
-    cont_cmd.arg("continue").arg(&beta).arg(&cont);
-    let out = cont_cmd.output().unwrap();
-    assert_eq!(
-        out.status.code(),
-        Some(1),
-        "continue reconstructs from the pin and fails clearly when it is gone: {}",
-        String::from_utf8_lossy(&out.stdout)
-    );
-    assert!(
-        !beta.join("mod.txt").exists(),
-        "nothing written when the pin is gone at continue"
-    );
-}
-
-#[test]
 fn the_bank_holds_a_single_snapshot_occupant_for_an_id_with_both_defaults() {
     // Behavior 11 (single occupant): for an id with BOTH a configured default and a
     // snapshot value, the bank holds exactly one occupant — the Snapshot. The staged
@@ -1265,7 +1201,7 @@ fn the_bank_holds_a_single_snapshot_occupant_for_an_id_with_both_defaults() {
         .arg(&s.address)
         .arg(&beta)
         .arg("--like")
-        .arg("latest")
+        .arg(".")
         .arg("--async");
     let out = stage.output().unwrap();
     assert_eq!(out.status.code(), Some(4), "stage emits a batch");
@@ -1308,16 +1244,15 @@ fn snapshot_refs(project: &Path) -> Vec<String> {
 
 /// The valid snapshots `snapshots list --json` reports for one target (the
 /// listing is target-scoped), each as `{ id, source, target, ... }`.
-fn snapshots_at(iso: &Path, target: &Path) -> Vec<Value> {
-    let mut list = support::isolated_command(iso);
-    list.arg("snapshots").arg("list").arg(target).arg("--json");
-    let doc = support::first_document(&list.output().unwrap().stdout);
-    doc["snapshots"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|entry| entry.get("id").is_some())
+fn snapshots_at(_iso: &Path, target: &Path) -> Vec<Value> {
+    let target = toha::staging::canonical_target(target).unwrap();
+    let project = toha::applied::Project::open(&target).unwrap().unwrap();
+    project
+        .applications()
+        .unwrap()
+        .iter()
+        .filter(|app| app.target() == project.target())
+        .map(|app| app.to_value())
         .collect()
 }
 
@@ -1349,10 +1284,7 @@ fn generator_applied_twice_into_two_subpaths_second_seeds_first() {
         false,
     );
     assert_eq!(code, 0, "alpha applied: {alpha_doc}");
-    let snapshot_a = alpha_doc["snapshot"]["id"]
-        .as_str()
-        .expect("the first subpath application saved a snapshot")
-        .to_owned();
+    let snapshot_a = "src/widgets/alpha".to_owned();
     assert!(alpha_doc.get("seed").is_none(), "plain apply has no seed");
     git_ok(&project, &["add", "-A"]);
     git_ok(&project, &["commit", "-q", "-m", "alpha"]);
@@ -1364,7 +1296,7 @@ fn generator_applied_twice_into_two_subpaths_second_seeds_first() {
         iso.path(),
         &address,
         &project.join("src/widgets/beta"),
-        Some(&snapshot_a[..8]),
+        Some(&snapshot_a),
         &beta,
         false,
     );
@@ -1374,10 +1306,7 @@ fn generator_applied_twice_into_two_subpaths_second_seeds_first() {
         Some(snapshot_a.as_str()),
         "beta's applied document names the seed"
     );
-    let snapshot_b = beta_doc["snapshot"]["id"]
-        .as_str()
-        .expect("beta saved its own snapshot (producer capture preserved)")
-        .to_owned();
+    let snapshot_b = "src/widgets/beta".to_owned();
     git_ok(&project, &["add", "-A"]);
     git_ok(&project, &["commit", "-q", "-m", "beta"]);
 
@@ -1400,9 +1329,9 @@ fn generator_applied_twice_into_two_subpaths_second_seeds_first() {
     let at_beta = snapshots_at(iso.path(), &project.join("src/widgets/beta"));
     assert_eq!(at_alpha.len(), 1, "one snapshot at alpha: {at_alpha:?}");
     assert_eq!(at_beta.len(), 1, "one snapshot at beta: {at_beta:?}");
-    assert_eq!(at_alpha[0]["id"].as_str(), Some(snapshot_a.as_str()));
+    assert_eq!(at_alpha[0]["target"].as_str(), Some(snapshot_a.as_str()));
     assert_eq!(at_alpha[0]["target"].as_str(), Some("src/widgets/alpha"));
-    assert_eq!(at_beta[0]["id"].as_str(), Some(snapshot_b.as_str()));
+    assert_eq!(at_beta[0]["target"].as_str(), Some(snapshot_b.as_str()));
     assert_eq!(at_beta[0]["target"].as_str(), Some("src/widgets/beta"));
     assert_eq!(
         at_alpha[0]["source"].as_str(),

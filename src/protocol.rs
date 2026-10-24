@@ -45,10 +45,14 @@ pub struct Context {
 }
 impl Context {
     pub fn new(target: &CanonicalTarget, record: &StagedRecord) -> Self {
+        Self::for_template(target, &record.template, &record.commit)
+    }
+    /// Context for a selected template before an interview record has been created.
+    pub fn for_template(target: &CanonicalTarget, template: &str, commit: &str) -> Self {
         Self {
             target: target.to_string(),
-            template: record.template.clone(),
-            commit: Some(record.commit.clone()).filter(|commit| !commit.is_empty()),
+            template: template.to_owned(),
+            commit: Some(commit.to_owned()).filter(|value| !value.is_empty()),
         }
     }
 }
@@ -58,7 +62,7 @@ fn context_value(context: &Context) -> Value {
 /// The shared shell of a result document — `protocol`, `status`, and `context` —
 /// that a caller extends with the members of a specific status. The update route
 /// uses it to build the `applied`, `planned`, and `already-current` documents
-/// with their `snapshot` and `merge` members.
+/// with their `record` and `merge` members.
 pub fn shell(status: &str, context: &Context) -> Value {
     json!({ "protocol": 1, "status": status, "context": context_value(context) })
 }
@@ -91,12 +95,20 @@ fn prompt_schema(prompt: &Prompt) -> Value {
         PromptKind::Text | PromptKind::TextLoop => "text",
         PromptKind::Multiline => "multiline",
         PromptKind::Git => "git",
+        PromptKind::Document => "document",
         PromptKind::Confirm => "confirm",
         PromptKind::Select => "select",
         PromptKind::MultiSelect => "multiselect",
     };
     property.insert("x-toha-type".into(), json!(kind));
     match prompt.kind {
+        PromptKind::Document => {
+            property.insert("type".into(), json!("object"));
+            if let Some(document) = &prompt.document {
+                property.insert("x-toha-schemas".into(), json!(document.schemas));
+                property.insert("x-toha-input".into(), json!(document.input));
+            }
+        }
         PromptKind::Text | PromptKind::Multiline | PromptKind::Git => {
             property.insert("type".into(), json!("string"));
             property.extend(text_rules(prompt));
@@ -313,7 +325,7 @@ pub enum ErrorKind {
     Ambiguous,
     /// A `--like` seed selector could not be honoured (unknown, ambiguous,
     /// wrong-source, absent, or no project). Exit 1.
-    Snapshot,
+    Record,
     /// A program the template `requires` is not on `PATH`. Exit 1.
     Requirement,
     /// The `git` question's repository could not be set up: the remote already
@@ -333,7 +345,7 @@ impl ErrorKind {
             Self::Render => "render",
             Self::Hook => "hook",
             Self::Ambiguous => "ambiguous",
-            Self::Snapshot => "snapshot",
+            Self::Record => "record",
             Self::Requirement => "requirement",
             Self::Git => "git",
         }
@@ -409,6 +421,13 @@ pub enum AnswersDocumentError {
     TemplateMismatch { declared: String, expected: String },
 }
 
+/// Verify an answers envelope before admitting document question values.
+pub fn document_answers(
+    expected_template: &str,
+    text: &str,
+) -> Result<RawAnswers, AnswersDocumentError> {
+    parse_and_verify(expected_template, text).map(|v| v.raw)
+}
 /// The parsed envelope, before identity verification. Private, so external JSON
 /// never yields a raw answer map without passing the identity gate first.
 struct WireAnswersDocument {
@@ -534,7 +553,7 @@ pub fn answer_document_once<'a>(
 
 /// Verify an answers envelope's identity against `expected_template` and return
 /// its raw answer map. The update route uses this to read override answers and to
-/// enforce that an update document names the base snapshot's template: the same
+/// enforce that an update document names the base application's template: the same
 /// exact-string identity check the scripted route applies, before any evaluation.
 pub fn verify_answers(
     expected_template: &str,

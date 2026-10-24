@@ -462,7 +462,7 @@ fn bundled_snapshots_preserve_content_identity_and_update_offline() {
             );
             run(&root, &cwd, &["continue", ".", &answers], 0);
             let output = run(&root, &cwd, &["apply", "."], 0);
-            assert!(String::from_utf8_lossy(&output.stdout).contains("saved snapshot"));
+            assert!(String::from_utf8_lossy(&output.stdout).contains("saved applied record"));
         } else {
             let mut args = vec!["apply", "toha-demo", ".", "--answers", &answers];
             if route == "baseline" {
@@ -470,42 +470,22 @@ fn bundled_snapshots_preserve_content_identity_and_update_offline() {
             }
             let output = run(&root, &cwd, &args, 0);
             let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-            assert!(value["snapshot"]["id"].is_string(), "{value}");
+            assert!(value["record"]["path"].is_string(), "{value}");
         }
-        let output = run(&root, &cwd, &["snapshots", "list", ".", "--json"], 0);
-        let listing: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        let row = &listing["snapshots"][0];
-        let id = row["id"].as_str().unwrap();
+        let bytes = fs::read(cwd.join(".toha.json")).unwrap();
+        let record = toha::applied::AppliedRecord::parse(&bytes).unwrap();
+        let row = record.applications()[0].to_value();
         assert!(row["commit"].is_null());
-        let digest = row["content_digest"].as_str().unwrap();
-        assert_eq!(digest.len(), 64);
-        let record = git_fixture(
-            &cwd,
-            &["show", &format!("refs/toha/snapshots/{id}:snapshot.json")],
-        );
-        let record: serde_json::Value = serde_json::from_str(&record).unwrap();
-        assert!(record["commit"].is_null());
-        assert_eq!(record["content_digest"], digest);
-        let schema: serde_json::Value = serde_norway::from_str(
-            &fs::read_to_string("docs/specifications/snapshot.schema.yml").unwrap(),
-        )
-        .unwrap();
-        for (definition, value) in [("record", &record), ("list", &listing)] {
-            let mut schema = schema.clone();
-            schema["$ref"] = serde_json::json!(format!("#/$defs/{definition}"));
-            let validator = jsonschema::options()
-                .with_draft(jsonschema::Draft::Draft202012)
-                .build(&schema)
-                .unwrap();
-            assert!(validator.is_valid(value), "{definition}: {value}");
-        }
+        assert_eq!(row["content_digest"].as_str().unwrap().len(), 64);
+        git_fixture(&cwd, &["add", ".toha.json"]);
+        git_fixture(&cwd, &["commit", "-qm", "Record application"]);
 
         fs::write(
             cwd.join("note.txt"),
             format!("{NOTE}\nKeep this operator note.\n"),
         )
         .unwrap();
-        git_fixture(&cwd, &["add", "note.txt"]);
+        git_fixture(&cwd, &["add", "."]);
         git_fixture(&cwd, &["commit", "-qm", "Keep operator note"]);
         let override_answers = envelope(
             root.path(),
@@ -521,8 +501,7 @@ fn bundled_snapshots_preserve_content_identity_and_update_offline() {
                     "stage",
                     "toha-demo",
                     ".",
-                    "--from",
-                    id,
+                    "--update",
                     "--reanswer",
                     "--async",
                     batch.to_str().unwrap(),
@@ -535,7 +514,7 @@ fn bundled_snapshots_preserve_content_identity_and_update_offline() {
             assert_eq!(fs::read(cwd.join("note.txt")).unwrap(), before);
             let output = run(&root, &cwd, &["apply", "."], 0);
             let text = String::from_utf8(output.stdout).unwrap();
-            assert!(text.contains("Saved snapshot "), "{text}");
+            assert!(text.contains("Saved applied record "), "{text}");
             assert!(text.contains("Merged note.txt"), "{text}");
             assert_eq!(
                 fs::read_to_string(cwd.join("note.txt")).unwrap(),
@@ -551,9 +530,9 @@ fn bundled_snapshots_preserve_content_identity_and_update_offline() {
             &cwd,
             &[
                 "apply",
+                "toha-demo",
                 ".",
-                "--from",
-                id,
+                "--update",
                 "--answers",
                 &override_answers,
                 "--dry-run",
@@ -570,11 +549,18 @@ fn bundled_snapshots_preserve_content_identity_and_update_offline() {
         let output = run(
             &root,
             &cwd,
-            &["apply", ".", "--from", id, "--answers", &override_answers],
+            &[
+                "apply",
+                "toha-demo",
+                ".",
+                "--update",
+                "--answers",
+                &override_answers,
+            ],
             0,
         );
         let applied: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert!(applied["snapshot"]["id"].is_string());
+        assert!(applied["record"]["path"].is_string());
         assert_eq!(
             fs::read_to_string(cwd.join("note.txt")).unwrap(),
             "Updated Title\nTopic: Sample Topic\n\nKeep this operator note.\n"
@@ -601,19 +587,13 @@ fn person_bundled_apply_reports_saved_snapshot() {
     session.send_line("Sample Title").unwrap();
     session.expect("Topic").unwrap();
     session.send_line("Sample Topic").unwrap();
-    session.expect("saved snapshot").unwrap();
+    session.expect("saved applied record").unwrap();
     session.expect(expectrl::Eof).unwrap();
-    let output = run(&root, &cwd, &["snapshots", "list", ".", "--json"], 0);
-    let listing: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(listing["snapshots"].as_array().unwrap().len(), 1);
-    assert!(listing["snapshots"][0]["commit"].is_null());
-    assert_eq!(
-        listing["snapshots"][0]["content_digest"]
-            .as_str()
-            .unwrap()
-            .len(),
-        64
-    );
+    let bytes = fs::read(cwd.join(".toha.json")).unwrap();
+    let record = toha::applied::AppliedRecord::parse(&bytes).unwrap();
+    let entry = record.applications()[0].to_value();
+    assert!(entry["commit"].is_null());
+    assert_eq!(entry["content_digest"].as_str().unwrap().len(), 64);
 }
 
 #[test]
@@ -636,17 +616,17 @@ fn person_update_completion_is_prose_and_preserves_operator_edits() {
         0,
     );
     let doc: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let id = doc["snapshot"]["id"].as_str().unwrap();
+    assert!(doc["record"]["path"].is_string());
     fs::write(
         cwd.join("note.txt"),
         format!("{NOTE}\nKeep this operator note.\n"),
     )
     .unwrap();
-    git_fixture(&cwd, &["add", "note.txt"]);
+    git_fixture(&cwd, &["add", "."]);
     git_fixture(&cwd, &["commit", "-qm", "Keep operator note"]);
     for preview in [true, false] {
         let mut command = command(&root, &cwd);
-        command.args(["apply", "toha-demo", ".", "--from", id, "--reanswer"]);
+        command.args(["apply", "toha-demo", ".", "--update", "--reanswer"]);
         if preview {
             command.arg("--dry-run");
         }
@@ -663,7 +643,7 @@ fn person_update_completion_is_prose_and_preserves_operator_edits() {
         if preview {
             session.expect("Preview only; no changes written.").unwrap();
         } else {
-            session.expect("Saved snapshot ").unwrap();
+            session.expect("Saved applied record ").unwrap();
         }
         session.expect(expectrl::Eof).unwrap();
         assert_eq!(
@@ -714,7 +694,7 @@ fn staged_update_reports_messages_and_allowed_hook_failure() {
         "Before message",
         "After message",
         "Hook setup failed (exit 7); failure was allowed.",
-        "Saved snapshot ",
+        "Saved applied record ",
     ] {
         assert!(text.contains(expected), "missing {expected}: {text}");
     }

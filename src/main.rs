@@ -1,11 +1,17 @@
+fn runtime_now() -> Result<jiff::Zoned, String> {
+    match std::env::var("TOHA_NOW") {
+        Ok(value) => value.parse().map_err(|e: jiff::Error| e.to_string()),
+        Err(std::env::VarError::NotPresent) => Ok(jiff::Zoned::now()),
+        Err(e) => Err(e.to_string()),
+    }
+}
 mod cli {
-    pub mod bundled;
     pub mod guidance;
     pub mod like;
     pub mod resolve;
-    pub mod snapshots;
     pub mod templates;
 }
+mod parts_output;
 mod update;
 mod update_output;
 mod update_stage;
@@ -31,17 +37,16 @@ use cli::{
     resolve::{ResolveError, ResolvedTemplate},
 };
 use toha::{
-    Applied, ApplyOptions, Completed, EndKind, Ended, Interview, Plan, Planned, ReviewDigest, Step,
-    Template,
+    Applied, ApplyOptions, Completed, Interview, Plan, Planned, Template,
     context::{
         EnvironmentDecision, ExecutionFacts, FixedEnvironment, FixedEnvironmentSource, HostFacts,
-        InvocationContext, SelectedTemplate,
+        InvocationContext,
     },
     git_target::GitReport,
     hook::{ProcessRunner, ScriptedRunner},
     protocol::{
-        self, AppliedFile, AppliedHook, ApplyReport, Context, DocumentStep, ErrorKind, Headless,
-        ResultError, SubmitDocumentError, TrustState,
+        self, AppliedFile, AppliedHook, ApplyReport, Context, ErrorKind, ResultError,
+        SubmitDocumentError, TrustState,
     },
     staging::{self, CanonicalTarget, StagedRecord, Store},
 };
@@ -99,22 +104,14 @@ fn build_context(
     decision: EnvironmentDecision,
     is_interactive: bool,
 ) -> Result<InvocationContext, String> {
-    let mut source = HostEnvironmentSource;
-    let environment = template
-        .admit_environment(decision, &mut source)
-        .map_err(|e| staging::stage_admission_error(e).to_string())?;
-    let selected = SelectedTemplate::new(
-        resolved.formal_name.clone(),
-        template.name.clone(),
-        resolved.aliases.clone(),
-        resolved.source.clone(),
-    );
-    InvocationContext::new(
-        target.clone(),
-        selected,
+    toha::operations::invocation_context(
+        target,
+        resolved,
+        template,
+        decision,
         HostFacts::capture(),
         ExecutionFacts::new(is_admin(), is_interactive),
-        environment,
+        &mut HostEnvironmentSource,
     )
     .map_err(|e| e.to_string())
 }
@@ -122,18 +119,8 @@ fn build_context(
 /// explicit `--trust`, or a current registry approval that matches the live
 /// executable surface.
 fn apply_environment_grant(trust: bool, resolved: &ResolvedTemplate, template: &Template) -> bool {
-    if trust {
-        return true;
-    }
-    match toha::HookSurface::of(template) {
-        Ok(surface) => matches!(
-            toha::evaluate_trust(resolved.approval.as_ref(), &surface.digest()),
-            toha::Trust::Trusted
-        ),
-        Err(_) => false,
-    }
+    toha::operations::effective_trust(trust, resolved, template)
 }
-
 /// Generate projects and files from templates.
 #[derive(Parser)]
 #[command(
@@ -172,6 +159,7 @@ Environment:
   VISUAL, EDITOR    Editor for multiline answers, VISUAL first. Default: nano, or notepad
                     on Windows. When the editor is not found, answers end with a line of \".\".
   PATH              Directories searched for the editor and for the program of a run hook.
+  TOHA_RECORD       Applied record path relative to the Git repository root. Default: .toha.json.
   TOHA_NOW          Instant that now() returns for a new interview, such as
                     2026-01-02T03:04:05+00:00[UTC]. Default: the current time.
 
@@ -214,6 +202,15 @@ enum Command {
     ///
     /// Multiline input uses an editor, or lines ending with . when no editor is available.
     Stage {
+        /// Read a JSON contract document, routed by its exact $schema URI. Repeatable.
+        #[arg(long, value_name = "FILE")]
+        input: Vec<PathBuf>,
+        /// Add an optional part. Repeatable.
+        #[arg(long = "with", value_name = "PART")]
+        with: Vec<String>,
+        /// Remove an optional part. Repeatable.
+        #[arg(long = "without", value_name = "PART")]
+        without: Vec<String>,
         /// Alias, short name, formal name, git address, or folder of the template.
         template: String,
         /// Target directory.
@@ -233,22 +230,18 @@ enum Command {
         /// visual) for this staged interview's templates that reference them.
         #[arg(long)]
         trust: bool,
-        /// Stage an update from a base snapshot: replay its recorded answers and
-        /// ask only what the new version needs. The value is a snapshot id.
-        #[arg(long, value_name = "ID", conflicts_with = "baseline")]
-        from: Option<String>,
+        /// Update from the applied record for this source and target.
+        #[arg(long, conflicts_with = "baseline")]
+        update: bool,
         /// Stage an update from an empty base.
         #[arg(long)]
         baseline: bool,
         /// Re-ask every recorded answer instead of replaying it.
-        #[arg(long, requires = "from")]
+        #[arg(long, requires = "update")]
         reanswer: bool,
-        /// Seed answer defaults from a snapshot of a prior application of the
-        /// same source (the generate axis). The optional value is `latest`, a
-        /// snapshot id or id prefix (>= 6 characters), or omitted to pick from a
-        /// list (the person route only). Mutually exclusive with --from and
-        /// --baseline.
-        #[arg(long, value_name = "SELECTOR", num_args = 0..=1, conflicts_with_all = ["from", "baseline"])]
+        /// Seed answer defaults from an application of the same source at TARGET.
+        /// Omit the value to choose an application in a terminal.
+        #[arg(long, value_name = "SELECTOR", num_args = 0..=1, conflicts_with_all = ["update", "baseline"])]
         like: Option<Option<String>>,
     },
     /// Continue a staged interview with an answers document or terminal prompts.
@@ -259,6 +252,9 @@ enum Command {
     ///
     /// Multiline input uses an editor, or lines ending with . when no editor is available.
     Continue {
+        /// Submit a JSON contract document, routed by its exact $schema URI.
+        #[arg(long, value_name = "FILE", conflicts_with = "answers")]
+        input: Vec<PathBuf>,
         /// Target directory of the staged interview.
         path: PathBuf,
         /// Identity-bearing answers document for the current batch; - reads
@@ -289,6 +285,15 @@ enum Command {
         help_template = APPLY_HELP
     )]
     Apply {
+        /// Read a JSON contract document, routed by its exact $schema URI. Repeatable.
+        #[arg(long, value_name = "FILE")]
+        input: Vec<PathBuf>,
+        /// Add an optional part. Repeatable.
+        #[arg(long = "with", value_name = "PART")]
+        with: Vec<String>,
+        /// Remove an optional part. Repeatable.
+        #[arg(long = "without", value_name = "PART")]
+        without: Vec<String>,
         /// One operand is the target directory; two are the template and the target directory.
         #[arg(num_args = 1..=2, required = true, value_name = "PATH", hide = true)]
         paths: Vec<String>,
@@ -306,81 +311,24 @@ enum Command {
         /// Run the hooks of this template for this run.
         #[arg(long)]
         trust: bool,
-        /// Update from a base snapshot: re-render the template and merge the
-        /// difference into the target. The value is a snapshot id or id prefix.
-        #[arg(long, value_name = "ID", conflicts_with = "baseline")]
-        from: Option<String>,
+        /// Update from the applied record for this source and target.
+        #[arg(long, conflicts_with = "baseline")]
+        update: bool,
         /// Update from an empty base: merge the whole render into the target,
         /// three-way against nothing, so unrelated local edits survive.
         #[arg(long)]
         baseline: bool,
         /// Re-ask every recorded answer instead of replaying it.
-        #[arg(long, requires = "from")]
+        #[arg(long, requires = "update")]
         reanswer: bool,
-        /// Seed answer defaults from a snapshot of a prior application of the
-        /// same source (the generate axis). The optional value is `latest`, a
-        /// snapshot id or id prefix (>= 6 characters), or omitted to pick from a
-        /// list (the person route only). Mutually exclusive with --from and
-        /// --baseline.
-        #[arg(long, value_name = "SELECTOR", num_args = 0..=1, conflicts_with_all = ["from", "baseline"])]
+        /// Seed answer defaults from an application of the same source at TARGET.
+        /// Omit the value to choose an application in a terminal.
+        #[arg(long, value_name = "SELECTOR", num_args = 0..=1, conflicts_with_all = ["update", "baseline"])]
         like: Option<Option<String>>,
     },
-    /// Manage the project's update snapshots.
-    Snapshots {
-        #[command(subcommand)]
-        command: SnapshotsCommand,
-    },
-    /// Configure the repository to fetch update snapshots from a remote.
-    Init {
-        /// Target directory (default: the current directory).
-        path: Option<PathBuf>,
-        /// The remote to add the snapshot fetch refspec to.
-        #[arg(long, default_value = "origin")]
-        remote: String,
-    },
 }
 
-#[derive(Subcommand)]
-enum SnapshotsCommand {
-    /// List the target's snapshots, newest first, marking a likely base.
-    List {
-        /// Target directory (default: the current directory).
-        path: Option<PathBuf>,
-        /// Write one JSON document instead of a human-readable list.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Remove snapshots named in a JSON document (the script and agent route).
-    ///
-    /// `--remove FILE` (or `-`) reads `{ "remove": ["<id>", ...] }` and acts
-    /// immediately, writing one JSON result. A request that would remove every
-    /// snapshot of a source is refused unless `--force`.
-    Clean {
-        /// Target directory (default: the current directory).
-        path: Option<PathBuf>,
-        /// Preselect all but the newest N per source (the person route).
-        #[arg(long, value_name = "N")]
-        keep: Option<usize>,
-        /// A JSON document naming the exact snapshots to remove; - reads stdin.
-        #[arg(long, value_name = "FILE")]
-        remove: Option<String>,
-        /// Allow removing every snapshot of a source.
-        #[arg(long)]
-        force: bool,
-    },
-}
-
-#[derive(Clone)]
-pub(crate) struct Dirs {
-    system_config: PathBuf,
-    user_config: PathBuf,
-    local_config_override: Option<PathBuf>,
-    system_data: PathBuf,
-    user_data: PathBuf,
-    cache: PathBuf,
-    state: PathBuf,
-    home: PathBuf,
-}
+use toha::resolve::Paths as Dirs;
 /// The platform whose directory conventions `Dirs::from_env` follows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Platform {
@@ -400,7 +348,12 @@ impl Platform {
         }
     }
 }
-impl Dirs {
+trait RuntimeDirs: Sized {
+    fn resolve() -> Result<Self, String>;
+    fn from_env(platform: Platform, var: impl Fn(&str) -> Option<OsString>)
+    -> Result<Self, String>;
+}
+impl RuntimeDirs for Dirs {
     fn resolve() -> Result<Self, String> {
         Self::from_env(Platform::host(), |key| std::env::var_os(key))
     }
@@ -500,21 +453,12 @@ impl Dirs {
             home,
         })
     }
-    fn config_paths(&self) -> toha::config::ConfigPaths {
-        toha::config::ConfigPaths {
-            system_config: self.system_config.clone(),
-            user_config: self.user_config.clone(),
-            local_config_override: self.local_config_override.clone(),
-            system_data: self.system_data.clone(),
-            user_data: self.user_data.clone(),
-            cache: self.cache.clone(),
-            home: self.home.clone(),
-        }
-    }
 }
+
 enum Outcome {
     Written(Vec<String>),
     Error(String),
+    Usage(String),
     Document(serde_json::Value, u8),
     /// An agent-route result: an optional question-batch document followed by
     /// plain-text instructions, both on standard output. The batch is omitted
@@ -534,11 +478,6 @@ enum Outcome {
     },
 }
 impl Outcome {
-    /// Whether the outcome reports a successful result (not an error).
-    /// The staged update apply removes its record only on success.
-    pub(crate) fn is_success(&self) -> bool {
-        matches!(self, Self::Document(_, 0) | Self::Written(_))
-    }
     /// Names `command` with each formal name when the template name is ambiguous.
     fn retry(self, command: impl Fn(&str) -> String) -> Self {
         match self {
@@ -583,6 +522,10 @@ impl Outcome {
             Self::Error(message) => {
                 writeln!(err, "{message}")?;
                 Ok(ExitCode::from(1))
+            }
+            Self::Usage(message) => {
+                writeln!(err, "{message}")?;
+                Ok(ExitCode::from(2))
             }
             Self::Saved(code) => Ok(ExitCode::from(code)),
             Self::Document(value, code) => {
@@ -700,6 +643,25 @@ fn injection_report(
     Ok(lines)
 }
 
+fn document_input_error(error: toha::document::PrepareError, context: Option<&Context>) -> Outcome {
+    let usage = error.is_usage();
+    let message = error.to_string();
+    if let Some(context) = context {
+        let error = ResultError {
+            kind: ErrorKind::Input,
+            message,
+            commands: vec![],
+        };
+        Outcome::Document(
+            protocol::error_document(&error, Some(context)),
+            if usage { 2 } else { 1 },
+        )
+    } else if usage {
+        Outcome::Usage(message)
+    } else {
+        Outcome::Error(message)
+    }
+}
 /// Reads the answers document once as UTF-8 and prefixes a read failure with the
 /// source name. It does not inspect the JSON; the protocol boundary parses and
 /// verifies it.
@@ -724,21 +686,13 @@ fn resolution(
     formal_name: &str,
     template: &Template,
     config: &toha::config::Config,
-) -> Result<(toha::interview::Resolution, jiff::Zoned), String> {
-    let now = match std::env::var("TOHA_NOW") {
-        Ok(value) => value.parse().map_err(|e: jiff::Error| e.to_string())?,
-        Err(std::env::VarError::NotPresent) => jiff::Zoned::now(),
-        Err(e) => return Err(e.to_string()),
-    };
-    let resolution = toha::interview::configured_defaults(
-        formal_name,
-        template,
-        &config.presets,
-        &config.template_defaults,
-    )
-    .map_err(|e| e.to_string())?;
-    report_config_warnings(resolution.warnings());
-    Ok((resolution, now))
+) -> Result<jiff::Zoned, String> {
+    let now = runtime_now()?;
+    report_config_warnings(
+        &toha::operations::configuration_warnings(formal_name, template, config)
+            .map_err(|e| e.to_string())?,
+    );
+    Ok(now)
 }
 /// The parsed `--like` request from clap's `Option<Option<String>>`: absent, a
 /// bare flag (picker on the person route; usage error elsewhere), or an explicit
@@ -753,9 +707,6 @@ impl LikeFlag {
         match like {
             None => LikeFlag::Absent,
             Some(None) => LikeFlag::Bare,
-            Some(Some(value)) if value == "latest" => {
-                LikeFlag::Select(cli::like::LikeSelector::Latest)
-            }
             Some(Some(value)) => LikeFlag::Select(cli::like::LikeSelector::Reference(value)),
         }
     }
@@ -764,10 +715,10 @@ impl LikeFlag {
     }
 }
 /// Why a `--like` request could not be resolved: a usage error (bare selector on
-/// a non-interactive route, exit 2) or a snapshot error (exit 1).
+/// a non-interactive route, exit 2) or a record error (exit 1).
 struct LikeReject {
     message: String,
-    /// `true` for a usage error (exit 2); `false` for a snapshot error (exit 1).
+    /// `true` for a usage error (exit 2); `false` for a record error (exit 1).
     usage: bool,
 }
 impl LikeReject {
@@ -781,14 +732,23 @@ impl LikeReject {
 impl From<cli::like::LikeError> for LikeReject {
     fn from(error: cli::like::LikeError) -> Self {
         Self {
-            message: error.to_string(),
+            message: match error {
+                cli::like::LikeError::NoProject => {
+                    "the target is not inside a git repository; --like needs a recorded application"
+                        .into()
+                }
+                cli::like::LikeError::Missing { name, target } => format!(
+                    "no application of {name} at target {target}; --like selects a target in the applied record"
+                ),
+                other => other.to_string(),
+            },
             usage: false,
         }
     }
 }
-/// A repository-open or read fault while resolving `--like` is a snapshot error
+/// A repository-open or read fault while resolving `--like` is a record error
 /// (exit 1), not a usage error.
-fn project_reject(error: toha::snapshot::ProjectError) -> LikeReject {
+fn project_reject(error: toha::applied::ProjectError) -> LikeReject {
     LikeReject {
         message: error.to_string(),
         usage: false,
@@ -796,7 +756,7 @@ fn project_reject(error: toha::snapshot::ProjectError) -> LikeReject {
 }
 /// Resolve a `--like` request against the target repository into a seed, or
 /// `None` when there is nothing to seed from and the request does not require a
-/// snapshot (flag absent, or a person-route picker with no candidates or a
+/// application (flag absent, or a person-route picker with no candidates or a
 /// "none" choice). `interactive` selects the person route, where a bare `--like`
 /// opens a picker; on every other route a bare `--like` is a usage error.
 fn resolve_like_seed(
@@ -809,31 +769,19 @@ fn resolve_like_seed(
         LikeFlag::Absent => return Ok(None),
         LikeFlag::Bare if !interactive => {
             return Err(LikeReject::usage(
-                "--like needs a selector here: name a snapshot id or `latest`",
+                "--like needs a selector here: name an application target",
             ));
         }
         LikeFlag::Bare => None, // the person picker
         LikeFlag::Select(selector) => Some(selector),
     };
-    let project = toha::snapshot::Project::open(target).map_err(project_reject)?;
+    let project = toha::applied::Project::open(target).map_err(project_reject)?;
     match selector {
         Some(cli::like::LikeSelector::Reference(reference)) => {
-            let snapshot = cli::like::find_required(project.as_ref(), source, &reference)?;
-            Ok(Some(cli::like::seed(&snapshot)))
+            let application = cli::like::find_required(project.as_ref(), source, &reference)?;
+            Ok(Some(cli::like::seed(&application)))
         }
-        Some(cli::like::LikeSelector::Latest) => {
-            let project = project
-                .as_ref()
-                .ok_or(cli::like::LikeError::NoProject)
-                .map_err(LikeReject::from)?;
-            let candidates = cli::like::candidates(project, source).map_err(project_reject)?;
-            match cli::like::latest(&candidates) {
-                Some(snapshot) => Ok(Some(cli::like::seed(snapshot))),
-                None => Err(LikeReject::from(cli::like::LikeError::Missing {
-                    source: source.to_owned(),
-                })),
-            }
-        }
+        Some(_) => unreachable!("CLI constructs reference selectors"),
         // Bare, interactive: the person picker. No project or no candidate means
         // there is nothing to offer, so proceed with a normal apply.
         None => {
@@ -844,46 +792,21 @@ fn resolve_like_seed(
             if candidates.is_empty() {
                 return Ok(None);
             }
-            match pick_snapshot(&candidates).map_err(LikeReject::usage)? {
+            match pick_application(&candidates).map_err(LikeReject::usage)? {
                 Some(index) => Ok(Some(cli::like::seed(&candidates[index]))),
                 None => Ok(None),
             }
         }
     }
 }
-/// Re-read the snapshot a staged generate pinned (`saved.seed`) and rebuild its
-/// engine seed, so a resumed interview seeds the identical defaults. The pin is
-/// an exact id, so a newer same-source snapshot added between stage and resume
-/// does not change it; a pinned snapshot that is now missing, invalid, or of a
-/// foreign source fails clearly (exit 1). `None` when nothing was pinned.
-fn resolve_pinned_seed(
-    pin: Option<&str>,
-    source: &str,
-    target: &CanonicalTarget,
-) -> Result<Option<toha::interview::SnapshotSeed>, String> {
-    let Some(pin) = pin else {
-        return Ok(None);
-    };
-    let project = toha::snapshot::Project::open(target).map_err(|error| error.to_string())?;
-    let snapshot = cli::like::find_required(project.as_ref(), source, pin)
-        .map_err(|error| error.to_string())?;
-    Ok(Some(cli::like::seed(&snapshot).engine))
-}
-/// The person-route picker: list the source's applications newest first and let
+/// The person-route picker: list the source's applications in target order and let
 /// the person choose one to seed from, or "none". Returns the chosen index, or
 /// `None` for "none". Prompts only here; the pure selection functions never do.
-fn pick_snapshot(candidates: &[toha::snapshot::Snapshot]) -> Result<Option<usize>, String> {
+fn pick_application(candidates: &[toha::applied::Application]) -> Result<Option<usize>, String> {
     const NONE_LABEL: &str = "none (ask every question)";
     let mut options: Vec<String> = candidates
         .iter()
-        .map(|snapshot| {
-            format!(
-                "{} ({}, {})",
-                snapshot.id(),
-                snapshot.source(),
-                snapshot.target()
-            )
-        })
+        .map(|application| format!("{} ({})", application.target(), application.source()))
         .collect();
     options.push(NONE_LABEL.to_owned());
     let chosen = inquire::Select::new("Seed defaults from which application?", options.clone())
@@ -896,6 +819,11 @@ fn pick_snapshot(candidates: &[toha::snapshot::Snapshot]) -> Result<Option<usize
 }
 fn setup(path: &Path, dirs: &Dirs) -> Result<(staging::CanonicalTarget, Store), String> {
     let target = staging::canonical_target(path).map_err(|e| e.to_string())?;
+    if let Some(project) = toha::applied::Project::open(&target).map_err(|e| e.to_string())? {
+        project.read_record().map_err(|e| e.to_string())?;
+    } else {
+        toha::applied::validate_record_path(target.as_path()).map_err(|e| e.to_string())?;
+    }
     Ok((target, Store::new(dirs.state.clone())))
 }
 fn context(target: &staging::CanonicalTarget, record: &StagedRecord) -> Context {
@@ -911,11 +839,6 @@ fn trustable(resolved: &ResolvedTemplate, registry: &toha::registry::Registry) -
 /// Loads the template an interview is about to drive and confirms its
 /// `requires` programs are on `PATH`, so a caller answers no question for an
 /// apply whose hooks cannot run.
-fn load_template(resolved: &ResolvedTemplate) -> Result<Template, String> {
-    let template = Template::load(&resolved.folder).map_err(|e| e.to_string())?;
-    toha::requirement::check(&template).map_err(|e| e.to_string())?;
-    Ok(template)
-}
 fn environment(
     dirs: &Dirs,
 ) -> Result<(toha::config::Config, toha::registry::Registry, PathBuf), Outcome> {
@@ -925,12 +848,15 @@ fn environment(
 }
 fn resolve_error(error: ResolveError) -> Outcome {
     match error {
-        ResolveError::Error(message) => Outcome::Error(message),
+        error @ (ResolveError::Error(_)
+        | ResolveError::NotFound(_)
+        | ResolveError::StaleRevision { .. }) => Outcome::Error(error.to_string()),
         ResolveError::Ambiguous { name, matches } => Outcome::Ambiguous {
             name,
             matches,
             retry: vec![],
         },
+        other => Outcome::Error(other.to_string()),
     }
 }
 /// The configuration, registry, and directories that template names resolve against.
@@ -942,48 +868,26 @@ struct Scope<'a> {
 }
 /// Whether the staged interview has questions remaining, for guidance only.
 fn progress(saved: &StagedRecord, scope: &Scope, target: &CanonicalTarget) -> Progress {
-    let replayed = (|| {
-        let resolved = cli::resolve::resume_template(
-            &saved.template,
-            &saved.commit,
-            saved.named,
-            scope.config,
-            scope.registry,
-            scope.dirs,
-            scope.cwd,
-        )
-        .ok()?;
-        let template = Template::load(&resolved.folder).ok()?;
-        let resolution = toha::interview::configured_defaults(
-            &saved.template,
-            &template,
-            &scope.config.presets,
-            &scope.config.template_defaults,
-        )
-        .ok()?;
-        report_config_warnings(resolution.warnings());
-        // A generate-staged record re-reads its pinned seed so the guidance
-        // reflects the same remaining questions the resume will show.
-        let pinned_seed = resolve_pinned_seed(
-            saved.seed.as_deref(),
-            toha::snapshot::source_identity(&resolved.formal_name),
-            target,
-        )
-        .ok()?;
-        // A flow stop/abort is terminal but distinct from complete: nothing can
-        // be applied, so its guidance names starting over, not `apply`.
-        Some(
-            match saved
-                .replay_with_seed(&template, resolution, pinned_seed, target)
-                .ok()?
-            {
-                Interview::Complete(_) => Progress::Complete,
-                Interview::Ended(_) => Progress::Ended,
-                Interview::Asking(_) => Progress::Incomplete,
-            },
-        )
-    })();
-    replayed.unwrap_or(Progress::Unknown)
+    let session = match toha::operations::Session::resume(
+        saved.clone(),
+        target.clone(),
+        scope.dirs,
+        scope.config.clone(),
+        scope.registry,
+        scope.cwd,
+    ) {
+        Ok(v) => v,
+        Err(_) => return Progress::Unknown,
+    };
+    if let Ok(warnings) = session.warnings() {
+        report_config_warnings(&warnings);
+    }
+    match session.state() {
+        Ok(toha::operations::SessionState::Completed(_)) => Progress::Complete,
+        Ok(toha::operations::SessionState::Ended(_)) => Progress::Ended,
+        Ok(toha::operations::SessionState::Asking { .. }) => Progress::Incomplete,
+        _ => Progress::Unknown,
+    }
 }
 /// The refusal for `stage` or `apply` with a template when an interview is
 /// staged at the path, or `None` when `apply` names the staged template.
@@ -1019,12 +923,15 @@ fn staged_refusal(
         ))
     })
 }
+#[allow(clippy::too_many_arguments)]
 fn stage(
+    input: &[PathBuf],
     template: String,
     path: PathBuf,
     output: Option<Option<String>>,
     trust: bool,
     like: Option<Option<String>>,
+    parts: toha::parts::Selection,
     dirs: &Dirs,
 ) -> Outcome {
     let (target, store) = match setup(&path, dirs) {
@@ -1054,40 +961,54 @@ fn stage(
         return staged_refusal(&invocation, &template, &path, &saved, &scope, &target)
             .expect("stage refuses every staged target");
     }
-    if output.is_none() && !io::stdin().is_terminal() {
+    let interactive = output.is_none();
+    if interactive && !io::stdin().is_terminal() {
         return Outcome::Error(guidance::no_terminal(&template, &path));
     }
     let resolved = match cli::resolve::resolve_template(&template, &config, &registry, dirs, &cwd) {
         Ok(v) => v,
         Err(e) => return resolve_error(e),
     };
-    let template = match load_template(&resolved) {
+    let template = match Template::load(&resolved.folder) {
+        Ok(v) => v,
+        Err(e) => return Outcome::Error(e.to_string()),
+    };
+    let preparation = match toha::operations::Preparation::new(
+        template,
+        resolved,
+        target.clone(),
+        input,
+        &Default::default(),
+    ) {
+        Ok(v) => v,
+        Err(e) => return operation_error(e, None),
+    };
+    let now = match resolution(
+        &preparation.resolved.formal_name,
+        &preparation.template,
+        &config,
+    ) {
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
     };
-    let (resolution, now) = match resolution(&resolved.formal_name, &template, &config) {
-        Ok(v) => v,
-        Err(e) => return Outcome::Error(e),
-    };
-    // Stage uses only its explicit flag: with it, capture the fixed five once
-    // (even without a reference); without it, refuse a need before any progress.
     let decision = if trust {
         EnvironmentDecision::CarryStageGrant
     } else {
         EnvironmentDecision::RequireStageGrant
     };
-    // The originating driver can prompt a human only on the terminal path.
-    let interactive = output.is_none();
-    let invocation = match build_context(&target, &resolved, &template, decision, interactive) {
+    let invocation = match preparation.context(
+        decision,
+        HostFacts::capture(),
+        ExecutionFacts::new(is_admin(), interactive),
+        &mut HostEnvironmentSource,
+    ) {
         Ok(v) => v,
-        Err(e) => return Outcome::Error(e),
+        Err(e) => return operation_error(e, None),
     };
-    // Resolve `--like`: the person route (no `--async`) may open a picker; the
-    // agent route (`--async`) rejects a bare `--like` as a usage error.
-    let like_seed = match resolve_like_seed(
+    let seed = match resolve_like_seed(
         LikeFlag::parse(like),
         interactive,
-        toha::snapshot::source_identity(&resolved.formal_name),
+        &toha::applied::source_identity(&preparation.resolved.formal_name),
         &target,
     ) {
         Ok(v) => v,
@@ -1099,88 +1020,65 @@ fn stage(
             };
         }
     };
-    if interactive && let Some(seed) = &like_seed {
-        println!("seed defaults from snapshot {}", seed.label);
+    if interactive && let Some(seed) = &seed {
+        println!("seed defaults from application {}", seed.label);
     }
-    let seed_from = like_seed.as_ref().map(|seed| seed.id.to_string());
-    let mut saved = StagedRecord::new_with_context(
-        invocation.clone(),
-        resolved.commit.clone(),
-        resolved.named,
-        now.to_string(),
-        vec![],
-    );
-    saved.seed = seed_from.clone();
-    let interview = match resolution.start_with_seed(
-        &template,
-        now,
-        invocation,
-        like_seed.map(|seed| seed.engine),
-    ) {
-        Ok((interview, warnings)) => {
-            report_config_warnings(&warnings);
-            interview
-        }
-        Err(e) => return Outcome::Error(e.to_string()),
-    };
-    let installed = trustable(&resolved, &registry);
-    if output.is_none() {
-        // Person route: prompt, saving each batch, then show the dry-run plan and
-        // apply instructions at completion.
-        let mut saved = saved;
-        let completed = terminal::drive(interview, &mut terminal::InquireAsk, |submission| {
-            saved.submissions.push(submission);
-            store.save(&target, &saved).map_err(|e| e.to_string())
-        });
-        return match completed {
-            Ok(terminal::Session::Completed(completed)) => {
-                // An interview without prompts still needs a staged record.
-                if saved.submissions.is_empty()
-                    && let Err(e) = store.save(&target, &saved)
-                {
-                    return Outcome::Error(e.to_string());
-                }
-                completion_preview(
-                    &template,
-                    &completed,
-                    &target,
-                    &resolved,
-                    installed.as_deref(),
-                    &path,
-                    false,
-                )
+    let mut session =
+        match preparation.start(invocation, now, config, parts, &Default::default(), seed) {
+            Ok(v) => v,
+            Err(e) => return operation_error(e, None),
+        };
+    match session.seed_warnings() {
+        Ok(warnings) => report_config_warnings(&warnings),
+        Err(e) => return operation_error(e, None),
+    }
+    let installed = trustable(&session.resolved, &registry);
+    if interactive {
+        return match prompt_fresh(&mut session, Some(&store)) {
+            Ok(terminal::Session::Completed(completed)) => completion_preview(
+                &session.template,
+                &completed,
+                &target,
+                &session.resolved,
+                installed.as_deref(),
+                &path,
+                false,
+            ),
+            Ok(terminal::Session::Ended(ended)) => {
+                eprintln!("{}", guidance::flow_ended(&ended));
+                Outcome::Written(vec![])
             }
-            Ok(terminal::Session::Ended(ended)) => ended_outcome(&ended, &target, &store),
-            Err(error) => Outcome::Error(error),
+            Err(e) => Outcome::Error(e),
         };
     }
-    // Agent route: emit the first question batch and the answer instructions.
-    let output = output.unwrap();
-    let formal = resolved.formal_name.clone();
-    match interview {
-        Interview::Asking(pending) => {
-            let document = with_seed(
-                protocol::batch_document(pending.batch(), &context(&target, &saved), None),
-                seed_from.as_deref(),
+    let state = match session.state() {
+        Ok(v) => v,
+        Err(e) => return operation_error(e, None),
+    };
+    if let Err(e) = session.persist(&store) {
+        return operation_error(e, None);
+    }
+    match state {
+        toha::operations::SessionState::Asking { document, .. } => {
+            let document = with_seed(document, session.record.seed.as_deref());
+            let instructions = instructions(
+                &AgentOutcome::Batch {
+                    template: &session.record.template,
+                },
+                &path,
             );
-            if let Err(e) = store.save(&target, &saved) {
-                return Outcome::Error(e.to_string());
-            }
-            let instructions = instructions(&AgentOutcome::Batch { template: &formal }, &path);
-            match output {
-                Some(file) => {
-                    if let Err(e) = fs::write(
-                        file,
-                        serde_json::to_vec_pretty(&document).expect("JSON value"),
-                    ) {
-                        return Outcome::Error(e.to_string());
-                    }
-                    Outcome::Agent {
+            match output.flatten() {
+                Some(file) => match fs::write(
+                    file,
+                    serde_json::to_vec_pretty(&document).expect("JSON value"),
+                ) {
+                    Ok(()) => Outcome::Agent {
                         document: None,
                         instructions,
                         code: 4,
-                    }
-                }
+                    },
+                    Err(e) => Outcome::Error(e.to_string()),
+                },
                 None => Outcome::Agent {
                     document: Some(document),
                     instructions,
@@ -1188,36 +1086,99 @@ fn stage(
                 },
             }
         }
-        // A staged interview with no questions is complete; save it and point to
-        // apply. There is no batch to write to a file.
-        Interview::Complete(_) => {
-            if let Err(e) = store.save(&target, &saved) {
-                return Outcome::Error(e.to_string());
-            }
-            Outcome::Agent {
-                document: None,
-                instructions: instructions(&AgentOutcome::Complete, &path),
-                code: 0,
-            }
-        }
-        // A stop/abort at the first batch ends the interview: nothing is staged,
-        // an abort removes any record, and the `ended` document reports it.
-        Interview::Ended(ended) => {
-            if let Err(e) = ended_removed(&ended, &target, &store) {
-                return Outcome::Error(e);
-            }
+        toha::operations::SessionState::Completed(_) => Outcome::Agent {
+            document: None,
+            instructions: instructions(&AgentOutcome::Complete, &path),
+            code: 0,
+        },
+        toha::operations::SessionState::Ended(ended) => {
             eprintln!("{}", guidance::flow_ended(&ended));
-            let document = protocol::ended_document(&ended, &context(&target, &saved));
-            match output {
-                Some(file) => match fs::write(
-                    file,
-                    serde_json::to_vec_pretty(&document).expect("JSON value"),
-                ) {
+            let doc = protocol::ended_document(&ended, &context(&target, &session.record));
+            match output.flatten() {
+                Some(file) => match fs::write(file, serde_json::to_vec_pretty(&doc).unwrap()) {
                     Ok(()) => Outcome::Saved(0),
                     Err(e) => Outcome::Error(e.to_string()),
                 },
-                None => Outcome::Document(document, 0),
+                None => Outcome::Document(doc, 0),
             }
+        }
+        _ => unreachable!("known session state"),
+    }
+}
+
+fn seed_diagnostic(error: &toha::operations::SeedError) -> String {
+    use toha::operations::SeedError;
+    let message = match error {
+        SeedError::MissingCopy => "staged --like has no copied application",
+        SeedError::WrongSource => "copied --like application has another source",
+        SeedError::WrongTarget => "copied --like application has another target",
+        SeedError::Record(_) => return error.to_string(),
+        _ => return format!("{error}; abort and stage again"),
+    };
+    format!("{message}; abort and stage again")
+}
+fn replay_diagnostic(error: &toha::operations::OperationError) -> String {
+    match error {
+        toha::operations::OperationError::Seed(error) => seed_diagnostic(error),
+        other => other.to_string(),
+    }
+}
+fn operation_error(error: toha::operations::OperationError, ctx: Option<&Context>) -> Outcome {
+    match error {
+        toha::operations::OperationError::Document(error) => document_input_error(error, ctx),
+        toha::operations::OperationError::Parts(error) => Outcome::Usage(error),
+        toha::operations::OperationError::Resolve(error) => resolve_error(error),
+        toha::operations::OperationError::Seed(error) => Outcome::Error(seed_diagnostic(&error)),
+        other => Outcome::Error(other.to_string()),
+    }
+}
+
+/// Presentation driver: the library owns advancement, acceptance and stage persistence.
+fn prompt_fresh(
+    session: &mut toha::operations::Session,
+    store: Option<&Store>,
+) -> Result<terminal::Session, String> {
+    let mut reached = 0;
+    loop {
+        let state = session.state().map_err(|e| e.to_string())?;
+        match state {
+            toha::operations::SessionState::Completed(done) => {
+                for message in done.messages.iter().skip(reached) {
+                    println!("{message}");
+                }
+                if let Some(store) = store {
+                    session.persist(store).map_err(|e| e.to_string())?;
+                }
+                return Ok(terminal::Session::Completed(done));
+            }
+            toha::operations::SessionState::Ended(ended) => {
+                for message in ended.messages.iter().skip(reached) {
+                    println!("{message}");
+                }
+                if let Some(store) = store {
+                    session.persist(store).map_err(|e| e.to_string())?;
+                }
+                return Ok(terminal::Session::Ended(ended));
+            }
+            toha::operations::SessionState::Asking { .. } => {}
+            _ => unreachable!("known session state"),
+        }
+        let submission = match session.replay().map_err(|e| e.to_string())? {
+            Interview::Asking(pending) => {
+                reached = pending.messages_reached();
+                terminal::prompt_batch(&pending, &mut terminal::InquireAsk)?
+            }
+            _ => unreachable!("asking session"),
+        };
+        let state = session.answer(submission).map_err(|e| e.to_string())?;
+        if let Some(store) = store {
+            session.persist(store).map_err(|e| e.to_string())?;
+        }
+        if let toha::operations::SessionState::Ended(ended) = state {
+            for message in ended.messages.iter().skip(reached) {
+                println!("{message}");
+            }
+            return Ok(terminal::Session::Ended(ended));
         }
     }
 }
@@ -1282,241 +1243,176 @@ fn completion_preview(
         Outcome::Saved(0)
     }
 }
-fn continue_run(path: PathBuf, answers: Option<String>, dirs: &Dirs) -> Outcome {
+fn continue_run(path: PathBuf, answers: Option<String>, input: &[PathBuf], dirs: &Dirs) -> Outcome {
+    use toha::operations::SessionState;
     let (target, store) = match setup(&path, dirs) {
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
     };
-    let mut saved = match store.load(&target) {
+    let saved = match store.load(&target) {
         Ok(Some(v)) => v,
         Ok(None) => return Outcome::Error(guidance::nothing_staged(&path)),
         Err(e) => return Outcome::Error(e.to_string()),
     };
-    // A staged update resumes through the update replay adapter and merges.
     if update_stage::is_staged_update(&saved) {
-        return update_stage::continue_staged(saved, &path, answers, dirs);
+        return update_stage::continue_staged(saved, &path, answers, input, dirs);
     }
     let (config, registry, cwd) = match environment(dirs) {
         Ok(v) => v,
         Err(e) => return e,
     };
-    let resolved = match cli::resolve::resume_template(
-        &saved.template,
-        &saved.commit,
-        saved.named,
-        &config,
-        &registry,
+    let mut session = match toha::operations::Session::resume(
+        saved,
+        target.clone(),
         dirs,
+        config,
+        &registry,
         &cwd,
     ) {
         Ok(v) => v,
-        Err(e) => return resolve_error(e),
+        Err(e) => return operation_error(e, None),
     };
-    let template = match load_template(&resolved) {
-        Ok(v) => v,
-        Err(e) => return Outcome::Error(e),
-    };
-    let resolution = match toha::interview::configured_defaults(
-        &resolved.formal_name,
-        &template,
-        &config.presets,
-        &config.template_defaults,
-    ) {
-        Ok(v) => v,
-        Err(e) => return Outcome::Error(e.to_string()),
-    };
-    report_config_warnings(resolution.warnings());
-    let installed = trustable(&resolved, &registry);
-    // Re-read the pinned generate seed, if any, so the resumed defaults match.
-    let pinned_seed = match resolve_pinned_seed(
-        saved.seed.as_deref(),
-        toha::snapshot::source_identity(&resolved.formal_name),
-        &target,
-    ) {
-        Ok(v) => v,
-        Err(e) => return Outcome::Error(guidance::replay_failed(&path, &saved.template, &e)),
-    };
-    let interview = match saved.replay_with_seed(&template, resolution, pinned_seed, &target) {
+    if let Ok(warnings) = session.warnings() {
+        report_config_warnings(&warnings);
+    }
+    let state = match session.state() {
         Ok(v) => v,
         Err(e) => {
             return Outcome::Error(guidance::replay_failed(
                 &path,
-                &saved.template,
-                &e.to_string(),
+                &session.record.template,
+                &replay_diagnostic(&e),
             ));
         }
     };
-    if let Interview::Complete(completed) = &interview {
-        // `continue PATH FILE` on a complete interview refuses before reading the
-        // document. `continue PATH` shows the completion preview.
-        if answers.is_some() {
-            return Outcome::Error(guidance::complete_answers_unused(&path));
+    if answers.is_some() {
+        match state {
+            SessionState::Completed(_) => {
+                return Outcome::Error(guidance::complete_answers_unused(&path));
+            }
+            SessionState::Ended(ended) => {
+                return Outcome::Error(guidance::ended_answers_unused(
+                    &path,
+                    &session.record.template,
+                    ended.kind(),
+                ));
+            }
+            _ => {}
         }
-        return completion_preview(
-            &template,
-            completed,
-            &target,
-            &resolved,
-            installed.as_deref(),
-            &path,
-            true,
-        );
     }
-    if let Interview::Ended(ended) = &interview {
-        // A prior submission ended the staged interview. `continue PATH FILE`
-        // refuses before reading the document. Without a document, report the end.
-        if answers.is_some() {
-            return Outcome::Error(guidance::ended_answers_unused(
-                &path,
-                &saved.template,
-                ended.kind(),
-            ));
-        }
-        if let Err(e) = ended_removed(ended, &target, &store) {
-            return Outcome::Error(e);
-        }
-        eprintln!("{}", guidance::flow_ended(ended));
-        return Outcome::Document(
-            protocol::ended_document(ended, &context(&target, &saved)),
-            0,
-        );
-    }
-    let Interview::Asking(pending) = interview else {
-        unreachable!("a complete or ended interview returned above");
-    };
-    // `continue PATH` (person): prompt the remaining questions, saving each
-    // batch, then show the completion preview.
-    let Some(answers_file) = answers else {
-        if !io::stdin().is_terminal() {
-            return Outcome::Error(guidance::continue_no_terminal(&path));
-        }
-        return match terminal::drive(
-            Interview::Asking(pending),
-            &mut terminal::InquireAsk,
-            |submission| {
-                saved.submissions.push(submission);
-                store.save(&target, &saved).map_err(|e| e.to_string())
-            },
-        ) {
-            Ok(terminal::Session::Completed(completed)) => completion_preview(
-                &template,
-                &completed,
-                &target,
-                &resolved,
-                installed.as_deref(),
-                &path,
-                false,
-            ),
-            Ok(terminal::Session::Ended(ended)) => ended_outcome(&ended, &target, &store),
-            Err(error) => Outcome::Error(error),
-        };
-    };
-    // `continue PATH FILE` (agent): submit one document as a single step.
-    let text = match read_answers_text(&answers_file) {
-        Ok(v) => v,
-        Err(e) => return Outcome::Error(e),
-    };
-    let formal = saved.template.clone();
-    match protocol::answer_document_once(&formal, pending, &text) {
-        Ok(DocumentStep::Accepted {
-            interview,
-            submission,
-        }) => {
-            // An accepted abort removes the record and saves no submission; every
-            // other accepted step saves the one submission.
-            if let Interview::Ended(ended) = &interview
-                && ended.kind() == EndKind::Abort
-            {
-                if let Err(e) = store.remove(&target) {
-                    return Outcome::Error(e.to_string());
-                }
-                eprintln!("{}", guidance::flow_ended(ended));
-                return Outcome::Document(
-                    protocol::ended_document(ended, &context(&target, &saved)),
-                    0,
+    let incoming = match answers.as_deref().map(read_answers_text).transpose() {
+        Ok(Some(text)) => match protocol::document_answers(&session.record.template, &text) {
+            Ok(v) => v,
+            Err(e) => {
+                return Outcome::Error(
+                    document_error(SubmitDocumentError::Document(e), &session.record.template)
+                        .message,
                 );
             }
-            saved.submissions.push(submission);
-            if let Err(e) = store.save(&target, &saved) {
-                return Outcome::Error(e.to_string());
-            }
-            match interview {
-                Interview::Asking(next) => Outcome::Agent {
-                    document: Some(with_seed(
-                        protocol::batch_document(next.batch(), &context(&target, &saved), None),
-                        saved.seed.as_deref(),
-                    )),
-                    instructions: instructions(
-                        &AgentOutcome::Batch {
-                            template: &saved.template,
-                        },
+        },
+        Ok(None) => Default::default(),
+        Err(e) => return Outcome::Error(e),
+    };
+    if let Err(e) = session.admit_documents(input, &incoming) {
+        return operation_error(e, None);
+    }
+    let installed = trustable(&session.resolved, &registry);
+    if answers.is_none() && input.is_empty() {
+        match session.state() {
+            Ok(SessionState::Asking { .. }) => {
+                if !io::stdin().is_terminal() {
+                    return Outcome::Error(guidance::continue_no_terminal(&path));
+                }
+                return match prompt_fresh(&mut session, Some(&store)) {
+                    Ok(terminal::Session::Completed(done)) => completion_preview(
+                        &session.template,
+                        &done,
+                        &target,
+                        &session.resolved,
+                        installed.as_deref(),
                         &path,
+                        false,
                     ),
-                    code: 4,
-                },
-                Interview::Complete(_) => Outcome::Agent {
-                    document: None,
-                    instructions: instructions(&AgentOutcome::Complete, &path),
-                    code: 0,
-                },
-                // A flow `stop` retains the saved record; the notice names the
-                // abort command.
-                Interview::Ended(ended) => {
-                    eprintln!("{}", guidance::flow_ended(&ended));
-                    Outcome::Document(
-                        protocol::ended_document(&ended, &context(&target, &saved)),
-                        0,
-                    )
+                    Ok(terminal::Session::Ended(ended)) => {
+                        eprintln!("{}", guidance::flow_ended(&ended));
+                        Outcome::Written(vec![])
+                    }
+                    Err(e) => Outcome::Error(e),
+                };
+            }
+            Ok(SessionState::Completed(done)) => {
+                return completion_preview(
+                    &session.template,
+                    &done,
+                    &target,
+                    &session.resolved,
+                    installed.as_deref(),
+                    &path,
+                    true,
+                );
+            }
+            Err(e) => return operation_error(e, None),
+            _ => {}
+        }
+    }
+    let state = match if answers.is_some() && input.is_empty() {
+        session.answer(incoming)
+    } else {
+        session.state()
+    } {
+        Ok(v) => v,
+        Err(e) => return operation_error(e, None),
+    };
+    let rejected =
+        matches!(&state, SessionState::Asking { rejections, .. } if !rejections.is_empty());
+    if !rejected && let Err(e) = session.persist(&store) {
+        return operation_error(e, None);
+    }
+    match state {
+        SessionState::Asking {
+            mut document,
+            rejections,
+        } => {
+            if !rejections.is_empty() {
+                let explained =
+                    guidance::explain_rejections(&rejections, &path, &session.record.template);
+                if let Ok(Interview::Asking(pending)) = session.replay() {
+                    document = protocol::batch_document(
+                        pending.batch(),
+                        &context(&target, &session.record),
+                        Some(&explained),
+                    );
                 }
             }
-        }
-        Ok(DocumentStep::Rejected {
-            pending,
-            rejections,
-        }) => {
-            // Nothing is saved for a rejected document.
-            let errors = guidance::explain_rejections(&rejections, &path, &saved.template);
             Outcome::Agent {
-                document: Some(with_seed(
-                    protocol::batch_document(
-                        pending.batch(),
-                        &context(&target, &saved),
-                        Some(&errors),
-                    ),
-                    saved.seed.as_deref(),
-                )),
+                document: Some(if input.is_empty() {
+                    with_seed(document, session.record.seed.as_deref())
+                } else {
+                    document
+                }),
                 instructions: instructions(
                     &AgentOutcome::Batch {
-                        template: &saved.template,
+                        template: &session.record.template,
                     },
                     &path,
                 ),
                 code: 4,
             }
         }
-        Err(e) => Outcome::Error(document_error(e, &formal).message),
+        SessionState::Completed(_) => Outcome::Agent {
+            document: None,
+            instructions: instructions(&AgentOutcome::Complete, &path),
+            code: 0,
+        },
+        SessionState::Ended(ended) => {
+            eprintln!("{}", guidance::flow_ended(&ended));
+            Outcome::Document(
+                protocol::ended_document(&ended, &context(&target, &session.record)),
+                0,
+            )
+        }
+        _ => unreachable!("known session state"),
     }
-}
-/// The outcome of a flow `stop`/`abort` at any driver. Both write nothing and
-/// exit 0; `Abort` additionally removes the target's staged record via the
-/// existing `Store::remove` (a no-op when none exists; a removal I/O failure
-/// surfaces as an error and exits nonzero). The engine reached this only after
-/// a committed `Interview::Ended`, so a rejected document never removes a
-/// record.
-fn ended_removed(ended: &Ended, target: &CanonicalTarget, store: &Store) -> Result<(), String> {
-    if ended.kind() == EndKind::Abort {
-        store.remove(target).map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-/// The terminal/direct outcome of a flow end: a stderr notice and exit 0, with
-/// the staged record removed on an abort.
-fn ended_outcome(ended: &Ended, target: &CanonicalTarget, store: &Store) -> Outcome {
-    if let Err(e) = ended_removed(ended, target, store) {
-        return Outcome::Error(e);
-    }
-    eprintln!("{}", guidance::flow_ended(ended));
-    Outcome::Written(vec![])
 }
 fn abort(path: PathBuf, dirs: &Dirs) -> Outcome {
     let (target, store) = match setup(&path, dirs) {
@@ -1559,13 +1455,13 @@ fn instructions(outcome: &AgentOutcome, path: &Path) -> String {
 }
 /// One scripted `error` result document with its tabled exit code.
 /// The result document for a `--like` rejection on a document route: a usage
-/// error (exit 2) for a bare selector where one is required, or a snapshot error
+/// error (exit 2) for a bare selector where one is required, or a record error
 /// (exit 1) for an unknown, ambiguous, wrong-source, or absent selector.
 fn like_reject_document(reject: LikeReject, context: Option<&Context>) -> Outcome {
     let (kind, code) = if reject.usage {
         (ErrorKind::Input, 2)
     } else {
-        (ErrorKind::Snapshot, 1)
+        (ErrorKind::Record, 1)
     };
     Outcome::Document(
         protocol::error_document(
@@ -1578,6 +1474,13 @@ fn like_reject_document(reject: LikeReject, context: Option<&Context>) -> Outcom
         ),
         code,
     )
+}
+fn with_application(
+    mut document: serde_json::Value,
+    metadata: &serde_json::Value,
+) -> serde_json::Value {
+    document["application"] = metadata.clone();
+    document
 }
 /// Add the optional `seed: { from }` member to a result document when `--like`
 /// seeded the interview; leaves the document unchanged otherwise.
@@ -1643,62 +1546,7 @@ fn document_error(error: SubmitDocumentError, expected: &str) -> ResultError {
         commands: vec![],
     }
 }
-/// Classifies each planned write against the target's current bytes before any
-/// write: `create`/`overwrite`/`conflict` for a whole-file rule, `inject`/
-/// `update` for an edit (by whether the region or value is present), carrying the
-/// region key or JSON path an edit governs. A whole-file rule that a path also
-/// edits keeps its create/overwrite action; the edit folds into the generated
-/// image and is not classified against the not-yet-written target. An unchanged
-/// edit is omitted, as it writes nothing.
-#[allow(clippy::result_large_err)]
-fn classify_paths(
-    plan: &Plan,
-    target: &CanonicalTarget,
-    force: bool,
-) -> Result<Vec<protocol::PlannedPath>, toha::ApplyError> {
-    use toha::{EditReport, PlannedEdit};
-    let mut paths = Vec::new();
-    for file in &plan.files {
-        let action = if plan.conflicts.contains(&file.path) {
-            if force { "overwrite" } else { "conflict" }
-        } else {
-            "create"
-        };
-        paths.push(protocol::PlannedPath {
-            path: file.path.to_string(),
-            action: action.to_string(),
-            owner: None,
-        });
-    }
-    for edit in &plan.edits {
-        if plan.files.iter().any(|file| file.path == *edit.path()) {
-            continue;
-        }
-        let full = target.as_path().join(edit.path().as_path());
-        let current = std::fs::read(&full).ok();
-        let (report, owner) = match edit {
-            PlannedEdit::Region(region) => (
-                toha::report_region_edit(current.as_deref(), region)?,
-                region.region.to_string(),
-            ),
-            PlannedEdit::JsonValue(json) => (
-                toha::report_json_edit(current.as_deref(), json)?,
-                json.json_path.to_string(),
-            ),
-        };
-        let action = match report {
-            EditReport::Inject => "inject",
-            EditReport::Update | EditReport::Drift => "update",
-            EditReport::Unchanged => continue,
-        };
-        paths.push(protocol::PlannedPath {
-            path: edit.path().to_string(),
-            action: action.to_string(),
-            owner: Some(owner),
-        });
-    }
-    Ok(paths)
-}
+use toha::operations::classify_paths;
 /// Maps an apply failure to a scripted `error` document by kind.
 fn scripted_apply_error(error: toha::ApplyError, context: &Context) -> Outcome {
     use toha::ApplyError as E;
@@ -1706,7 +1554,7 @@ fn scripted_apply_error(error: toha::ApplyError, context: &Context) -> Outcome {
         E::Conflicts(_) | E::Drift(_) | E::Symlink(_) => ErrorKind::Conflict,
         E::Hook { .. } | E::HookIo { .. } | E::HookOutput { .. } => ErrorKind::Hook,
         E::Io { .. } | E::Deferred(_) | E::Region(_) | E::Json(_) => ErrorKind::Render,
-        E::Git(_) => ErrorKind::Git,
+        E::Git(_) | E::Record(_) => ErrorKind::Git,
     };
     scripted_error(kind, error.to_string(), vec![], Some(context))
 }
@@ -1715,15 +1563,18 @@ fn scripted_apply_error(error: toha::ApplyError, context: &Context) -> Outcome {
 /// and writes exactly one JSON result document for every outcome.
 #[allow(clippy::too_many_arguments)]
 fn scripted(
+    input: &[PathBuf],
     template_arg: String,
     path: &Path,
-    answers_file: String,
+    answers_file: Option<String>,
     force: bool,
     dry_run: bool,
     trust: bool,
     like: Option<Option<String>>,
+    parts: toha::parts::Selection,
     dirs: &Dirs,
 ) -> Outcome {
+    let answers_file = answers_file.as_deref().unwrap_or("");
     // 1. Construct one canonical target and check for a staged record.
     let (target, store) = match setup(path, dirs) {
         Ok(v) => v,
@@ -1750,14 +1601,14 @@ fn scripted(
     };
     let (config, registry) = match cli::resolve::load_context(dirs, &cwd) {
         Ok(v) => v,
-        Err(e) => return scripted_resolve_error(e, path, &answers_file, force, dry_run, trust),
+        Err(e) => return scripted_resolve_error(e, path, answers_file, force, dry_run, trust),
     };
     // 3. Resolve the command template, load it, produce the configured
     //    Resolution, and start the interview.
     let resolved =
         match cli::resolve::resolve_template(&template_arg, &config, &registry, dirs, &cwd) {
             Ok(v) => v,
-            Err(e) => return scripted_resolve_error(e, path, &answers_file, force, dry_run, trust),
+            Err(e) => return scripted_resolve_error(e, path, answers_file, force, dry_run, trust),
         };
     let template = match Template::load(&resolved.folder) {
         Ok(v) => v,
@@ -1766,7 +1617,7 @@ fn scripted(
     if let Err(e) = toha::requirement::check(&template) {
         return requirement_error(&e);
     }
-    let (resolution, now) = match resolution(&resolved.formal_name, &template, &config) {
+    let now = match resolution(&resolved.formal_name, &template, &config) {
         Ok(v) => v,
         Err(e) => return scripted_error(ErrorKind::Source, e, vec![], None),
     };
@@ -1790,104 +1641,91 @@ fn scripted(
     let like_seed = match resolve_like_seed(
         LikeFlag::parse(like),
         false,
-        toha::snapshot::source_identity(&resolved.formal_name),
+        &toha::applied::source_identity(&resolved.formal_name),
         &target,
     ) {
         Ok(v) => v,
         Err(reject) => return like_reject_document(reject, Some(&ctx)),
     };
     let seed_from = like_seed.as_ref().map(|seed| seed.id.to_string());
-    let interview = match resolution.start_with_seed(
-        &template,
-        now,
-        new_context,
-        like_seed.map(|seed| seed.engine),
-    ) {
-        Ok((interview, warnings)) => {
-            report_config_warnings(&warnings);
-            interview
-        }
-        Err(e) => return scripted_error(ErrorKind::Render, e.to_string(), vec![], Some(&ctx)),
-    };
     // 4. Read the document once as UTF-8.
-    let text = match read_answers_text(&answers_file) {
+    let text = match if answers_file.is_empty() {
+        Ok(serde_json::json!({"template": resolved.formal_name, "answers": {}}).to_string())
+    } else {
+        read_answers_text(answers_file)
+    } {
         Ok(v) => v,
         Err(e) => return scripted_error(ErrorKind::Input, e, vec![], Some(&ctx)),
     };
-    // 5-8. Parse, verify identity, and drive the headless walk.
-    let headless = match protocol::answer_document_headless(
-        &resolved.formal_name,
-        &template,
-        interview,
-        &text,
-    ) {
+    let supplied = match protocol::document_answers(&resolved.formal_name, &text) {
         Ok(v) => v,
         Err(e) => {
-            let error = document_error(e, &resolved.formal_name);
-            let code = if error.kind == ErrorKind::Ambiguous {
-                5
-            } else {
-                1
-            };
-            return Outcome::Document(protocol::error_document(&error, Some(&ctx)), code);
+            let error = document_error(SubmitDocumentError::Document(e), &resolved.formal_name);
+            return Outcome::Document(protocol::error_document(&error, Some(&ctx)), 1);
         }
     };
-    match headless {
-        Headless::Pending {
-            pending,
-            rejections,
-            ..
-        } => {
-            // The headless walk reaches each unanswered required question and
-            // rejects it with `is required`; the scripted `questions` document
-            // carries those rejections. Agent routes take one step and leave an
-            // unanswered question pending without such an error.
-            Outcome::Document(
-                with_seed(
-                    protocol::batch_document(pending.batch(), &ctx, Some(&rejections)),
-                    seed_from.as_deref(),
-                ),
-                4,
-            )
+    if let Err(error) = parts.admit(&template, &supplied) {
+        return Outcome::Usage(error);
+    }
+    let mut session = match toha::operations::Session::start(
+        template,
+        resolved,
+        target.clone(),
+        new_context,
+        now,
+        config,
+        parts,
+        input,
+        &supplied,
+        like_seed,
+    ) {
+        Ok(v) => v,
+        Err(e) => return operation_error(e, Some(&ctx)),
+    };
+    match session.seed_warnings() {
+        Ok(warnings) => report_config_warnings(&warnings),
+        Err(e) => return scripted_error(ErrorKind::Render, e.to_string(), vec![], Some(&ctx)),
+    }
+    let state = match session.answer_all(supplied) {
+        Ok(v) => v,
+        Err(e) => return scripted_error(ErrorKind::Render, e.to_string(), vec![], Some(&ctx)),
+    };
+    match state {
+        toha::operations::SessionState::Asking { document, .. } => {
+            Outcome::Document(with_seed(document, seed_from.as_deref()), 4)
         }
-        Headless::Ended { ended, .. } => {
-            // The scripted route never staged, so an abort removes nothing.
+        toha::operations::SessionState::Ended(ended) => {
             Outcome::Document(protocol::ended_document(&ended, &ctx), 0)
         }
-        Headless::Completed {
+        toha::operations::SessionState::Completed(completed) => scripted_completed(
+            &session,
             completed,
-            accepted,
-        } => scripted_completed(
-            &template,
-            completed,
-            accepted,
-            &target,
-            &resolved,
             &ctx,
             force,
             dry_run,
             trust,
             seed_from.as_deref(),
         ),
+        _ => unreachable!("known session state"),
     }
 }
 /// The scripted `Completed` tail: build the plan, then report `planned` (dry run
-/// or untrusted hooks) or apply and report `applied`, capturing the snapshot of
+/// or untrusted hooks) or apply and report `applied`, writing the applied record for
 /// the apply when the project allows it.
 #[allow(clippy::too_many_arguments)]
 fn scripted_completed(
-    template: &Template,
+    session: &toha::operations::Session,
     completed: Completed,
-    accepted: Vec<indexmap::IndexMap<String, serde_json::Value>>,
-    target: &CanonicalTarget,
-    resolved: &ResolvedTemplate,
     ctx: &Context,
     force: bool,
     dry_run: bool,
     trust: bool,
     seed_from: Option<&str>,
 ) -> Outcome {
-    let dry_run = dry_run || matches!(completed.step(), Step::Plan { apply: false });
+    let template = &session.template;
+    let resolved = &session.resolved;
+    let target = &session.target;
+    let dry_run = toha::updates::effective_dry_run(dry_run, &completed);
     let live_surface = match toha::HookSurface::of(template) {
         Ok(surface) => surface.digest(),
         Err(error) => {
@@ -1899,12 +1737,21 @@ fn scripted_completed(
             toha::evaluate_trust(resolved.approval.as_ref(), &live_surface),
             toha::Trust::Trusted
         );
-    let plan = match Plan::build(template, &completed, target) {
+    let plan = match session.plan(&completed) {
         Ok(plan) => plan,
+        Err(toha::operations::OperationError::Record(error)) => {
+            return Outcome::Error(error.to_string());
+        }
         Err(error) => {
             return scripted_error(ErrorKind::Render, error.to_string(), vec![], Some(ctx));
         }
     };
+    let metadata = parts_output::metadata(
+        None,
+        &plan.record.as_ref().expect("plan record").revision,
+        &[],
+        &template.selected_parts(&completed),
+    );
     let mut messages = completed.messages.clone();
     if let Some(before) = &plan.before_apply {
         messages.push(before.clone());
@@ -1924,13 +1771,25 @@ fn scripted_completed(
     if dry_run {
         let code = if has_hooks && !trusted { 3 } else { 0 };
         return Outcome::Document(
-            protocol::planned_document(&classified, &plan, &messages, ctx, trust_state),
+            with_application(
+                protocol::planned_document(&classified, &plan, &messages, ctx, trust_state),
+                &metadata,
+            ),
             code,
         );
     }
     if has_hooks && !trusted {
         return Outcome::Document(
-            protocol::planned_document(&classified, &plan, &messages, ctx, TrustState::Untrusted),
+            with_application(
+                protocol::planned_document(
+                    &classified,
+                    &plan,
+                    &messages,
+                    ctx,
+                    TrustState::Untrusted,
+                ),
+                &metadata,
+            ),
             3,
         );
     }
@@ -1938,16 +1797,8 @@ fn scripted_completed(
         .iter()
         .map(|entry| (entry.path.clone(), entry.action.clone()))
         .collect();
-    // The snapshot save rule reads cleanliness before the apply writes.
-    let project = open_project_for_snapshot(
-        toha::snapshot::Project::open(target),
-        &mut std::io::stderr(),
-    );
-    let was_clean = project
-        .as_ref()
-        .is_some_and(|p| matches!(p.cleanliness(), Ok(toha::snapshot::Cleanliness::Clean)));
-    match plan.apply_reporting(
-        target,
+    match session.apply_plan(
+        plan,
         ApplyOptions {
             force,
             trusted: true,
@@ -1955,6 +1806,7 @@ fn scripted_completed(
         // The scripted route keeps standard output a single JSON document: an
         // uncaptured hook's stdout is forwarded to standard error.
         &ScriptedRunner,
+        None,
         &mut |_| {},
     ) {
         Ok(Applied::Written {
@@ -1962,6 +1814,7 @@ fn scripted_completed(
             hooks,
             after_apply,
             git,
+            record,
             ..
         }) => {
             if let Some(warning) = git.as_ref().and_then(|g| g.warning.clone()) {
@@ -1992,20 +1845,11 @@ fn scripted_completed(
                     .collect(),
                 git: git.as_ref().map(|g| g.setup.clone()),
             };
-            let project = project_after_git(project, git.as_ref(), target);
-            let snapshot = plain_apply_snapshot(
-                project.as_ref(),
-                was_clean,
-                target,
-                template,
-                &completed,
-                resolved,
-                accepted,
+            let mut document = with_application(
+                with_seed(protocol::applied_document(&report, ctx), seed_from),
+                &metadata,
             );
-            let mut document = with_seed(protocol::applied_document(&report, ctx), seed_from);
-            if let Some(object) = document.as_object_mut() {
-                object.insert("snapshot".to_owned(), snapshot);
-            }
+            document["record"] = record_document(&record);
             Outcome::Document(document, 0)
         }
         // Trust was granted above, so an untrusted plan cannot occur here.
@@ -2015,123 +1859,8 @@ fn scripted_completed(
             vec![],
             Some(ctx),
         ),
-        Err(error) => scripted_apply_error(error, ctx),
-    }
-}
-/// Open the repository to decide the snapshot save, distinguishing a genuine
-/// open fault from a target that is simply not inside a git repository. A
-/// `ProjectError` (a canonicalize IO error, a bare repository, a config/strip
-/// failure) is named on `warn` before the apply degrades to saving no snapshot;
-/// "not a git repo" (`Ok(None)`) degrades silently, as before. This adds a
-/// diagnostic only: it does not change the apply, its exit code, or its result
-/// document, and it does not narrow the not-git path.
-fn open_project_for_snapshot(
-    opened: Result<Option<toha::snapshot::Project>, toha::snapshot::ProjectError>,
-    warn: &mut dyn std::io::Write,
-) -> Option<toha::snapshot::Project> {
-    match opened {
-        Ok(project) => project,
-        Err(err) => {
-            let _ = writeln!(
-                warn,
-                "warning: cannot open the repository to save a snapshot: {err}"
-            );
-            None
-        }
-    }
-}
-
-/// The `snapshot` member of a plain apply's `applied` document: `{ "id": ... }`
-/// when the apply saved a snapshot, or `{ "skipped": "<reason>" }` when the save
-/// rule declined. The plan is rebuilt for the capture because `apply` consumes
-/// it; it renders the same mutation targets from the same template and answers.
-fn plain_apply_snapshot(
-    project: Option<&toha::snapshot::Project>,
-    was_clean: bool,
-    target: &CanonicalTarget,
-    template: &Template,
-    completed: &Completed,
-    resolved: &ResolvedTemplate,
-    submissions: Vec<indexmap::IndexMap<String, serde_json::Value>>,
-) -> serde_json::Value {
-    use toha::snapshot::{FrozenNow, SnapshotOutcome};
-
-    let Some(project) = project else {
-        return serde_json::json!({ "skipped": toha::snapshot::SkipReason::NotGit.as_str() });
-    };
-    let plan = match Plan::build(template, completed, target) {
-        Ok(plan) => plan,
-        Err(error) => return serde_json::json!({ "error": error.to_string() }),
-    };
-    let revision = match cli::resolve::snapshot_revision(&resolved.formal_name, &resolved.commit) {
-        Ok(revision) => revision,
-        Err(error) => return serde_json::json!({ "error": error.to_string() }),
-    };
-    let generated = FrozenNow::new(completed.now.clone());
-    match project.save_after_apply(
-        &plan,
-        resolved.formal_name.clone(),
-        revision,
-        generated,
-        submissions,
-        was_clean,
-    ) {
-        Ok(SnapshotOutcome::Saved(id)) => serde_json::json!({ "id": id.to_string() }),
-        Ok(SnapshotOutcome::Skipped(reason)) => {
-            serde_json::json!({ "skipped": reason.as_str() })
-        }
-        Err(error) => serde_json::json!({ "error": error.to_string() }),
-    }
-}
-/// The project a plain apply captures into: the repository opened before the
-/// apply, or the one the apply's `git` question initialized. A new repository
-/// has no commit, so its snapshot reports `no-commit` rather than `not-git`.
-/// Cleanliness is still the reading taken before the apply.
-fn project_after_git(
-    before: Option<toha::snapshot::Project>,
-    git: Option<&GitReport>,
-    target: &toha::staging::CanonicalTarget,
-) -> Option<toha::snapshot::Project> {
-    let initialized =
-        git.is_some_and(|g| matches!(g.setup, toha::git_target::GitSetup::Initialized { .. }));
-    if before.is_some() || !initialized {
-        return before;
-    }
-    open_project_for_snapshot(
-        toha::snapshot::Project::open(target),
-        &mut std::io::stderr(),
-    )
-}
-/// The plain apply's snapshot result as one human line for the person and agent
-/// routes, which report text: the id it saved, or the reason it saved none. The
-/// staged record carries the template identity, commit, and submissions.
-fn plain_apply_snapshot_line(
-    project: Option<&toha::snapshot::Project>,
-    was_clean: bool,
-    saved: &StagedRecord,
-    generated_now: &jiff::Zoned,
-    plan: &Plan,
-) -> Option<String> {
-    use toha::snapshot::{FrozenNow, SnapshotOutcome};
-
-    let project = project?;
-    let revision = match cli::resolve::snapshot_revision(&saved.template, &saved.commit) {
-        Ok(revision) => revision,
-        Err(error) => return Some(format!("snapshot not saved: {error}")),
-    };
-    match project.save_after_apply(
-        plan,
-        saved.template.clone(),
-        revision,
-        FrozenNow::new(generated_now.clone()),
-        saved.submissions.clone(),
-        was_clean,
-    ) {
-        Ok(SnapshotOutcome::Saved(id)) => Some(format!("saved snapshot {id}")),
-        Ok(SnapshotOutcome::Skipped(reason)) => {
-            Some(format!("no snapshot saved: {}", reason.as_str()))
-        }
-        Err(error) => Some(format!("snapshot not saved: {error}")),
+        Err(toha::operations::OperationError::Apply(error)) => scripted_apply_error(*error, ctx),
+        Err(error) => operation_error(error, Some(ctx)),
     }
 }
 /// Maps a resolve failure on the scripted route to a `source` or `ambiguous`
@@ -2146,7 +1875,11 @@ fn scripted_resolve_error(
     trust: bool,
 ) -> Outcome {
     match error {
-        ResolveError::Error(message) => scripted_error(ErrorKind::Source, message, vec![], None),
+        error @ (ResolveError::Error(_)
+        | ResolveError::NotFound(_)
+        | ResolveError::StaleRevision { .. }) => {
+            scripted_error(ErrorKind::Source, error.to_string(), vec![], None)
+        }
         ResolveError::Ambiguous { name, matches } => {
             let commands = matches
                 .iter()
@@ -2169,11 +1902,13 @@ fn scripted_resolve_error(
                 None,
             )
         }
+        other => scripted_error(ErrorKind::Source, other.to_string(), vec![], None),
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn run(
+    input: &[PathBuf],
     template: Option<String>,
     path: &Path,
     answers: Option<String>,
@@ -2181,19 +1916,24 @@ fn run(
     dry_run: bool,
     trust: bool,
     like: Option<Option<String>>,
+    parts: toha::parts::Selection,
     dirs: &Dirs,
 ) -> Outcome {
     // Scripted route: apply TEMPLATE PATH --answers FILE. One shot, one result
     // document, never staged.
-    if let (Some(template), Some(answers_file)) = (template.clone(), answers.clone()) {
+    if let Some(template) = template.clone()
+        && (answers.is_some() || (!input.is_empty() && !io::stdin().is_terminal()))
+    {
         return scripted(
+            input,
             template,
             path,
-            answers_file,
+            answers.clone(),
             force,
             dry_run,
             trust,
             like,
+            parts,
             dirs,
         );
     }
@@ -2207,13 +1947,16 @@ fn run(
         Ok(v) => v,
         Err(e) => return Outcome::Error(e.to_string()),
     };
+    if parts.is_present() && (existing.is_some() || template.is_none()) {
+        return Outcome::Usage("part flags belong to a new interview; use stage TEMPLATE PATH --update to change parts".into());
+    }
     // `apply PATH` on a staged update resumes it through the update replay
     // adapter and merges from the base.
     if answers.is_none()
         && let Some(saved) = &existing
         && update_stage::is_staged_update(saved)
     {
-        return update_stage::apply_staged(saved.clone(), path, dry_run, trust, dirs);
+        return update_stage::apply_staged(saved.clone(), path, dry_run, trust, input, dirs);
     }
     let (config, registry, cwd) = match environment(dirs) {
         Ok(v) => v,
@@ -2270,216 +2013,161 @@ fn run(
     let mut terminal_run = false;
     // The stored approval digest of the template resolved by name, compared to
     // the live executable surface once the template is loaded.
-    let approval: Option<ReviewDigest>;
     // The installed template whose registry trust would run the hooks.
-    let installed: Option<String>;
-    let (template, interview, saved) = match (template, existing) {
-        // apply TEMPLATE PATH with nothing staged: the person route starts the
-        // interview, prompts, saves at each batch boundary, and applies at
-        // completion.
+    let mut session = match (template, existing) {
         (Some(folder), None) => {
-            if !io::stdin().is_terminal() {
-                return Outcome::Error(guidance::no_terminal(&folder, path));
-            }
             let resolved =
                 match cli::resolve::resolve_template(&folder, &config, &registry, dirs, &cwd) {
                     Ok(v) => v,
                     Err(e) => return resolve_error(e),
                 };
-            approval = resolved.approval.clone();
-            installed = trustable(&resolved, &registry);
-            let template = match load_template(&resolved) {
+            let template = match Template::load(&resolved.folder) {
+                Ok(v) => v,
+                Err(e) => return Outcome::Error(e.to_string()),
+            };
+            if let Err(e) = toha::requirement::check(&template) {
+                return Outcome::Error(e.to_string());
+            }
+            if let Err(e) = parts.admit(&template, &Default::default()) {
+                return Outcome::Usage(e);
+            }
+            if !io::stdin().is_terminal() {
+                return Outcome::Error(guidance::no_terminal(&folder, path));
+            }
+            let preparation = match toha::operations::Preparation::new(
+                template,
+                resolved,
+                target.clone(),
+                input,
+                &Default::default(),
+            ) {
+                Ok(v) => v,
+                Err(e) => return operation_error(e, None),
+            };
+            let now = match resolution(
+                &preparation.resolved.formal_name,
+                &preparation.template,
+                &config,
+            ) {
                 Ok(v) => v,
                 Err(e) => return Outcome::Error(e),
             };
-            let (resolution, now) = match resolution(&resolved.formal_name, &template, &config) {
-                Ok(v) => v,
-                Err(e) => return Outcome::Error(e),
-            };
-            // Direct/new-apply grants environment access on explicit `--trust`
-            // or a current matching reviewed approval; otherwise it denies.
             let decision = EnvironmentDecision::grant_if_needed(apply_environment_grant(
-                trust, &resolved, &template,
+                trust,
+                &preparation.resolved,
+                &preparation.template,
             ));
-            let new_context = match build_context(&target, &resolved, &template, decision, true) {
+            let context = match preparation.context(
+                decision,
+                HostFacts::capture(),
+                ExecutionFacts::new(is_admin(), true),
+                &mut HostEnvironmentSource,
+            ) {
                 Ok(v) => v,
-                Err(e) => return Outcome::Error(e),
+                Err(e) => return operation_error(e, None),
             };
-            // The person route is interactive: a bare `--like` opens the picker.
-            let like_seed = match resolve_like_seed(
+            let seed = match resolve_like_seed(
                 like,
                 true,
-                toha::snapshot::source_identity(&resolved.formal_name),
+                &toha::applied::source_identity(&preparation.resolved.formal_name),
                 &target,
             ) {
                 Ok(v) => v,
-                Err(reject) => return Outcome::Error(reject.message),
+                Err(e) => return Outcome::Error(e.message),
             };
-            if let Some(seed) = &like_seed {
-                println!("seed defaults from snapshot {}", seed.label);
+            if let Some(seed) = &seed {
+                println!("seed defaults from application {}", seed.label);
             }
-            let mut saved = StagedRecord::new_with_context(
-                new_context.clone(),
-                resolved.commit.clone(),
-                resolved.named,
-                now.to_string(),
-                vec![],
-            );
-            saved.seed = like_seed.as_ref().map(|seed| seed.id.to_string());
-            let interview = match resolution.start_with_seed(
-                &template,
-                now,
-                new_context,
-                like_seed.map(|seed| seed.engine),
-            ) {
-                Ok((interview, warnings)) => {
-                    report_config_warnings(&warnings);
-                    interview
-                }
-                Err(e) => return Outcome::Error(e.to_string()),
-            };
-            // Save each accepted batch so an interrupt leaves a resumable record;
-            // a dry run records nothing.
-            match terminal::drive(interview, &mut terminal::InquireAsk, |submission| {
-                if dry_run {
-                    return Ok(());
-                }
-                saved.submissions.push(submission);
-                store.save(&target, &saved).map_err(|e| e.to_string())
-            }) {
-                Ok(terminal::Session::Completed(completed)) => {
-                    terminal_run = true;
-                    (template, completed, Some(saved))
-                }
-                Ok(terminal::Session::Ended(ended)) => {
-                    return ended_outcome(&ended, &target, &store);
-                }
-                Err(e) => return Outcome::Error(e),
+            let session =
+                match preparation.start(context, now, config, parts, &Default::default(), seed) {
+                    Ok(v) => v,
+                    Err(e) => return operation_error(e, None),
+                };
+            match session.seed_warnings() {
+                Ok(warnings) => report_config_warnings(&warnings),
+                Err(e) => return operation_error(e, None),
             }
+            session
         }
-        // apply PATH (agent) or apply TEMPLATE PATH naming the staged template
-        // (person) resumes the staged interview. The agent route never prompts;
-        // the person route prompts the remaining questions.
-        (None, Some(mut saved)) => {
-            let resolved = match cli::resolve::resume_template(
-                &saved.template,
-                &saved.commit,
-                saved.named,
-                &config,
-                &registry,
+        (None, Some(saved)) => {
+            let mut session = match toha::operations::Session::resume(
+                saved,
+                target.clone(),
                 dirs,
+                config,
+                &registry,
                 &cwd,
             ) {
                 Ok(v) => v,
-                Err(e) => return resolve_error(e),
+                Err(e) => return operation_error(e, None),
             };
-            approval = resolved.approval.clone();
-            installed = trustable(&resolved, &registry);
-            let template = match load_template(&resolved) {
-                Ok(v) => v,
+            if let Ok(warnings) = session.warnings() {
+                report_config_warnings(&warnings);
+            }
+            if let Err(e) = session.admit_documents(input, &Default::default()) {
+                return operation_error(e, None);
+            }
+            session
+        }
+        (None, None) => return Outcome::Error(guidance::nothing_staged(path)),
+        _ => unreachable!("a named template resumes its staged interview"),
+    };
+    let approval = session.resolved.approval.clone();
+    let installed = trustable(&session.resolved, &registry);
+    let completed = match session.state() {
+        Ok(toha::operations::SessionState::Completed(done)) => done,
+        Ok(toha::operations::SessionState::Ended(ended)) => {
+            if let Err(e) = session.persist(&store) {
+                return operation_error(e, None);
+            }
+            eprintln!("{}", guidance::flow_ended(&ended));
+            return Outcome::Written(vec![]);
+        }
+        Ok(toha::operations::SessionState::Asking { document, .. }) if !named => {
+            return Outcome::Agent {
+                document: Some(with_seed(document, session.record.seed.as_deref())),
+                instructions: instructions(
+                    &AgentOutcome::ApplyIncomplete {
+                        template: &session.record.template,
+                    },
+                    path,
+                ),
+                code: 4,
+            };
+        }
+        Ok(toha::operations::SessionState::Asking { .. }) => {
+            if !io::stdin().is_terminal() {
+                return Outcome::Error(guidance::continue_no_terminal(path));
+            }
+            match prompt_fresh(&mut session, if dry_run { None } else { Some(&store) }) {
+                Ok(terminal::Session::Completed(done)) => {
+                    terminal_run = true;
+                    done
+                }
+                Ok(terminal::Session::Ended(ended)) => {
+                    eprintln!("{}", guidance::flow_ended(&ended));
+                    return Outcome::Written(vec![]);
+                }
                 Err(e) => return Outcome::Error(e),
-            };
-            let resolution = match toha::interview::configured_defaults(
-                &resolved.formal_name,
-                &template,
-                &config.presets,
-                &config.template_defaults,
-            ) {
-                Ok(v) => v,
-                Err(e) => return Outcome::Error(e.to_string()),
-            };
-            report_config_warnings(resolution.warnings());
-            // Re-read the pinned seed, if the staged interview was generated with
-            // `--like`, so the resumed defaults match the staged run exactly.
-            let pinned_seed = match resolve_pinned_seed(
-                saved.seed.as_deref(),
-                toha::snapshot::source_identity(&resolved.formal_name),
-                &target,
-            ) {
-                Ok(v) => v,
-                Err(e) => {
-                    return Outcome::Error(guidance::replay_failed(path, &saved.template, &e));
-                }
-            };
-            let interview =
-                match saved.replay_with_seed(&template, resolution, pinned_seed, &target) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        return Outcome::Error(guidance::replay_failed(
-                            path,
-                            &saved.template,
-                            &e.to_string(),
-                        ));
-                    }
-                };
-            match interview {
-                Interview::Ended(ended) => {
-                    return ended_outcome(&ended, &target, &store);
-                }
-                Interview::Complete(completed) => (template, completed, Some(saved)),
-                // apply TEMPLATE PATH resume: the person route prompts the rest,
-                // saving each batch, then applies.
-                Interview::Asking(pending) if named => {
-                    if !io::stdin().is_terminal() {
-                        return Outcome::Error(guidance::continue_no_terminal(path));
-                    }
-                    match terminal::drive(
-                        Interview::Asking(pending),
-                        &mut terminal::InquireAsk,
-                        |submission| {
-                            if dry_run {
-                                return Ok(());
-                            }
-                            saved.submissions.push(submission);
-                            store.save(&target, &saved).map_err(|e| e.to_string())
-                        },
-                    ) {
-                        Ok(terminal::Session::Completed(c)) => {
-                            terminal_run = true;
-                            (template, c, Some(saved))
-                        }
-                        Ok(terminal::Session::Ended(ended)) => {
-                            return ended_outcome(&ended, &target, &store);
-                        }
-                        Err(e) => return Outcome::Error(e),
-                    }
-                }
-                // apply PATH: the agent route reports the current batch with
-                // instructions and never prompts. Nothing new is saved.
-                Interview::Asking(pending) => {
-                    return Outcome::Agent {
-                        document: Some(with_seed(
-                            protocol::batch_document(
-                                pending.batch(),
-                                &context(&target, &saved),
-                                None,
-                            ),
-                            saved.seed.as_deref(),
-                        )),
-                        instructions: instructions(
-                            &AgentOutcome::ApplyIncomplete {
-                                template: &saved.template,
-                            },
-                            path,
-                        ),
-                        code: 4,
-                    };
-                }
             }
         }
-        (None, None) => {
-            return Outcome::Error(guidance::nothing_staged(path));
+        Err(e) => {
+            return Outcome::Error(guidance::replay_failed(
+                path,
+                &session.record.template,
+                &replay_diagnostic(&e),
+            ));
         }
-        (Some(_), Some(_)) => unreachable!("a named template resumes its staged interview"),
+        _ => unreachable!("known session state"),
     };
-    let completed = interview;
+    let template = &session.template;
     // A flow `dry-run` composes with the CLI `--dry-run` by union: either
     // suppresses the apply.
-    let dry_run = dry_run || matches!(completed.step(), Step::Plan { apply: false });
+    let dry_run = toha::updates::effective_dry_run(dry_run, &completed);
     // Trust is the live executable surface matching the stored approval; the
     // one flag `--trust` overrides for a single run. This is the only place a
     // template becomes trusted from stored state.
-    let live_surface = match toha::HookSurface::of(&template) {
+    let live_surface = match toha::HookSurface::of(template) {
         Ok(surface) => surface.digest(),
         Err(error) => return Outcome::Error(error.to_string()),
     };
@@ -2489,10 +2177,17 @@ fn run(
     );
     // An approval that no longer matches marks the hooks changed since approval.
     let changed_since_approval = approval.is_some() && !registry_trusted;
-    let plan = match Plan::build(&template, &completed, &target) {
+    let plan = session.plan(&completed);
+    let plan = match plan {
         Ok(plan) => plan,
         Err(error) => return Outcome::Error(error.to_string()),
     };
+    let metadata = parts_output::metadata(
+        None,
+        &plan.record.as_ref().expect("plan record").revision,
+        &[],
+        &template.selected_parts(&completed),
+    );
     if dry_run {
         let edits = match injection_report(&plan, &target) {
             Ok(edits) => edits,
@@ -2501,9 +2196,10 @@ fn run(
         let lines = if terminal_run {
             vec![]
         } else {
-            completed.messages
+            completed.messages.clone()
         }
         .into_iter()
+        .chain(parts_output::lines(&metadata))
         .chain(plan_lines(&plan, force, &edits));
         if plan.hooks.is_empty() || registry_trusted || trust {
             return Outcome::Written(lines.collect());
@@ -2522,22 +2218,10 @@ fn run(
         );
         return Outcome::Saved(0);
     }
-    // The snapshot save of a plain apply (person and agent routes). The apply
-    // consumes its plan, so build a second for the capture, and read cleanliness
-    // before the apply writes. `completed` is not yet moved here.
-    let capture_plan = Plan::build(&template, &completed, &target).ok();
-    let capture_now = completed.now.clone();
-    let capture_project = open_project_for_snapshot(
-        toha::snapshot::Project::open(&target),
-        &mut std::io::stderr(),
-    );
-    let capture_was_clean = capture_project
-        .as_ref()
-        .is_some_and(|p| matches!(p.cleanliness(), Ok(toha::snapshot::Cleanliness::Clean)));
     let before = plan.before_apply.clone();
     let preview = plan_lines(&plan, force, &[]);
     if !terminal_run {
-        for message in completed.messages {
+        for message in &completed.messages {
             println!("{message}");
         }
     }
@@ -2546,36 +2230,27 @@ fn run(
     }
     // Each file line is printed as the file is written, so that the lines
     // precede the output of every hook.
-    match plan.apply_reporting(
-        &target,
+    match session.apply_plan(
+        plan,
         ApplyOptions {
             force,
             trusted: registry_trusted || trust,
         },
         &ProcessRunner,
+        Some(&store),
         &mut |file| println!("{file}"),
     ) {
         Ok(Applied::Written {
-            after_apply, git, ..
+            after_apply,
+            git,
+            record,
+            ..
         }) => {
-            let mut lines = git.as_ref().map(GitReport::lines).unwrap_or_default();
+            let mut lines = parts_output::lines(&metadata);
+            lines.extend(git.as_ref().map(GitReport::lines).unwrap_or_default());
             lines.extend(after_apply);
-            let capture_project = project_after_git(capture_project, git.as_ref(), &target);
-            if let (Some(sv), Some(cplan)) = (saved.as_ref(), capture_plan.as_ref())
-                && let Some(line) = plain_apply_snapshot_line(
-                    capture_project.as_ref(),
-                    capture_was_clean,
-                    sv,
-                    &capture_now,
-                    cplan,
-                )
-            {
-                lines.push(line);
-            }
-            if saved.is_some()
-                && let Err(e) = store.remove(&target)
-            {
-                return Outcome::Error(e.to_string());
+            if let toha::applied::RecordOutcome::Written(path) = record {
+                lines.push(format!("saved applied record {path}"));
             }
             Outcome::Written(lines)
         }
@@ -2589,7 +2264,12 @@ fn run(
                 changed_since_approval,
             ))
         }
-        Err(error @ (toha::ApplyError::Conflicts(_) | toha::ApplyError::Drift(_))) => {
+        Err(toha::operations::OperationError::Apply(error))
+            if matches!(
+                *error,
+                toha::ApplyError::Conflicts(_) | toha::ApplyError::Drift(_)
+            ) =>
+        {
             Outcome::Error(format!("{error}\n{}", guidance::conflicts(&invocation)))
         }
         Err(error) => Outcome::Error(error.to_string()),
@@ -2605,6 +2285,25 @@ fn main() -> ExitCode {
     if let Command::Skills { command } = command {
         return skills::run(command).finish();
     }
+    let record_target = match &command {
+        Command::Stage { path, .. } | Command::Continue { path, .. } => Some(path.clone()),
+        Command::Apply { paths, .. } => paths.last().map(PathBuf::from),
+        _ => None,
+    };
+    if let Some(path) = record_target {
+        let checked = staging::canonical_target(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|target| {
+                match toha::applied::Project::open(&target).map_err(|e| e.to_string())? {
+                    Some(project) => project.record_relative().map_err(|e| e.to_string()),
+                    None => toha::applied::validate_record_path(target.as_path())
+                        .map_err(|e| e.to_string()),
+                }
+            });
+        if let Err(error) = checked {
+            return Outcome::Usage(error).finish();
+        }
+    }
     let dirs = match Dirs::resolve() {
         Ok(v) => v,
         Err(e) => return Outcome::Error(e).finish(),
@@ -2612,21 +2311,30 @@ fn main() -> ExitCode {
     match command {
         Command::Skills { .. } => unreachable!("the home-free skills command returned above"),
         Command::Stage {
+            input,
+            with,
+            without,
             template,
             path,
             r#async,
             trust,
-            from,
+            update,
             baseline,
             reanswer,
             like,
         } => {
-            // A staged update (`stage --from`/`--baseline`) drives the update
+            let parts = toha::parts::Selection {
+                with,
+                without,
+                base: None,
+            };
+            // A staged update (`stage --update`/`--baseline`) drives the update
             // replay adapter; a plain stage starts a fresh interview.
-            if from.is_some() || baseline {
-                let base = match from {
-                    Some(id) => update::UpdateBase::From(id),
-                    None => update::UpdateBase::Baseline,
+            if update || baseline {
+                let base = if update {
+                    update::UpdateBase::Update
+                } else {
+                    update::UpdateBase::Baseline
                 };
                 return update_stage::stage(
                     base,
@@ -2635,22 +2343,37 @@ fn main() -> ExitCode {
                     r#async,
                     reanswer,
                     trust,
+                    &input,
+                    parts,
                     &dirs,
                 )
                 .finish();
             }
-            stage(template, path.clone(), r#async.clone(), trust, like, &dirs)
-                .retry(|formal| {
-                    Invocation::Stage {
-                        template: Arg::Given(guidance::formal_for("stage", formal)),
-                        path: &path,
-                        output: r#async.as_ref().map(|file| file.as_deref()),
-                    }
-                    .command()
-                })
-                .finish()
+            stage(
+                &input,
+                template,
+                path.clone(),
+                r#async.clone(),
+                trust,
+                like,
+                parts,
+                &dirs,
+            )
+            .retry(|formal| {
+                Invocation::Stage {
+                    template: Arg::Given(guidance::formal_for("stage", formal)),
+                    path: &path,
+                    output: r#async.as_ref().map(|file| file.as_deref()),
+                }
+                .command()
+            })
+            .finish()
         }
-        Command::Continue { path, answers } => continue_run(path, answers, &dirs).finish(),
+        Command::Continue {
+            path,
+            answers,
+            input,
+        } => continue_run(path, answers, &input, &dirs).finish(),
         Command::Abort { path } => abort(path, &dirs).finish(),
         Command::Templates(args) => {
             let cwd = match std::env::current_dir() {
@@ -2675,32 +2398,42 @@ fn main() -> ExitCode {
             }
         }
         Command::Apply {
+            input,
+            with,
+            without,
             paths,
             answers,
             force,
             dry_run,
             trust,
-            from,
+            update,
             baseline,
             reanswer,
             like,
         } => {
+            let parts = toha::parts::Selection {
+                with,
+                without,
+                base: None,
+            };
             let (template, path) = match paths.as_slice() {
                 [path] => (None, PathBuf::from(path)),
                 [template, path] => (Some(template.clone()), PathBuf::from(path)),
                 _ => unreachable!("clap requires one or two operands"),
             };
-            if from.is_some() || baseline {
-                let base = match from {
-                    Some(id) => update::UpdateBase::From(id),
-                    None => update::UpdateBase::Baseline,
+            if update || baseline {
+                let base = if update {
+                    update::UpdateBase::Update
+                } else {
+                    update::UpdateBase::Baseline
                 };
                 return update::run_update(
-                    base, template, &path, answers, reanswer, dry_run, trust, &dirs,
+                    base, template, &path, answers, reanswer, dry_run, trust, &input, parts, &dirs,
                 )
                 .finish();
             }
             run(
+                &input,
                 template,
                 &path,
                 answers.clone(),
@@ -2708,6 +2441,7 @@ fn main() -> ExitCode {
                 dry_run,
                 trust,
                 like,
+                parts,
                 &dirs,
             )
             .retry(|formal| {
@@ -2723,40 +2457,12 @@ fn main() -> ExitCode {
             })
             .finish()
         }
-        Command::Init { path, remote } => {
-            snapshot_outcome(cli::snapshots::init(path, &remote)).finish()
-        }
-        Command::Snapshots { command } => {
-            let output = match command {
-                SnapshotsCommand::List { path, json } => cli::snapshots::list(path, json),
-                SnapshotsCommand::Clean {
-                    path,
-                    keep: _,
-                    remove: Some(file),
-                    force,
-                } => cli::snapshots::clean_remove(path, &file, force),
-                SnapshotsCommand::Clean { remove: None, .. } => cli::snapshots::SnapshotOutput::Error(
-                    "snapshots clean needs --remove FILE for the script route; the interactive person route is not yet available"
-                        .to_owned(),
-                ),
-            };
-            snapshot_outcome(output).finish()
-        }
-    }
-}
-
-/// Map a snapshot command's output to the shared `Outcome`.
-fn snapshot_outcome(output: cli::snapshots::SnapshotOutput) -> Outcome {
-    match output {
-        cli::snapshots::SnapshotOutput::Lines(lines) => Outcome::Written(lines),
-        cli::snapshots::SnapshotOutput::Document(value) => Outcome::Document(value, 0),
-        cli::snapshots::SnapshotOutput::Error(message) => Outcome::Error(message),
     }
 }
 
 #[cfg(test)]
 mod dirs_tests {
-    use super::{Dirs, Platform};
+    use super::{Dirs, Platform, RuntimeDirs};
 
     const HOME_UNAVAILABLE: &str =
         "home directory unavailable: set HOME (or USERPROFILE on Windows) to an absolute path";
@@ -2935,8 +2641,7 @@ mod dirs_tests {
     #[test]
     fn missing_home_names_the_variables() {
         let error = dirs_without(Platform::Unix, &[], &["HOME", "USERPROFILE"])
-            .err()
-            .expect("no home directory");
+            .expect_err("no home directory");
         assert_eq!(error, HOME_UNAVAILABLE);
     }
 
@@ -3078,7 +2783,7 @@ mod report_tests {
             serde_json::json!({
                 "protocol": 1,
                 "status": "applied",
-                "snapshot": { "id": "01J9Z8XR7Q" },
+                "record": { "path": ".toha.json" },
                 "merge": { "changes": [], "conflicted": [] }
             }),
             0,
@@ -3100,10 +2805,8 @@ mod report_tests {
         // snapshot ref-map — captured from the real update before the report —
         // must be byte-identical after the report fails.
         use indexmap::IndexMap;
+        use toha::applied::{Base, MergeOptions, Merged, Project, RecordInputs, Revision};
         use toha::interview::{Interview, Seed};
-        use toha::snapshot::{
-            Base, FrozenNow, MergeOptions, Merged, Project, Revision, SnapshotInputs,
-        };
         use toha::template::{Id, Template};
         use toha::{RawAnswer, RawAnswers};
 
@@ -3158,16 +2861,14 @@ mod report_tests {
             serde_json::json!("sample-value"),
         );
         let project = Project::open(&target).unwrap().unwrap();
-        let merged = toha::snapshot::merge_apply(
+        let merged = toha::applied::merge_apply(
             &project,
             Base::Empty,
             &template,
             &completed,
-            SnapshotInputs {
+            RecordInputs {
                 template: "forge:demo/greeter@stable".to_owned(),
                 revision: Revision::Unversioned,
-                generated: FrozenNow::new(completed.now.clone()),
-                submissions: vec![submission],
             },
             MergeOptions {
                 trusted: true,
@@ -3177,7 +2878,7 @@ mod report_tests {
         )
         .unwrap();
         let Merged::Written {
-            snapshot, changes, ..
+            record, changes, ..
         } = merged
         else {
             panic!("a baseline merge writes: {merged:?}");
@@ -3192,7 +2893,7 @@ mod report_tests {
             serde_json::json!({
                 "protocol": 1,
                 "status": "applied",
-                "snapshot": { "id": snapshot.to_string() },
+                "record": { "path": record },
                 "merge": { "changes": [], "conflicted": [] }
             }),
             0,
@@ -3212,10 +2913,8 @@ mod report_tests {
         let file_before = std::fs::read(root.join("greeting.txt")).unwrap();
         let index_before = std::fs::read(root.join(".git/index")).unwrap();
         let refmap_before = refmap(root);
-        assert!(
-            refmap_before.contains(&snapshot.to_string()),
-            "the update saved its snapshot ref: {refmap_before}"
-        );
+        assert!(refmap_before.is_empty(), "an update creates no Toha ref");
+        let record_before = std::fs::read(root.join(".toha.json")).unwrap();
 
         // Reporting to a failing writer surfaces the error (no panic, no swallow).
         let mut err = Vec::new();
@@ -3225,6 +2924,10 @@ mod report_tests {
             "a broken pipe at the report boundary surfaces as an error"
         );
 
+        assert_eq!(
+            std::fs::read(root.join(".toha.json")).unwrap(),
+            record_before
+        );
         // The real committed result is byte-identical after the failed report.
         assert_eq!(
             std::fs::read(root.join("greeting.txt")).unwrap(),
@@ -3261,38 +2964,45 @@ mod report_tests {
     }
 }
 
-#[cfg(test)]
-mod snapshot_open_tests {
-    use super::open_project_for_snapshot;
-    use toha::snapshot::ProjectError;
-
-    #[test]
-    fn a_genuine_open_fault_is_warned_and_degrades_to_no_snapshot() {
-        // Err(ProjectError) — a real open fault, not "not a git repo" — is named
-        // on the warn writer before degrading to None (the apply saves no
-        // snapshot). This is the distinction finding 5 restores.
-        let mut warn = Vec::new();
-        let project = open_project_for_snapshot(Err(ProjectError::Open("boom".into())), &mut warn);
-        assert!(project.is_none(), "a fault degrades to no snapshot");
-        let text = String::from_utf8(warn).unwrap();
-        assert!(
-            text.contains("warning"),
-            "the fault is named as a warning: {text}"
-        );
-        assert!(text.contains("boom"), "the warning names the fault: {text}");
+fn record_document(record: &toha::applied::RecordOutcome) -> serde_json::Value {
+    match record {
+        toha::applied::RecordOutcome::Written(path) => serde_json::json!({"path":path}),
+        toha::applied::RecordOutcome::NotGit => serde_json::json!({"skipped":"not-git"}),
+        toha::applied::RecordOutcome::Internal => serde_json::Value::Null,
     }
+}
 
+#[cfg(test)]
+mod seed_diagnostic_tests {
     #[test]
-    fn not_a_git_repository_degrades_silently() {
-        // Ok(None) — the target is simply not inside a repository — degrades to
-        // None with no diagnostic, as before.
-        let mut warn = Vec::new();
-        let project = open_project_for_snapshot(Ok(None), &mut warn);
-        assert!(project.is_none());
-        assert!(
-            warn.is_empty(),
-            "not-a-repo stays silent: {}",
-            String::from_utf8_lossy(&warn)
-        );
+    fn seed_refusals_keep_cli_guidance() {
+        use toha::operations::{OperationError, SeedError};
+        for (error, expected) in [
+            (
+                SeedError::MissingCopy,
+                "staged --like has no copied application; abort and stage again",
+            ),
+            (
+                SeedError::WrongSource,
+                "copied --like application has another source; abort and stage again",
+            ),
+            (
+                SeedError::WrongTarget,
+                "copied --like application has another target; abort and stage again",
+            ),
+        ] {
+            assert_eq!(
+                super::replay_diagnostic(&OperationError::Seed(error)),
+                expected,
+                "cli_seed_replay_text"
+            );
+        }
+        match super::operation_error(OperationError::Seed(SeedError::MissingCopy), None) {
+            super::Outcome::Error(message) => assert_eq!(
+                message, "staged --like has no copied application; abort and stage again",
+                "cli_seed_operation_text"
+            ),
+            _ => panic!("seed error changed category"),
+        }
     }
 }

@@ -4,55 +4,60 @@ relationships:
   implements:
     - command-line-interface
     - interview-protocol
-    - snapshot
+    - applied-record
   related-to:
     - architecture
     - project-updates
     - template-defaults
+    - template-composition
 objective: >-
-  Seed a new template application from one prior snapshot while preserving
+  Seed a new template application from one recorded application while preserving
   selected source identity, ordinary apply behavior and default provenance.
 proposed-design:
   high-level-overview: >-
     The generate axis is an apply pattern: the same template writes to distinct
-    project subpaths. cli::like selects a snapshot through the repository-wide
-    reader and folds its raw submissions into SnapshotSeed. Resolution layers
-    that seed over configured entries before starting the shared engine.
+    project subpaths. cli::like selects an application through the repository-wide
+    applied-record reader and converts its accepted raw answers into ApplicationSeed.
+    Resolution layers that seed over configured entries before starting the shared
+    engine. The selected entry also supplies parts for the part-selection rules.
   selection: >-
-    Candidates are validated snapshots whose source identity matches the
-    template source, across all target subpaths in the repository. Latest selects
-    the greatest ULID. An explicit id or prefix resolves exactly one valid
-    snapshot and verifies source equality; unknown, ambiguous, invalid or
-    wrong-source selection fails. Bare like is a person picker with newest
-    preselected and a none choice; scripts and agents name latest or a reference.
-    Without like, apply asks its ordinary questions. Like excludes from and
-    baseline; explicit selection requires a containing Git project.
+    Candidates are validated applications whose source identity matches the
+    template source, across all target subpaths in the repository. --like TARGET
+    selects the entry at that repository-relative target. A missing application,
+    invalid record or wrong-source selection fails. Bare like is a person-route
+    picker; scripts and agents must name a target. The record orders no entry by
+    time, and no temporal or snapshot-id selector exists. Without like, apply asks
+    its ordinary questions. Like excludes update and baseline and requires a
+    containing Git project.
   seed-boundary: >-
-    Folding submissions keeps the last raw value per question id and preserves
-    loop arrays. Snapshot and repository types stop at this boundary. SnapshotSeed
-    carries the raw defaults and snapshot provenance. Resolution::start_with_seed
-    builds a single-occupant default bank: a kind-matching snapshot value wins
-    over the configured value for that id; wrong-kind snapshot values are dropped
-    with warnings, revealing the configured or template fallback. Entries for
-    questions the template does not define do not become defaults.
+    The selected entry's answers supply one raw value per question id, preserving
+    loop arrays and whole document values. Application and repository types stop
+    at this boundary. ApplicationSeed carries the raw defaults and application
+    target as provenance. Resolution::start_with_seed builds a single-occupant
+    default bank: a kind-matching application value wins over the configured value
+    for that id; wrong-kind values are dropped with warnings, revealing the
+    configured or template fallback. Entries for questions the template does not
+    define do not become defaults. Parts remain separate from answers and follow
+    the template composition design's part-selection rules.
   precedence-and-validation: >-
-    Route submissions win over snapshot defaults, then configured defaults,
-    then template defaults. Snapshot bank entries retain their source id in
-    prepared-default rejections. The engine validates and formats values under
+    Route submissions win over application defaults, then configured defaults,
+    then template defaults. Application bank entries retain their source target
+    in prepared-default rejections. The engine validates and formats values under
     the selected template. A constraint rejection prompts a person or reports a
-    remaining question to a script or agent. No seed follows the normal
-    context-bearing Resolution start path; configured entries retain their
-    mapping and preset origins in either path.
-  staged-pinning: >-
-    The optional staged seed member stores the selected snapshot id, not copied
-    answers. Resume rereads that exact snapshot and source-checks it; missing or
-    invalid pinned data fails rather than selecting another snapshot. The seed
-    remains separate from the update base. Accepted explicit submissions replay
-    over seeded defaults. Result documents expose optional seed provenance
+    remaining question to a script or agent. Without a seed, the interview follows
+    the normal context-bearing Resolution start path; configured entries retain
+    their mapping and preset origins in either path.
+  staged-seed: >-
+    The optional staged seed member stores the selected application target, and
+    seed_entry copies the selected entry, including its answers and parts. Resume
+    uses the copy even if the live entry changes or is removed. The seed remains
+    separate from the update base. Accepted explicit submissions replay over
+    seeded defaults. Result documents expose seed.from as the selected target
     without answer values.
   apply-and-capture: >-
     Selection writes no repository state. The ordinary plan and apply path writes
-    the new target, enforces existing conflicts and trust, and invokes the
-    snapshot producer's capture rules for the new application. Identity is the
-    selected source and target pair. The interview engine knows neither Gitoxide
-    nor snapshot repository selection.
+    the new target, enforces existing conflicts and trust, and captures ownership
+    under the applied-record rules. Identity is the selected source and target
+    pair. An apply that writes files inside Git replaces that pair's entry in the
+    repository's applied record; preview writes none. The interview engine knows
+    neither Gitoxide nor application repository selection.

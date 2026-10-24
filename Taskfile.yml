@@ -7,7 +7,13 @@ tasks:
   build:
     cmds: [ cargo build ]
   test:
-    cmds: [ cargo test ]
+    cmds:
+      - cargo test
+      - task: test:consumer
+  test:consumer:
+    desc: Exercise public library operations from a separate crate without CLI features
+    cmds:
+      - cargo run --locked --manifest-path tests/consumer/Cargo.toml
   test:network:
     desc: Run local HTTPS and opt-in Unix OpenSSH Git transport tests
     cmds:
@@ -19,9 +25,13 @@ tasks:
   lint:
     cmds: [ "cargo clippy --all-targets -- -D warnings" ]
   fmt:
-    cmds: [ cargo fmt --all ]
+    cmds:
+      - cargo fmt --all
+      - cargo fmt --manifest-path tests/consumer/Cargo.toml
   fmt-check:
-    cmds: [ "cargo fmt --all -- --check" ]
+    cmds:
+      - cargo fmt --all -- --check
+      - cargo fmt --manifest-path tests/consumer/Cargo.toml -- --check
   release:check:
     desc: Validate release configuration, workflows, and the crates.io package
     cmds:

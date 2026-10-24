@@ -14,7 +14,7 @@ objective: >-
 proposed-design:
   high-level-overview: >-
     Compiled Jinja values retain their source and origin. Default-bank entries
-    retain template, configured, seed or snapshot provenance. An effect-free
+    retain template, configured, seed or application provenance. An effect-free
     tentative walk classifies early-answer failures before a submission commits.
     A producer-created CanonicalTarget supplies one identity to all consumers.
   template-faults: >-

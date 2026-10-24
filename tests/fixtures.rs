@@ -87,6 +87,7 @@ fn run(fixture: &Path, target: &Path) -> Result<Vec<String>, (u8, String)> {
             Err((3, String::new()))
         } else {
             Ok(Applied::Written {
+                record: toha::applied::RecordOutcome::Internal,
                 files: vec![],
                 hooks_run: 0,
                 hooks: vec![],

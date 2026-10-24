@@ -69,8 +69,8 @@ fn the_two_clone_acceptance_scenario() {
     let work = tempfile::tempdir().unwrap();
     let template = work.path().join("template");
     version_a(&template);
-    let formal = support::formal_name(&template);
-    let address = support::folder_address(&template.canonicalize().unwrap());
+    let formal = support::versioned_template(&template);
+    let address = formal.clone();
 
     // A bare origin and the first clone.
     let origin = work.path().join("origin.git");
@@ -105,13 +105,13 @@ fn the_two_clone_acceptance_scenario() {
     let mut apply = support::isolated_command(iso.path());
     apply
         .arg("apply")
-        .arg(&address)
+        .arg(support::refresh_template(&address))
         .arg(&clone1)
         .arg("--answers")
         .arg(&answers);
     let document = support::first_document(&apply.output().unwrap().stdout);
     assert!(
-        document["snapshot"]["id"].is_string(),
+        document["record"]["path"].is_string(),
         "version A recorded a snapshot: {document}"
     );
 
@@ -128,16 +128,6 @@ fn the_two_clone_acceptance_scenario() {
 
     // Publish the branch and the snapshot ref to the origin.
     git_ok(&clone1, &["push", "--quiet", "-u", "origin", "main"]);
-    git_ok(
-        &clone1,
-        &[
-            "push",
-            "--quiet",
-            "origin",
-            "refs/toha/snapshots/*:refs/toha/snapshots/*",
-        ],
-    );
-
     // The second clone fetches the snapshot after `toha init`.
     let clone2 = work.path().join("clone2");
     git_ok(
@@ -149,21 +139,13 @@ fn the_two_clone_acceptance_scenario() {
             clone2.to_str().unwrap(),
         ],
     );
-    let mut init = support::isolated_command(iso.path());
-    init.arg("init").arg(&clone2);
-    assert!(init.output().unwrap().status.success(), "toha init");
-    git_ok(&clone2, &["fetch", "--quiet", "origin"]);
-
-    // `snapshots list` marks the fetched snapshot as a likely base.
-    let mut list = support::isolated_command(iso.path());
-    list.arg("snapshots").arg("list").arg(&clone2).arg("--json");
-    let listed = support::first_document(&list.output().unwrap().stdout);
-    let entries = listed["snapshots"].as_array().unwrap();
-    assert_eq!(entries.len(), 1, "the snapshot fetched: {listed}");
-    let snapshot = entries[0]["id"].as_str().unwrap().to_owned();
+    let record: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(clone2.join(".toha.json")).unwrap()).unwrap();
+    assert_eq!(record["applications"].as_array().unwrap().len(), 1);
     assert!(
-        entries[0]["mark"].is_string(),
-        "marked a likely base: {listed}"
+        git(&clone2, &["for-each-ref", "refs/toha/"])
+            .stdout
+            .is_empty()
     );
 
     // Version B, then update the second clone from the snapshot.
@@ -171,10 +153,9 @@ fn the_two_clone_acceptance_scenario() {
     let mut update = support::isolated_command(iso.path());
     update
         .arg("apply")
-        .arg(&address)
+        .arg(support::refresh_template(&address))
         .arg(&clone2)
-        .arg("--from")
-        .arg(&snapshot);
+        .arg("--update");
     let output = update.output().unwrap();
     assert_eq!(output.status.code(), Some(0), "update: {output:?}");
     let text = String::from_utf8(output.stdout).unwrap();
@@ -183,7 +164,7 @@ fn the_two_clone_acceptance_scenario() {
         text.contains("Resolve conflicts in these files before committing."),
         "{text}"
     );
-    assert!(text.contains("Saved snapshot "), "{text}");
+    assert!(text.contains("Saved applied record "), "{text}");
     assert!(!text.contains("\"protocol\""), "{text}");
 
     // The template's clean change reached src/app.txt and the new file was added.
@@ -230,28 +211,19 @@ fn the_two_clone_acceptance_scenario() {
 
     // The update saved a new snapshot of the render; applying from it reports
     // already-current and changes no byte.
-    let mut list2 = support::isolated_command(iso.path());
-    list2
-        .arg("snapshots")
-        .arg("list")
-        .arg(&clone2)
-        .arg("--json");
-    let listed2 = support::first_document(&list2.output().unwrap().stdout);
-    let newest = listed2["snapshots"][0]["id"].as_str().unwrap().to_owned();
     let readme_before = std::fs::read_to_string(clone2.join("README.md")).unwrap();
     let mut current = support::isolated_command(iso.path());
     current
         .arg("apply")
-        .arg(&address)
+        .arg(support::refresh_template(&address))
         .arg(&clone2)
-        .arg("--from")
-        .arg(&newest);
+        .arg("--update");
     let output = current.output().unwrap();
     assert!(output.status.success());
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(text.contains("Already current."), "{text}");
     assert!(
-        text.contains("No snapshot saved: already current."),
+        text.contains("No applied record written: already current."),
         "{text}"
     );
     assert_eq!(

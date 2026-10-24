@@ -1,0 +1,7 @@
+$schema: https://refinery.systems/ontology/term
+title: Document question
+description: >-
+  A question whose answer is a JSON document validated by a JSON Schema named
+  by URI. The template vendors the schema in its schemas directory, or Toha
+  fetches it. A contract document is routed to the question by its `$schema`
+  URI, and the question names an `input` file that Toha reads on every apply.

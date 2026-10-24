@@ -1657,7 +1657,7 @@ fn a_snapshot_seeded_id_is_prepared_exactly_once_with_a_single_occupant() {
     // Snapshot, pushes the prompt twice (duplicate preparation); the batch then
     // holds two `style` prompts and the exactly-once assertion fails.
     use indexmap::IndexMap;
-    use toha::interview::{SnapshotSeed, configured_defaults};
+    use toha::interview::{ApplicationSeed, configured_defaults};
     use toha::{Id, Interview, Item, RawAnswer};
 
     let (_folder, template) = inline(
@@ -1670,7 +1670,7 @@ fn a_snapshot_seeded_id_is_prepared_exactly_once_with_a_single_occupant() {
     let now = seed().now;
     let mut defaults: IndexMap<Id, RawAnswer> = IndexMap::new();
     defaults.insert(Id::parse("style").unwrap(), RawAnswer(json!("panel")));
-    let snap_seed = SnapshotSeed {
+    let snap_seed = ApplicationSeed {
         defaults,
         from: "01J9Z4K7QX6M2V8R0T5B3N1P9D".to_owned(),
     };
@@ -1707,4 +1707,57 @@ fn a_snapshot_seeded_id_is_prepared_exactly_once_with_a_single_occupant() {
         json!("panel"),
         "the single occupant is the snapshot value"
     );
+}
+
+#[test]
+fn raw_seed_null_keeps_empty_answer_semantics_without_relaxing_configured_defaults() {
+    for kind in [
+        "text",
+        "multiline",
+        "git",
+        "confirm",
+        "select",
+        "multiselect",
+        "loop",
+    ] {
+        let (question_kind, extra) = match kind {
+            "select" | "multiselect" => (kind, "options: [one, two]"),
+            "loop" => ("text", "loop: {min: 0, max: 2}"),
+            _ => (kind, "description: Sample"),
+        };
+        let (_folder, template) = inline(&format!(
+            "name: sample\ninterview:\n  - {{id: value, type: {question_kind}, prompt: Value, {extra}}}\n"
+        ));
+        let seeded = Seed {
+            defaults: [(
+                toha::Id::parse("value").unwrap(),
+                toha::RawAnswer(json!(null)),
+            )]
+            .into(),
+            ..seed()
+        };
+        let Interview::Asking(pending) = Interview::start(&template, seeded).unwrap() else {
+            panic!("seed question missing")
+        };
+        let Interview::Complete(completed) = pending.answer(Default::default()).unwrap() else {
+            panic!("empty seed did not complete")
+        };
+        let expected = if matches!(kind, "multiselect" | "loop") {
+            json!([])
+        } else {
+            json!(null)
+        };
+        assert_eq!(
+            completed.answers[&toha::Id::parse("value").unwrap()].to_json(),
+            expected,
+            "raw_seed_null_empty_semantics"
+        );
+        let configured = toha::interview::configured_defaults(
+            "sample",
+            &template,
+            &Default::default(),
+            &configured(json!({"value": null})),
+        );
+        assert!(configured.is_err(), "configured_null_still_rejected");
+    }
 }

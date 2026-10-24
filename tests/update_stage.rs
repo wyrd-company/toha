@@ -75,7 +75,7 @@ fn baseline(iso: &Path, address: &str, formal: &str, target: &Path, trust: bool)
     let mut command = support::isolated_command(iso);
     command
         .arg("apply")
-        .arg(address)
+        .arg(support::refresh_template(address))
         .arg(target)
         .arg("--baseline")
         .arg("--answers")
@@ -84,7 +84,7 @@ fn baseline(iso: &Path, address: &str, formal: &str, target: &Path, trust: bool)
         command.arg("--trust");
     }
     let document = support::first_document(&command.output().unwrap().stdout);
-    let id = document["snapshot"]["id"].as_str().unwrap().to_owned();
+    let id = document["record"]["path"].as_str().unwrap().to_owned();
     git(target, &["add", "."]);
     git(target, &["commit", "--quiet", "-m", "baseline"]);
     id
@@ -99,9 +99,9 @@ fn a_person_apply_from_prompts_a_new_question_then_merges() {
     let target = tempfile::tempdir().unwrap();
     write_one_question(template_dir.path());
     target_repo(target.path());
-    let formal = support::formal_name(template_dir.path());
-    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
-    let snapshot = baseline(iso.path(), &address, &formal, target.path(), false);
+    let formal = support::versioned_template(template_dir.path());
+    let address = formal.clone();
+    let _snapshot = baseline(iso.path(), &address, &formal, target.path(), false);
     add_second_question(template_dir.path());
 
     // `apply ADDRESS TARGET --from ID` at a terminal prompts the new question and
@@ -109,10 +109,9 @@ fn a_person_apply_from_prompts_a_new_question_then_merges() {
     let mut command = support::isolated_command(iso.path());
     command
         .arg("apply")
-        .arg(&address)
+        .arg(support::refresh_template(&address))
         .arg(target.path())
-        .arg("--from")
-        .arg(&snapshot);
+        .arg("--update");
     // The batch the replay cannot complete carries both questions, so the person
     // is prompted for `name` (with the recorded value as the default) and the new
     // `color`. Accepting the default keeps the name; the new answer settles it.
@@ -142,9 +141,9 @@ fn a_person_stage_prompts_saves_each_batch_then_applies() {
     let target = tempfile::tempdir().unwrap();
     write_one_question(template_dir.path());
     target_repo(target.path());
-    let formal = support::formal_name(template_dir.path());
-    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
-    let snapshot = baseline(iso.path(), &address, &formal, target.path(), false);
+    let formal = support::versioned_template(template_dir.path());
+    let address = formal.clone();
+    let _snapshot = baseline(iso.path(), &address, &formal, target.path(), false);
     add_second_question(template_dir.path());
 
     // `stage ADDRESS TARGET --from ID` at a terminal (no --async) is the person
@@ -152,10 +151,9 @@ fn a_person_stage_prompts_saves_each_batch_then_applies() {
     let mut command = support::isolated_command(iso.path());
     command
         .arg("stage")
-        .arg(&address)
+        .arg(support::refresh_template(&address))
         .arg(target.path())
-        .arg("--from")
-        .arg(&snapshot);
+        .arg("--update");
     let mut session = Session::spawn(command).unwrap();
     session.expect("Name").unwrap();
     session.send_line("sample-value").unwrap();
@@ -169,7 +167,7 @@ fn a_person_stage_prompts_saves_each_batch_then_applies() {
     let output = apply.output().unwrap();
     assert_eq!(output.status.code(), Some(0), "apply: {output:?}");
     let text = String::from_utf8(output.stdout.clone()).unwrap();
-    assert!(text.contains("Saved snapshot "), "{text}");
+    assert!(text.contains("Saved applied record "), "{text}");
     assert!(!text.contains("\"protocol\""), "{text}");
     assert_eq!(
         std::fs::read_to_string(target.path().join("color.txt")).unwrap(),
@@ -188,9 +186,9 @@ fn stage_trust_environment_is_carried_through_continue_and_apply() {
     let target = tempfile::tempdir().unwrap();
     write_one_question(template_dir.path());
     target_repo(target.path());
-    let formal = support::formal_name(template_dir.path());
-    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
-    let snapshot = baseline(iso.path(), &address, &formal, target.path(), false);
+    let formal = support::versioned_template(template_dir.path());
+    let address = formal.clone();
+    let _snapshot = baseline(iso.path(), &address, &formal, target.path(), false);
 
     // The new version adds a question and a file that renders the captured user.
     std::fs::write(
@@ -213,10 +211,9 @@ fn stage_trust_environment_is_carried_through_continue_and_apply() {
     let mut stage = support::isolated_command(iso.path());
     stage
         .arg("stage")
-        .arg(&address)
+        .arg(support::refresh_template(&address))
         .arg(target.path())
-        .arg("--from")
-        .arg(&snapshot)
+        .arg("--update")
         .arg("--trust")
         .arg("--async")
         .env("USER", "staged-user")
@@ -266,14 +263,14 @@ fn stage_baseline_then_continue_and_apply_records_a_snapshot() {
     let target = tempfile::tempdir().unwrap();
     write_one_question(template_dir.path());
     target_repo(target.path());
-    let formal = support::formal_name(template_dir.path());
-    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let formal = support::versioned_template(template_dir.path());
+    let address = formal.clone();
 
     // Stage a baseline update: there is no recorded answer, so it asks `name`.
     let mut stage = support::isolated_command(iso.path());
     stage
         .arg("stage")
-        .arg(&address)
+        .arg(support::refresh_template(&address))
         .arg(target.path())
         .arg("--baseline")
         .arg("--async");
@@ -299,7 +296,7 @@ fn stage_baseline_then_continue_and_apply_records_a_snapshot() {
     let mut apply = support::isolated_command(iso.path());
     apply.arg("apply").arg(target.path());
     let text = String::from_utf8(apply.output().unwrap().stdout.clone()).unwrap();
-    assert!(text.contains("Saved snapshot "), "{text}");
+    assert!(text.contains("Saved applied record "), "{text}");
     assert!(!text.contains("\"protocol\""), "{text}");
     assert_eq!(
         std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
@@ -314,18 +311,17 @@ fn stage_reanswer_re_asks_a_recorded_answer() {
     let target = tempfile::tempdir().unwrap();
     write_one_question(template_dir.path());
     target_repo(target.path());
-    let formal = support::formal_name(template_dir.path());
-    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
-    let snapshot = baseline(iso.path(), &address, &formal, target.path(), false);
+    let formal = support::versioned_template(template_dir.path());
+    let address = formal.clone();
+    let _snapshot = baseline(iso.path(), &address, &formal, target.path(), false);
 
     // `--reanswer` offers `name` again even though the base answered it.
     let mut stage = support::isolated_command(iso.path());
     stage
         .arg("stage")
-        .arg(&address)
+        .arg(support::refresh_template(&address))
         .arg(target.path())
-        .arg("--from")
-        .arg(&snapshot)
+        .arg("--update")
         .arg("--reanswer")
         .arg("--async");
     let staged = stage.output().unwrap();
@@ -349,7 +345,7 @@ fn stage_reanswer_re_asks_a_recorded_answer() {
     let mut apply = support::isolated_command(iso.path());
     apply.arg("apply").arg(target.path());
     let text = String::from_utf8(apply.output().unwrap().stdout.clone()).unwrap();
-    assert!(text.contains("Saved snapshot "), "{text}");
+    assert!(text.contains("Saved applied record "), "{text}");
     assert!(!text.contains("\"protocol\""), "{text}");
     assert_eq!(
         std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
@@ -375,18 +371,17 @@ fn stage_refuses_before_any_batch_when_env_needs_trust() {
     )
     .unwrap();
     target_repo(target.path());
-    let formal = support::formal_name(template_dir.path());
-    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
-    let snapshot = baseline(iso.path(), &address, &formal, target.path(), true);
+    let formal = support::versioned_template(template_dir.path());
+    let address = formal.clone();
+    let _snapshot = baseline(iso.path(), &address, &formal, target.path(), true);
 
     // Without --trust the stage refuses before asking anything.
     let mut stage = support::isolated_command(iso.path());
     stage
         .arg("stage")
-        .arg(&address)
+        .arg(support::refresh_template(&address))
         .arg(target.path())
-        .arg("--from")
-        .arg(&snapshot)
+        .arg("--update")
         .arg("--async");
     let output = stage.output().unwrap();
     assert_ne!(output.status.code(), Some(0), "env stage should refuse");
@@ -413,19 +408,18 @@ fn a_continue_with_a_foreign_identity_leaves_the_staged_update_unchanged() {
     let target = tempfile::tempdir().unwrap();
     write_one_question(template_dir.path());
     target_repo(target.path());
-    let formal = support::formal_name(template_dir.path());
-    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
-    let snapshot = baseline(iso.path(), &address, &formal, target.path(), false);
+    let formal = support::versioned_template(template_dir.path());
+    let address = formal.clone();
+    let _snapshot = baseline(iso.path(), &address, &formal, target.path(), false);
     add_second_question(template_dir.path());
 
     // Stage the update (asks `color`).
     let mut stage = support::isolated_command(iso.path());
     stage
         .arg("stage")
-        .arg(&address)
+        .arg(support::refresh_template(&address))
         .arg(target.path())
-        .arg("--from")
-        .arg(&snapshot)
+        .arg("--update")
         .arg("--async");
     assert_eq!(stage.output().unwrap().status.code(), Some(4));
 
@@ -470,8 +464,8 @@ fn agent_stages_continues_and_applies_a_staged_update() {
     write_one_question(template_dir.path());
     target_repo(target.path());
 
-    let formal = support::formal_name(template_dir.path());
-    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let formal = support::versioned_template(template_dir.path());
+    let address = formal.clone();
 
     // Baseline the first version and commit it clean.
     let env_first = envelope(
@@ -483,13 +477,13 @@ fn agent_stages_continues_and_applies_a_staged_update() {
     let mut baseline = support::isolated_command(iso.path());
     baseline
         .arg("apply")
-        .arg(&address)
+        .arg(support::refresh_template(&address))
         .arg(target.path())
         .arg("--baseline")
         .arg("--answers")
         .arg(&env_first);
     let document = support::first_document(&baseline.output().unwrap().stdout);
-    let snapshot = document["snapshot"]["id"].as_str().unwrap().to_owned();
+    let _snapshot = document["record"]["path"].as_str().unwrap().to_owned();
     git(target.path(), &["add", "."]);
     git(target.path(), &["commit", "--quiet", "-m", "baseline"]);
 
@@ -500,10 +494,9 @@ fn agent_stages_continues_and_applies_a_staged_update() {
     let mut stage = support::isolated_command(iso.path());
     stage
         .arg("stage")
-        .arg(&address)
+        .arg(support::refresh_template(&address))
         .arg(target.path())
-        .arg("--from")
-        .arg(&snapshot)
+        .arg("--update")
         .arg("--async");
     let staged = stage.output().unwrap();
     assert_eq!(staged.status.code(), Some(4), "stage: {staged:?}");
@@ -538,7 +531,7 @@ fn agent_stages_continues_and_applies_a_staged_update() {
     let applied = apply.output().unwrap();
     assert_eq!(applied.status.code(), Some(0), "apply: {applied:?}");
     let text = String::from_utf8(applied.stdout.clone()).unwrap();
-    assert!(text.contains("Saved snapshot "), "{text}");
+    assert!(text.contains("Saved applied record "), "{text}");
     assert!(!text.contains("\"protocol\""), "{text}");
     assert_eq!(
         std::fs::read_to_string(target.path().join("color.txt")).unwrap(),
@@ -571,8 +564,8 @@ fn the_final_agent_apply_path_refuses_a_dirty_target() {
     write_one_question(template_dir.path());
     target_repo(target.path());
 
-    let formal = support::formal_name(template_dir.path());
-    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let formal = support::versioned_template(template_dir.path());
+    let address = formal.clone();
 
     // Baseline the first version and commit it clean.
     let env_first = envelope(
@@ -584,13 +577,13 @@ fn the_final_agent_apply_path_refuses_a_dirty_target() {
     let mut baseline = support::isolated_command(iso.path());
     baseline
         .arg("apply")
-        .arg(&address)
+        .arg(support::refresh_template(&address))
         .arg(target.path())
         .arg("--baseline")
         .arg("--answers")
         .arg(&env_first);
     let document = support::first_document(&baseline.output().unwrap().stdout);
-    let snapshot = document["snapshot"]["id"].as_str().unwrap().to_owned();
+    let _snapshot = document["record"]["path"].as_str().unwrap().to_owned();
     git(target.path(), &["add", "."]);
     git(target.path(), &["commit", "--quiet", "-m", "baseline"]);
 
@@ -599,10 +592,9 @@ fn the_final_agent_apply_path_refuses_a_dirty_target() {
     let mut stage = support::isolated_command(iso.path());
     stage
         .arg("stage")
-        .arg(&address)
+        .arg(support::refresh_template(&address))
         .arg(target.path())
-        .arg("--from")
-        .arg(&snapshot)
+        .arg("--update")
         .arg("--async");
     assert_eq!(stage.output().unwrap().status.code(), Some(4), "stage");
     let env_color = envelope(
@@ -761,9 +753,9 @@ fn apply_dry_run_on_a_completed_staged_update_previews_and_preserves_everything(
     let target = tempfile::tempdir().unwrap();
     write_one_question(template_dir.path());
     target_repo(target.path());
-    let formal = support::formal_name(template_dir.path());
-    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
-    let snapshot = baseline(iso.path(), &address, &formal, target.path(), false);
+    let formal = support::versioned_template(template_dir.path());
+    let address = formal.clone();
+    let _snapshot = baseline(iso.path(), &address, &formal, target.path(), false);
 
     // A generic, user-owned file the template never names, committed before
     // the update is staged: a real three-way merge, not an empty target, must
@@ -799,10 +791,9 @@ fn apply_dry_run_on_a_completed_staged_update_previews_and_preserves_everything(
     let mut stage = support::isolated_command(iso.path());
     stage
         .arg("stage")
-        .arg(&address)
+        .arg(support::refresh_template(&address))
         .arg(target.path())
-        .arg("--from")
-        .arg(&snapshot)
+        .arg("--update")
         .arg("--trust")
         .arg("--async");
     assert_eq!(stage.output().unwrap().status.code(), Some(4), "stage");
@@ -820,6 +811,18 @@ fn apply_dry_run_on_a_completed_staged_update_previews_and_preserves_everything(
     assert_eq!(cont.output().unwrap().status.code(), Some(0), "continue");
 
     let before = capture_state(iso.path(), target.path());
+
+    // A refusal for unapproved hooks must retain the completed stage for --trust retry.
+    let mut untrusted = support::isolated_command(iso.path());
+    untrusted.arg("apply").arg(target.path());
+    let refusal = untrusted.output().unwrap();
+    assert_eq!(refusal.status.code(), Some(0), "trust preview: {refusal:?}");
+    assert!(String::from_utf8_lossy(&refusal.stdout).contains("Hooks need trust"));
+    assert_eq!(
+        before,
+        capture_state(iso.path(), target.path()),
+        "shared_update_needs_trust_retains_stage_for_retry"
+    );
 
     // `apply PATH --dry-run --trust` must preview the merge without writing
     // anything. `--trust` re-asserts the hook trust established at stage, the
@@ -871,7 +874,7 @@ fn apply_dry_run_on_a_completed_staged_update_previews_and_preserves_everything(
     let applied = apply.output().unwrap();
     assert_eq!(applied.status.code(), Some(0), "apply: {applied:?}");
     let text = String::from_utf8(applied.stdout.clone()).unwrap();
-    assert!(text.contains("Saved snapshot "), "{text}");
+    assert!(text.contains("Saved applied record "), "{text}");
     for message in ["Interview message", "Before message", "After message"] {
         assert_eq!(text.matches(message).count(), 1, "{text}");
     }
@@ -941,14 +944,14 @@ fn apply_dry_run_on_a_completed_staged_baseline_previews_and_preserves_everythin
     )
     .unwrap();
     target_repo(target.path());
-    let formal = support::formal_name(template_dir.path());
-    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let formal = support::versioned_template(template_dir.path());
+    let address = formal.clone();
 
     // Stage a trusted baseline: there is no recorded answer, so it asks `name`.
     let mut stage = support::isolated_command(iso.path());
     stage
         .arg("stage")
-        .arg(&address)
+        .arg(support::refresh_template(&address))
         .arg(target.path())
         .arg("--baseline")
         .arg("--trust")
@@ -1012,7 +1015,7 @@ fn apply_dry_run_on_a_completed_staged_baseline_previews_and_preserves_everythin
     let applied = apply.output().unwrap();
     assert_eq!(applied.status.code(), Some(0), "apply: {applied:?}");
     let text = String::from_utf8(applied.stdout.clone()).unwrap();
-    assert!(text.contains("Saved snapshot "), "{text}");
+    assert!(text.contains("Saved applied record "), "{text}");
     assert!(!text.contains("\"protocol\""), "{text}");
     assert_eq!(
         std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
@@ -1052,9 +1055,9 @@ fn flow_dry_run_on_a_completed_staged_update_previews_and_preserves_staged_state
     let target = tempfile::tempdir().unwrap();
     write_one_question(template_dir.path());
     target_repo(target.path());
-    let formal = support::formal_name(template_dir.path());
-    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
-    let snapshot = baseline(iso.path(), &address, &formal, target.path(), false);
+    let formal = support::versioned_template(template_dir.path());
+    let address = formal.clone();
+    let _snapshot = baseline(iso.path(), &address, &formal, target.path(), false);
 
     // The new version adds a `mode` question, a flow dry-run node gated on it,
     // and a trusted hook. An absolute marker outside the target and the
@@ -1074,10 +1077,9 @@ fn flow_dry_run_on_a_completed_staged_update_previews_and_preserves_staged_state
     let mut stage = support::isolated_command(iso.path());
     stage
         .arg("stage")
-        .arg(&address)
+        .arg(support::refresh_template(&address))
         .arg(target.path())
-        .arg("--from")
-        .arg(&snapshot)
+        .arg("--update")
         .arg("--trust")
         .arg("--async");
     assert_eq!(stage.output().unwrap().status.code(), Some(4), "stage");
@@ -1142,10 +1144,9 @@ fn flow_dry_run_on_a_completed_staged_update_previews_and_preserves_staged_state
     let mut restage = support::isolated_command(iso.path());
     restage
         .arg("stage")
-        .arg(&address)
+        .arg(support::refresh_template(&address))
         .arg(target.path())
-        .arg("--from")
-        .arg(&snapshot)
+        .arg("--update")
         .arg("--trust")
         .arg("--async");
     assert_eq!(restage.output().unwrap().status.code(), Some(4), "restage");
@@ -1164,7 +1165,7 @@ fn flow_dry_run_on_a_completed_staged_update_previews_and_preserves_staged_state
     let applied = real.output().unwrap();
     assert_eq!(applied.status.code(), Some(0), "apply: {applied:?}");
     let text = String::from_utf8(applied.stdout.clone()).unwrap();
-    assert!(text.contains("Saved snapshot "), "{text}");
+    assert!(text.contains("Saved applied record "), "{text}");
     for message in ["Interview message", "Before message", "After message"] {
         assert_eq!(text.matches(message).count(), 1, "{text}");
     }
@@ -1213,9 +1214,9 @@ fn hook_free_update_messages(scripted: bool) {
     let target = tempfile::tempdir().unwrap();
     write_one_question(template_dir.path());
     target_repo(target.path());
-    let formal = support::formal_name(template_dir.path());
-    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
-    let snapshot = baseline(iso.path(), &address, &formal, target.path(), false);
+    let formal = support::versioned_template(template_dir.path());
+    let address = formal.clone();
+    let _snapshot = baseline(iso.path(), &address, &formal, target.path(), false);
     std::fs::write(
         template_dir.path().join("template.yml"),
         "name: greeter\ninterview:\n  - id: name\n    type: text\n    prompt: Name\n    required: true\n  - id: mode\n    type: text\n    prompt: Mode\n    required: true\n  - message: Interview message\n  - flow: dry-run\n    when: \"mode == 'preview'\"\nmessages:\n  before-apply: Before message\n  after-apply: After message\n",
@@ -1235,20 +1236,18 @@ fn hook_free_update_messages(scripted: bool) {
         if scripted {
             command
                 .arg("apply")
-                .arg(&address)
+                .arg(support::refresh_template(&address))
                 .arg(target.path())
-                .arg("--from")
-                .arg(&snapshot)
+                .arg("--update")
                 .arg("--answers")
                 .arg(&answers);
         } else {
             let mut stage = support::isolated_command(iso.path());
             stage
                 .arg("stage")
-                .arg(&address)
+                .arg(support::refresh_template(&address))
                 .arg(target.path())
-                .arg("--from")
-                .arg(&snapshot)
+                .arg("--update")
                 .arg("--async");
             let staged = stage.output().unwrap();
             assert_eq!(staged.status.code(), Some(4), "{staged:?}");
@@ -1284,7 +1283,7 @@ fn hook_free_update_messages(scripted: bool) {
                 assert!(text.contains("Preview only; no changes written."), "{text}");
                 assert_preview_messages(&text);
             } else {
-                assert!(text.contains("Saved snapshot "), "{text}");
+                assert!(text.contains("Saved applied record "), "{text}");
                 for message in ["Interview message", "Before message", "After message"] {
                     assert_eq!(text.matches(message).count(), 1, "{text}");
                 }
@@ -1306,10 +1305,10 @@ fn hook_free_update_messages(scripted: bool) {
                 std::fs::read_to_string(target.path().join("color.txt")).unwrap(),
                 "blue\n"
             );
-            assert_ne!(
+            assert_eq!(
                 before.refs,
                 show_refs(target.path()),
-                "real apply saves a snapshot"
+                "real apply creates no ref"
             );
         }
     }

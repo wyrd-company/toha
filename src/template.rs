@@ -50,6 +50,7 @@ pub struct Template {
     pub source_dir: PathBuf,
     pub data: IndexMap<Id, Value>,
     pub interview: Vec<Node>,
+    pub part_selection: crate::parts::Selection,
     pub root: PathBuf,
     /// The single include-confinement owner for this template's file bodies,
     /// created once from the canonical `root`. It is retained so a source-tree
@@ -85,6 +86,7 @@ pub struct Template {
     /// any compiled surface can observe a fixed environment value, and the first
     /// location that does.
     environment_need: EnvironmentNeed,
+    context_references: HashSet<String>,
     /// Every hook-result name a template author may read: each producer `id` and
     /// each declared `status_id`. A reference whose root is in this set is a hook
     /// result read, resolved by `settle_hook_results` at load, not an ordinary
@@ -114,6 +116,27 @@ pub enum SourceBody {
     NonUtf8,
 }
 impl Template {
+    /// Reserved host/environment values referenced on any compiled surface.
+    pub fn record_context(
+        &self,
+        context: Option<&crate::context::InvocationContext>,
+    ) -> std::collections::BTreeMap<String, Value> {
+        let mut values = std::collections::BTreeMap::new();
+        if let Some(context) = context {
+            context.project(&mut values);
+        }
+        values.retain(|name, _| {
+            self.context_references.contains(name)
+                && (name == "toha_target_name"
+                    || name == "toha_template_aliases"
+                    || name == "toha_template_source"
+                    || name.starts_with("toha_host_")
+                    || name.starts_with("toha_is_")
+                    || name.starts_with("toha_env_"))
+        });
+        values
+    }
+
     /// Combines the immutable render-program analysis with one caller decision,
     /// capturing the closed five-value environment snapshot exactly once when
     /// granted and never otherwise.
@@ -142,6 +165,48 @@ fn collect_hook_nodes(values: &[Value], out: &mut Vec<Value>) {
     }
 }
 impl Template {
+    pub fn question(&self, id: &Id) -> Option<&Question> {
+        fn find<'a>(nodes: &'a [Node], id: &Id) -> Option<&'a Question> {
+            nodes.iter().find_map(|node| match node {
+                Node::Question(q) if &q.id == id => Some(q),
+                Node::Group(g) => find(&g.nodes, id),
+                _ => None,
+            })
+        }
+        find(&self.interview, id)
+    }
+    /// The single, top-level question whose options name parts.
+    pub fn part_question(&self) -> Option<&Question> {
+        self.interview.iter().find_map(|node| match node {
+            Node::Question(q) if q.parts => Some(q),
+            _ => None,
+        })
+    }
+    pub fn selected_parts(&self, completed: &crate::Completed) -> Vec<String> {
+        self.part_question()
+            .and_then(|q| completed.answers.get(&q.id))
+            .and_then(|a| match a {
+                crate::Answer::List(parts) => Some(parts.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+    pub fn document_question_ids(&self) -> Vec<Id> {
+        fn collect(nodes: &[Node], out: &mut Vec<Id>) {
+            for node in nodes {
+                match node {
+                    Node::Question(q) if matches!(q.kind, QuestionKind::Document { .. }) => {
+                        out.push(q.id.clone())
+                    }
+                    Node::Group(g) => collect(&g.nodes, out),
+                    _ => {}
+                }
+            }
+        }
+        let mut ids = Vec::new();
+        collect(&self.interview, &mut ids);
+        ids
+    }
     pub fn has_question_id(&self, id: &Id) -> bool {
         fn contains(nodes: &[Node], id: &Id) -> bool {
             nodes.iter().any(|node| match node {
@@ -200,12 +265,16 @@ pub struct Question {
     pub placeholder: Option<Tmpl>,
     pub required: Typed<bool>,
     pub kind: QuestionKind,
+    pub parts: bool,
     pub validate: Validate,
     pub format: Option<Expr>,
     pub when: Option<Expr>,
 }
 #[derive(Debug)]
 pub enum QuestionKind {
+    Document {
+        contract: crate::document::DocumentQuestion,
+    },
     Text {
         default: Option<Tmpl>,
     },
@@ -490,6 +559,7 @@ struct RawTemplate {
     name: String,
     description: Option<String>,
     source: Option<String>,
+    schemas: Option<String>,
     data: Option<Map<String, Value>>,
     interview: Option<Vec<Value>>,
     files: Option<Vec<Value>>,
@@ -592,6 +662,7 @@ fn resolve(
     }
 }
 struct Builder {
+    schemas: crate::document::SchemaIndex,
     problems: Vec<Problem>,
     seen: HashSet<String>,
     names: HashSet<String>,
@@ -1293,6 +1364,28 @@ impl Builder {
             let format = self.expr(map.get("format"), &format!("{path}.format"), &["value"]);
             let default = map.get("default");
             let kind = match kind_name {
+                "document" => {
+                    let schemas = match &map["schema"] {
+                        Value::String(uri) => vec![uri.clone()],
+                        Value::Array(uris) => uris
+                            .iter()
+                            .map(|v| v.as_str().unwrap().to_owned())
+                            .collect(),
+                        _ => unreachable!("schema validated"),
+                    };
+                    match crate::document::DocumentQuestion::load(
+                        &self.schemas,
+                        schemas,
+                        map["input"].as_str().unwrap(),
+                    ) {
+                        Ok(contract) => QuestionKind::Document { contract },
+                        Err(e) => {
+                            problem(&mut self.problems, &path, e);
+                            continue;
+                        }
+                    }
+                }
+
                 "text" if map.contains_key("loop") => {
                     let lm = map.get("loop").and_then(Value::as_object);
                     QuestionKind::TextLoop {
@@ -1352,6 +1445,7 @@ impl Builder {
                     placeholder,
                     required,
                     kind,
+                    parts: map.get("parts").and_then(Value::as_bool).unwrap_or(false),
                     validate: Validate { min, max, regex },
                     format,
                     when,
@@ -1458,7 +1552,11 @@ impl Template {
         // shared by the `files:` bodies (compiled here) and the source-tree
         // bodies (compiled below); it is retained on the returned Template.
         let partials = Partials::rooted(&root);
+        let schemas =
+            crate::document::SchemaIndex::load(&root, &source_dir, raw.schemas.as_deref())
+                .map_err(|e| error("schemas", e))?;
         let mut b = Builder {
+            schemas,
             problems,
             seen: HashSet::new(),
             names: HashSet::new(),
@@ -1493,6 +1591,62 @@ impl Template {
                 }
             }
         }
+        fn validate_parts(
+            nodes: &[Value],
+            nested: bool,
+            flow: &mut bool,
+            count: &mut usize,
+            problems: &mut Vec<Problem>,
+        ) {
+            for node in nodes {
+                if node.get("flow").is_some() {
+                    *flow = true;
+                }
+                if node.get("parts") == Some(&Value::Bool(true)) {
+                    *count += 1;
+                    let options = node.get("options").and_then(Value::as_array);
+                    let valid_options = options.is_some_and(|items| {
+                        let mut seen = HashSet::new();
+                        items.iter().all(|item| {
+                            item.as_str().is_some_and(|s| {
+                                let mut chars = s.chars();
+                                matches!(chars.next(), Some('a'..='z' | '0'..='9'))
+                                    && chars.all(|c| {
+                                        c.is_ascii_lowercase()
+                                            || c.is_ascii_digit()
+                                            || c == '_'
+                                            || c == '-'
+                                    })
+                                    && seen.insert(s)
+                            })
+                        })
+                    });
+                    if *count > 1
+                        || nested
+                        || *flow
+                        || node.get("when").is_some()
+                        || node.get("type").and_then(Value::as_str) != Some("multiselect")
+                        || !valid_options
+                    {
+                        problem(
+                            problems,
+                            "interview.parts",
+                            "parts needs one top-level multiselect question before every flow, without when, with unique literal part names",
+                        );
+                    }
+                }
+                if let Some(children) = node.get("nodes").and_then(Value::as_array) {
+                    validate_parts(children, true, flow, count, problems);
+                }
+            }
+        }
+        validate_parts(
+            raw.interview.as_deref().unwrap_or_default(),
+            false,
+            &mut false,
+            &mut 0,
+            &mut b.problems,
+        );
         let interview = b.nodes(
             raw.interview.as_deref().unwrap_or_default(),
             "interview",
@@ -1647,7 +1801,7 @@ impl Template {
                 problems: b.problems,
             });
         }
-        let environment_need = compute_environment_need(
+        let (environment_need, context_references) = compute_environment_need(
             &interview,
             &files,
             &inject,
@@ -1661,6 +1815,7 @@ impl Template {
             source_dir,
             data,
             interview,
+            part_selection: Default::default(),
             root,
             partials,
             files,
@@ -1675,6 +1830,7 @@ impl Template {
             render_program,
             reserves_context,
             environment_need,
+            context_references,
             result_ids: b.result_ids,
         })
     }
@@ -1826,7 +1982,7 @@ fn compute_environment_need(
     hooks: &[HookNode],
     messages: &ApplyMessages,
     render_program: &[SourceEntry],
-) -> EnvironmentNeed {
+) -> (EnvironmentNeed, HashSet<String>) {
     let mut find = NeedScan::default();
     find.nodes(interview, "interview");
     for (i, rule) in inject.iter().enumerate() {
@@ -1859,16 +2015,18 @@ fn compute_environment_need(
             find.file_tmpl(body, &label);
         }
     }
-    match find.found {
+    let need = match find.found {
         Some(origin) => EnvironmentNeed::Needed(origin),
         None => EnvironmentNeed::None,
-    }
+    };
+    (need, find.references)
 }
 
 /// Accumulates the first environment-need location across the render program.
 #[derive(Default)]
 struct NeedScan {
     found: Option<RenderOrigin>,
+    references: HashSet<String>,
 }
 impl NeedScan {
     fn mark(&mut self, label: &str, needed: bool) {
@@ -1877,12 +2035,14 @@ impl NeedScan {
         }
     }
     fn tmpl(&mut self, tmpl: &Tmpl, label: &str) {
+        self.references.extend(tmpl.references().iter().cloned());
         self.mark(label, tmpl.needs_environment());
     }
     /// A file body's need is transitive: it is true when the body or any partial
     /// it selects can observe a fixed value, so an environment read reached only
     /// through a nested include still marks the load.
     fn file_tmpl(&mut self, body: &FileTmpl, label: &str) {
+        self.references.extend(body.references().iter().cloned());
         self.mark(label, body.needs_environment());
     }
     fn opt_tmpl(&mut self, tmpl: Option<&Tmpl>, label: &str) {
@@ -1891,6 +2051,7 @@ impl NeedScan {
         }
     }
     fn expr(&mut self, expr: &Expr, label: &str) {
+        self.references.extend(expr.references().iter().cloned());
         self.mark(label, expr.needs_environment());
     }
     fn opt_expr(&mut self, expr: Option<&Expr>, label: &str) {
@@ -1899,6 +2060,7 @@ impl NeedScan {
         }
     }
     fn typed<T: Clone + serde::de::DeserializeOwned>(&mut self, typed: &Typed<T>, label: &str) {
+        self.references.extend(typed.references().iter().cloned());
         self.mark(label, typed.needs_environment());
     }
     fn opt_typed<T: Clone + serde::de::DeserializeOwned>(
@@ -1981,6 +2143,7 @@ impl NeedScan {
                     self.opt_typed(q.validate.max.as_ref(), &format!("{label}.validate.max"));
                     self.opt_expr(q.format.as_ref(), &format!("{label}.format"));
                     match &q.kind {
+                        QuestionKind::Document { .. } => {}
                         QuestionKind::Text { default }
                         | QuestionKind::Multiline { default }
                         | QuestionKind::Git { default } => {
@@ -2437,6 +2600,7 @@ impl Settle<'_> {
                     self.deny_opt_typed(q.validate.max.as_ref(), &format!("{label}.validate.max"));
                     self.deny_opt_expr(q.format.as_ref(), &format!("{label}.format"));
                     match &q.kind {
+                        QuestionKind::Document { .. } => {}
                         QuestionKind::Text { default }
                         | QuestionKind::Multiline { default }
                         | QuestionKind::Git { default } => {

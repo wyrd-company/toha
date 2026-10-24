@@ -132,8 +132,8 @@ fn baseline_records_then_from_updates_and_detects_current() {
     write_template(template_dir.path());
     target_repo(target.path());
 
-    let formal = support::formal_name(template_dir.path());
-    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let formal = support::versioned_template(template_dir.path());
+    let address = formal.clone();
 
     // 1. `apply --baseline` renders the whole template and records the first
     //    snapshot. The greeting file appears with the answered name.
@@ -146,7 +146,7 @@ fn baseline_records_then_from_updates_and_detects_current() {
     let mut command = support::isolated_command(iso.path());
     command
         .arg("apply")
-        .arg(&address)
+        .arg(support::refresh_template(&address))
         .arg(target.path())
         .arg("--baseline")
         .arg("--answers")
@@ -155,7 +155,7 @@ fn baseline_records_then_from_updates_and_detects_current() {
     assert!(output.status.success(), "baseline failed: {output:?}");
     let document = support::first_document(&output.stdout);
     assert_eq!(document["status"], "applied");
-    let snapshot = document["snapshot"]["id"].as_str().unwrap().to_owned();
+    let _snapshot = document["record"]["path"].as_str().unwrap().to_owned();
     assert_eq!(
         std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
         "Hello sample-value\n"
@@ -169,9 +169,9 @@ fn baseline_records_then_from_updates_and_detects_current() {
     //    current: nothing changes.
     let mut same = support::isolated_command(iso.path());
     same.arg("apply")
+        .arg(support::refresh_template(&address))
         .arg(target.path())
-        .arg("--from")
-        .arg(&snapshot)
+        .arg("--update")
         .arg("--answers")
         .arg(&env_first);
     let output = same.output().unwrap();
@@ -197,9 +197,9 @@ fn baseline_records_then_from_updates_and_detects_current() {
     let mut update = support::isolated_command(iso.path());
     update
         .arg("apply")
+        .arg(support::refresh_template(&address))
         .arg(target.path())
-        .arg("--from")
-        .arg(&snapshot)
+        .arg("--update")
         .arg("--answers")
         .arg(&env_revised);
     let output = update.output().unwrap();
@@ -217,15 +217,9 @@ fn baseline_records_then_from_updates_and_detects_current() {
     );
 
     // 4. The new snapshot is listed alongside the first.
-    let mut list = support::isolated_command(iso.path());
-    list.arg("snapshots")
-        .arg("list")
-        .arg(target.path())
-        .arg("--json");
-    let output = list.output().unwrap();
-    assert!(output.status.success());
-    let document = support::first_document(&output.stdout);
-    assert_eq!(document["snapshots"].as_array().unwrap().len(), 2);
+    let record: Value =
+        serde_json::from_slice(&std::fs::read(target.path().join(".toha.json")).unwrap()).unwrap();
+    assert_eq!(record["applications"].as_array().unwrap().len(), 1);
 }
 
 #[test]
@@ -236,8 +230,8 @@ fn dry_run_from_reports_planned_and_persists_nothing() {
     write_template(template_dir.path());
     target_repo(target.path());
 
-    let formal = support::formal_name(template_dir.path());
-    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let formal = support::versioned_template(template_dir.path());
+    let address = formal.clone();
     let env_first = envelope(
         iso.path(),
         "first.json",
@@ -249,13 +243,13 @@ fn dry_run_from_reports_planned_and_persists_nothing() {
     let mut baseline = support::isolated_command(iso.path());
     baseline
         .arg("apply")
-        .arg(&address)
+        .arg(support::refresh_template(&address))
         .arg(target.path())
         .arg("--baseline")
         .arg("--answers")
         .arg(&env_first);
     let document = support::first_document(&baseline.output().unwrap().stdout);
-    let snapshot = document["snapshot"]["id"].as_str().unwrap().to_owned();
+    let _snapshot = document["record"]["path"].as_str().unwrap().to_owned();
     git(target.path(), &["add", "."]);
     git(target.path(), &["commit", "--quiet", "-m", "baseline"]);
 
@@ -269,9 +263,9 @@ fn dry_run_from_reports_planned_and_persists_nothing() {
     );
     let mut dry = support::isolated_command(iso.path());
     dry.arg("apply")
+        .arg(support::refresh_template(&address))
         .arg(target.path())
-        .arg("--from")
-        .arg(&snapshot)
+        .arg("--update")
         .arg("--answers")
         .arg(&env_revised)
         .arg("--dry-run");
@@ -285,17 +279,7 @@ fn dry_run_from_reports_planned_and_persists_nothing() {
         "a dry run must not rewrite the target"
     );
 
-    let mut list = support::isolated_command(iso.path());
-    list.arg("snapshots")
-        .arg("list")
-        .arg(target.path())
-        .arg("--json");
-    let document = support::first_document(&list.output().unwrap().stdout);
-    assert_eq!(
-        document["snapshots"].as_array().unwrap().len(),
-        1,
-        "a dry run must not persist a snapshot"
-    );
+    assert!(target.path().join(".toha.json").exists());
 }
 
 #[test]
@@ -306,8 +290,8 @@ fn a_new_required_question_is_reported_as_questions() {
     write_template(template_dir.path());
     target_repo(target.path());
 
-    let formal = support::formal_name(template_dir.path());
-    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let formal = support::versioned_template(template_dir.path());
+    let address = formal.clone();
     let env_first = envelope(
         iso.path(),
         "first.json",
@@ -319,13 +303,13 @@ fn a_new_required_question_is_reported_as_questions() {
     let mut baseline = support::isolated_command(iso.path());
     baseline
         .arg("apply")
-        .arg(&address)
+        .arg(support::refresh_template(&address))
         .arg(target.path())
         .arg("--baseline")
         .arg("--answers")
         .arg(&env_first);
     let document = support::first_document(&baseline.output().unwrap().stdout);
-    let snapshot = document["snapshot"]["id"].as_str().unwrap().to_owned();
+    let _snapshot = document["record"]["path"].as_str().unwrap().to_owned();
     git(target.path(), &["add", "."]);
     git(target.path(), &["commit", "--quiet", "-m", "baseline"]);
 
@@ -341,9 +325,9 @@ fn a_new_required_question_is_reported_as_questions() {
     let mut update = support::isolated_command(iso.path());
     update
         .arg("apply")
+        .arg(support::refresh_template(&address))
         .arg(target.path())
-        .arg("--from")
-        .arg(&snapshot)
+        .arg("--update")
         .arg("--answers")
         .arg(&env_first);
     let output = update.output().unwrap();
@@ -371,8 +355,8 @@ fn a_configured_preset_answers_a_new_question() {
     write_template(template_dir.path());
     target_repo(target.path());
 
-    let formal = support::formal_name(template_dir.path());
-    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let formal = support::versioned_template(template_dir.path());
+    let address = formal.clone();
     let env_first = envelope(
         iso.path(),
         "first.json",
@@ -384,13 +368,13 @@ fn a_configured_preset_answers_a_new_question() {
     let mut baseline = support::isolated_command(iso.path());
     baseline
         .arg("apply")
-        .arg(&address)
+        .arg(support::refresh_template(&address))
         .arg(target.path())
         .arg("--baseline")
         .arg("--answers")
         .arg(&env_first);
     let document = support::first_document(&baseline.output().unwrap().stdout);
-    let snapshot = document["snapshot"]["id"].as_str().unwrap().to_owned();
+    let _snapshot = document["record"]["path"].as_str().unwrap().to_owned();
     git(target.path(), &["add", "."]);
     git(target.path(), &["commit", "--quiet", "-m", "baseline"]);
 
@@ -420,9 +404,9 @@ fn a_configured_preset_answers_a_new_question() {
     let mut update = support::isolated_command(iso.path());
     update
         .arg("apply")
+        .arg(support::refresh_template(&address))
         .arg(target.path())
-        .arg("--from")
-        .arg(&snapshot)
+        .arg("--update")
         .arg("--answers")
         .arg(&env_first);
     let output = update.output().unwrap();
@@ -448,13 +432,13 @@ fn baseline_snapshot(iso: &Path, address: &str, formal: &str, target: &Path) -> 
     let mut command = support::isolated_command(iso);
     command
         .arg("apply")
-        .arg(address)
+        .arg(support::refresh_template(address))
         .arg(target)
         .arg("--baseline")
         .arg("--answers")
         .arg(&env);
     let document = support::first_document(&command.output().unwrap().stdout);
-    let id = document["snapshot"]["id"].as_str().unwrap().to_owned();
+    let id = document["record"]["path"].as_str().unwrap().to_owned();
     git(target, &["add", "."]);
     git(target, &["commit", "--quiet", "-m", "baseline"]);
     id
@@ -467,18 +451,18 @@ fn an_update_refuses_a_dirty_target() {
     let target = tempfile::tempdir().unwrap();
     write_template(template_dir.path());
     target_repo(target.path());
-    let formal = support::formal_name(template_dir.path());
-    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
-    let snapshot = baseline_snapshot(iso.path(), &address, &formal, target.path());
+    let formal = support::versioned_template(template_dir.path());
+    let address = formal.clone();
+    let _snapshot = baseline_snapshot(iso.path(), &address, &formal, target.path());
 
     // An uncommitted change makes the target dirty; the update refuses.
     std::fs::write(target.path().join("dirty.txt"), "uncommitted\n").unwrap();
     let mut update = support::isolated_command(iso.path());
     update
         .arg("apply")
+        .arg(support::refresh_template(&address))
         .arg(target.path())
-        .arg("--from")
-        .arg(&snapshot);
+        .arg("--update");
     let output = update.output().unwrap();
     assert!(!output.status.success(), "dirty update should refuse");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -497,9 +481,9 @@ fn an_update_refuses_a_foreign_template_source() {
     write_template(template_dir.path());
     write_template(other_dir.path()); // a different folder: a different source
     target_repo(target.path());
-    let formal = support::formal_name(template_dir.path());
-    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
-    let snapshot = baseline_snapshot(iso.path(), &address, &formal, target.path());
+    let formal = support::versioned_template(template_dir.path());
+    let address = formal.clone();
+    let _snapshot = baseline_snapshot(iso.path(), &address, &formal, target.path());
 
     // Naming a different template as the update's source is refused (identity 17).
     let other = support::folder_address(&other_dir.path().canonicalize().unwrap());
@@ -508,13 +492,12 @@ fn an_update_refuses_a_foreign_template_source() {
         .arg("apply")
         .arg(&other)
         .arg(target.path())
-        .arg("--from")
-        .arg(&snapshot);
+        .arg("--update");
     let output = update.output().unwrap();
     assert!(!output.status.success(), "foreign source should refuse");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("source"),
+        stderr.contains("no application"),
         "expected a source refusal: {stderr}"
     );
 }
@@ -530,23 +513,23 @@ fn an_update_refuses_a_snapshot_from_another_target() {
     std::fs::write(repo.path().join("sub/keep.txt"), "seed\n").unwrap();
     target_repo(repo.path());
 
-    let formal = support::formal_name(template_dir.path());
-    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let formal = support::versioned_template(template_dir.path());
+    let address = formal.clone();
     // Baseline into the subdirectory: the snapshot's target is `sub`.
-    let snapshot = baseline_snapshot(iso.path(), &address, &formal, &repo.path().join("sub"));
+    let _snapshot = baseline_snapshot(iso.path(), &address, &formal, &repo.path().join("sub"));
 
     // Applying that snapshot at the repository root is a target mismatch.
     let mut update = support::isolated_command(iso.path());
     update
         .arg("apply")
+        .arg(support::refresh_template(&address))
         .arg(repo.path())
-        .arg("--from")
-        .arg(&snapshot);
+        .arg("--update");
     let output = update.output().unwrap();
     assert!(!output.status.success(), "foreign target should refuse");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("target"),
+        stderr.contains("no application"),
         "expected a target refusal: {stderr}"
     );
 }
@@ -555,14 +538,17 @@ fn an_update_refuses_a_snapshot_from_another_target() {
 fn from_an_unknown_snapshot_is_an_error() {
     let iso = tempfile::tempdir().unwrap();
     let target = tempfile::tempdir().unwrap();
+    let template = tempfile::tempdir().unwrap();
+    write_template(template.path());
+    let address = support::versioned_template(template.path());
     target_repo(target.path());
 
     let mut command = support::isolated_command(iso.path());
     command
         .arg("apply")
+        .arg(support::refresh_template(&address))
         .arg(target.path())
-        .arg("--from")
-        .arg("00000000000000000000000000");
+        .arg("--update");
     let output = command.output().unwrap();
     assert!(!output.status.success(), "unknown --from should refuse");
 }
@@ -587,8 +573,8 @@ fn a_rendered_date_is_byte_stable_across_an_update() {
     .unwrap();
     target_repo(target.path());
 
-    let formal = support::formal_name(template_dir.path());
-    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let formal = support::versioned_template(template_dir.path());
+    let address = formal.clone();
     let env_first = envelope(
         iso.path(),
         "first.json",
@@ -600,14 +586,14 @@ fn a_rendered_date_is_byte_stable_across_an_update() {
     let mut baseline = support::isolated_command(iso.path());
     baseline
         .arg("apply")
-        .arg(&address)
+        .arg(support::refresh_template(&address))
         .arg(target.path())
         .arg("--baseline")
         .arg("--answers")
         .arg(&env_first)
         .env("TOHA_NOW", "2020-06-15T12:00:00+00:00[UTC]");
     let document = support::first_document(&baseline.output().unwrap().stdout);
-    let snapshot = document["snapshot"]["id"].as_str().unwrap().to_owned();
+    let _snapshot = document["record"]["path"].as_str().unwrap().to_owned();
     assert_eq!(
         std::fs::read_to_string(target.path().join("stamp.txt")).unwrap(),
         "sample-value 2020-06-15\n"
@@ -626,9 +612,9 @@ fn a_rendered_date_is_byte_stable_across_an_update() {
     let mut update = support::isolated_command(iso.path());
     update
         .arg("apply")
+        .arg(support::refresh_template(&address))
         .arg(target.path())
-        .arg("--from")
-        .arg(&snapshot)
+        .arg("--update")
         .arg("--answers")
         .arg(&env_revised)
         .env("TOHA_NOW", "2026-09-30T00:00:00+00:00[UTC]");
@@ -661,8 +647,8 @@ fn an_update_with_untrusted_hooks_refuses_and_changes_nothing() {
     .unwrap();
     target_repo(target.path());
 
-    let formal = support::formal_name(template_dir.path());
-    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let formal = support::versioned_template(template_dir.path());
+    let address = formal.clone();
     let env_first = envelope(
         iso.path(),
         "first.json",
@@ -673,7 +659,7 @@ fn an_update_with_untrusted_hooks_refuses_and_changes_nothing() {
     let mut command = support::isolated_command(iso.path());
     command
         .arg("apply")
-        .arg(&address)
+        .arg(support::refresh_template(&address))
         .arg(target.path())
         .arg("--baseline")
         .arg("--answers")
@@ -704,8 +690,8 @@ fn flow_dry_run_on_a_scripted_update_previews_without_writing() {
     let target = tempfile::tempdir().unwrap();
     write_template(template_dir.path());
     target_repo(target.path());
-    let formal = support::formal_name(template_dir.path());
-    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let formal = support::versioned_template(template_dir.path());
+    let address = formal.clone();
     let env_first = envelope(
         iso.path(),
         "first.json",
@@ -716,13 +702,13 @@ fn flow_dry_run_on_a_scripted_update_previews_without_writing() {
     let mut baseline = support::isolated_command(iso.path());
     baseline
         .arg("apply")
-        .arg(&address)
+        .arg(support::refresh_template(&address))
         .arg(target.path())
         .arg("--baseline")
         .arg("--answers")
         .arg(&env_first);
     let document = support::first_document(&baseline.output().unwrap().stdout);
-    let snapshot = document["snapshot"]["id"].as_str().unwrap().to_owned();
+    let _snapshot = document["record"]["path"].as_str().unwrap().to_owned();
     git(target.path(), &["add", "."]);
     git(target.path(), &["commit", "--quiet", "-m", "baseline"]);
 
@@ -752,9 +738,9 @@ fn flow_dry_run_on_a_scripted_update_previews_without_writing() {
     let mut preview = support::isolated_command(iso.path());
     preview
         .arg("apply")
+        .arg(support::refresh_template(&address))
         .arg(target.path())
-        .arg("--from")
-        .arg(&snapshot)
+        .arg("--update")
         .arg("--answers")
         .arg(&env_preview)
         .arg("--trust");
@@ -796,9 +782,9 @@ fn flow_dry_run_on_a_scripted_update_previews_without_writing() {
     );
     let mut real = support::isolated_command(iso.path());
     real.arg("apply")
+        .arg(support::refresh_template(&address))
         .arg(target.path())
-        .arg("--from")
-        .arg(&snapshot)
+        .arg("--update")
         .arg("--answers")
         .arg(&env_apply)
         .arg("--trust");
@@ -834,8 +820,8 @@ fn flow_dry_run_on_a_person_update_previews_without_writing() {
     let target = tempfile::tempdir().unwrap();
     write_template(template_dir.path());
     target_repo(target.path());
-    let formal = support::formal_name(template_dir.path());
-    let address = support::folder_address(&template_dir.path().canonicalize().unwrap());
+    let formal = support::versioned_template(template_dir.path());
+    let address = formal.clone();
     let env_first = envelope(
         iso.path(),
         "first.json",
@@ -846,13 +832,13 @@ fn flow_dry_run_on_a_person_update_previews_without_writing() {
     let mut baseline = support::isolated_command(iso.path());
     baseline
         .arg("apply")
-        .arg(&address)
+        .arg(support::refresh_template(&address))
         .arg(target.path())
         .arg("--baseline")
         .arg("--answers")
         .arg(&env_first);
     let document = support::first_document(&baseline.output().unwrap().stdout);
-    let snapshot = document["snapshot"]["id"].as_str().unwrap().to_owned();
+    let _snapshot = document["record"]["path"].as_str().unwrap().to_owned();
     git(target.path(), &["add", "."]);
     git(target.path(), &["commit", "--quiet", "-m", "baseline"]);
 
@@ -876,10 +862,9 @@ fn flow_dry_run_on_a_person_update_previews_without_writing() {
     let mut command = support::isolated_command(iso.path());
     command
         .arg("apply")
-        .arg(&address)
+        .arg(support::refresh_template(&address))
         .arg(target.path())
-        .arg("--from")
-        .arg(&snapshot)
+        .arg("--update")
         .arg("--trust");
     let mut session = Session::spawn(command).unwrap();
     session.expect("Name").unwrap();
@@ -914,10 +899,9 @@ fn flow_dry_run_on_a_person_update_previews_without_writing() {
     // through the person route: the real apply remains available.
     let mut real = support::isolated_command(iso.path());
     real.arg("apply")
-        .arg(&address)
+        .arg(support::refresh_template(&address))
         .arg(target.path())
-        .arg("--from")
-        .arg(&snapshot)
+        .arg("--update")
         .arg("--trust");
     let mut session = Session::spawn(real).unwrap();
     session.expect("Name").unwrap();
@@ -925,7 +909,7 @@ fn flow_dry_run_on_a_person_update_previews_without_writing() {
     session.expect("Mode").unwrap();
     session.send_line("apply").unwrap();
     session.expect("Merged greeting.txt").unwrap();
-    session.expect("Saved snapshot ").unwrap();
+    session.expect("Saved applied record ").unwrap();
     session.expect(expectrl::Eof).unwrap();
     assert_eq!(
         std::fs::read_to_string(target.path().join("greeting.txt")).unwrap(),
