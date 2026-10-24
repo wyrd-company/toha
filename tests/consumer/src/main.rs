@@ -888,6 +888,74 @@ fn main() {
             &mut environment,
         )
         .unwrap();
+        let current = UpdateSession::start(
+            prepared,
+            target_id.clone(),
+            UpdateBase::Update,
+            false,
+            Default::default(),
+            &[],
+            &raw(
+                "catalog",
+                json!({"$schema":"https://schemas.example.test/catalog/1", "title":"fresh"}),
+            ),
+        )
+        .unwrap();
+        let current_record = current.record.clone();
+        let completed = done(current.state().unwrap());
+        store.save(&target_id, &current_record).unwrap();
+        let current_runner = Runner {
+            calls: RefCell::new(vec![]),
+        };
+        assert!(
+            matches!(
+                current
+                    .apply(&completed, true, &current_runner, Some(&store))
+                    .unwrap()
+                    .0,
+                toha::applied::Merged::AlreadyCurrent
+            ),
+            "consumer_already_current_preview_disposition"
+        );
+        assert!(
+            store.load(&target_id).unwrap().is_some(),
+            "consumer_already_current_preview_retains_stage"
+        );
+        let mut environment = update_environment(&config, &registry, &root, &mut env_source);
+        let current = UpdateSession::resume(
+            current_record,
+            target_id.clone(),
+            &paths,
+            true,
+            &mut environment,
+        )
+        .unwrap();
+        let completed = done(current.state().unwrap());
+        assert!(matches!(
+            current
+                .apply(&completed, false, &current_runner, Some(&store))
+                .unwrap()
+                .0,
+            toha::applied::Merged::AlreadyCurrent
+        ));
+        assert!(
+            store.load(&target_id).unwrap().is_none(),
+            "consumer_already_current_real_consumes_stage"
+        );
+    }
+    {
+        let mut environment = update_environment(&config, &registry, &root, &mut env_source);
+        let prepared = updates::prepare(
+            &UpdateBase::Update,
+            &address,
+            &target_id,
+            &paths,
+            true,
+            PrepareMode::Stage,
+            false,
+            &mut environment,
+        )
+        .unwrap();
         let reanswer = UpdateSession::start(
             prepared,
             target_id.clone(),
