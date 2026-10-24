@@ -12,7 +12,14 @@ plan and apply output, and update generated projects without enabling the CLI.
 
 ## Add the dependency
 
-Pin a reviewed integration commit in your `Cargo.toml` without CLI dependencies:
+Add the library without the CLI dependencies:
+
+```sh
+cargo add toha --no-default-features
+```
+
+To use a reviewed integration commit before it is released, pin it as a Git
+dependency instead:
 
 ```toml
 [dependencies.toha]
