@@ -19,32 +19,19 @@ use std::path::{Path, PathBuf};
 use indexmap::IndexMap;
 use serde_json::{Value, json};
 use std::io::IsTerminal;
-use toha::context::InvocationContext;
 use toha::hook::ProcessRunner;
 use toha::interview::Seed;
 
+use toha::RawAnswer;
 use toha::applied::{
-    Action, Application, Base, Change, Cleanliness, ConflictKind, MergeOptions, Merged, Project,
-    RecordInputs, RepoPath, UpdateDrive, drive_update, drive_update_resume, merge_apply_reported,
+    Action, Change, ConflictKind, Merged, RepoPath, UpdateDrive, drive_update, drive_update_resume,
 };
 use toha::protocol::Context;
-use toha::template::{Id, Template};
-use toha::{RawAnswer, RawAnswers};
+use toha::template::Id;
 
-use crate::cli::resolve::ResolvedTemplate;
-use crate::{
-    Dirs, EnvironmentDecision, Outcome, apply_environment_grant, build_context, load_template,
-    read_answers_text, requirement_error, resolution, setup,
-};
+use crate::{Dirs, Outcome, read_answers_text, requirement_error, setup};
 
-/// The base an update merges from.
-#[derive(Clone)]
-pub enum UpdateBase {
-    /// The application matching this source and target.
-    Update,
-    /// An empty base: the whole render is merged, three-way against nothing.
-    Baseline,
-}
+pub use toha::updates::UpdateBase;
 
 /// `apply --update PATH [--answers FILE] [--reanswer]` and `apply --baseline
 /// TEMPLATE PATH --answers FILE`.
@@ -234,32 +221,21 @@ fn person_update(
     }
 }
 
-/// The shared pieces an update route needs after resolving its base and
-/// template: the opened project, the merge base, the resolved template and its
-/// render context, the base's recorded submissions, and the trust grant.
-pub(crate) struct Prepared {
-    pub project: Project,
-    pub merge_base: Base,
-    pub base_application: Option<Application>,
-    pub resolved: ResolvedTemplate,
-    pub template: Template,
-    pub now: jiff::Zoned,
-    pub context: InvocationContext,
-    pub configured_defaults: RawAnswers,
-    pub recorded: Vec<IndexMap<Id, RawAnswer>>,
-    pub trusted: bool,
+pub use toha::updates::{PrepareMode, Prepared};
+fn update_error(error: toha::updates::UpdateError, scripted: bool) -> Outcome {
+    match error {
+        toha::updates::UpdateError::Error(e) => Outcome::Error(e),
+        toha::updates::UpdateError::Resolve(e) => crate::resolve_error(e),
+        toha::updates::UpdateError::Requirements(e) => {
+            if scripted {
+                requirement_error(&e)
+            } else {
+                Outcome::Error(e.to_string())
+            }
+        }
+        other => Outcome::Error(other.to_string()),
+    }
 }
-
-/// Open the project, resolve the base application and template, enforce the update
-/// preconditions and identity (17), and build the render context and trust
-/// grant. Shared by the one-shot update route and the staged update flow.
-/// How `prepare` grants the environment and computes trust: an `apply` merges
-/// now; a `stage` captures the grant for later batches.
-pub(crate) enum PrepareMode {
-    Apply,
-    Stage,
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare(
     base: &UpdateBase,
@@ -271,128 +247,34 @@ pub(crate) fn prepare(
     interactive: bool,
     scripted: bool,
 ) -> Result<Prepared, Outcome> {
-    let project = match Project::open(target) {
-        Ok(Some(project)) => project,
-        Ok(None) => {
-            return Err(Outcome::Error(
-                "the target is not inside a git repository; an update needs git".to_owned(),
-            ));
-        }
-        Err(error) => return Err(Outcome::Error(error.to_string())),
-    };
-
-    project
-        .ensure_record_clean()
-        .map_err(|e| Outcome::Error(e.to_string()))?;
-    match project.cleanliness() {
-        Ok(Cleanliness::Clean) => {}
-        Ok(Cleanliness::Dirty { .. }) => {
-            return Err(Outcome::Error(
-                "the target has uncommitted changes; commit or discard them before an update"
-                    .into(),
-            ));
-        }
-        Err(error) => return Err(Outcome::Error(error.to_string())),
-    }
+    toha::updates::open_project(target).map_err(|e| update_error(e, false))?;
     let cwd = std::env::current_dir().map_err(|e| Outcome::Error(e.to_string()))?;
     let (config, registry) = cli_context(dirs, &cwd)?;
-    let arg = template_arg.ok_or_else(|| {
-        Outcome::Error(
-            "apply --update and --baseline need a template operand: apply TEMPLATE PATH --update"
-                .into(),
-        )
-    })?;
-    let resolved = crate::cli::resolve::resolve_template(&arg, &config, &registry, dirs, &cwd)
-        .map_err(crate::resolve_error)?;
-    let base_application = match base {
-        UpdateBase::Update => Some(
-            project
-                .application(&source_of(&resolved.formal_name))
-                .map_err(|e| Outcome::Error(e.to_string()))?,
-        ),
-        UpdateBase::Baseline => None,
-    };
-    let (merge_base, base_application, prior_part_question) = restore_merge_base(
-        &project,
-        base_application,
-        target,
-        &config,
-        &registry,
-        dirs,
-        &cwd,
-    )?;
-    // The scripted route (`--answers`) reports a missing requirement as its
-    // `requirement` error document; the other routes report it as text.
-    let template = match Template::load(&resolved.folder) {
-        Ok(value) => value,
-        Err(error) => return Err(Outcome::Error(error.to_string())),
-    };
-    if let Err(error) = toha::requirement::check(&template) {
-        return Err(if scripted {
-            requirement_error(&error)
-        } else {
-            Outcome::Error(error.to_string())
-        });
-    }
-
-    let (resolution, runtime_now) = match resolution(&resolved.formal_name, &template, &config) {
-        Ok(value) => value,
-        Err(error) => return Err(Outcome::Error(error)),
-    };
-    let (configured_defaults, _) = resolution.into_flat_defaults();
-    let now = match &base_application {
-        Some(application) => application.generated().get().clone(),
-        None => runtime_now,
-    };
-
-    // The environment decision and trust grant. An apply grants env values when
-    // the template is already trusted (an approval or `--trust`). A stage
-    // captures the fixed five when `--trust` is given, discovers the references
-    // upfront, and refuses before any batch when one needs trust it lacks, so the
-    // grant carries through every later batch and the apply.
-    let (decision, trusted) = match mode {
-        PrepareMode::Apply => {
-            let trusted = apply_environment_grant(trust, &resolved, &template);
-            (EnvironmentDecision::grant_if_needed(trusted), trusted)
-        }
-        PrepareMode::Stage => {
-            let decision = if trust {
-                EnvironmentDecision::CarryStageGrant
-            } else {
-                EnvironmentDecision::RequireStageGrant
-            };
-            (decision, trust)
-        }
-    };
-    let context = match build_context(target, &resolved, &template, decision, interactive) {
-        Ok(value) => value,
-        Err(error) => return Err(Outcome::Error(error)),
-    };
-
-    let recorded = match &base_application {
-        Some(application) => candidate_submissions(application, &template, prior_part_question)
-            .map_err(Outcome::Error)?,
-        None => Vec::new(),
-    };
-
-    Ok(Prepared {
-        project,
-        merge_base,
-        base_application,
-        resolved,
-        template,
+    let now = crate::runtime_now().map_err(Outcome::Error)?;
+    let mut source = crate::HostEnvironmentSource;
+    let mut environment = toha::updates::Environment {
+        config: &config,
+        registry: &registry,
+        cwd: &cwd,
         now,
-        context,
-        configured_defaults,
-        recorded,
-        trusted,
-    })
+        host: toha::context::HostFacts::capture(),
+        is_admin: crate::is_admin(),
+        source: &mut source,
+    };
+    let result = toha::updates::prepare(
+        base,
+        template_arg,
+        target,
+        dirs,
+        trust,
+        mode,
+        interactive,
+        &mut environment,
+    )
+    .map_err(|e| update_error(e, scripted))?;
+    crate::report_config_warnings(&result.warnings);
+    Ok(result)
 }
-
-/// Restore the pieces a staged-update resume needs from its record: reopen the
-/// project, re-resolve the template and base application, restore the identity-
-/// bearing context (not rebuilt), and recompute the trust grant for the apply.
-/// The target's cleanliness is re-checked so a merge never runs on a dirty tree.
 pub(crate) fn resume_prepared(
     saved: &crate::StagedRecord,
     base: &UpdateBase,
@@ -400,138 +282,26 @@ pub(crate) fn resume_prepared(
     dirs: &Dirs,
     trust: bool,
 ) -> Result<Prepared, Outcome> {
-    let project = match Project::open(target) {
-        Ok(Some(project)) => project,
-        Ok(None) => {
-            return Err(Outcome::Error(
-                "the target is not inside a git repository; an update needs git".to_owned(),
-            ));
-        }
-        Err(error) => return Err(Outcome::Error(error.to_string())),
-    };
-    project
-        .ensure_record_clean()
-        .map_err(|e| Outcome::Error(e.to_string()))?;
-    match project.cleanliness() {
-        Ok(Cleanliness::Clean) => {}
-        Ok(Cleanliness::Dirty { .. }) => {
-            return Err(Outcome::Error(
-                "the target has uncommitted changes; commit or discard them before an update"
-                    .to_owned(),
-            ));
-        }
-        Err(error) => return Err(Outcome::Error(error.to_string())),
-    }
-
-    let base_application = match base {
-        UpdateBase::Update => {
-            let application = project
-                .application(&source_of(&saved.template))
-                .map_err(|e| Outcome::Error(e.to_string()))?;
-            let pinned: Value =
-                serde_json::from_str(saved.base.as_deref().unwrap_or("")).map_err(|_| {
-                    Outcome::Error(
-                        "invalid staged application; run stage TEMPLATE PATH --update".into(),
-                    )
-                })?;
-            if application.to_value() != pinned {
-                return Err(Outcome::Error(
-                    "the applied record entry changed; run stage TEMPLATE PATH --update".into(),
-                ));
-            }
-            Some(application)
-        }
-        UpdateBase::Baseline => None,
-    };
+    toha::updates::open_project(target).map_err(|e| update_error(e, false))?;
     let cwd = std::env::current_dir().map_err(|e| Outcome::Error(e.to_string()))?;
     let (config, registry) = cli_context(dirs, &cwd)?;
-    let (merge_base, base_application, prior_part_question) = restore_merge_base(
-        &project,
-        base_application,
-        target,
-        &config,
-        &registry,
-        dirs,
-        &cwd,
-    )?;
-
-    let resolved = match crate::cli::resolve::resume_template(
-        &saved.template,
-        &saved.commit,
-        saved.named,
-        &config,
-        &registry,
-        dirs,
-        &cwd,
-    ) {
-        Ok(value) => value,
-        Err(error) => return Err(crate::resolve_error(error)),
-    };
-    let mut template = match load_template(&resolved) {
-        Ok(value) => value,
-        Err(error) => return Err(Outcome::Error(error)),
-    };
-
-    template.part_selection = saved.part_selection.clone();
-    let (resolution, _) = match resolution(&resolved.formal_name, &template, &config) {
-        Ok(value) => value,
-        Err(error) => return Err(Outcome::Error(error)),
-    };
-    let (configured_defaults, _) = resolution.into_flat_defaults();
-    let now = match saved.now.parse::<jiff::Zoned>() {
-        Ok(value) => value,
-        Err(error) => return Err(Outcome::Error(error.to_string())),
-    };
-    let context = match saved.invocation_context(target) {
-        Ok(value) => value,
-        Err(error) => return Err(Outcome::Error(error.to_string())),
-    };
-    let trusted = apply_environment_grant(trust, &resolved, &template);
-    let recorded = match &base_application {
-        Some(application) => candidate_submissions(application, &template, prior_part_question)
-            .map_err(Outcome::Error)?,
-        None => Vec::new(),
-    };
-    Ok(Prepared {
-        project,
-        merge_base,
-        base_application,
-        resolved,
-        template,
+    let now = crate::runtime_now().map_err(Outcome::Error)?;
+    let mut source = crate::HostEnvironmentSource;
+    let mut environment = toha::updates::Environment {
+        config: &config,
+        registry: &registry,
+        cwd: &cwd,
         now,
-        context,
-        configured_defaults,
-        recorded,
-        trusted,
-    })
+        host: toha::context::HostFacts::capture(),
+        is_admin: crate::is_admin(),
+        source: &mut source,
+    };
+    let result = toha::updates::resume_prepared(saved, base, target, dirs, trust, &mut environment)
+        .map_err(|e| update_error(e, false))?;
+    crate::report_config_warnings(&result.warnings);
+    Ok(result)
 }
-
-/// A staged record's stored submissions as the interview's raw answers.
-pub(crate) fn to_raw_staged(
-    stored: &[IndexMap<String, Value>],
-) -> Result<Vec<IndexMap<Id, RawAnswer>>, String> {
-    stored
-        .iter()
-        .map(|submission| {
-            submission
-                .iter()
-                .map(|(key, value)| {
-                    Id::parse(key)
-                        .map(|id| (id, RawAnswer(value.clone())))
-                        .map_err(|message| format!("staged answer id {key:?}: {message}"))
-                })
-                .collect::<Result<IndexMap<_, _>, _>>()
-        })
-        .collect()
-}
-
-/// Whether an update route's merge is a dry run: the invocation's `--dry-run`
-/// composes with a completed interview's own `flow: dry-run` disposition by
-/// union, either suppresses the write, matching the scripted and agent-apply
-/// routes (`main.rs`'s `scripted_completed` and fresh-apply resume).
-pub(crate) fn effective_dry_run(dry_run: bool, completed: &toha::Completed) -> bool {
-    dry_run || matches!(completed.step(), toha::Step::Plan { apply: false })
-}
+pub use toha::updates::{effective_dry_run, to_raw_staged};
 
 /// Build the application inputs from a completed update interview and merge them
 /// into the project, mapping the merge result to an `Outcome`.
@@ -576,28 +346,12 @@ pub(crate) fn finish_merge(
             .unwrap_or(&[]),
         &prep.template.selected_parts(&completed),
     );
-    let inputs = RecordInputs {
-        template: prep.resolved.formal_name.clone(),
-        revision,
-    };
-    let options = MergeOptions {
-        trusted: prep.trusted,
-        dry_run,
-    };
     let runner: &dyn toha::hook::HookRunner = if scripted {
         &crate::ScriptedRunner
     } else {
         &ProcessRunner
     };
-    match merge_apply_reported(
-        &prep.project,
-        prep.merge_base,
-        &prep.template,
-        &completed,
-        inputs,
-        options,
-        runner,
-    ) {
+    match prep.finish(target, &completed, dry_run, runner) {
         Ok((merged, report)) => {
             let outcome = match merged_outcome(merged, &ctx, base_id.as_deref()) {
                 Outcome::Document(document, code) => {
@@ -621,62 +375,6 @@ fn cli_context(
     cwd: &Path,
 ) -> Result<(toha::config::Config, toha::registry::Registry), Outcome> {
     crate::cli::resolve::load_context(dirs, cwd).map_err(crate::resolve_error)
-}
-
-/// A formal name's source identity: the name without its `@reference`, the same
-/// value an application records as its `source`.
-fn source_of(formal: &str) -> String {
-    toha::applied::source_identity(formal)
-}
-
-/// Only ordinary answers are replayed into a candidate. Documents are admitted
-/// from this run's inputs; recorded documents belong to the merge base alone.
-/// Parts replay only if the applied revision actually asked a part question.
-fn candidate_submissions(
-    application: &Application,
-    template: &Template,
-    prior_part_question: bool,
-) -> Result<Vec<IndexMap<Id, RawAnswer>>, String> {
-    let documents = template.document_question_ids();
-    Ok(recorded_submissions(application, template)?
-        .into_iter()
-        .map(|mut submission| {
-            submission.retain(|id, _| {
-                !documents.contains(id)
-                    && (prior_part_question || template.part_question().is_none_or(|q| &q.id != id))
-            });
-            submission
-        })
-        .filter(|submission| !submission.is_empty())
-        .collect())
-}
-
-/// The base application's recorded submissions, as the interview's raw answers.
-fn recorded_submissions(
-    application: &Application,
-    template: &Template,
-) -> Result<Vec<IndexMap<Id, RawAnswer>>, String> {
-    let mut submissions: Vec<IndexMap<Id, RawAnswer>> = application
-        .submissions()
-        .iter()
-        .map(|submission| {
-            submission
-                .iter()
-                .map(|(key, value)| {
-                    Id::parse(key)
-                        .map(|id| (id, RawAnswer(value.clone())))
-                        .map_err(|message| format!("recorded answer id {key:?}: {message}"))
-                })
-                .collect::<Result<IndexMap<_, _>, _>>()
-        })
-        .collect::<Result<_, _>>()?;
-    if let Some(q) = template.part_question() {
-        submissions.push(IndexMap::from([(
-            q.id.clone(),
-            RawAnswer(json!(application.parts)),
-        )]));
-    }
-    Ok(submissions)
 }
 
 /// Map a merge result to the caller's result document. An update reports the
@@ -760,111 +458,4 @@ fn conflict_name(kind: ConflictKind) -> &'static str {
         ConflictKind::Binary => "binary",
         ConflictKind::Driver => "driver",
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn restore_merge_base(
-    project: &Project,
-    application: Option<Application>,
-    target: &toha::staging::CanonicalTarget,
-    config: &toha::config::Config,
-    registry: &toha::registry::Registry,
-    dirs: &Dirs,
-    cwd: &Path,
-) -> Result<(Base, Option<Application>, bool), Outcome> {
-    let Some(mut application) = application else {
-        return Ok((Base::Empty, None, false));
-    };
-    let failure_source = application.source().to_owned();
-    let failure_revision = application.revision().clone();
-    let failure = |message: String| {
-        Outcome::Error(format!(
-            "cannot render merge base for {failure_source} at {failure_revision:?}: {message}; use apply TEMPLATE PATH --baseline to re-baseline"
-        ))
-    };
-    if matches!(application.revision(), toha::applied::Revision::Unversioned) {
-        return Err(failure("the template has no reproducible revision".into()));
-    }
-    let resolved = crate::cli::resolve::resume_application_template(
-        application.template(),
-        application.revision(),
-        config,
-        registry,
-        dirs,
-        cwd,
-    )
-    .map_err(|e| failure(format!("{e:?}")))?;
-    let template = Template::load(&resolved.folder).map_err(|e| failure(e.to_string()))?;
-    let context = InvocationContext::new(
-        target.clone(),
-        toha::context::SelectedTemplate::new(
-            template.name.clone(),
-            application.template().into(),
-            vec![],
-            resolved.source.clone(),
-        ),
-        toha::context::HostFacts::new(String::new(), String::new(), None, None, vec![]),
-        toha::context::ExecutionFacts::new(false, false),
-        toha::context::EnvironmentSnapshot::Unavailable,
-    )
-    .map_err(|e| failure(e.to_string()))?
-    .with_recorded(application.context.clone());
-    if template
-        .record_context(Some(&context))
-        .keys()
-        .any(|key| !application.context.contains_key(key))
-    {
-        return Err(failure(
-            "a referenced render context value is missing from the record".into(),
-        ));
-    }
-    let seed = Seed {
-        now: application.generated().get().clone(),
-        defaults: IndexMap::new(),
-        context,
-    };
-    let mut interview =
-        toha::Interview::start(&template, seed).map_err(|e| failure(e.to_string()))?;
-    let mut remaining = recorded_submissions(&application, &template)
-        .map_err(failure)?
-        .into_iter()
-        .flatten()
-        .collect::<IndexMap<_, _>>();
-    let completed = loop {
-        match interview {
-            toha::Interview::Complete(completed) => break completed,
-            toha::Interview::Ended(_) => {
-                return Err(failure("the recorded interview ended".into()));
-            }
-            toha::Interview::Asking(pending) => {
-                let values = pending
-                    .batch()
-                    .items
-                    .iter()
-                    .filter_map(|item| match item {
-                        toha::interview::Item::Prompt(p) => {
-                            remaining.shift_remove(&p.id).map(|v| (p.id.clone(), v))
-                        }
-                        _ => None,
-                    })
-                    .collect::<IndexMap<_, _>>();
-                if values.is_empty() {
-                    return Err(failure("a recorded question is unanswered".into()));
-                }
-                interview = pending
-                    .answer(values)
-                    .map_err(|_| failure("a recorded answer was rejected".into()))?;
-            }
-        }
-    };
-    let plan =
-        toha::Plan::build(&template, &completed, target).map_err(|e| failure(e.to_string()))?;
-    project
-        .restore_base(&mut application, plan)
-        .map_err(|e| failure(e.to_string()))?;
-    Ok((
-        Base::Application(application.clone()),
-        Some(application),
-        template.part_question().is_some(),
-    ))
 }

@@ -36,3 +36,5 @@ pub enum RecordOutcome {
 pub fn validate_record_path(root: &std::path::Path) -> Result<String, ProjectError> {
     project::record_relative(root)
 }
+
+pub(crate) use replay::covered_answers;

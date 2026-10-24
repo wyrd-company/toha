@@ -24,7 +24,7 @@ include = [
 
 [features]
 default = ["cli"]
-cli = ["dep:clap", "dep:inquire", "dep:include_dir"]
+cli = ["dep:clap", "dep:inquire"]
 
 [dependencies]
 minijinja = { version = "2.24", default-features = false, features = ["builtins", "serde", "json", "macros", "loop_controls", "multi_template", "unstable_machinery"] }
@@ -46,7 +46,7 @@ jsonc-parser = { version = "0.34.0", features = ["cst", "serde_json"] }
 inquire = { version = "0.9.4", features = ["editor"], optional = true }
 tempfile = "3"
 gix = { version = "0.87.1", default-features = false, features = ["blocking-network-client", "blocking-http-transport-curl-rustls", "worktree-mutation", "revision", "sha1", "sha256", "status", "merge"] }
-include_dir = { version = "0.7.4", optional = true }
+include_dir = "0.7.4"
 rustix = { version = "1", features = ["process", "system"] }
 curl = { version = "0.4.50", default-features = false }
 rustls-native-certs = "0.8.4"

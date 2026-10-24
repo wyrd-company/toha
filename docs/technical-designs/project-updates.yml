@@ -141,3 +141,14 @@ proposed-design:
     An update's base is the record entry for its template's source and its
     target. No route chooses among candidate bases, and no listing marks one.
     Reader APIs expose domain values rather than Gitoxide types.
+
+  library-operations: >-
+    The updates module prepares the base, selected revision, configured defaults,
+    context and recorded answer queue from explicit caller inputs. UpdateSession
+    holds one loaded request and an owned StagedRecord. The record crosses request
+    boundaries; the loaded Git-bound operation is constructed and consumed inside
+    one blocking worker. Its question form omits valid covered answers, using the
+    same replay queue and validator to submit them with the new answers. Command
+    drivers retain their whole-batch defaults and presentation. Both routes use
+    the same base reconstruction, interview and merge implementation, and every
+    apply receives the caller-selected HookRunner.
