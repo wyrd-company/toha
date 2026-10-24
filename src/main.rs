@@ -1028,6 +1028,10 @@ fn stage(
             Ok(v) => v,
             Err(e) => return operation_error(e, None),
         };
+    match session.seed_warnings() {
+        Ok(warnings) => report_config_warnings(&warnings),
+        Err(e) => return operation_error(e, None),
+    }
     let installed = trustable(&session.resolved, &registry);
     if interactive {
         return match prompt_fresh(&mut session, Some(&store)) {
@@ -1661,6 +1665,10 @@ fn scripted(
         Ok(v) => v,
         Err(e) => return operation_error(e, Some(&ctx)),
     };
+    match session.seed_warnings() {
+        Ok(warnings) => report_config_warnings(&warnings),
+        Err(e) => return operation_error(e, Some(&ctx)),
+    }
     let state = match session.answer_all(supplied) {
         Ok(v) => v,
         Err(e) => return scripted_error(ErrorKind::Render, e.to_string(), vec![], Some(&ctx)),
@@ -2050,10 +2058,16 @@ fn run(
             if let Some(seed) = &seed {
                 println!("seed defaults from application {}", seed.label);
             }
-            match preparation.start(context, now, config, parts, &Default::default(), seed) {
-                Ok(v) => v,
+            let session =
+                match preparation.start(context, now, config, parts, &Default::default(), seed) {
+                    Ok(v) => v,
+                    Err(e) => return operation_error(e, None),
+                };
+            match session.seed_warnings() {
+                Ok(warnings) => report_config_warnings(&warnings),
                 Err(e) => return operation_error(e, None),
             }
+            session
         }
         (None, Some(saved)) => {
             let mut session = match toha::operations::Session::resume(

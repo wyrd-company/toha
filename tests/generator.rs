@@ -417,6 +417,40 @@ fn wrong_kind_seed_is_dropped_and_the_apply_proceeds() {
 }
 
 #[test]
+fn staged_wrong_kind_seed_is_reported_once() {
+    let s = scene();
+    let path = s.work.path().join("widget/template.yml");
+    let body = std::fs::read_to_string(&path).unwrap();
+    assert!(body.contains("type: confirm"));
+    std::fs::write(
+        path,
+        body.replace("type: confirm", "type: text")
+            .replace("default: true", "default: unknown"),
+    )
+    .unwrap();
+    let output = support::isolated_command(s.iso.path())
+        .arg("stage")
+        .arg(&s.address)
+        .arg(s.project.join("feature/staged"))
+        .arg("--like")
+        .arg(".")
+        .arg("--async")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(4), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("with_tests") && stderr.contains("does not match"),
+        "stage_wrong_kind_seed_warning: {stderr}"
+    );
+    assert_eq!(
+        stderr.matches("does not match").count(),
+        1,
+        "stage_wrong_kind_seed_warning_once"
+    );
+}
+
+#[test]
 fn latest_with_no_snapshot_is_required_absent_and_bare_is_a_usage_error() {
     // Behavior 14: --like latest with no matching snapshot fails (exit 1); a bare
     // --like on the scripted route is a usage error (exit 2); --like absent

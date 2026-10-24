@@ -152,7 +152,9 @@ and return data. They do not parse arguments, prompt or print command reports.
   structured events and errors.
 - `operations::Session` owns a loaded template and a serializable `StagedRecord`.
   `state` returns a question document, completion or an ended interview; `answer`
-  returns per-question rejections without changing rejected state. `plan` and
+  returns per-question rejections without changing rejected state. `seed_warnings`
+  returns dropped application-default warnings as data for the caller to report.
+  `plan` and
   `apply` use the existing planner and caller-supplied `HookRunner`.
 - `updates::prepare` opens and verifies an update or baseline. `UpdateSession`
   admits current document inputs, pins the application and replays old answers.

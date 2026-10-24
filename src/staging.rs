@@ -464,15 +464,27 @@ impl StagedRecord {
         seed: Option<ApplicationSeed>,
         target: &CanonicalTarget,
     ) -> Result<Interview<'a>, StagingError> {
+        self.replay_with_seed_reporting(template, resolution, seed, target)
+            .map(|(interview, _)| interview)
+    }
+
+    pub(crate) fn replay_with_seed_reporting<'a>(
+        &self,
+        template: &'a Template,
+        resolution: Resolution,
+        seed: Option<ApplicationSeed>,
+        target: &CanonicalTarget,
+    ) -> Result<(Interview<'a>, Vec<String>), StagingError> {
         let now = self
             .now
             .parse()
             .map_err(|e: jiff::Error| StagingError::Replay(e.to_string()))?;
         let context = self.invocation_context(target)?;
-        let (interview, _warnings) = resolution
+        let (interview, warnings) = resolution
             .start_with_selection(template, now, context, seed, self.part_selection.clone())
             .map_err(|e| StagingError::Replay(e.to_string()))?;
         self.replay_from(interview, template)
+            .map(|interview| (interview, warnings))
     }
 
     fn replay_from<'a>(
