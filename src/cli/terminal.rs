@@ -2,13 +2,16 @@
 // relationships:
 //   implements: architecture
 // ---
+#[cfg(test)]
 use indexmap::IndexMap;
 use inquire::{Confirm, Editor, MultiSelect, Select, Text};
 use serde_json::{Value, json};
 use toha::{
-    Answer, AnswerError, CheckError, Completed, Ended, Interview, Item, Pending, Prompt,
-    PromptKind, RawAnswer, RawAnswers,
+    Answer, CheckError, Completed, Ended, Item, Pending, Prompt, PromptKind, RawAnswer, RawAnswers,
 };
+
+#[cfg(test)]
+use toha::{AnswerError, Interview};
 
 /// The terminal outcome of a driven interview: a normal completion, or a flow
 /// `stop`/`abort` that ended it.
@@ -236,6 +239,7 @@ fn ask_value(ask: &mut impl Ask, prompt: &Prompt) -> Result<Value, String> {
     Ok(value)
 }
 
+#[cfg(test)]
 pub(crate) fn drive<'a>(
     interview: Interview<'a>,
     ask: &mut impl Ask,
@@ -279,6 +283,7 @@ pub(crate) fn prompt_batch(
     Ok(submission)
 }
 
+#[cfg(test)]
 fn drive_to<'a>(
     mut interview: Interview<'a>,
     ask: &mut impl Ask,

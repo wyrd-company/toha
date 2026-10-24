@@ -103,6 +103,7 @@ impl From<CatalogError> for CommandError {
             CatalogError::Surface { formal, error } => {
                 Self::Error(guidance::surface_unreadable(&formal, &error))
             }
+            other => Self::Error(other.to_string()),
         }
     }
 }
@@ -137,6 +138,7 @@ fn events(events: Vec<Event>) -> Vec<String> {
                 "{}untrusted {formal}",
                 if already { "already " } else { "" }
             ),
+            _ => "template registry changed".to_owned(),
         })
         .collect()
 }
@@ -226,9 +228,23 @@ pub fn run(args: TemplatesArgs, dirs: Dirs, cwd: &Path) -> Result<Vec<String>, C
             template,
             alias: name,
             remove,
-        } => catalog::alias(&ctx, template, name, remove)
-            .map(events)
-            .map_err(Into::into),
+        } => {
+            let result = match (template, name, remove) {
+                (None, None, Some(alias)) => catalog::remove_alias(&ctx, &alias),
+                (Some(template), Some(alias), None) => catalog::add_alias(&ctx, &template, &alias),
+                (_, _, Some(_)) => {
+                    return Err(CommandError::Error(
+                        "-r cannot be combined with a template or alias".into(),
+                    ));
+                }
+                _ => {
+                    return Err(CommandError::Error(
+                        "template and alias are required".into(),
+                    ));
+                }
+            };
+            result.map(events).map_err(Into::into)
+        }
         TemplatesCommand::Trust { template } => catalog::trust(&ctx, &template)
             .map(events)
             .map_err(Into::into),

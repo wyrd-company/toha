@@ -4,7 +4,6 @@
 // ---
 pub use toha::resolve::{
     ResolveError, ResolvedTemplate, applied_revision, formal_name, resolve_template,
-    resume_template,
 };
 pub fn load_context(
     dirs: &crate::Dirs,

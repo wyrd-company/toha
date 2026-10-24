@@ -15,8 +15,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[derive(Clone)]
-/// Explicit storage locations. These operations do not consult cwd or XDG variables.
+#[derive(Debug, Clone)]
+/// Explicit Toha storage locations; callers also pass the resolution working directory.
+/// Git dependencies retain their supported process-global configuration lookup (including
+/// HOME/XDG Git config) and SSH executable lookup through PATH. Requirements and the
+/// default process hook runner also consult PATH. Applied-record operations retain the
+/// TOHA_RECORD override. These inputs do not provide process or environment isolation.
 pub struct Paths {
     pub system_config: PathBuf,
     pub user_config: PathBuf,
@@ -61,6 +65,7 @@ pub struct ResolvedTemplate {
 }
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ResolveError {
     Error(String),
     NotFound(String),
@@ -560,7 +565,9 @@ impl std::fmt::Display for ResolveError {
         match self {
             Self::Error(message) | Self::StaleRevision { message } => message.fmt(f),
             Self::NotFound(name) => write!(f, "template not found: {name}"),
-            _ => write!(f, "{self:?}"),
+            Self::Ambiguous { name, matches } => {
+                write!(f, "template {name} is ambiguous: {}", matches.join(", "))
+            }
         }
     }
 }

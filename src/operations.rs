@@ -15,6 +15,21 @@ use crate::{
     staging::{CanonicalTarget, StagedRecord, Store},
 };
 use std::path::{Path, PathBuf};
+/// Warnings from the same configured-default resolution used by session replay.
+pub fn configuration_warnings(
+    formal_name: &str,
+    template: &Template,
+    config: &crate::config::Config,
+) -> Result<Vec<String>, OperationError> {
+    Ok(crate::interview::configured_defaults(
+        formal_name,
+        template,
+        &config.presets,
+        &config.template_defaults,
+    )?
+    .warnings()
+    .to_vec())
+}
 pub fn admit_parts(
     template: &mut Template,
     mut parts: crate::parts::Selection,
@@ -102,10 +117,10 @@ pub fn invocation_context(
     host: HostFacts,
     execution: ExecutionFacts,
     source: &mut impl FixedEnvironmentSource,
-) -> Result<InvocationContext, String> {
+) -> Result<InvocationContext, OperationError> {
     let environment = template
         .admit_environment(decision, source)
-        .map_err(|e| crate::staging::stage_admission_error(e).to_string())?;
+        .map_err(crate::staging::stage_admission_error)?;
     let selected = SelectedTemplate::new(
         resolved.formal_name.clone(),
         template.name.clone(),
@@ -113,7 +128,7 @@ pub fn invocation_context(
         resolved.source.clone(),
     );
     InvocationContext::new(target.clone(), selected, host, execution, environment)
-        .map_err(|e| e.to_string())
+        .map_err(OperationError::Context)
 }
 /// Admit parts and freeze the already admitted documents and optional seed in an owned record.
 /// Drivers can perform their input/prompt admission first without duplicating replay state construction.
@@ -145,12 +160,13 @@ pub fn prepare_record(
 }
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum SeedError {
-    #[error("staged --like has no copied application; abort and stage again")]
+    #[error("the staged seed has no copied application")]
     MissingCopy,
-    #[error("copied --like application has another source; abort and stage again")]
+    #[error("the copied seed application has another source")]
     WrongSource,
-    #[error("copied --like application has another target; abort and stage again")]
+    #[error("the copied seed application has another target")]
     WrongTarget,
     #[error(transparent)]
     Record(#[from] crate::applied::RecordError),
@@ -159,7 +175,6 @@ pub enum SeedError {
 pub fn pinned_seed(
     saved: &StagedRecord,
     source: &str,
-    _target: &CanonicalTarget,
 ) -> Result<Option<crate::interview::ApplicationSeed>, SeedError> {
     let Some(pin) = &saved.seed_entry else {
         return if saved.seed.is_some() {
@@ -181,7 +196,10 @@ pub fn pinned_seed(
 }
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum OperationError {
+    #[error("{0}")]
+    Context(#[from] crate::context::ContextError),
     #[error("{0}")]
     Input(String),
     #[error("{0}")]
@@ -203,7 +221,7 @@ pub enum OperationError {
     #[error("{0}")]
     Requirements(#[from] crate::MissingRequirements),
     #[error("{0}")]
-    Apply(Box<crate::ApplyError>),
+    Apply(#[source] Box<crate::ApplyError>),
 }
 
 impl From<crate::ApplyError> for OperationError {
@@ -214,6 +232,8 @@ impl From<crate::ApplyError> for OperationError {
 
 /// An owned response: question errors retain their question ids. No Pending escapes a request.
 #[allow(clippy::large_enum_variant)]
+#[non_exhaustive]
+#[derive(Debug)]
 pub enum SessionState {
     Asking {
         document: serde_json::Value,
@@ -231,14 +251,18 @@ pub struct Session {
     pub record: StagedRecord,
     pub target: CanonicalTarget,
     config: crate::config::Config,
+    has_progress: bool,
+    ended: Option<crate::Ended>,
 }
 
 impl Session {
     /// Start a new in-memory application. Host inputs and storage admission belong to the caller.
     /// The same record can be persisted through Store or carried by a stateless request protocol.
+    /// `admission_answers` admit document values and part selection only. Call `answer` or
+    /// `answer_all` to submit interview answers. Use [`Preparation`] before capturing environment values.
     #[allow(clippy::too_many_arguments, clippy::result_large_err)]
     pub fn start(
-        mut template: Template,
+        template: Template,
         resolved: ResolvedTemplate,
         target: CanonicalTarget,
         context: InvocationContext,
@@ -246,7 +270,29 @@ impl Session {
         config: crate::config::Config,
         parts: crate::parts::Selection,
         inputs: &[PathBuf],
-        answers: &RawAnswers,
+        admission_answers: &RawAnswers,
+        seed: Option<crate::application_seed::LikeSeed>,
+    ) -> Result<Self, OperationError> {
+        Preparation::new(template, resolved, target, inputs, admission_answers)?.start(
+            context,
+            now,
+            config,
+            parts,
+            admission_answers,
+            seed,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn from_admitted(
+        mut template: Template,
+        resolved: ResolvedTemplate,
+        target: CanonicalTarget,
+        context: InvocationContext,
+        now: jiff::Zoned,
+        config: crate::config::Config,
+        parts: crate::parts::Selection,
+        admission_answers: &RawAnswers,
         seed: Option<crate::application_seed::LikeSeed>,
     ) -> Result<Self, OperationError> {
         if context.target() != &target
@@ -256,15 +302,13 @@ impl Session {
                 "invocation context does not match the selected template and target".into(),
             ));
         }
-        crate::requirement::check(&template)?;
-        crate::document::prepare(&mut template, target.as_path(), inputs, answers)?;
         let record = prepare_record(
             &mut template,
             &resolved,
             context,
             &now,
             parts,
-            answers,
+            admission_answers,
             seed.as_ref(),
         )
         .map_err(OperationError::Input)?;
@@ -274,20 +318,20 @@ impl Session {
             record,
             target,
             config,
+            has_progress: false,
+            ended: None,
         })
     }
 
     /// Reload a request using its exact recorded revision and admitted document values.
     #[allow(clippy::too_many_arguments, clippy::result_large_err)]
     pub fn resume(
-        mut record: StagedRecord,
+        record: StagedRecord,
         target: CanonicalTarget,
         paths: &crate::resolve::Paths,
         config: crate::config::Config,
         registry: &crate::registry::Registry,
         cwd: &Path,
-        inputs: &[PathBuf],
-        incoming: &RawAnswers,
     ) -> Result<Self, OperationError> {
         record.invocation_context(&target)?;
         let resolved = crate::resolve::resume_template(
@@ -303,13 +347,6 @@ impl Session {
         crate::requirement::check(&template)?;
         crate::document::restore_missing(&mut template, &recorded_answers(&record))
             .map_err(OperationError::Input)?;
-        prepare_staged_documents(
-            &mut template,
-            target.as_path(),
-            inputs,
-            incoming,
-            &mut record,
-        )?;
         template.part_selection = record.part_selection.clone();
         Ok(Self {
             template,
@@ -317,11 +354,16 @@ impl Session {
             record,
             target,
             config,
+            has_progress: true,
+            ended: None,
         })
     }
 
     /// Rebuild the pure engine for this request. Existing legacy record replay remains supported.
     pub fn replay(&self) -> Result<Interview<'_>, OperationError> {
+        if let Some(ended) = &self.ended {
+            return Ok(Interview::Ended(ended.clone()));
+        }
         let resolution = crate::interview::configured_defaults(
             &self.resolved.formal_name,
             &self.template,
@@ -331,7 +373,6 @@ impl Session {
         let seed = pinned_seed(
             &self.record,
             &crate::applied::source_identity(&self.resolved.formal_name),
-            &self.target,
         )?;
         Ok(self
             .record
@@ -351,6 +392,10 @@ impl Session {
                 rejections,
             },
         }
+    }
+
+    pub fn warnings(&self) -> Result<Vec<String>, OperationError> {
+        configuration_warnings(&self.resolved.formal_name, &self.template, &self.config)
     }
 
     pub fn state(&self) -> Result<SessionState, OperationError> {
@@ -375,13 +420,80 @@ impl Session {
                 ));
             }
         };
-        if accepted {
+        if matches!(&state, SessionState::Ended(ended) if ended.kind() == crate::EndKind::Abort) {
+            if let SessionState::Ended(ended) = &state {
+                self.ended = Some(ended.clone());
+            }
+        } else if accepted {
+            self.has_progress = true;
             self.record.submissions.push(
                 answers
                     .into_iter()
                     .map(|(id, raw)| (id.to_string(), raw.0))
                     .collect(),
             );
+        }
+        Ok(state)
+    }
+
+    /// Admit document inputs after callers have checked a reconstructed session's state.
+    /// Reconstruction itself never reads new input files.
+    pub fn admit_documents(
+        &mut self,
+        inputs: &[PathBuf],
+        incoming: &RawAnswers,
+    ) -> Result<(), OperationError> {
+        prepare_staged_documents(
+            &mut self.template,
+            self.target.as_path(),
+            inputs,
+            incoming,
+            &mut self.record,
+        )?;
+        Ok(())
+    }
+
+    /// Persist accepted progress; an accepted abort consumes the stage without recording its batch.
+    pub fn persist(&self, store: &Store) -> Result<(), OperationError> {
+        match self.state()? {
+            SessionState::Ended(ended) if ended.kind() == crate::EndKind::Abort => {
+                store.remove(&self.target)?;
+            }
+            SessionState::Ended(_) if !self.has_progress => {}
+            _ => {
+                store.save(&self.target, &self.record)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Drive a noninteractive whole answer map through the existing headless validator.
+    pub fn answer_all(&mut self, answers: RawAnswers) -> Result<SessionState, OperationError> {
+        let (state, accepted) =
+            match crate::protocol::answer_headless(&self.template, self.replay()?, answers)? {
+                crate::protocol::Headless::Completed {
+                    completed,
+                    accepted,
+                } => (SessionState::Completed(completed), accepted),
+                crate::protocol::Headless::Pending {
+                    pending,
+                    rejections,
+                    accepted,
+                } => (
+                    self.response(Interview::Asking(*pending), rejections),
+                    accepted,
+                ),
+                crate::protocol::Headless::Ended { ended, accepted } => {
+                    (SessionState::Ended(ended), accepted)
+                }
+            };
+        if matches!(&state, SessionState::Ended(ended) if ended.kind() == crate::EndKind::Abort) {
+            if let SessionState::Ended(ended) = &state {
+                self.ended = Some(ended.clone());
+            }
+        } else {
+            self.has_progress |= !accepted.is_empty();
+            self.record.submissions.extend(accepted);
         }
         Ok(state)
     }
@@ -410,17 +522,32 @@ impl Session {
         if crate::updates::effective_dry_run(dry_run, completed) {
             return Ok(ApplicationResult::Planned(plan));
         }
-        let result = plan.apply(&self.target, options, runner)?;
+        let result = self.apply_plan(plan, options, runner, store, &mut |_| {})?;
+        Ok(ApplicationResult::Applied(result))
+    }
+
+    /// Apply an already inspected plan with caller-owned progress presentation.
+    pub fn apply_plan(
+        &self,
+        plan: Plan,
+        options: ApplyOptions,
+        runner: &dyn crate::hook::HookRunner,
+        store: Option<&Store>,
+        report: &mut dyn FnMut(&crate::TargetPath),
+    ) -> Result<Applied, OperationError> {
+        let result = plan.apply_reporting(&self.target, options, runner, report)?;
         if matches!(result, Applied::Written { .. })
             && let Some(store) = store
         {
             store.remove(&self.target)?;
         }
-        Ok(ApplicationResult::Applied(result))
+        Ok(result)
     }
 }
 
 #[allow(clippy::large_enum_variant)]
+#[non_exhaustive]
+#[derive(Debug)]
 pub enum ApplicationResult {
     Planned(Plan),
     Applied(Applied),
@@ -503,4 +630,78 @@ pub fn classify_paths(
         });
     }
     Ok(paths)
+}
+
+impl std::fmt::Debug for Session {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Session")
+            .field("resolved", &self.resolved)
+            .field("record", &self.record)
+            .field("target", &self.target)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A template whose requirements and document inputs have been admitted before environment access.
+#[derive(Debug)]
+pub struct Preparation {
+    pub template: Template,
+    pub resolved: ResolvedTemplate,
+    pub target: CanonicalTarget,
+}
+impl Preparation {
+    pub fn new(
+        mut template: Template,
+        resolved: ResolvedTemplate,
+        target: CanonicalTarget,
+        inputs: &[PathBuf],
+        admission_answers: &RawAnswers,
+    ) -> Result<Self, OperationError> {
+        crate::requirement::check(&template)?;
+        crate::document::prepare(&mut template, target.as_path(), inputs, admission_answers)?;
+        Ok(Self {
+            template,
+            resolved,
+            target,
+        })
+    }
+    pub fn context(
+        &self,
+        decision: EnvironmentDecision,
+        host: HostFacts,
+        execution: ExecutionFacts,
+        source: &mut impl FixedEnvironmentSource,
+    ) -> Result<InvocationContext, OperationError> {
+        invocation_context(
+            &self.target,
+            &self.resolved,
+            &self.template,
+            decision,
+            host,
+            execution,
+            source,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn start(
+        self,
+        context: InvocationContext,
+        now: jiff::Zoned,
+        config: crate::config::Config,
+        parts: crate::parts::Selection,
+        admission_answers: &RawAnswers,
+        seed: Option<crate::application_seed::LikeSeed>,
+    ) -> Result<Session, OperationError> {
+        Session::from_admitted(
+            self.template,
+            self.resolved,
+            self.target,
+            context,
+            now,
+            config,
+            parts,
+            admission_answers,
+            seed,
+        )
+    }
 }

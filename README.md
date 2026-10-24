@@ -148,7 +148,7 @@ and return data. They do not parse arguments, prompt or print command reports.
 - `resolve::Paths` and `resolve::{load_context, resolve_template,
   resume_template}` load configuration, fetch/cache templates and restore pins.
 - `catalog::Catalog` loads one registry snapshot. Load a fresh snapshot for each
-  mutation; `catalog::{add, list, update, remove, alias, trust, untrust}` return
+  mutation; `catalog::{add, list, update, remove, add_alias, remove_alias, trust, untrust}` return
   structured events and errors.
 - `operations::Session` owns a loaded template and a serializable `StagedRecord`.
   `state` returns a question document, completion or an ended interview; `answer`
@@ -166,8 +166,13 @@ Persist or return the session's `record`, then drop the loaded request. Rebuild
 with `Session::resume` or `UpdateSession::resume` for each subsequent request.
 The record includes the exact template/base, context, time, document values and
 accepted submissions. A bare submissions list does not carry all replay inputs.
-Document answers are read fresh when starting an update and stay fixed within
-that update session.
+Reconstruction does not read new document paths. Inspect `state` before acquiring
+new submissions or call `admit_documents` to admit new inputs. `Preparation`
+checks requirements and documents before its environment-context admission;
+`Session::start` accepts an already captured context. Its `admission_answers`
+argument admits document values and parts; `answer`/`answer_all` submit answers.
+`persist` owns accepted progress and abort cleanup. Document answers are read
+fresh when starting an update and stay fixed within that update session.
 
 Owned request inputs, records and `SessionState` results can cross a worker
 boundary. A loaded update retains a thread-local Git repository and is not
@@ -181,7 +186,10 @@ metadata; the runner returns status and optional raw captured streams. There is
 no per-hook environment map. Choose the runner and trust decision explicitly.
 Operation-owned reports are silent; runners retain their own I/O contract. The
 existing Git SSH transport starts the configured/default `ssh` executable and
-can forward SSH diagnostics to stderr.
+can forward SSH diagnostics to stderr. Explicit Toha paths are not process
+isolation: gix can read global Git configuration through HOME/XDG, executable
+requirements and the process runner use PATH, and applied-record operations
+retain the TOHA_RECORD process override.
 
 Run the complete direct-library recipe from a repository checkout:
 

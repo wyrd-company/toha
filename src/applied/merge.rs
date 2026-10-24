@@ -84,7 +84,10 @@ pub enum ConflictKind {
 /// A failure of the merge transaction. Every variant names paths or a
 /// diagnostic and never an answer value or file content.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum MergeError {
+    #[error("the update was prepared for another target")]
+    WrongTarget,
     #[error("git error during merge: {0}")]
     Git(String),
     #[error("git error during merge: apply: {0}")]

@@ -37,8 +37,7 @@ use cli::{
     resolve::{ResolveError, ResolvedTemplate},
 };
 use toha::{
-    Applied, ApplyOptions, Completed, EndKind, Ended, Interview, Plan, Planned, ReviewDigest, Step,
-    Template,
+    Applied, ApplyOptions, Completed, Interview, Plan, Planned, Template,
     context::{
         EnvironmentDecision, ExecutionFacts, FixedEnvironment, FixedEnvironmentSource, HostFacts,
         InvocationContext,
@@ -46,8 +45,8 @@ use toha::{
     git_target::GitReport,
     hook::{ProcessRunner, ScriptedRunner},
     protocol::{
-        self, AppliedFile, AppliedHook, ApplyReport, Context, DocumentStep, ErrorKind, Headless,
-        ResultError, SubmitDocumentError, TrustState,
+        self, AppliedFile, AppliedHook, ApplyReport, Context, ErrorKind, ResultError,
+        SubmitDocumentError, TrustState,
     },
     staging::{self, CanonicalTarget, StagedRecord, Store},
 };
@@ -114,6 +113,7 @@ fn build_context(
         ExecutionFacts::new(is_admin(), is_interactive),
         &mut HostEnvironmentSource,
     )
+    .map_err(|e| e.to_string())
 }
 /// The effective-trust gate for a direct/new-apply environment decision: an
 /// explicit `--trust`, or a current registry approval that matches the live
@@ -478,11 +478,6 @@ enum Outcome {
     },
 }
 impl Outcome {
-    /// Whether the outcome reports a successful result (not an error).
-    /// The staged update apply removes its record only on success.
-    pub(crate) fn is_success(&self) -> bool {
-        matches!(self, Self::Document(_, 0) | Self::Written(_))
-    }
     /// Names `command` with each formal name when the template name is ambiguous.
     fn retry(self, command: impl Fn(&str) -> String) -> Self {
         match self {
@@ -648,9 +643,6 @@ fn injection_report(
     Ok(lines)
 }
 
-use toha::operations::{
-    admit_parts, admitted_documents, prepare_staged_documents, recorded_answers,
-};
 fn document_input_error(error: toha::document::PrepareError, context: Option<&Context>) -> Outcome {
     let usage = error.is_usage();
     let message = error.to_string();
@@ -670,19 +662,6 @@ fn document_input_error(error: toha::document::PrepareError, context: Option<&Co
         Outcome::Error(message)
     }
 }
-fn overlay_document_answers(
-    template: &Template,
-    formal: &str,
-    supplied: toha::RawAnswers,
-) -> String {
-    let mut answers: indexmap::IndexMap<String, serde_json::Value> = supplied
-        .into_iter()
-        .map(|(id, v)| (id.to_string(), v.0))
-        .collect();
-    answers.extend(admitted_documents(template));
-    serde_json::json!({"template": formal, "answers": answers}).to_string()
-}
-
 /// Reads the answers document once as UTF-8 and prefixes a read failure with the
 /// source name. It does not inspect the JSON; the protocol boundary parses and
 /// verifies it.
@@ -707,17 +686,13 @@ fn resolution(
     formal_name: &str,
     template: &Template,
     config: &toha::config::Config,
-) -> Result<(toha::interview::Resolution, jiff::Zoned), String> {
+) -> Result<jiff::Zoned, String> {
     let now = runtime_now()?;
-    let resolution = toha::interview::configured_defaults(
-        formal_name,
-        template,
-        &config.presets,
-        &config.template_defaults,
-    )
-    .map_err(|e| e.to_string())?;
-    report_config_warnings(resolution.warnings());
-    Ok((resolution, now))
+    report_config_warnings(
+        &toha::operations::configuration_warnings(formal_name, template, config)
+            .map_err(|e| e.to_string())?,
+    );
+    Ok(now)
 }
 /// The parsed `--like` request from clap's `Option<Option<String>>`: absent, a
 /// bare flag (picker on the person route; usage error elsewhere), or an explicit
@@ -757,7 +732,16 @@ impl LikeReject {
 impl From<cli::like::LikeError> for LikeReject {
     fn from(error: cli::like::LikeError) -> Self {
         Self {
-            message: error.to_string(),
+            message: match error {
+                cli::like::LikeError::NoProject => {
+                    "the target is not inside a git repository; --like needs a recorded application"
+                        .into()
+                }
+                cli::like::LikeError::Missing { name, target } => format!(
+                    "no application of {name} at target {target}; --like selects a target in the applied record"
+                ),
+                other => other.to_string(),
+            },
             usage: false,
         }
     }
@@ -797,6 +781,7 @@ fn resolve_like_seed(
             let application = cli::like::find_required(project.as_ref(), source, &reference)?;
             Ok(Some(cli::like::seed(&application)))
         }
+        Some(_) => unreachable!("CLI constructs reference selectors"),
         // Bare, interactive: the person picker. No project or no candidate means
         // there is nothing to offer, so proceed with a normal apply.
         None => {
@@ -813,14 +798,6 @@ fn resolve_like_seed(
             }
         }
     }
-}
-/// Rebuild defaults from the application copied when `--like` was staged.
-fn resolve_pinned_seed(
-    saved: &StagedRecord,
-    source: &str,
-    target: &CanonicalTarget,
-) -> Result<Option<toha::interview::ApplicationSeed>, String> {
-    toha::operations::pinned_seed(saved, source, target).map_err(|error| error.to_string())
 }
 /// The person-route picker: list the source's applications in target order and let
 /// the person choose one to seed from, or "none". Returns the chosen index, or
@@ -862,11 +839,6 @@ fn trustable(resolved: &ResolvedTemplate, registry: &toha::registry::Registry) -
 /// Loads the template an interview is about to drive and confirms its
 /// `requires` programs are on `PATH`, so a caller answers no question for an
 /// apply whose hooks cannot run.
-fn load_template(resolved: &ResolvedTemplate) -> Result<Template, String> {
-    let template = Template::load(&resolved.folder).map_err(|e| e.to_string())?;
-    toha::requirement::check(&template).map_err(|e| e.to_string())?;
-    Ok(template)
-}
 fn environment(
     dirs: &Dirs,
 ) -> Result<(toha::config::Config, toha::registry::Registry, PathBuf), Outcome> {
@@ -884,6 +856,7 @@ fn resolve_error(error: ResolveError) -> Outcome {
             matches,
             retry: vec![],
         },
+        other => Outcome::Error(other.to_string()),
     }
 }
 /// The configuration, registry, and directories that template names resolve against.
@@ -895,48 +868,26 @@ struct Scope<'a> {
 }
 /// Whether the staged interview has questions remaining, for guidance only.
 fn progress(saved: &StagedRecord, scope: &Scope, target: &CanonicalTarget) -> Progress {
-    let replayed = (|| {
-        let resolved = cli::resolve::resume_template(
-            &saved.template,
-            &saved.commit,
-            saved.named,
-            scope.config,
-            scope.registry,
-            scope.dirs,
-            scope.cwd,
-        )
-        .ok()?;
-        let template = Template::load(&resolved.folder).ok()?;
-        let resolution = toha::interview::configured_defaults(
-            &saved.template,
-            &template,
-            &scope.config.presets,
-            &scope.config.template_defaults,
-        )
-        .ok()?;
-        report_config_warnings(resolution.warnings());
-        // A generate-staged record carries its copied seed so the guidance
-        // reflects the same remaining questions the resume will show.
-        let pinned_seed = resolve_pinned_seed(
-            saved,
-            &toha::applied::source_identity(&resolved.formal_name),
-            target,
-        )
-        .ok()?;
-        // A flow stop/abort is terminal but distinct from complete: nothing can
-        // be applied, so its guidance names starting over, not `apply`.
-        Some(
-            match saved
-                .replay_with_seed(&template, resolution, pinned_seed, target)
-                .ok()?
-            {
-                Interview::Complete(_) => Progress::Complete,
-                Interview::Ended(_) => Progress::Ended,
-                Interview::Asking(_) => Progress::Incomplete,
-            },
-        )
-    })();
-    replayed.unwrap_or(Progress::Unknown)
+    let session = match toha::operations::Session::resume(
+        saved.clone(),
+        target.clone(),
+        scope.dirs,
+        scope.config.clone(),
+        scope.registry,
+        scope.cwd,
+    ) {
+        Ok(v) => v,
+        Err(_) => return Progress::Unknown,
+    };
+    if let Ok(warnings) = session.warnings() {
+        report_config_warnings(&warnings);
+    }
+    match session.state() {
+        Ok(toha::operations::SessionState::Completed(_)) => Progress::Complete,
+        Ok(toha::operations::SessionState::Ended(_)) => Progress::Ended,
+        Ok(toha::operations::SessionState::Asking { .. }) => Progress::Incomplete,
+        _ => Progress::Unknown,
+    }
 }
 /// The refusal for `stage` or `apply` with a template when an interview is
 /// staged at the path, or `None` when `apply` names the staged template.
@@ -1010,45 +961,54 @@ fn stage(
         return staged_refusal(&invocation, &template, &path, &saved, &scope, &target)
             .expect("stage refuses every staged target");
     }
-    if output.is_none() && !io::stdin().is_terminal() {
+    let interactive = output.is_none();
+    if interactive && !io::stdin().is_terminal() {
         return Outcome::Error(guidance::no_terminal(&template, &path));
     }
     let resolved = match cli::resolve::resolve_template(&template, &config, &registry, dirs, &cwd) {
         Ok(v) => v,
         Err(e) => return resolve_error(e),
     };
-    let mut template = match load_template(&resolved) {
+    let template = match Template::load(&resolved.folder) {
+        Ok(v) => v,
+        Err(e) => return Outcome::Error(e.to_string()),
+    };
+    let preparation = match toha::operations::Preparation::new(
+        template,
+        resolved,
+        target.clone(),
+        input,
+        &Default::default(),
+    ) {
+        Ok(v) => v,
+        Err(e) => return operation_error(e, None),
+    };
+    let now = match resolution(
+        &preparation.resolved.formal_name,
+        &preparation.template,
+        &config,
+    ) {
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
     };
-    if let Err(e) =
-        toha::document::prepare(&mut template, target.as_path(), input, &Default::default())
-    {
-        return document_input_error(e, None);
-    }
-    let (resolution, now) = match resolution(&resolved.formal_name, &template, &config) {
-        Ok(v) => v,
-        Err(e) => return Outcome::Error(e),
-    };
-    // Stage uses only its explicit flag: with it, capture the fixed five once
-    // (even without a reference); without it, refuse a need before any progress.
     let decision = if trust {
         EnvironmentDecision::CarryStageGrant
     } else {
         EnvironmentDecision::RequireStageGrant
     };
-    // The originating driver can prompt a human only on the terminal path.
-    let interactive = output.is_none();
-    let invocation = match build_context(&target, &resolved, &template, decision, interactive) {
+    let invocation = match preparation.context(
+        decision,
+        HostFacts::capture(),
+        ExecutionFacts::new(is_admin(), interactive),
+        &mut HostEnvironmentSource,
+    ) {
         Ok(v) => v,
-        Err(e) => return Outcome::Error(e),
+        Err(e) => return operation_error(e, None),
     };
-    // Resolve `--like`: the person route (no `--async`) may open a picker; the
-    // agent route (`--async`) rejects a bare `--like` as a usage error.
-    let like_seed = match resolve_like_seed(
+    let seed = match resolve_like_seed(
         LikeFlag::parse(like),
         interactive,
-        &toha::applied::source_identity(&resolved.formal_name),
+        &toha::applied::source_identity(&preparation.resolved.formal_name),
         &target,
     ) {
         Ok(v) => v,
@@ -1060,92 +1020,61 @@ fn stage(
             };
         }
     };
-    if interactive && let Some(seed) = &like_seed {
+    if interactive && let Some(seed) = &seed {
         println!("seed defaults from application {}", seed.label);
     }
-    let seed_from = like_seed.as_ref().map(|seed| seed.id.to_string());
-    let saved = match toha::operations::prepare_record(
-        &mut template,
-        &resolved,
-        invocation.clone(),
-        &now,
-        parts,
-        &Default::default(),
-        like_seed.as_ref(),
-    ) {
-        Ok(saved) => saved,
-        Err(error) => return Outcome::Usage(error),
-    };
-    let interview = match resolution.start_with_seed(
-        &template,
-        now,
-        invocation,
-        like_seed.map(|seed| seed.engine),
-    ) {
-        Ok((interview, warnings)) => {
-            report_config_warnings(&warnings);
-            interview
-        }
-        Err(e) => return Outcome::Error(e.to_string()),
-    };
-    let installed = trustable(&resolved, &registry);
-    if output.is_none() {
-        // Person route: prompt, saving each batch, then show the dry-run plan and
-        // apply instructions at completion.
-        let mut saved = saved;
-        let completed = terminal::drive(interview, &mut terminal::InquireAsk, |submission| {
-            saved.submissions.push(submission);
-            store.save(&target, &saved).map_err(|e| e.to_string())
-        });
-        return match completed {
-            Ok(terminal::Session::Completed(completed)) => {
-                // An interview without prompts still needs a staged record.
-                if saved.submissions.is_empty()
-                    && let Err(e) = store.save(&target, &saved)
-                {
-                    return Outcome::Error(e.to_string());
-                }
-                completion_preview(
-                    &template,
-                    &completed,
-                    &target,
-                    &resolved,
-                    installed.as_deref(),
-                    &path,
-                    false,
-                )
+    let mut session =
+        match preparation.start(invocation, now, config, parts, &Default::default(), seed) {
+            Ok(v) => v,
+            Err(e) => return operation_error(e, None),
+        };
+    let installed = trustable(&session.resolved, &registry);
+    if interactive {
+        return match prompt_fresh(&mut session, Some(&store)) {
+            Ok(terminal::Session::Completed(completed)) => completion_preview(
+                &session.template,
+                &completed,
+                &target,
+                &session.resolved,
+                installed.as_deref(),
+                &path,
+                false,
+            ),
+            Ok(terminal::Session::Ended(ended)) => {
+                eprintln!("{}", guidance::flow_ended(&ended));
+                Outcome::Written(vec![])
             }
-            Ok(terminal::Session::Ended(ended)) => ended_outcome(&ended, &target, &store),
-            Err(error) => Outcome::Error(error),
+            Err(e) => Outcome::Error(e),
         };
     }
-    // Agent route: emit the first question batch and the answer instructions.
-    let output = output.unwrap();
-    let formal = resolved.formal_name.clone();
-    match interview {
-        Interview::Asking(pending) => {
-            let document = with_seed(
-                protocol::batch_document(pending.batch(), &context(&target, &saved), None),
-                seed_from.as_deref(),
+    let state = match session.state() {
+        Ok(v) => v,
+        Err(e) => return operation_error(e, None),
+    };
+    if let Err(e) = session.persist(&store) {
+        return operation_error(e, None);
+    }
+    match state {
+        toha::operations::SessionState::Asking { document, .. } => {
+            let document = with_seed(document, session.record.seed.as_deref());
+            let instructions = instructions(
+                &AgentOutcome::Batch {
+                    template: &session.record.template,
+                },
+                &path,
             );
-            if let Err(e) = store.save(&target, &saved) {
-                return Outcome::Error(e.to_string());
-            }
-            let instructions = instructions(&AgentOutcome::Batch { template: &formal }, &path);
-            match output {
-                Some(file) => {
-                    if let Err(e) = fs::write(
-                        file,
-                        serde_json::to_vec_pretty(&document).expect("JSON value"),
-                    ) {
-                        return Outcome::Error(e.to_string());
-                    }
-                    Outcome::Agent {
+            match output.flatten() {
+                Some(file) => match fs::write(
+                    file,
+                    serde_json::to_vec_pretty(&document).expect("JSON value"),
+                ) {
+                    Ok(()) => Outcome::Agent {
                         document: None,
                         instructions,
                         code: 4,
-                    }
-                }
+                    },
+                    Err(e) => Outcome::Error(e.to_string()),
+                },
                 None => Outcome::Agent {
                     document: Some(document),
                     instructions,
@@ -1153,36 +1082,89 @@ fn stage(
                 },
             }
         }
-        // A staged interview with no questions is complete; save it and point to
-        // apply. There is no batch to write to a file.
-        Interview::Complete(_) => {
-            if let Err(e) = store.save(&target, &saved) {
-                return Outcome::Error(e.to_string());
-            }
-            Outcome::Agent {
-                document: None,
-                instructions: instructions(&AgentOutcome::Complete, &path),
-                code: 0,
-            }
-        }
-        // A stop/abort at the first batch ends the interview: nothing is staged,
-        // an abort removes any record, and the `ended` document reports it.
-        Interview::Ended(ended) => {
-            if let Err(e) = ended_removed(&ended, &target, &store) {
-                return Outcome::Error(e);
-            }
+        toha::operations::SessionState::Completed(_) => Outcome::Agent {
+            document: None,
+            instructions: instructions(&AgentOutcome::Complete, &path),
+            code: 0,
+        },
+        toha::operations::SessionState::Ended(ended) => {
             eprintln!("{}", guidance::flow_ended(&ended));
-            let document = protocol::ended_document(&ended, &context(&target, &saved));
-            match output {
-                Some(file) => match fs::write(
-                    file,
-                    serde_json::to_vec_pretty(&document).expect("JSON value"),
-                ) {
+            let doc = protocol::ended_document(&ended, &context(&target, &session.record));
+            match output.flatten() {
+                Some(file) => match fs::write(file, serde_json::to_vec_pretty(&doc).unwrap()) {
                     Ok(()) => Outcome::Saved(0),
                     Err(e) => Outcome::Error(e.to_string()),
                 },
-                None => Outcome::Document(document, 0),
+                None => Outcome::Document(doc, 0),
             }
+        }
+        _ => unreachable!("known session state"),
+    }
+}
+
+fn replay_diagnostic(error: &toha::operations::OperationError) -> String {
+    match error {
+        toha::operations::OperationError::Seed(error) => format!("{error}; abort and stage again"),
+        other => other.to_string(),
+    }
+}
+fn operation_error(error: toha::operations::OperationError, ctx: Option<&Context>) -> Outcome {
+    match error {
+        toha::operations::OperationError::Document(error) => document_input_error(error, ctx),
+        toha::operations::OperationError::Resolve(error) => resolve_error(error),
+        toha::operations::OperationError::Seed(error) => {
+            Outcome::Error(format!("{error}; abort and stage again"))
+        }
+        other => Outcome::Error(other.to_string()),
+    }
+}
+
+/// Presentation driver: the library owns advancement, acceptance and stage persistence.
+fn prompt_fresh(
+    session: &mut toha::operations::Session,
+    store: Option<&Store>,
+) -> Result<terminal::Session, String> {
+    let mut reached = 0;
+    loop {
+        let state = session.state().map_err(|e| e.to_string())?;
+        match state {
+            toha::operations::SessionState::Completed(done) => {
+                for message in done.messages.iter().skip(reached) {
+                    println!("{message}");
+                }
+                if let Some(store) = store {
+                    session.persist(store).map_err(|e| e.to_string())?;
+                }
+                return Ok(terminal::Session::Completed(done));
+            }
+            toha::operations::SessionState::Ended(ended) => {
+                for message in ended.messages.iter().skip(reached) {
+                    println!("{message}");
+                }
+                if let Some(store) = store {
+                    session.persist(store).map_err(|e| e.to_string())?;
+                }
+                return Ok(terminal::Session::Ended(ended));
+            }
+            toha::operations::SessionState::Asking { .. } => {}
+            _ => unreachable!("known session state"),
+        }
+        let submission = match session.replay().map_err(|e| e.to_string())? {
+            Interview::Asking(pending) => {
+                reached = pending.messages_reached();
+                terminal::prompt_batch(&pending, &mut terminal::InquireAsk)?
+            }
+            _ => unreachable!("asking session"),
+        };
+        let state = session.answer(submission).map_err(|e| e.to_string())?;
+        if let Some(store) = store {
+            session.persist(store).map_err(|e| e.to_string())?;
+        }
+        if let toha::operations::SessionState::Ended(ended) = state {
+            for message in ended.messages.iter().skip(reached) {
+                println!("{message}");
+            }
+            return Ok(terminal::Session::Ended(ended));
         }
     }
 }
@@ -1248,16 +1230,16 @@ fn completion_preview(
     }
 }
 fn continue_run(path: PathBuf, answers: Option<String>, input: &[PathBuf], dirs: &Dirs) -> Outcome {
+    use toha::operations::SessionState;
     let (target, store) = match setup(&path, dirs) {
         Ok(v) => v,
         Err(e) => return Outcome::Error(e),
     };
-    let mut saved = match store.load(&target) {
+    let saved = match store.load(&target) {
         Ok(Some(v)) => v,
         Ok(None) => return Outcome::Error(guidance::nothing_staged(&path)),
         Err(e) => return Outcome::Error(e.to_string()),
     };
-    // A staged update resumes through the update replay adapter and merges.
     if update_stage::is_staged_update(&saved) {
         return update_stage::continue_staged(saved, &path, answers, input, dirs);
     }
@@ -1265,320 +1247,154 @@ fn continue_run(path: PathBuf, answers: Option<String>, input: &[PathBuf], dirs:
         Ok(v) => v,
         Err(e) => return e,
     };
-    let resolved = match cli::resolve::resume_template(
-        &saved.template,
-        &saved.commit,
-        saved.named,
-        &config,
-        &registry,
+    let mut session = match toha::operations::Session::resume(
+        saved,
+        target.clone(),
         dirs,
+        config,
+        &registry,
         &cwd,
     ) {
         Ok(v) => v,
-        Err(e) => return resolve_error(e),
+        Err(e) => return operation_error(e, None),
     };
-    let mut template = match load_template(&resolved) {
-        Ok(v) => v,
-        Err(e) => return Outcome::Error(e),
-    };
-    if let Err(e) = toha::document::restore_missing(&mut template, &recorded_answers(&saved)) {
-        return Outcome::Error(e);
+    if let Ok(warnings) = session.warnings() {
+        report_config_warnings(&warnings);
     }
-    let resolution = match toha::interview::configured_defaults(
-        &resolved.formal_name,
-        &template,
-        &config.presets,
-        &config.template_defaults,
-    ) {
-        Ok(v) => v,
-        Err(e) => return Outcome::Error(e.to_string()),
-    };
-    report_config_warnings(resolution.warnings());
-    let installed = trustable(&resolved, &registry);
-    // Re-read the pinned generate seed, if any, so the resumed defaults match.
-    let pinned_seed = match resolve_pinned_seed(
-        &saved,
-        &toha::applied::source_identity(&resolved.formal_name),
-        &target,
-    ) {
-        Ok(v) => v,
-        Err(e) => return Outcome::Error(guidance::replay_failed(&path, &saved.template, &e)),
-    };
-    let interview =
-        match saved.replay_with_seed(&template, resolution, pinned_seed.clone(), &target) {
-            Ok(v) => v,
-            Err(e) => {
-                return Outcome::Error(guidance::replay_failed(
-                    &path,
-                    &saved.template,
-                    &e.to_string(),
-                ));
-            }
-        };
-    // Refuse a submission to a settled session before reading its file.
-    if answers.is_some() {
-        match &interview {
-            Interview::Complete(_) => {
-                return Outcome::Error(guidance::complete_answers_unused(&path));
-            }
-            Interview::Ended(ended) => {
-                return Outcome::Error(guidance::ended_answers_unused(
-                    &path,
-                    &saved.template,
-                    ended.kind(),
-                ));
-            }
-            Interview::Asking(_) => {}
-        }
-    }
-    drop(interview);
-    let text = match answers.as_deref().map(read_answers_text).transpose() {
-        Ok(text) => text,
-        Err(e) => return Outcome::Error(e),
-    };
-    let incoming = match text
-        .as_deref()
-        .map(|text| protocol::document_answers(&saved.template, text))
-        .transpose()
-    {
-        Ok(raw) => raw.unwrap_or_default(),
-        Err(e) => {
-            return Outcome::Error(
-                document_error(SubmitDocumentError::Document(e), &saved.template).message,
-            );
-        }
-    };
-    if let Err(e) = prepare_staged_documents(
-        &mut template,
-        target.as_path(),
-        input,
-        &incoming,
-        &mut saved,
-    ) {
-        return document_input_error(e, None);
-    }
-    let resolution = match toha::interview::configured_defaults(
-        &resolved.formal_name,
-        &template,
-        &config.presets,
-        &config.template_defaults,
-    ) {
-        Ok(v) => v,
-        Err(e) => return Outcome::Error(e.to_string()),
-    };
-    let interview = match saved.replay_with_seed(&template, resolution, pinned_seed, &target) {
+    let state = match session.state() {
         Ok(v) => v,
         Err(e) => {
             return Outcome::Error(guidance::replay_failed(
                 &path,
-                &saved.template,
-                &e.to_string(),
+                &session.record.template,
+                &replay_diagnostic(&e),
             ));
         }
     };
-    if let Interview::Complete(completed) = &interview {
-        // `continue PATH FILE` on a complete interview refuses before reading the
-        // document. `continue PATH` shows the completion preview.
-        if answers.is_some() {
-            return Outcome::Error(guidance::complete_answers_unused(&path));
-        }
-        if !input.is_empty() {
-            if let Err(e) = store.save(&target, &saved) {
-                return Outcome::Error(e.to_string());
+    if answers.is_some() {
+        match state {
+            SessionState::Completed(_) => {
+                return Outcome::Error(guidance::complete_answers_unused(&path));
             }
-            return Outcome::Agent {
-                document: None,
-                instructions: instructions(&AgentOutcome::Complete, &path),
-                code: 0,
-            };
+            SessionState::Ended(ended) => {
+                return Outcome::Error(guidance::ended_answers_unused(
+                    &path,
+                    &session.record.template,
+                    ended.kind(),
+                ));
+            }
+            _ => {}
         }
-        return completion_preview(
-            &template,
-            completed,
-            &target,
-            &resolved,
-            installed.as_deref(),
-            &path,
-            true,
-        );
     }
-    if let Interview::Ended(ended) = &interview {
-        // A prior submission ended the staged interview. `continue PATH FILE`
-        // refuses before reading the document. Without a document, report the end.
-        if answers.is_some() {
-            return Outcome::Error(guidance::ended_answers_unused(
-                &path,
-                &saved.template,
-                ended.kind(),
-            ));
-        }
-        if !input.is_empty()
-            && ended.kind() == EndKind::Stop
-            && let Err(e) = store.save(&target, &saved)
-        {
-            return Outcome::Error(e.to_string());
-        }
-        if let Err(e) = ended_removed(ended, &target, &store) {
-            return Outcome::Error(e);
-        }
-        eprintln!("{}", guidance::flow_ended(ended));
-        return Outcome::Document(
-            protocol::ended_document(ended, &context(&target, &saved)),
-            0,
-        );
-    }
-    let Interview::Asking(pending) = interview else {
-        unreachable!("a complete or ended interview returned above");
-    };
-    if !input.is_empty() {
-        if let Err(e) = store.save(&target, &saved) {
-            return Outcome::Error(e.to_string());
-        }
-        return Outcome::Agent {
-            document: Some(protocol::batch_document(
-                pending.batch(),
-                &context(&target, &saved),
-                None,
-            )),
-            instructions: instructions(
-                &AgentOutcome::Batch {
-                    template: &saved.template,
-                },
-                &path,
-            ),
-            code: 4,
-        };
-    }
-    // `continue PATH` (person): prompt the remaining questions, saving each
-    // batch, then show the completion preview.
-    let Some(_answers_file) = answers else {
-        if !io::stdin().is_terminal() {
-            return Outcome::Error(guidance::continue_no_terminal(&path));
-        }
-        return match terminal::drive(
-            Interview::Asking(pending),
-            &mut terminal::InquireAsk,
-            |submission| {
-                saved.submissions.push(submission);
-                store.save(&target, &saved).map_err(|e| e.to_string())
-            },
-        ) {
-            Ok(terminal::Session::Completed(completed)) => completion_preview(
-                &template,
-                &completed,
-                &target,
-                &resolved,
-                installed.as_deref(),
-                &path,
-                false,
-            ),
-            Ok(terminal::Session::Ended(ended)) => ended_outcome(&ended, &target, &store),
-            Err(error) => Outcome::Error(error),
-        };
-    };
-    // `continue PATH FILE` (agent): submit one document as a single step.
-    let text = text.expect("answers file was read after the settled-session check");
-    let formal = saved.template.clone();
-    match protocol::answer_document_once(&formal, pending, &text) {
-        Ok(DocumentStep::Accepted {
-            interview,
-            submission,
-        }) => {
-            // An accepted abort removes the record and saves no submission; every
-            // other accepted step saves the one submission.
-            if let Interview::Ended(ended) = &interview
-                && ended.kind() == EndKind::Abort
-            {
-                if let Err(e) = store.remove(&target) {
-                    return Outcome::Error(e.to_string());
-                }
-                eprintln!("{}", guidance::flow_ended(ended));
-                return Outcome::Document(
-                    protocol::ended_document(ended, &context(&target, &saved)),
-                    0,
+    let incoming = match answers.as_deref().map(read_answers_text).transpose() {
+        Ok(Some(text)) => match protocol::document_answers(&session.record.template, &text) {
+            Ok(v) => v,
+            Err(e) => {
+                return Outcome::Error(
+                    document_error(SubmitDocumentError::Document(e), &session.record.template)
+                        .message,
                 );
             }
-            saved.submissions.push(submission);
-            if let Err(e) = store.save(&target, &saved) {
-                return Outcome::Error(e.to_string());
-            }
-            match interview {
-                Interview::Asking(next) => Outcome::Agent {
-                    document: Some(with_seed(
-                        protocol::batch_document(next.batch(), &context(&target, &saved), None),
-                        saved.seed.as_deref(),
-                    )),
-                    instructions: instructions(
-                        &AgentOutcome::Batch {
-                            template: &saved.template,
-                        },
+        },
+        Ok(None) => Default::default(),
+        Err(e) => return Outcome::Error(e),
+    };
+    if let Err(e) = session.admit_documents(input, &incoming) {
+        return operation_error(e, None);
+    }
+    let installed = trustable(&session.resolved, &registry);
+    if answers.is_none() && input.is_empty() {
+        match session.state() {
+            Ok(SessionState::Asking { .. }) => {
+                if !io::stdin().is_terminal() {
+                    return Outcome::Error(guidance::continue_no_terminal(&path));
+                }
+                return match prompt_fresh(&mut session, Some(&store)) {
+                    Ok(terminal::Session::Completed(done)) => completion_preview(
+                        &session.template,
+                        &done,
+                        &target,
+                        &session.resolved,
+                        installed.as_deref(),
                         &path,
+                        false,
                     ),
-                    code: 4,
-                },
-                Interview::Complete(_) => Outcome::Agent {
-                    document: None,
-                    instructions: instructions(&AgentOutcome::Complete, &path),
-                    code: 0,
-                },
-                // A flow `stop` retains the saved record; the notice names the
-                // abort command.
-                Interview::Ended(ended) => {
-                    eprintln!("{}", guidance::flow_ended(&ended));
-                    Outcome::Document(
-                        protocol::ended_document(&ended, &context(&target, &saved)),
-                        0,
-                    )
+                    Ok(terminal::Session::Ended(ended)) => {
+                        eprintln!("{}", guidance::flow_ended(&ended));
+                        Outcome::Written(vec![])
+                    }
+                    Err(e) => Outcome::Error(e),
+                };
+            }
+            Ok(SessionState::Completed(done)) => {
+                return completion_preview(
+                    &session.template,
+                    &done,
+                    &target,
+                    &session.resolved,
+                    installed.as_deref(),
+                    &path,
+                    true,
+                );
+            }
+            Err(e) => return operation_error(e, None),
+            _ => {}
+        }
+    }
+    let state = match if answers.is_some() && input.is_empty() {
+        session.answer(incoming)
+    } else {
+        session.state()
+    } {
+        Ok(v) => v,
+        Err(e) => return operation_error(e, None),
+    };
+    let rejected =
+        matches!(&state, SessionState::Asking { rejections, .. } if !rejections.is_empty());
+    if !rejected && let Err(e) = session.persist(&store) {
+        return operation_error(e, None);
+    }
+    match state {
+        SessionState::Asking {
+            mut document,
+            rejections,
+        } => {
+            if !rejections.is_empty() {
+                let explained =
+                    guidance::explain_rejections(&rejections, &path, &session.record.template);
+                if let Ok(Interview::Asking(pending)) = session.replay() {
+                    document = protocol::batch_document(
+                        pending.batch(),
+                        &context(&target, &session.record),
+                        Some(&explained),
+                    );
                 }
             }
-        }
-        Ok(DocumentStep::Rejected {
-            pending,
-            rejections,
-        }) => {
-            // Nothing is saved for a rejected document.
-            let errors = guidance::explain_rejections(&rejections, &path, &saved.template);
             Outcome::Agent {
-                document: Some(with_seed(
-                    protocol::batch_document(
-                        pending.batch(),
-                        &context(&target, &saved),
-                        Some(&errors),
-                    ),
-                    saved.seed.as_deref(),
-                )),
+                document: Some(with_seed(document, session.record.seed.as_deref())),
                 instructions: instructions(
                     &AgentOutcome::Batch {
-                        template: &saved.template,
+                        template: &session.record.template,
                     },
                     &path,
                 ),
                 code: 4,
             }
         }
-        Err(e) => Outcome::Error(document_error(e, &formal).message),
+        SessionState::Completed(_) => Outcome::Agent {
+            document: None,
+            instructions: instructions(&AgentOutcome::Complete, &path),
+            code: 0,
+        },
+        SessionState::Ended(ended) => {
+            eprintln!("{}", guidance::flow_ended(&ended));
+            Outcome::Document(
+                protocol::ended_document(&ended, &context(&target, &session.record)),
+                0,
+            )
+        }
+        _ => unreachable!("known session state"),
     }
-}
-/// The outcome of a flow `stop`/`abort` at any driver. Both write nothing and
-/// exit 0; `Abort` additionally removes the target's staged record via the
-/// existing `Store::remove` (a no-op when none exists; a removal I/O failure
-/// surfaces as an error and exits nonzero). The engine reached this only after
-/// a committed `Interview::Ended`, so a rejected document never removes a
-/// record.
-fn ended_removed(ended: &Ended, target: &CanonicalTarget, store: &Store) -> Result<(), String> {
-    if ended.kind() == EndKind::Abort {
-        store.remove(target).map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-/// The terminal/direct outcome of a flow end: a stderr notice and exit 0, with
-/// the staged record removed on an abort.
-fn ended_outcome(ended: &Ended, target: &CanonicalTarget, store: &Store) -> Outcome {
-    if let Err(e) = ended_removed(ended, target, store) {
-        return Outcome::Error(e);
-    }
-    eprintln!("{}", guidance::flow_ended(ended));
-    Outcome::Written(vec![])
 }
 fn abort(path: PathBuf, dirs: &Dirs) -> Outcome {
     let (target, store) = match setup(&path, dirs) {
@@ -1776,14 +1592,14 @@ fn scripted(
             Ok(v) => v,
             Err(e) => return scripted_resolve_error(e, path, answers_file, force, dry_run, trust),
         };
-    let mut template = match Template::load(&resolved.folder) {
+    let template = match Template::load(&resolved.folder) {
         Ok(v) => v,
         Err(e) => return scripted_error(ErrorKind::Source, e.to_string(), vec![], None),
     };
     if let Err(e) = toha::requirement::check(&template) {
         return requirement_error(&e);
     }
-    let (resolution, now) = match resolution(&resolved.formal_name, &template, &config) {
+    let now = match resolution(&resolved.formal_name, &template, &config) {
         Ok(v) => v,
         Err(e) => return scripted_error(ErrorKind::Source, e, vec![], None),
     };
@@ -1830,85 +1646,42 @@ fn scripted(
             return Outcome::Document(protocol::error_document(&error, Some(&ctx)), 1);
         }
     };
-    if let Err(error) = admit_parts(
-        &mut template,
-        parts,
-        like_seed.as_ref().map(|seed| &seed.entry),
-        &supplied,
-    ) {
-        return Outcome::Usage(error);
-    }
-    if let Err(e) = toha::document::prepare(&mut template, target.as_path(), input, &supplied) {
-        return document_input_error(e, Some(&ctx));
-    }
-    let text = overlay_document_answers(&template, &resolved.formal_name, supplied);
-    let interview = match resolution.start_with_seed(
-        &template,
-        now,
+    let mut session = match toha::operations::Session::start(
+        template,
+        resolved,
+        target.clone(),
         new_context,
-        like_seed.map(|seed| seed.engine),
-    ) {
-        Ok((interview, warnings)) => {
-            report_config_warnings(&warnings);
-            interview
-        }
-        Err(e) => return scripted_error(ErrorKind::Render, e.to_string(), vec![], Some(&ctx)),
-    };
-    // 5-8. Parse, verify identity, and drive the headless walk.
-    let headless = match protocol::answer_document_headless(
-        &resolved.formal_name,
-        &template,
-        interview,
-        &text,
+        now,
+        config,
+        parts,
+        input,
+        &supplied,
+        like_seed,
     ) {
         Ok(v) => v,
-        Err(e) => {
-            let error = document_error(e, &resolved.formal_name);
-            let code = if error.kind == ErrorKind::Ambiguous {
-                5
-            } else {
-                1
-            };
-            return Outcome::Document(protocol::error_document(&error, Some(&ctx)), code);
-        }
+        Err(e) => return operation_error(e, Some(&ctx)),
     };
-    match headless {
-        Headless::Pending {
-            pending,
-            rejections,
-            ..
-        } => {
-            // The headless walk reaches each unanswered required question and
-            // rejects it with `is required`; the scripted `questions` document
-            // carries those rejections. Agent routes take one step and leave an
-            // unanswered question pending without such an error.
-            Outcome::Document(
-                with_seed(
-                    protocol::batch_document(pending.batch(), &ctx, Some(&rejections)),
-                    seed_from.as_deref(),
-                ),
-                4,
-            )
+    let state = match session.answer_all(supplied) {
+        Ok(v) => v,
+        Err(e) => return scripted_error(ErrorKind::Render, e.to_string(), vec![], Some(&ctx)),
+    };
+    match state {
+        toha::operations::SessionState::Asking { document, .. } => {
+            Outcome::Document(with_seed(document, seed_from.as_deref()), 4)
         }
-        Headless::Ended { ended, .. } => {
-            // The scripted route never staged, so an abort removes nothing.
+        toha::operations::SessionState::Ended(ended) => {
             Outcome::Document(protocol::ended_document(&ended, &ctx), 0)
         }
-        Headless::Completed {
+        toha::operations::SessionState::Completed(completed) => scripted_completed(
+            &session,
             completed,
-            accepted,
-        } => scripted_completed(
-            &template,
-            completed,
-            accepted,
-            &target,
-            &resolved,
             &ctx,
             force,
             dry_run,
             trust,
             seed_from.as_deref(),
         ),
+        _ => unreachable!("known session state"),
     }
 }
 /// The scripted `Completed` tail: build the plan, then report `planned` (dry run
@@ -1916,18 +1689,18 @@ fn scripted(
 /// the apply when the project allows it.
 #[allow(clippy::too_many_arguments)]
 fn scripted_completed(
-    template: &Template,
+    session: &toha::operations::Session,
     completed: Completed,
-    _accepted: Vec<indexmap::IndexMap<String, serde_json::Value>>,
-    target: &CanonicalTarget,
-    resolved: &ResolvedTemplate,
     ctx: &Context,
     force: bool,
     dry_run: bool,
     trust: bool,
     seed_from: Option<&str>,
 ) -> Outcome {
-    let dry_run = dry_run || matches!(completed.step(), Step::Plan { apply: false });
+    let template = &session.template;
+    let resolved = &session.resolved;
+    let target = &session.target;
+    let dry_run = toha::updates::effective_dry_run(dry_run, &completed);
     let live_surface = match toha::HookSurface::of(template) {
         Ok(surface) => surface.digest(),
         Err(error) => {
@@ -1939,13 +1712,7 @@ fn scripted_completed(
             toha::evaluate_trust(resolved.approval.as_ref(), &live_surface),
             toha::Trust::Trusted
         );
-    let plan = match toha::operations::build_plan(
-        template,
-        &completed,
-        target,
-        &resolved.formal_name,
-        &resolved.commit,
-    ) {
+    let plan = match session.plan(&completed) {
         Ok(plan) => plan,
         Err(toha::operations::OperationError::Record(error)) => {
             return Outcome::Error(error.to_string());
@@ -2005,8 +1772,8 @@ fn scripted_completed(
         .iter()
         .map(|entry| (entry.path.clone(), entry.action.clone()))
         .collect();
-    match plan.apply_reporting(
-        target,
+    match session.apply_plan(
+        plan,
         ApplyOptions {
             force,
             trusted: true,
@@ -2014,6 +1781,7 @@ fn scripted_completed(
         // The scripted route keeps standard output a single JSON document: an
         // uncaptured hook's stdout is forwarded to standard error.
         &ScriptedRunner,
+        None,
         &mut |_| {},
     ) {
         Ok(Applied::Written {
@@ -2066,7 +1834,8 @@ fn scripted_completed(
             vec![],
             Some(ctx),
         ),
-        Err(error) => scripted_apply_error(error, ctx),
+        Err(toha::operations::OperationError::Apply(error)) => scripted_apply_error(*error, ctx),
+        Err(error) => operation_error(error, Some(ctx)),
     }
 }
 /// Maps a resolve failure on the scripted route to a `source` or `ambiguous`
@@ -2108,6 +1877,7 @@ fn scripted_resolve_error(
                 None,
             )
         }
+        other => scripted_error(ErrorKind::Source, other.to_string(), vec![], None),
     }
 }
 
@@ -2218,237 +1988,152 @@ fn run(
     let mut terminal_run = false;
     // The stored approval digest of the template resolved by name, compared to
     // the live executable surface once the template is loaded.
-    let approval: Option<ReviewDigest>;
     // The installed template whose registry trust would run the hooks.
-    let installed: Option<String>;
-    let (template, interview, saved) = match (template, existing) {
-        // apply TEMPLATE PATH with nothing staged: the person route starts the
-        // interview, prompts, saves at each batch boundary, and applies at
-        // completion.
+    let mut session = match (template, existing) {
         (Some(folder), None) => {
             let resolved =
                 match cli::resolve::resolve_template(&folder, &config, &registry, dirs, &cwd) {
                     Ok(v) => v,
                     Err(e) => return resolve_error(e),
                 };
-            approval = resolved.approval.clone();
-            installed = trustable(&resolved, &registry);
-            let mut template = match load_template(&resolved) {
-                Ok(v) => v,
-                Err(e) => return Outcome::Error(e),
-            };
-            if let Err(error) = parts.admit(&template, &Default::default()) {
-                return Outcome::Usage(error);
-            }
             if !io::stdin().is_terminal() {
                 return Outcome::Error(guidance::no_terminal(&folder, path));
             }
-            if let Err(e) =
-                toha::document::prepare(&mut template, target.as_path(), input, &Default::default())
-            {
-                return document_input_error(e, None);
+            let template = match Template::load(&resolved.folder) {
+                Ok(v) => v,
+                Err(e) => return Outcome::Error(e.to_string()),
+            };
+            if let Err(e) = parts.admit(&template, &Default::default()) {
+                return Outcome::Usage(e);
             }
-            let (resolution, now) = match resolution(&resolved.formal_name, &template, &config) {
+            let preparation = match toha::operations::Preparation::new(
+                template,
+                resolved,
+                target.clone(),
+                input,
+                &Default::default(),
+            ) {
+                Ok(v) => v,
+                Err(e) => return operation_error(e, None),
+            };
+            let now = match resolution(
+                &preparation.resolved.formal_name,
+                &preparation.template,
+                &config,
+            ) {
                 Ok(v) => v,
                 Err(e) => return Outcome::Error(e),
             };
-            // Direct/new-apply grants environment access on explicit `--trust`
-            // or a current matching reviewed approval; otherwise it denies.
             let decision = EnvironmentDecision::grant_if_needed(apply_environment_grant(
-                trust, &resolved, &template,
+                trust,
+                &preparation.resolved,
+                &preparation.template,
             ));
-            let new_context = match build_context(&target, &resolved, &template, decision, true) {
+            let context = match preparation.context(
+                decision,
+                HostFacts::capture(),
+                ExecutionFacts::new(is_admin(), true),
+                &mut HostEnvironmentSource,
+            ) {
                 Ok(v) => v,
-                Err(e) => return Outcome::Error(e),
+                Err(e) => return operation_error(e, None),
             };
-            // The person route is interactive: a bare `--like` opens the picker.
-            let like_seed = match resolve_like_seed(
+            let seed = match resolve_like_seed(
                 like,
                 true,
-                &toha::applied::source_identity(&resolved.formal_name),
+                &toha::applied::source_identity(&preparation.resolved.formal_name),
                 &target,
             ) {
                 Ok(v) => v,
-                Err(reject) => return Outcome::Error(reject.message),
+                Err(e) => return Outcome::Error(e.message),
             };
-            if let Some(seed) = &like_seed {
+            if let Some(seed) = &seed {
                 println!("seed defaults from application {}", seed.label);
             }
-            let mut saved = match toha::operations::prepare_record(
-                &mut template,
-                &resolved,
-                new_context.clone(),
-                &now,
-                parts,
-                &Default::default(),
-                like_seed.as_ref(),
-            ) {
-                Ok(saved) => saved,
-                Err(error) => return Outcome::Usage(error),
-            };
-            let interview = match resolution.start_with_seed(
-                &template,
-                now,
-                new_context,
-                like_seed.map(|seed| seed.engine),
-            ) {
-                Ok((interview, warnings)) => {
-                    report_config_warnings(&warnings);
-                    interview
-                }
-                Err(e) => return Outcome::Error(e.to_string()),
-            };
-            // Save each accepted batch so an interrupt leaves a resumable record;
-            // a dry run records nothing.
-            match terminal::drive(interview, &mut terminal::InquireAsk, |submission| {
-                if dry_run {
-                    return Ok(());
-                }
-                saved.submissions.push(submission);
-                store.save(&target, &saved).map_err(|e| e.to_string())
-            }) {
-                Ok(terminal::Session::Completed(completed)) => {
-                    terminal_run = true;
-                    (template, completed, Some(saved))
-                }
-                Ok(terminal::Session::Ended(ended)) => {
-                    return ended_outcome(&ended, &target, &store);
-                }
-                Err(e) => return Outcome::Error(e),
+            match preparation.start(context, now, config, parts, &Default::default(), seed) {
+                Ok(v) => v,
+                Err(e) => return operation_error(e, None),
             }
         }
-        // apply PATH (agent) or apply TEMPLATE PATH naming the staged template
-        // (person) resumes the staged interview. The agent route never prompts;
-        // the person route prompts the remaining questions.
-        (None, Some(mut saved)) => {
-            let resolved = match cli::resolve::resume_template(
-                &saved.template,
-                &saved.commit,
-                saved.named,
-                &config,
-                &registry,
+        (None, Some(saved)) => {
+            let mut session = match toha::operations::Session::resume(
+                saved,
+                target.clone(),
                 dirs,
+                config,
+                &registry,
                 &cwd,
             ) {
                 Ok(v) => v,
-                Err(e) => return resolve_error(e),
+                Err(e) => return operation_error(e, None),
             };
-            approval = resolved.approval.clone();
-            installed = trustable(&resolved, &registry);
-            let mut template = match load_template(&resolved) {
-                Ok(v) => v,
-                Err(e) => return Outcome::Error(e),
-            };
-            if let Err(e) = prepare_staged_documents(
-                &mut template,
-                target.as_path(),
-                input,
-                &Default::default(),
-                &mut saved,
-            ) {
-                return document_input_error(e, None);
+            if let Ok(warnings) = session.warnings() {
+                report_config_warnings(&warnings);
             }
-            let resolution = match toha::interview::configured_defaults(
-                &resolved.formal_name,
-                &template,
-                &config.presets,
-                &config.template_defaults,
-            ) {
-                Ok(v) => v,
-                Err(e) => return Outcome::Error(e.to_string()),
-            };
-            report_config_warnings(resolution.warnings());
-            // Re-read the pinned seed, if the staged interview was generated with
-            // `--like`, so the resumed defaults match the staged run exactly.
-            let pinned_seed = match resolve_pinned_seed(
-                &saved,
-                &toha::applied::source_identity(&resolved.formal_name),
-                &target,
-            ) {
-                Ok(v) => v,
-                Err(e) => {
-                    return Outcome::Error(guidance::replay_failed(path, &saved.template, &e));
-                }
-            };
-            let interview =
-                match saved.replay_with_seed(&template, resolution, pinned_seed, &target) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        return Outcome::Error(guidance::replay_failed(
-                            path,
-                            &saved.template,
-                            &e.to_string(),
-                        ));
-                    }
-                };
-            match interview {
-                Interview::Ended(ended) => {
-                    return ended_outcome(&ended, &target, &store);
-                }
-                Interview::Complete(completed) => (template, completed, Some(saved)),
-                // apply TEMPLATE PATH resume: the person route prompts the rest,
-                // saving each batch, then applies.
-                Interview::Asking(pending) if named => {
-                    if !io::stdin().is_terminal() {
-                        return Outcome::Error(guidance::continue_no_terminal(path));
-                    }
-                    match terminal::drive(
-                        Interview::Asking(pending),
-                        &mut terminal::InquireAsk,
-                        |submission| {
-                            if dry_run {
-                                return Ok(());
-                            }
-                            saved.submissions.push(submission);
-                            store.save(&target, &saved).map_err(|e| e.to_string())
-                        },
-                    ) {
-                        Ok(terminal::Session::Completed(c)) => {
-                            terminal_run = true;
-                            (template, c, Some(saved))
-                        }
-                        Ok(terminal::Session::Ended(ended)) => {
-                            return ended_outcome(&ended, &target, &store);
-                        }
-                        Err(e) => return Outcome::Error(e),
-                    }
-                }
-                // apply PATH: the agent route reports the current batch with
-                // instructions and never prompts. Nothing new is saved.
-                Interview::Asking(pending) => {
-                    return Outcome::Agent {
-                        document: Some(with_seed(
-                            protocol::batch_document(
-                                pending.batch(),
-                                &context(&target, &saved),
-                                None,
-                            ),
-                            saved.seed.as_deref(),
-                        )),
-                        instructions: instructions(
-                            &AgentOutcome::ApplyIncomplete {
-                                template: &saved.template,
-                            },
-                            path,
-                        ),
-                        code: 4,
-                    };
-                }
+            if let Err(e) = session.admit_documents(input, &Default::default()) {
+                return operation_error(e, None);
             }
+            session
         }
-        (None, None) => {
-            return Outcome::Error(guidance::nothing_staged(path));
-        }
-        (Some(_), Some(_)) => unreachable!("a named template resumes its staged interview"),
+        (None, None) => return Outcome::Error(guidance::nothing_staged(path)),
+        _ => unreachable!("a named template resumes its staged interview"),
     };
-    let completed = interview;
+    let approval = session.resolved.approval.clone();
+    let installed = trustable(&session.resolved, &registry);
+    let completed = match session.state() {
+        Ok(toha::operations::SessionState::Completed(done)) => done,
+        Ok(toha::operations::SessionState::Ended(ended)) => {
+            if let Err(e) = session.persist(&store) {
+                return operation_error(e, None);
+            }
+            eprintln!("{}", guidance::flow_ended(&ended));
+            return Outcome::Written(vec![]);
+        }
+        Ok(toha::operations::SessionState::Asking { document, .. }) if !named => {
+            return Outcome::Agent {
+                document: Some(with_seed(document, session.record.seed.as_deref())),
+                instructions: instructions(
+                    &AgentOutcome::ApplyIncomplete {
+                        template: &session.record.template,
+                    },
+                    path,
+                ),
+                code: 4,
+            };
+        }
+        Ok(toha::operations::SessionState::Asking { .. }) => {
+            if !io::stdin().is_terminal() {
+                return Outcome::Error(guidance::continue_no_terminal(path));
+            }
+            match prompt_fresh(&mut session, if dry_run { None } else { Some(&store) }) {
+                Ok(terminal::Session::Completed(done)) => {
+                    terminal_run = true;
+                    done
+                }
+                Ok(terminal::Session::Ended(ended)) => {
+                    eprintln!("{}", guidance::flow_ended(&ended));
+                    return Outcome::Written(vec![]);
+                }
+                Err(e) => return Outcome::Error(e),
+            }
+        }
+        Err(e) => {
+            return Outcome::Error(guidance::replay_failed(
+                path,
+                &session.record.template,
+                &replay_diagnostic(&e),
+            ));
+        }
+        _ => unreachable!("known session state"),
+    };
+    let template = &session.template;
     // A flow `dry-run` composes with the CLI `--dry-run` by union: either
     // suppresses the apply.
-    let dry_run = dry_run || matches!(completed.step(), Step::Plan { apply: false });
+    let dry_run = toha::updates::effective_dry_run(dry_run, &completed);
     // Trust is the live executable surface matching the stored approval; the
     // one flag `--trust` overrides for a single run. This is the only place a
     // template becomes trusted from stored state.
-    let live_surface = match toha::HookSurface::of(&template) {
+    let live_surface = match toha::HookSurface::of(template) {
         Ok(surface) => surface.digest(),
         Err(error) => return Outcome::Error(error.to_string()),
     };
@@ -2458,17 +2143,7 @@ fn run(
     );
     // An approval that no longer matches marks the hooks changed since approval.
     let changed_since_approval = approval.is_some() && !registry_trusted;
-    let plan = match saved.as_ref() {
-        Some(saved) => toha::operations::build_plan(
-            &template,
-            &completed,
-            &target,
-            &saved.template,
-            &saved.commit,
-        ),
-        None => Plan::build(&template, &completed, &target)
-            .map_err(toha::operations::OperationError::from),
-    };
+    let plan = session.plan(&completed);
     let plan = match plan {
         Ok(plan) => plan,
         Err(error) => return Outcome::Error(error.to_string()),
@@ -2487,7 +2162,7 @@ fn run(
         let lines = if terminal_run {
             vec![]
         } else {
-            completed.messages
+            completed.messages.clone()
         }
         .into_iter()
         .chain(parts_output::lines(&metadata))
@@ -2512,7 +2187,7 @@ fn run(
     let before = plan.before_apply.clone();
     let preview = plan_lines(&plan, force, &[]);
     if !terminal_run {
-        for message in completed.messages {
+        for message in &completed.messages {
             println!("{message}");
         }
     }
@@ -2521,13 +2196,14 @@ fn run(
     }
     // Each file line is printed as the file is written, so that the lines
     // precede the output of every hook.
-    match plan.apply_reporting(
-        &target,
+    match session.apply_plan(
+        plan,
         ApplyOptions {
             force,
             trusted: registry_trusted || trust,
         },
         &ProcessRunner,
+        Some(&store),
         &mut |file| println!("{file}"),
     ) {
         Ok(Applied::Written {
@@ -2542,11 +2218,6 @@ fn run(
             if let toha::applied::RecordOutcome::Written(path) = record {
                 lines.push(format!("saved applied record {path}"));
             }
-            if saved.is_some()
-                && let Err(e) = store.remove(&target)
-            {
-                return Outcome::Error(e.to_string());
-            }
             Outcome::Written(lines)
         }
         Ok(Applied::NeedsTrust(_)) => {
@@ -2559,7 +2230,12 @@ fn run(
                 changed_since_approval,
             ))
         }
-        Err(error @ (toha::ApplyError::Conflicts(_) | toha::ApplyError::Drift(_))) => {
+        Err(toha::operations::OperationError::Apply(error))
+            if matches!(
+                *error,
+                toha::ApplyError::Conflicts(_) | toha::ApplyError::Drift(_)
+            ) =>
+        {
             Outcome::Error(format!("{error}\n{}", guidance::conflicts(&invocation)))
         }
         Err(error) => Outcome::Error(error.to_string()),
@@ -2931,8 +2607,7 @@ mod dirs_tests {
     #[test]
     fn missing_home_names_the_variables() {
         let error = dirs_without(Platform::Unix, &[], &["HOME", "USERPROFILE"])
-            .err()
-            .expect("no home directory");
+            .expect_err("no home directory");
         assert_eq!(error, HOME_UNAVAILABLE);
     }
 
