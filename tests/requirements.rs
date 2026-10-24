@@ -661,3 +661,22 @@ fn a_path_with_no_absolute_entry_left_searches_no_directory() {
     assert_requirement_error_for(&output, PROGRAM);
     case.assert_target_empty();
 }
+
+#[test]
+fn person_requirements_are_checked_before_terminal_admission() {
+    let case = Case::new();
+    let address = support::folder_address(&missing_fixture());
+    let output = case.run(&["apply", &address, case.target()]);
+    assert_code(&output, 1);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(ABSENT),
+        "person_requirements_precede_terminal: {output:?}"
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "no questions before requirement refusal"
+    );
+    case.assert_nothing_staged();
+    case.assert_target_empty();
+}
