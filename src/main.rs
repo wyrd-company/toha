@@ -1115,6 +1115,7 @@ fn replay_diagnostic(error: &toha::operations::OperationError) -> String {
 fn operation_error(error: toha::operations::OperationError, ctx: Option<&Context>) -> Outcome {
     match error {
         toha::operations::OperationError::Document(error) => document_input_error(error, ctx),
+        toha::operations::OperationError::Parts(error) => Outcome::Usage(error),
         toha::operations::OperationError::Resolve(error) => resolve_error(error),
         toha::operations::OperationError::Seed(error) => {
             Outcome::Error(format!("{error}; abort and stage again"))
@@ -1667,7 +1668,7 @@ fn scripted(
     };
     match session.seed_warnings() {
         Ok(warnings) => report_config_warnings(&warnings),
-        Err(e) => return operation_error(e, Some(&ctx)),
+        Err(e) => return scripted_error(ErrorKind::Render, e.to_string(), vec![], Some(&ctx)),
     }
     let state = match session.answer_all(supplied) {
         Ok(v) => v,
@@ -2004,15 +2005,15 @@ fn run(
                     Ok(v) => v,
                     Err(e) => return resolve_error(e),
                 };
-            if !io::stdin().is_terminal() {
-                return Outcome::Error(guidance::no_terminal(&folder, path));
-            }
             let template = match Template::load(&resolved.folder) {
                 Ok(v) => v,
                 Err(e) => return Outcome::Error(e.to_string()),
             };
             if let Err(e) = parts.admit(&template, &Default::default()) {
                 return Outcome::Usage(e);
+            }
+            if !io::stdin().is_terminal() {
+                return Outcome::Error(guidance::no_terminal(&folder, path));
             }
             let preparation = match toha::operations::Preparation::new(
                 template,

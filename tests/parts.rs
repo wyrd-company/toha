@@ -954,7 +954,11 @@ fn person_apply_rejects_unknown_part_before_prompting() {
         .stdin(std::process::Stdio::null())
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "person_part_admission_precedes_terminal: {out:?}"
+    );
     assert!(
         String::from_utf8_lossy(&out.stderr).contains("unknown part"),
         "{out:?}"

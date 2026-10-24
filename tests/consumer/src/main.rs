@@ -292,6 +292,14 @@ fn main() {
         ),
         _ => panic!("initial question missing"),
     }
+    let invalid_parts = Session::start(
+        Template::load(&session.resolved.folder).unwrap(), session.resolved.clone(), target_id.clone(),
+        session.record.invocation_context(&target_id).unwrap(),
+        "2026-01-02T03:04:05+00:00[UTC]".parse().unwrap(), config.clone(),
+        toha::parts::Selection { with: vec!["missing".into()], without: vec![], base: None },
+        &[], &RawAnswers::new(), None,
+    );
+    assert!(matches!(invalid_parts, Err(toha::operations::OperationError::Parts(_))), "consumer_parts_admission_has_domain_error");
     let record_before = serde_json::to_vec(&session.record).unwrap();
     let rejected = session.answer(raw("label", json!(42))).unwrap();
     match rejected {
