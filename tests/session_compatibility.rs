@@ -423,3 +423,28 @@ fn update_resolves_and_admits_before_clock_but_config_before_operand() {
         "cli_update_config_refusal: {out:?}"
     );
 }
+
+#[test]
+fn staged_parts_error_uses_usage_exit() {
+    let (root, target, source) = fixture(
+        "name: sample\ninterview:\n  - {id: label, type: text, prompt: Label, required: true}\n",
+    );
+    let address = support::versioned_template(&source);
+    let out = command(root.path())
+        .arg("stage")
+        .arg(&address)
+        .arg(&target)
+        .arg("--async")
+        .arg("--with")
+        .arg("extra")
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "staged_parts_usage_exit: {out:?}"
+    );
+    assert!(String::from_utf8_lossy(&out.stderr).contains("parts question"));
+    assert!(!target.join("result.txt").exists());
+    assert!(walk(&support::staged_dir(root.path())).is_empty());
+}
