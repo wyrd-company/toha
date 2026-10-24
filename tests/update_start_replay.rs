@@ -44,6 +44,13 @@ fn baselined_answers(
     body: &str,
     initial: serde_json::Value,
 ) -> (tempfile::TempDir, PathBuf, PathBuf, String) {
+    applied_answers(body, initial, true)
+}
+fn applied_answers(
+    body: &str,
+    initial: serde_json::Value,
+    baseline: bool,
+) -> (tempfile::TempDir, PathBuf, PathBuf, String) {
     let root = tempfile::tempdir().unwrap();
     let target = root.path().join("target");
     let source = root.path().join("source");
@@ -62,15 +69,12 @@ fn baselined_answers(
         json!({"template": address, "answers": initial}).to_string(),
     )
     .unwrap();
-    let out = command(root.path())
-        .arg("apply")
-        .arg(&address)
-        .arg(&target)
-        .arg("--baseline")
-        .arg("--answers")
-        .arg(&answers)
-        .output()
-        .unwrap();
+    let mut apply = command(root.path());
+    apply.arg("apply").arg(&address).arg(&target);
+    if baseline {
+        apply.arg("--baseline");
+    }
+    let out = apply.arg("--answers").arg(&answers).output().unwrap();
     show("baseline", &out);
     assert!(out.status.success(), "{out:?}");
     git(&target, &["add", "."]);
@@ -379,9 +383,10 @@ fn update_replays_optional_nulls_and_refuses_new_required_nulls() {
                 required == Some("verbose")
             )
         };
-        let (root, target, source, address) = baselined_answers(
+        let (root, target, source, address) = applied_answers(
             &body(None),
             json!({"label": "example", "remote": null, "verbose": null}),
+            false,
         );
         // The first application explicitly records empty optional answers.
         let record_before = std::fs::read(target.join(".toha.json")).unwrap();
