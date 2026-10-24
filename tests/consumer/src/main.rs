@@ -145,6 +145,7 @@ fn update_environment<'a>(
     }
 }
 fn main() {
+    update_null_replay_contract();
     update_start_replay_contract();
     update_start_end_contract();
     fn assert_send<T: Send>() {}
@@ -1829,6 +1830,17 @@ fn update_start_replay_contract() {
                     result_before,
                     "consumer_start_replay_file_unchanged"
                 );
+                if value == "x" {
+                    assert!(
+                        !session
+                            .record
+                            .submissions
+                            .iter()
+                            .flat_map(|s| s.values())
+                            .any(|v| v == &json!("x")),
+                        "consumer_start_replay_rejected_not_accepted"
+                    );
+                }
                 session.persist(&store).unwrap();
                 if matches!(value, "abort" | "stop") {
                     assert!(
@@ -1916,6 +1928,191 @@ fn update_start_replay_contract() {
                     "consumer_start_replay_valid_used"
                 );
             }
+        }
+    }
+}
+
+/// Optional raw nulls remain empty answers; making either question required re-asks it.
+fn update_null_replay_contract() {
+    for required in [None, Some("remote"), Some("verbose")] {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let source = root.join("source");
+        let target = root.join("target");
+        let body = |required: Option<&str>| {
+            format!(
+                "name: sample\ninterview:\n  - {{id: remote, type: git, prompt: Remote, required: {}}}\n  - {{id: verbose, type: confirm, prompt: Verbose, required: {}}}\n",
+                required == Some("remote"),
+                required == Some("verbose")
+            )
+        };
+        write(&source, "template.yml", body(None));
+        write(&source, "template/result.txt", "original\n");
+        std::fs::create_dir_all(&target).unwrap();
+        git(&source, &["init", "-q"]);
+        commit(&source);
+        git(&target, &["init", "-q"]);
+        commit(&target);
+        let paths = paths(&root);
+        let target_id = canonical_target(&target).unwrap();
+        let address = format!("file://{}", source.display());
+        let (config, registry, _) = toha::resolve::load_context(&paths, &root).unwrap();
+        let mut source_env = NoEnvironment;
+        let mut environment = update_environment(&config, &registry, &root, &mut source_env);
+        let mut answers = raw("remote", json!(null));
+        answers.extend(raw("verbose", json!(null)));
+        let resolved = resolve_template(&address, &config, &registry, &paths, &root).unwrap();
+        let preparation = toha::operations::Preparation::new(
+            Template::load(&resolved.folder).unwrap(),
+            resolved,
+            target_id.clone(),
+            &[],
+            &answers,
+        )
+        .unwrap();
+        let context = preparation
+            .context(
+                EnvironmentDecision::Deny,
+                HostFacts::new("linux".into(), "x86_64".into(), None, None, vec![]),
+                ExecutionFacts::new(false, false),
+                &mut NoEnvironment,
+            )
+            .unwrap();
+        let mut create = preparation
+            .start(
+                context,
+                "2026-01-02T03:04:05+00:00[UTC]".parse().unwrap(),
+                config.clone(),
+                Default::default(),
+                &answers,
+                None,
+            )
+            .unwrap();
+        let completed = done(create.answer_all(answers).unwrap());
+        create
+            .apply(
+                &completed,
+                ApplyOptions::default(),
+                false,
+                &FailingRunner,
+                None,
+            )
+            .unwrap();
+        commit(&target);
+        let record_before = std::fs::read(target.join(".toha.json")).unwrap();
+        let result_before = std::fs::read(target.join("result.txt")).unwrap();
+        write(&source, "template.yml", body(required));
+        write(&source, "template/extra.txt", "extra\n");
+        commit(&source);
+        let prepared = updates::prepare(
+            &UpdateBase::Update,
+            &address,
+            &target_id,
+            &paths,
+            true,
+            PrepareMode::Stage,
+            false,
+            &mut environment,
+        )
+        .unwrap();
+        let started = UpdateSession::start(
+            prepared,
+            target_id.clone(),
+            UpdateBase::Update,
+            false,
+            Default::default(),
+            &[],
+            &RawAnswers::new(),
+        );
+        assert!(
+            started.is_ok(),
+            "consumer_optional_null_replay_admitted: {:?}",
+            started.as_ref().err()
+        );
+        let mut session = started.unwrap();
+        let store = Store::new(paths.state.clone());
+        for rebuilt in [false, true] {
+            let state = session.state().unwrap();
+            if required.is_some()
+                && let SessionState::Completed(completed) = &state
+            {
+                session
+                    .apply(completed, false, &FailingRunner, None)
+                    .unwrap();
+                assert!(
+                    !target.join("extra.txt").exists(),
+                    "consumer_required_null_no_write"
+                );
+                panic!("consumer_required_null_completed");
+            }
+            match (state, required) {
+                (SessionState::Completed(_), None) => {}
+                (
+                    SessionState::Asking {
+                        document,
+                        rejections,
+                    },
+                    Some(id),
+                ) => {
+                    assert!(
+                        rejections.iter().any(|r| r.id.as_str() == id),
+                        "consumer_required_null_replay_rejected"
+                    );
+                    assert!(
+                        document["errors"].get(id).is_some(),
+                        "consumer_required_null_replay_errors"
+                    );
+                }
+                (other, _) => panic!(
+                    "consumer_null_replay_state: required={required:?}, rebuilt={rebuilt}: {other:?}"
+                ),
+            }
+            assert!(
+                !target.join("extra.txt").exists(),
+                "consumer_null_replay_no_early_write"
+            );
+            assert_eq!(
+                std::fs::read(target.join(".toha.json")).unwrap(),
+                record_before,
+                "consumer_null_replay_record_unchanged"
+            );
+            assert_eq!(
+                std::fs::read(target.join("result.txt")).unwrap(),
+                result_before,
+                "consumer_null_replay_file_unchanged"
+            );
+            session.persist(&store).unwrap();
+            if !rebuilt {
+                let wire = serde_json::to_vec(&session.record).unwrap();
+                drop(session);
+                session = UpdateSession::resume(
+                    serde_json::from_slice(&wire).unwrap(),
+                    target_id.clone(),
+                    &paths,
+                    true,
+                    &mut environment,
+                )
+                .unwrap();
+            }
+        }
+        if required.is_none() {
+            let completed = done(session.state().unwrap());
+            session
+                .apply(&completed, false, &FailingRunner, Some(&store))
+                .unwrap();
+            let applied = toha::applied::AppliedRecord::parse(
+                &std::fs::read(target.join(".toha.json")).unwrap(),
+            )
+            .unwrap();
+            let submissions = applied.applications()[0].submissions();
+            for id in ["remote", "verbose"] {
+                assert_eq!(
+                    submissions.iter().find_map(|s| s.get(id)),
+                    Some(&json!(null)),
+                    "consumer_optional_null_persisted"
+                );
+            }
+            assert!(store.load(&target_id).unwrap().is_none());
         }
     }
 }

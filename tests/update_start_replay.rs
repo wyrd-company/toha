@@ -38,6 +38,12 @@ const LABEL: &str = "name: sample\ninterview:\n  - {id: label, type: text, promp
 
 /// Template + committed target with a baseline application (label=example).
 fn baselined(body: &str) -> (tempfile::TempDir, PathBuf, PathBuf, String) {
+    baselined_answers(body, json!({"label": "example"}))
+}
+fn baselined_answers(
+    body: &str,
+    initial: serde_json::Value,
+) -> (tempfile::TempDir, PathBuf, PathBuf, String) {
     let root = tempfile::tempdir().unwrap();
     let target = root.path().join("target");
     let source = root.path().join("source");
@@ -53,7 +59,7 @@ fn baselined(body: &str) -> (tempfile::TempDir, PathBuf, PathBuf, String) {
     let answers = root.path().join("baseline.json");
     std::fs::write(
         &answers,
-        json!({"template": address, "answers": {"label": "example"}}).to_string(),
+        json!({"template": address, "answers": initial}).to_string(),
     )
     .unwrap();
     let out = command(root.path())
@@ -361,4 +367,73 @@ fn staged_update_documents_still_precede_parts() {
     );
     assert!(String::from_utf8_lossy(&out.stderr).contains("missing-input.json"));
     assert!(walk(&support::staged_dir(root.path())).is_empty());
+}
+
+#[test]
+fn update_replays_optional_nulls_and_refuses_new_required_nulls() {
+    for required in [None, Some("remote"), Some("verbose")] {
+        let body = |required: Option<&str>| {
+            format!(
+                "{LABEL}  - {{id: remote, type: git, prompt: Remote, required: {}}}\n  - {{id: verbose, type: confirm, prompt: Verbose, required: {}}}\n",
+                required == Some("remote"),
+                required == Some("verbose")
+            )
+        };
+        let (root, target, source, address) = baselined_answers(
+            &body(None),
+            json!({"label": "example", "remote": null, "verbose": null}),
+        );
+        // The first application explicitly records empty optional answers.
+        let record_before = std::fs::read(target.join(".toha.json")).unwrap();
+        let result_before = std::fs::read(target.join("result.txt")).unwrap();
+        std::fs::write(source.join("template.yml"), body(required)).unwrap();
+        std::fs::write(source.join("template/extra.txt"), "extra\n").unwrap();
+        let address = support::refresh_template(&address);
+        let answers = answers_file(root.path(), "answers.json", &address, json!({}));
+        let out = command(root.path())
+            .args(["apply", &address])
+            .arg(&target)
+            .args(["--update", "--answers"])
+            .arg(&answers)
+            .output()
+            .unwrap();
+        show("null-replay", &out);
+        if let Some(id) = required {
+            assert!(
+                !target.join("extra.txt").exists(),
+                "cli_required_null_no_write"
+            );
+            assert_eq!(
+                std::fs::read(target.join(".toha.json")).unwrap(),
+                record_before,
+                "cli_required_null_record_unchanged"
+            );
+            assert_eq!(
+                std::fs::read(target.join("result.txt")).unwrap(),
+                result_before
+            );
+            assert_eq!(out.status.code(), Some(4), "cli_required_null_exit");
+            assert!(
+                support::first_document(&out.stdout)["errors"]
+                    .get(id)
+                    .is_some(),
+                "cli_required_null_structured_error"
+            );
+        } else {
+            assert!(out.status.success(), "cli_optional_null_replay_admitted");
+            let applied = toha::applied::AppliedRecord::parse(
+                &std::fs::read(target.join(".toha.json")).unwrap(),
+            )
+            .unwrap();
+            let submissions = applied.applications()[0].submissions();
+            for id in ["remote", "verbose"] {
+                assert_eq!(
+                    submissions.iter().find_map(|s| s.get(id)),
+                    Some(&json!(null)),
+                    "cli_optional_null_persisted"
+                );
+            }
+        }
+        assert!(walk(&support::staged_dir(root.path())).is_empty());
+    }
 }
