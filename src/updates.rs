@@ -269,6 +269,7 @@ pub fn resume_prepared(
         Err(error) => return Err(UpdateError::Error(error)),
     };
 
+    crate::requirement::check(&template).map_err(UpdateError::Requirements)?;
     template.part_selection = saved.part_selection.clone();
     let resolution = crate::interview::configured_defaults(
         &resolved.formal_name,
