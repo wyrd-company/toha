@@ -174,7 +174,10 @@ description: >-
   interview over.
 
   Flow control. When a template's flow node ends the run, no files are written
-  and no hooks run, and the command exits with code 0. On the person and agent
+  and no hooks run. Fresh and continued interviews exit with code 0. A one-shot
+  project update (`apply TEMPLATE PATH --update` or `--baseline`) exits with code
+  1 and reports the ended interview as an error, including with `--answers`.
+  On the person and agent
   routes a one-line notice that names the action and any `label` is printed on
   standard error. A flow `abort`
   additionally removes the staged record, as the `abort` command does; a run

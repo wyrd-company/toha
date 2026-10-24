@@ -357,8 +357,9 @@ commands:
             document; other routes print the plan). An untrusted project update
             previews without writing and exits 0; scripted updates emit planned
             with trusted: false, while person and staged-agent updates print
-            completion prose and trust guidance on standard output. A flow stop/abort ended the
-            run or a flow dry-run showed the plan: the scripted route emits the
+            completion prose and trust guidance on standard output. Outside a
+            one-shot project update, a flow stop/abort ended the run; or a flow
+            dry-run showed the plan: the scripted route emits the
             `ended` or `planned` document and other routes print a one-line notice
             on standard error; nothing is written and an abort removes the staged
             record.
@@ -368,7 +369,9 @@ commands:
             staged at the path; an interview for another template is staged at
             the path; the scripted route found an interview already staged (an
             `error` document of kind `staged`); a flow abort could not remove the
-            staged record; the staged record does not replay against its
+            staged record; a flow stop/abort ended a one-shot project update
+            (--update or --baseline), which reports the ended interview as an
+            error without writing; the staged record does not replay against its
             template, and the message names `abort` followed by `stage`; or a
             `--like` selector could not be honoured — unknown, ambiguous,
             wrong-source, no application of the source, or a target not in git with
