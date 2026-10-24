@@ -174,7 +174,7 @@ description: >-
   interview over.
 
   Flow control. When a template's flow node ends the run, no files are written
-  and no hooks run. Fresh and continued interviews exit with code 0. A one-shot
+  and no hooks run. Fresh generation interviews exit with code 0. A one-shot
   project update (`apply TEMPLATE PATH --update` or `--baseline`) exits with code
   1 and reports the ended interview as an error, including with `--answers`.
   On the person and agent
