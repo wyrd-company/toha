@@ -17,12 +17,12 @@ Pin a reviewed integration commit in your `Cargo.toml` without CLI dependencies:
 ```toml
 [dependencies.toha]
 git = "https://github.com/wyrd-company/toha"
-rev = "161f1d6f61c033ff28b6c6b530703917a8a753ec"
+rev = "<full 40-hex commit>"
 default-features = false
 ```
 
-Use the full accepted 40-hex commit in `rev`; a branch name does not freeze the
-API. This route does not require a registry release.
+Replace the placeholder with the full 40-hex commit you reviewed; a branch name
+does not freeze the API. This route does not require a registry release.
 
 ## Drive an interview
 
