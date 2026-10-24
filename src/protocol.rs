@@ -45,10 +45,14 @@ pub struct Context {
 }
 impl Context {
     pub fn new(target: &CanonicalTarget, record: &StagedRecord) -> Self {
+        Self::for_template(target, &record.template, &record.commit)
+    }
+    /// Context for a selected template before an interview record has been created.
+    pub fn for_template(target: &CanonicalTarget, template: &str, commit: &str) -> Self {
         Self {
             target: target.to_string(),
-            template: record.template.clone(),
-            commit: Some(record.commit.clone()).filter(|commit| !commit.is_empty()),
+            template: template.to_owned(),
+            commit: Some(commit.to_owned()).filter(|value| !value.is_empty()),
         }
     }
 }

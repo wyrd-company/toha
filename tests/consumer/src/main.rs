@@ -105,7 +105,7 @@ fn done(state: SessionState) -> toha::Completed {
 }
 fn template(root: &Path, second: bool) {
     let extra = if second {
-        "  - {id: new_answer, type: text, prompt: New answer, required: true}\n"
+        "  - {id: new_answer, type: text, prompt: New answer, required: true}\n  - flow: abort\n    when: new_answer == 'cancel'\n"
     } else {
         ""
     };
@@ -113,7 +113,7 @@ fn template(root: &Path, second: bool) {
         root,
         "template.yml",
         format!(
-            "name: sample\nschemas: schemas\ninterview:\n  - {{id: label, type: text, prompt: Label, required: true}}\n  - {{id: features, type: multiselect, parts: true, prompt: Features, options: [core, optional], default: [core]}}\n  - {{id: catalog, type: document, prompt: Catalog, schema: 'https://schemas.example.test/catalog/1', input: catalog.json}}\n{extra}files:\n  - each: \"['one'] as item\"\n    source: optional.txt\n    path: optional.txt\n    when: \"'optional' in features\"\nhooks:\n  - run: [git, --version]\n"
+            "name: sample\nschemas: schemas\ninterview:\n  - {{id: label, type: text, prompt: Label, required: true}}\n  - {{id: confirmation, type: confirm, prompt: Confirm, required: true, when: \"label == 'sample'\"}}\n  - {{id: features, type: multiselect, parts: true, prompt: Features, options: [core, optional], default: [core]}}\n  - {{id: catalog, type: document, prompt: Catalog, schema: 'https://schemas.example.test/catalog/1', input: catalog.json}}\n{extra}files:\n  - each: \"['one'] as item\"\n    source: optional.txt\n    path: optional.txt\n    when: \"'optional' in features\"\nhooks:\n  - run: [git, --version]\n"
         ),
     );
     write(root,"schemas/catalog.json",json!({"$id":"https://schemas.example.test/catalog/1","type":"object","required":["title"],"properties":{"title":{"type":"string"}}}).to_string());
@@ -291,32 +291,61 @@ fn main() {
         SessionState::Asking { rejections, .. } => assert_eq!(rejections[0].id.as_str(), "label"),
         _ => panic!("invalid answer accepted"),
     };
-    assert_eq!(serde_json::to_vec(&session.record).unwrap(), record_before);
+    assert_eq!(
+        serde_json::to_vec(&session.record).unwrap(),
+        record_before,
+        "consumer_rejected_fresh_record_unchanged"
+    );
     let accepted = session.answer(raw("label", json!("sample"))).unwrap();
-    let _ = done(accepted);
+    assert!(
+        matches!(accepted, SessionState::Asking { .. }),
+        "first_request_requires_followup"
+    );
     let wire = serde_json::to_vec(&session.record).unwrap();
     drop(session);
-    let session = Session::resume(
+    let mut session = Session::resume(
         serde_json::from_slice(&wire).unwrap(),
         target_id.clone(),
         &paths,
         config.clone(),
         &registry,
         &root,
-        &[],
-        &RawAnswers::new(),
     )
     .unwrap();
     let mut bad_seed = session.record.clone();
     bad_seed.seed = Some("missing-copy".into());
     assert!(
         matches!(
-            toha::operations::pinned_seed(&bad_seed, &address, &target_id),
+            toha::operations::pinned_seed(&bad_seed, &address),
             Err(toha::operations::SeedError::MissingCopy)
         ),
         "missing seed copy accepted"
     );
-    let completed = done(session.state().unwrap());
+    let SessionState::Completed(completed) =
+        session.answer(raw("confirmation", json!(true))).unwrap()
+    else {
+        panic!("consumer_reconstructed_answer_completes");
+    };
+    assert_eq!(
+        session
+            .record
+            .submissions
+            .iter()
+            .filter(|batch| batch.contains_key("label"))
+            .count(),
+        1,
+        "reconstructed_label_recorded_once"
+    );
+    assert_eq!(
+        session
+            .record
+            .submissions
+            .iter()
+            .filter(|batch| batch.contains_key("confirmation"))
+            .count(),
+        1,
+        "reconstructed_followup_recorded_once"
+    );
     let other_target = canonical_target(&root.join("other-output")).unwrap();
     assert!(
         matches!(
@@ -413,13 +442,13 @@ fn main() {
         matches!(
             updates::prepare(
                 &UpdateBase::Update,
-                Some(address.clone()),
+                &address,
                 &target_id,
                 &paths,
                 true,
                 PrepareMode::Apply,
                 false,
-                &mut environment
+                &mut environment,
             ),
             Err(updates::UpdateError::Project(_))
         ),
@@ -448,13 +477,13 @@ fn main() {
         matches!(
             updates::prepare(
                 &UpdateBase::Update,
-                Some(address.clone()),
+                &address,
                 &target_id,
                 &paths,
                 true,
                 PrepareMode::Apply,
                 false,
-                &mut environment
+                &mut environment,
             ),
             Err(updates::UpdateError::DirtyTarget)
         ),
@@ -472,7 +501,7 @@ fn main() {
     let mut environment = update_environment(&config, &registry, &root, &mut env_source);
     let prepared = updates::prepare(
         &UpdateBase::Update,
-        Some(address.clone()),
+        &address,
         &target_id,
         &paths,
         true,
@@ -501,7 +530,7 @@ fn main() {
     );
     let prepared = updates::prepare(
         &UpdateBase::Update,
-        Some(address.clone()),
+        &address,
         &target_id,
         &paths,
         true,
@@ -523,7 +552,11 @@ fn main() {
     match upgrade.state().unwrap() {
         SessionState::Asking { document, .. } => {
             let properties = document["schema"]["properties"].as_object().unwrap();
-            assert_eq!(properties.len(), 1);
+            assert_eq!(
+                properties.len(),
+                1,
+                "consumer_update_projects_only_new_question"
+            );
             assert!(properties.contains_key("new_answer"));
         }
         _ => panic!("new question not asked"),
@@ -548,6 +581,29 @@ fn main() {
         before_invalid,
         "rejected update changed record"
     );
+    let mut abort_environment = update_environment(&config, &registry, &root, &mut env_source);
+    let mut aborted = UpdateSession::resume(
+        upgrade.record.clone(),
+        target_id.clone(),
+        &paths,
+        true,
+        &mut abort_environment,
+    )
+    .unwrap();
+    let original_submissions = aborted.record.submissions.clone();
+    store.save(&target_id, &aborted.record).unwrap();
+    assert!(
+        matches!(aborted.answer(raw("new_answer", json!("cancel"))).unwrap(), SessionState::Ended(ended) if ended.kind() == toha::EndKind::Abort)
+    );
+    assert_eq!(
+        aborted.record.submissions, original_submissions,
+        "consumer_update_abort_has_no_submission"
+    );
+    aborted.persist(&store).unwrap();
+    assert!(
+        store.load(&target_id).unwrap().is_none(),
+        "consumer_update_abort_consumes_stage"
+    );
     let _ = done(upgrade.answer(raw("new_answer", json!("new"))).unwrap());
     let wire = serde_json::to_vec(&upgrade.record).unwrap();
     drop(upgrade);
@@ -570,7 +626,9 @@ fn main() {
     .join()
     .unwrap()
     .unwrap();
-    let returned = done(returned);
+    let SessionState::Completed(returned) = returned else {
+        panic!("worker_restores_completed_document_state");
+    };
     assert_eq!(
         returned.now.to_string(),
         request_record.now,
@@ -622,8 +680,6 @@ fn main() {
         target_id.clone(),
         &paths,
         true,
-        &[],
-        &RawAnswers::new(),
         &mut environment,
     )
     .unwrap();
@@ -631,10 +687,67 @@ fn main() {
     store.save(&target_id, &upgrade.record).unwrap();
     let before_record = std::fs::read(target.join(".toha.json")).unwrap();
     let before_file = std::fs::read(target.join("result.txt")).unwrap();
+    for mutation in 0..3 {
+        let mut environment = update_environment(&config, &registry, &root, &mut env_source);
+        let mut prepared = updates::prepare(
+            &UpdateBase::Update,
+            &address,
+            &target_id,
+            &paths,
+            true,
+            PrepareMode::Apply,
+            false,
+            &mut environment,
+        )
+        .unwrap();
+        let mut mismatched = upgrade.record.clone();
+        match mutation {
+            0 => {
+                prepared.context = toha::context::InvocationContext::for_target(
+                    canonical_target(&root.join("other-request")).unwrap(),
+                )
+            }
+            1 => mismatched.template = "another-template".into(),
+            _ => mismatched.commit = "another-revision".into(),
+        }
+        assert!(
+            matches!(
+                UpdateSession::from_prepared(prepared, mismatched, target_id.clone()),
+                Err(updates::SessionError::Operation(
+                    toha::operations::OperationError::Input(_)
+                ))
+            ),
+            "prepared_record_identity_conjunct_{mutation}"
+        );
+    }
+    let mut untrusted_environment = update_environment(&config, &registry, &root, &mut env_source);
+    let untrusted = UpdateSession::resume(
+        upgrade.record.clone(),
+        target_id.clone(),
+        &paths,
+        false,
+        &mut untrusted_environment,
+    )
+    .unwrap();
+    let untrusted_completed = done(untrusted.state().unwrap());
+    assert!(
+        matches!(
+            untrusted
+                .apply(&untrusted_completed, false, &runner, Some(&store))
+                .unwrap()
+                .0,
+            toha::applied::Merged::NeedsTrust
+        ),
+        "consumer_update_requires_trust"
+    );
+    assert!(
+        store.load(&target_id).unwrap().is_some(),
+        "consumer_update_needs_trust_retains_stage"
+    );
     let mut check_environment = update_environment(&config, &registry, &root, &mut env_source);
     let check_prepared = updates::prepare(
         &UpdateBase::Update,
-        Some(address.clone()),
+        &address,
         &target_id,
         &paths,
         true,
@@ -651,7 +764,7 @@ fn main() {
                 true,
                 &runner
             ),
-            Err(toha::applied::MergeError::Changed)
+            Err(toha::applied::MergeError::WrongTarget)
         ),
         "prepared finish target mismatch admitted"
     );
@@ -674,8 +787,6 @@ fn main() {
         target_id.clone(),
         &paths,
         true,
-        &[],
-        &RawAnswers::new(),
         &mut environment,
     )
     .unwrap();
@@ -709,8 +820,6 @@ fn main() {
         target_id.clone(),
         &paths,
         true,
-        &[],
-        &RawAnswers::new(),
         &mut environment,
     )
     .unwrap();
@@ -751,7 +860,7 @@ fn main() {
         let mut environment = update_environment(&config, &registry, &root, &mut env_source);
         let prepared = updates::prepare(
             &UpdateBase::Update,
-            Some(address.clone()),
+            &address,
             &target_id,
             &paths,
             true,
@@ -781,7 +890,7 @@ fn main() {
     let mut environment = update_environment(&config, &registry, &root, &mut env_source);
     let prepared = updates::prepare(
         &UpdateBase::Update,
-        Some(address.clone()),
+        &address,
         &target_id,
         &paths,
         true,
@@ -807,6 +916,18 @@ fn main() {
     let completed = done(upgrade.state().unwrap());
     upgrade.apply(&completed, false, &runner, None).unwrap();
     assert!(!target.join("optional.txt").exists());
+    let retracted: Value =
+        serde_json::from_slice(&std::fs::read(target.join(".toha.json")).unwrap()).unwrap();
+    let application = &retracted["applications"][0];
+    assert_eq!(
+        application["parts"],
+        json!(["core"]),
+        "retraction_record_parts"
+    );
+    assert!(
+        application["paths"].get("optional.txt").is_none(),
+        "retraction_record_ownership"
+    );
     let old_resolved =
         toha::resolve::resume_template(&address, &v1, false, &config, &registry, &paths, &root)
             .unwrap();
@@ -831,7 +952,7 @@ fn main() {
     let mut environment = update_environment(&config, &registry, &root, &mut env_source);
     let prepared = updates::prepare(
         &UpdateBase::Update,
-        Some(address.clone()),
+        &address,
         &target_id,
         &paths,
         true,
@@ -887,7 +1008,7 @@ fn main() {
     let mut environment = update_environment(&config, &registry, &root, &mut env_source);
     let prep = updates::prepare(
         &UpdateBase::Update,
-        Some(address.clone()),
+        &address,
         &target_id,
         &paths,
         true,
@@ -922,6 +1043,8 @@ fn main() {
     );
     catalog_and_assets(&root, &paths, &address);
     assert!(!toha::assets::list().unwrap().is_empty());
+    abort_contract();
+    domain_diagnostics();
     println!(
         "external consumer passed: replay, Send, document refresh, runner, preview, update, parts and pins"
     );
@@ -951,12 +1074,7 @@ fn catalog_and_assets(root: &Path, paths: &Paths, address: &str) {
     ));
     let before = std::fs::read(paths.user_data.join("templates.yml")).unwrap();
     assert!(matches!(
-        catalog::alias(
-            &load(),
-            Some("sample-alias".into()),
-            Some("sample-alias".into()),
-            None
-        ),
+        catalog::add_alias(&load(), "sample-alias", "sample-alias"),
         Err(CatalogError::AliasInUse { .. })
     ));
     assert_eq!(
@@ -968,14 +1086,8 @@ fn catalog_and_assets(root: &Path, paths: &Paths, address: &str) {
         [Event::Untrusted { already: false, .. }]
     ));
     let _ = catalog::update(&load(), Some("sample-alias".into())).unwrap();
-    let _ = catalog::alias(
-        &load(),
-        Some("sample-alias".into()),
-        Some("second-alias".into()),
-        None,
-    )
-    .unwrap();
-    let _ = catalog::alias(&load(), None, None, Some("second-alias".into())).unwrap();
+    let _ = catalog::add_alias(&load(), "sample-alias", "second-alias").unwrap();
+    let _ = catalog::remove_alias(&load(), "second-alias").unwrap();
     let _ = catalog::remove(&load(), "sample-alias").unwrap();
     assert!(
         !catalog::list(&load(), None)
@@ -1018,15 +1130,109 @@ fn request_in_thread(
         environment.now = "2030-01-02T03:04:05+00:00[UTC]".parse().unwrap();
         environment.host =
             HostFacts::new("worker-os".into(), "worker-arch".into(), None, None, vec![]);
-        let operation = UpdateSession::resume(
-            record,
-            target,
-            &paths,
-            true,
-            &[],
-            &RawAnswers::new(),
-            &mut environment,
-        )?;
+        let operation = UpdateSession::resume(record, target, &paths, true, &mut environment)?;
         operation.state()
     })
+}
+
+fn abort_contract() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().canonicalize().unwrap();
+    let source = root.join("source");
+    let target_path = root.join("target");
+    write(
+        &source,
+        "template.yml",
+        "name: sample\ninterview:\n  - {id: label, type: text, prompt: Label, required: true}\n  - flow: abort\n    when: label == 'example'\n",
+    );
+    std::fs::create_dir_all(source.join("template")).unwrap();
+    std::fs::create_dir_all(&target_path).unwrap();
+    let paths = paths(&root);
+    let (config, registry, _) = toha::resolve::load_context(&paths, &root).unwrap();
+    let resolved =
+        resolve_template(source.to_str().unwrap(), &config, &registry, &paths, &root).unwrap();
+    let preparation = toha::operations::Preparation::new(
+        Template::load(&resolved.folder).unwrap(),
+        resolved,
+        canonical_target(&target_path).unwrap(),
+        &[],
+        &RawAnswers::new(),
+    )
+    .unwrap();
+    let context = preparation
+        .context(
+            EnvironmentDecision::RequireStageGrant,
+            HostFacts::new("linux".into(), "x86_64".into(), None, None, vec![]),
+            ExecutionFacts::new(false, false),
+            &mut NoEnvironment,
+        )
+        .unwrap();
+    let mut session = preparation
+        .start(
+            context,
+            "2026-01-02T03:04:05+00:00[UTC]".parse().unwrap(),
+            config,
+            Default::default(),
+            &RawAnswers::new(),
+            None,
+        )
+        .unwrap();
+    let store = Store::new(paths.state);
+    session.persist(&store).unwrap();
+    let previous = session.record.submissions.len();
+    assert!(
+        matches!(session.answer(raw("label", json!("example"))).unwrap(), SessionState::Ended(ended) if ended.kind() == toha::EndKind::Abort)
+    );
+    assert_eq!(
+        session.record.submissions.len(),
+        previous,
+        "consumer_abort_has_no_submission"
+    );
+    session.persist(&store).unwrap();
+    assert!(
+        store.load(&session.target).unwrap().is_none(),
+        "consumer_abort_consumes_stage"
+    );
+    assert!(
+        matches!(session.state().unwrap(), SessionState::Ended(_)),
+        "consumer_abort_remains_terminal"
+    );
+}
+
+fn domain_diagnostics() {
+    use toha::{catalog::CatalogError, resolve::ResolveError};
+    let ambiguous = ResolveError::Ambiguous {
+        name: "sample".into(),
+        matches: vec!["first".into(), "second".into()],
+    };
+    assert_eq!(
+        ambiguous.to_string(),
+        "template sample is ambiguous: first, second",
+        "consumer_resolve_display"
+    );
+    let alias = CatalogError::AliasInUse {
+        template: "sample".into(),
+        alias: "choice".into(),
+        removable: true,
+    };
+    assert_eq!(
+        alias.to_string(),
+        "alias choice is already in use",
+        "consumer_catalog_display"
+    );
+    assert_eq!(
+        updates::UpdateError::Resolve(ambiguous).to_string(),
+        "template sample is ambiguous: first, second",
+        "consumer_update_display"
+    );
+    assert_eq!(
+        updates::UpdateError::StaleApplication.to_string(),
+        "the applied record entry changed",
+        "consumer_domain_has_no_command_instructions"
+    );
+    assert_eq!(
+        toha::operations::SeedError::MissingCopy.to_string(),
+        "the staged seed has no copied application",
+        "consumer_seed_display"
+    );
 }

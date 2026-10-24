@@ -13,7 +13,7 @@ use serde::Deserialize;
 
 static SKILLS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/skills");
 
-#[derive(Deserialize, serde::Serialize)]
+#[derive(Debug, Deserialize, serde::Serialize)]
 pub struct Metadata {
     pub name: String,
     pub description: String,

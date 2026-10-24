@@ -77,8 +77,16 @@ proposed-design:
     private to the library. `resolve` combines source fetching, caching and
     pinned template selection with explicit caller paths. `catalog` owns installed
     template transactions and returns structured events. `operations` owns
-    application context, session documents, owned replay and application plans;
+    application context, session documents, owned replay and application plans.
+    Preparation admits requirements and documents before environment capture;
+    Session owns advancement, accepted progress and abort cleanup. Reconstruction
+    restores recorded documents without reading new input files; explicit document
+    admission follows state inspection. The binary drives these same lifecycle
+    methods for fresh, staged and scripted operations;
     `updates` prepares and finishes baseline and recorded-application updates.
+    UpdateSession retains staged state on preview, trust refusal and failure, and
+    consumes it after a real successful merge. Pinned-application admission
+    precedes acquisition of new configuration and clock inputs.
     `bundled` and `assets` expose embedded templates and guidance without terminal
     dependencies. The binary holds argument and environment interpretation, the
     terminal prompt driver, output formatting and exit-code mapping.
@@ -335,8 +343,9 @@ proposed-design:
     once, into a `Dirs` value holding the configuration, data, state, and
     system paths, and passes it to `config`, `registry`, and `staging`. The
     orchestration library receives those paths and the caller's working
-    directory explicitly. Existing record-path overrides and Git transport
-    environment remain part of their lower-level contracts. `config::load(&Dirs, cwd) ->
+    directory explicitly. Existing TOHA_RECORD overrides, PATH executable lookup
+    and Git global configuration (including HOME/XDG) remain part of lower-level
+    contracts. Explicit Toha paths do not establish process isolation. `config::load(&Dirs, cwd) ->
     Result<Config, ConfigError>` validates each layer against the embedded
     configuration schema and merges them by the rules in the configuration
     specification. `ConfigEntry<T>` keeps each winning value and origin

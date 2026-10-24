@@ -14,6 +14,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[non_exhaustive]
+#[derive(Debug)]
 pub enum Event {
     Added(String),
     SharedShortName {
@@ -40,15 +42,18 @@ pub enum Event {
         already: bool,
     },
 }
+#[derive(Debug)]
 pub struct ListedTemplate {
     pub listed: registry::Listed,
     pub trusted: bool,
 }
+#[derive(Debug)]
 pub struct Listing {
     pub entries: Vec<ListedTemplate>,
     pub bundled: Option<bundled::BundledRow>,
 }
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum CatalogError {
     Error(String),
     UserOnly(String),
@@ -88,6 +93,7 @@ impl CatalogError {
     }
 }
 /// Installed templates and the writable user registry, loaded from explicit paths.
+#[derive(Debug)]
 pub struct Catalog {
     dirs: Dirs,
     config: config::Config,
@@ -719,24 +725,14 @@ fn valid_alias(alias: &str) -> bool {
                     .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
         })
 }
-pub fn alias(
-    ctx: &Catalog,
-    template: Option<String>,
-    name: Option<String>,
-    remove: Option<String>,
-) -> Result<Vec<Event>, CatalogError> {
-    if let Some(alias) = remove {
-        if template.is_some() || name.is_some() {
-            return Err(CatalogError::text(
-                "-r cannot be combined with a template or alias",
-            ));
-        }
-        let next = ctx.user.remove_alias(&alias).map_err(CatalogError::text)?;
-        ctx.write(&next)?;
-        return Ok(vec![Event::AliasRemoved(alias)]);
-    }
-    let template = template.ok_or_else(|| CatalogError::text("template and alias are required"))?;
-    let alias = name.ok_or_else(|| CatalogError::text("template and alias are required"))?;
+pub fn remove_alias(ctx: &Catalog, alias: &str) -> Result<Vec<Event>, CatalogError> {
+    let next = ctx.user.remove_alias(alias).map_err(CatalogError::text)?;
+    ctx.write(&next)?;
+    Ok(vec![Event::AliasRemoved(alias.to_owned())])
+}
+pub fn add_alias(ctx: &Catalog, template: &str, alias: &str) -> Result<Vec<Event>, CatalogError> {
+    let template = template.to_owned();
+    let alias = alias.to_owned();
     if !valid_alias(&alias) {
         return Err(CatalogError::text("invalid alias"));
     }
@@ -782,8 +778,33 @@ impl std::fmt::Display for CatalogError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Error(message) => message.fmt(f),
-            _ => write!(f, "{self:?}"),
+            Self::UserOnly(name) => write!(
+                f,
+                "template {name} is not installed in the writable user registry"
+            ),
+            Self::AddressRequired { name, .. } => {
+                write!(f, "a template source address is required for {name}")
+            }
+            Self::AliasMultiple { alias, addresses } => write!(
+                f,
+                "alias {alias} identifies multiple templates: {}",
+                addresses.join(", ")
+            ),
+            Self::AliasInUse { alias, .. } => write!(f, "alias {alias} is already in use"),
+            Self::Surface { formal, error } => {
+                write!(f, "cannot inspect executable surface of {formal}: {error}")
+            }
+            Self::Ambiguous { name, matches } => {
+                write!(f, "template {name} is ambiguous: {}", matches.join(", "))
+            }
         }
     }
 }
-impl std::error::Error for CatalogError {}
+impl std::error::Error for CatalogError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Surface { error, .. } => Some(error),
+            _ => None,
+        }
+    }
+}

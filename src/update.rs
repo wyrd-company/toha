@@ -20,14 +20,9 @@ use indexmap::IndexMap;
 use serde_json::{Value, json};
 use std::io::IsTerminal;
 use toha::hook::ProcessRunner;
-use toha::interview::Seed;
 
-use toha::RawAnswer;
-use toha::applied::{
-    Action, Change, ConflictKind, Merged, RepoPath, UpdateDrive, drive_update, drive_update_resume,
-};
+use toha::applied::{Action, Change, ConflictKind, Merged, RepoPath, UpdateDrive};
 use toha::protocol::Context;
-use toha::template::Id;
 
 use crate::{Dirs, Outcome, read_answers_text, requirement_error, setup};
 
@@ -52,7 +47,7 @@ pub fn run_update(
         Ok(value) => value,
         Err(error) => return Outcome::Error(error),
     };
-    let mut prep = match prepare(
+    let prep = match prepare(
         &base,
         template_arg,
         &target,
@@ -82,148 +77,73 @@ pub fn run_update(
         None => IndexMap::new(),
     };
 
-    if let Err(error) = crate::admit_parts(&mut prep.template, parts, None, &overrides) {
-        return Outcome::Usage(error);
-    }
-    if let Err(error) =
-        toha::document::prepare(&mut prep.template, target.as_path(), input, &overrides)
-    {
-        let saved = crate::StagedRecord::new_with_context(
-            prep.context.clone(),
-            prep.resolved.commit.clone(),
-            prep.resolved.named,
-            prep.now.to_string(),
-            vec![],
-        );
-        let context = crate::context(&target, &saved);
-        return crate::document_input_error(error, answers.as_ref().map(|_| &context));
-    }
-
-    // The person route (no `--answers`, a terminal) prompts the questions the
-    // recorded answers do not settle, then merges; the script and agent route
-    // reports them.
-    if answers.is_none() && std::io::stdin().is_terminal() {
-        return person_update(prep, &target, reanswer, dry_run);
-    }
-
-    let seed = Seed {
-        now: prep.now.clone(),
-        defaults: prep.configured_defaults.clone(),
-        context: prep.context.clone(),
-    };
-    let driven = match drive_update(&prep.template, seed, &prep.recorded, overrides, reanswer) {
-        Ok(value) => value,
-        Err(error) => return Outcome::Error(error.to_string()),
-    };
-    let (completed, submissions) = match driven {
-        UpdateDrive::Completed {
-            completed,
-            submissions,
-        } => (completed, submissions),
-        UpdateDrive::Ask {
-            pending,
-            rejections,
-            ..
-        } => {
-            // The script route cannot prompt. A batch the replay could not
-            // complete is reported as `questions` (exit 4), the same document the
-            // scripted apply returns. Without `--answers` this is the person
-            // route; its `stage`/`continue` continuation is the update staging
-            // flow, so a one-shot person update with unsettled questions refuses.
-            if answers.is_none() {
-                return Outcome::Error(
-                    "the update has questions the recorded answers do not settle; \
-                     stage it with `stage --update` to answer them"
-                        .to_owned(),
-                );
-            }
-            let saved = crate::StagedRecord::new_with_context(
-                prep.context.clone(),
-                prep.resolved.commit.clone(),
-                prep.resolved.named,
-                prep.now.to_string(),
-                vec![],
-            );
-            let ctx = crate::context(&target, &saved);
-            return Outcome::Document(
-                toha::protocol::batch_document(pending.batch(), &ctx, Some(&rejections)),
-                4,
-            );
-        }
-        UpdateDrive::Ended(ended) => {
-            eprintln!("{}", crate::guidance::flow_ended(&ended));
-            return Outcome::Error(format!(
-                "the template ended the interview: {:?}",
-                ended.kind()
-            ));
-        }
-    };
-
-    // A flow `dry-run` composes with the CLI `--dry-run` by union.
-    let dry_run = effective_dry_run(dry_run, &completed);
-    finish_merge(
+    let document_context =
+        Context::for_template(&target, &prep.resolved.formal_name, &prep.resolved.commit);
+    let mut session = match toha::updates::UpdateSession::start(
         prep,
-        &target,
-        completed,
-        submissions,
-        dry_run,
-        answers.is_some(),
-    )
-}
-
-/// The person route for a one-shot update: prompt the questions the recorded
-/// answers do not settle — re-driving through the adapter each round so a batch
-/// the recorded answers cover is never prompted — then merge.
-fn person_update(
-    prep: Prepared,
-    target: &toha::staging::CanonicalTarget,
-    reanswer: bool,
-    dry_run: bool,
-) -> Outcome {
-    let mut staged: Vec<IndexMap<Id, RawAnswer>> = Vec::new();
-    loop {
-        let seed = Seed {
-            now: prep.now.clone(),
-            defaults: prep.configured_defaults.clone(),
-            context: prep.context.clone(),
-        };
-        let driven =
-            match drive_update_resume(&prep.template, seed, &prep.recorded, &staged, reanswer) {
-                Ok(value) => value,
-                Err(error) => return Outcome::Error(error.to_string()),
-            };
-        match driven {
-            UpdateDrive::Completed {
-                completed,
-                submissions,
-            } => {
-                // A flow `dry-run` composes with the CLI `--dry-run` by union.
-                let dry_run = effective_dry_run(dry_run, &completed);
-                return finish_merge(prep, target, completed, submissions, dry_run, false);
-            }
-            UpdateDrive::Ask { pending, .. } => {
-                let submission =
+        target.clone(),
+        base,
+        reanswer,
+        parts,
+        input,
+        &overrides,
+    ) {
+        Ok(v) => v,
+        Err(toha::updates::SessionError::Operation(e)) => {
+            return crate::operation_error(e, answers.as_ref().map(|_| &document_context));
+        }
+        Err(e) => return Outcome::Error(e.to_string()),
+    };
+    if answers.is_none() && std::io::stdin().is_terminal() {
+        loop {
+            let submission = match session.replay() {
+                Ok(UpdateDrive::Ask { pending, .. }) => {
                     match crate::terminal::prompt_batch(&pending, &mut crate::terminal::InquireAsk)
                     {
-                        Ok(submission) => submission,
-                        Err(error) => return Outcome::Error(error),
-                    };
-                staged.push(submission);
-            }
-            UpdateDrive::Ended(ended) => {
-                eprintln!("{}", crate::guidance::flow_ended(&ended));
-                return Outcome::Error(format!(
-                    "the template ended the interview: {:?}",
-                    ended.kind()
-                ));
+                        Ok(v) => v,
+                        Err(e) => return Outcome::Error(e),
+                    }
+                }
+                Ok(_) => break,
+                Err(e) => return Outcome::Error(e.to_string()),
+            };
+            if let Err(e) = session.answer(submission) {
+                return Outcome::Error(e.to_string());
             }
         }
+    }
+    match session.state() {
+        Ok(toha::operations::SessionState::Completed(done)) => finish_merge(session, done, dry_run, answers.is_some(), None),
+        Ok(toha::operations::SessionState::Asking { .. }) if answers.is_none() => Outcome::Error("the update has questions the recorded answers do not settle; stage it with `stage --update` to answer them".into()),
+        Ok(toha::operations::SessionState::Asking { .. }) => match session.replay() {
+            Ok(UpdateDrive::Ask { pending, rejections, .. }) => Outcome::Document(toha::protocol::batch_document(pending.batch(), &crate::context(&target, &session.record), Some(&rejections)), 4),
+            Err(e) => Outcome::Error(e.to_string()), _ => unreachable!("asking update"),
+        },
+        Ok(toha::operations::SessionState::Ended(ended)) => { eprintln!("{}", crate::guidance::flow_ended(&ended)); Outcome::Error(format!("the template ended the interview: {:?}", ended.kind())) },
+        Err(e) => Outcome::Error(e.to_string()), _ => unreachable!("known session state"),
     }
 }
 
 pub use toha::updates::{PrepareMode, Prepared};
 fn update_error(error: toha::updates::UpdateError, scripted: bool) -> Outcome {
     match error {
+        toha::updates::UpdateError::WithWarnings { warnings, source } => {
+            crate::report_config_warnings(&warnings);
+            update_error(*source, scripted)
+        }
+        toha::updates::UpdateError::StaleApplication => Outcome::Error(
+            "the applied record entry changed; run stage TEMPLATE PATH --update".into(),
+        ),
+        toha::updates::UpdateError::InvalidApplication => {
+            Outcome::Error("invalid staged application; run stage TEMPLATE PATH --update".into())
+        }
+        toha::updates::UpdateError::Base {
+            template,
+            revision,
+            reason,
+        } => Outcome::Error(format!(
+            "cannot render merge base for {template} at {revision:?}: {reason}; use apply TEMPLATE PATH --baseline to re-baseline"
+        )),
         toha::updates::UpdateError::Error(e) => Outcome::Error(e),
         toha::updates::UpdateError::Resolve(e) => crate::resolve_error(e),
         toha::updates::UpdateError::Requirements(e) => {
@@ -248,6 +168,12 @@ pub(crate) fn prepare(
     scripted: bool,
 ) -> Result<Prepared, Outcome> {
     toha::updates::open_project(target).map_err(|e| update_error(e, false))?;
+    let template_arg = template_arg.ok_or_else(|| {
+        Outcome::Error(
+            "apply --update and --baseline need a template operand: apply TEMPLATE PATH --update"
+                .into(),
+        )
+    })?;
     let cwd = std::env::current_dir().map_err(|e| Outcome::Error(e.to_string()))?;
     let (config, registry) = cli_context(dirs, &cwd)?;
     let now = crate::runtime_now().map_err(Outcome::Error)?;
@@ -263,7 +189,7 @@ pub(crate) fn prepare(
     };
     let result = toha::updates::prepare(
         base,
-        template_arg,
+        &template_arg,
         target,
         dirs,
         trust,
@@ -282,7 +208,8 @@ pub(crate) fn resume_prepared(
     dirs: &Dirs,
     trust: bool,
 ) -> Result<Prepared, Outcome> {
-    toha::updates::open_project(target).map_err(|e| update_error(e, false))?;
+    let admission =
+        toha::updates::admit_resume(saved, base, target).map_err(|e| update_error(e, false))?;
     let cwd = std::env::current_dir().map_err(|e| Outcome::Error(e.to_string()))?;
     let (config, registry) = cli_context(dirs, &cwd)?;
     let now = crate::runtime_now().map_err(Outcome::Error)?;
@@ -296,23 +223,25 @@ pub(crate) fn resume_prepared(
         is_admin: crate::is_admin(),
         source: &mut source,
     };
-    let result = toha::updates::resume_prepared(saved, base, target, dirs, trust, &mut environment)
-        .map_err(|e| update_error(e, false))?;
+    let result =
+        toha::updates::resume_admitted(admission, saved, target, dirs, trust, &mut environment)
+            .map_err(|e| update_error(e, false))?;
     crate::report_config_warnings(&result.warnings);
     Ok(result)
 }
-pub use toha::updates::{effective_dry_run, to_raw_staged};
 
 /// Build the application inputs from a completed update interview and merge them
 /// into the project, mapping the merge result to an `Outcome`.
 pub(crate) fn finish_merge(
-    prep: Prepared,
-    target: &toha::staging::CanonicalTarget,
+    session: toha::updates::UpdateSession,
     completed: toha::Completed,
-    _submissions: Vec<IndexMap<Id, RawAnswer>>,
     dry_run: bool,
     scripted: bool,
+    store: Option<&toha::staging::Store>,
 ) -> Outcome {
+    let prep = &session.prepared;
+    let target = &session.target;
+    let dry_run = toha::updates::effective_dry_run(dry_run, &completed);
     // The result documents carry the invocation context; build it from `prep`
     // before the merge consumes the base.
     let saved = crate::StagedRecord::new_with_context(
@@ -351,7 +280,7 @@ pub(crate) fn finish_merge(
     } else {
         &ProcessRunner
     };
-    match prep.finish(target, &completed, dry_run, runner) {
+    match session.apply(&completed, dry_run, runner, store) {
         Ok((merged, report)) => {
             let outcome = match merged_outcome(merged, &ctx, base_id.as_deref()) {
                 Outcome::Document(document, code) => {

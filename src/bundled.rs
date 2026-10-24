@@ -34,6 +34,7 @@ static DEMO: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/docs/examples/demo
 
 /// A read-only descriptor for the discoverability row (see D3). Not a registry
 /// entry; never consulted by resolution.
+#[derive(Debug)]
 pub struct BundledRow {
     pub formal: &'static str,
     pub short: &'static str,

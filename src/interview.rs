@@ -107,7 +107,7 @@ pub enum Step {
     Plan { apply: bool },
 }
 /// A stop or abort. Carries only what a driver prints; nothing a plan consumes.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Ended {
     /// `Abort` instructs the driver to remove the target's staged record.
     pub kind: EndKind,

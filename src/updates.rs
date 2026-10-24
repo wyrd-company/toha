@@ -18,14 +18,22 @@ use indexmap::IndexMap;
 use serde_json::{Value, json};
 use std::path::Path;
 /// The base an update merges from.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum UpdateBase {
     /// The application matching this source and target.
     Update,
     /// An empty base: the whole render is merged, three-way against nothing.
     Baseline,
 }
+#[non_exhaustive]
+#[derive(Debug)]
 pub enum UpdateError {
+    Admission(Box<crate::operations::OperationError>),
+    WithWarnings {
+        warnings: Vec<String>,
+        source: Box<UpdateError>,
+    },
     Error(String),
     Resolve(crate::resolve::ResolveError),
     Requirements(crate::MissingRequirements),
@@ -34,7 +42,6 @@ pub enum UpdateError {
     DirtyTarget,
     StaleApplication,
     InvalidApplication,
-    MissingTemplate,
     Base {
         template: String,
         revision: crate::applied::Revision,
@@ -44,25 +51,44 @@ pub enum UpdateError {
 impl std::fmt::Display for UpdateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::WithWarnings { source, .. } => source.fmt(f),
+            Self::Admission(e) => e.fmt(f),
             Self::Error(e) => e.fmt(f),
-            Self::Resolve(e) => write!(f, "{e:?}"),
+            Self::Resolve(e) => write!(f, "{e}"),
             Self::Requirements(e) => e.fmt(f),
             Self::Project(e) => e.fmt(f),
-            Self::NotGit=>f.write_str("the target is not inside a git repository; an update needs git"),
-            Self::DirtyTarget=>f.write_str("the target has uncommitted changes; commit or discard them before an update"),
-            Self::StaleApplication=>f.write_str("the applied record entry changed; run stage TEMPLATE PATH --update"),
-            Self::InvalidApplication=>f.write_str("invalid staged application; run stage TEMPLATE PATH --update"),
-            Self::MissingTemplate=>f.write_str("apply --update and --baseline need a template operand: apply TEMPLATE PATH --update"),
-            Self::Base{template,revision,reason}=>write!(f,"cannot render merge base for {template} at {revision:?}: {reason}; use apply TEMPLATE PATH --baseline to re-baseline"),
+            Self::NotGit => {
+                f.write_str("the target is not inside a git repository; an update needs git")
+            }
+            Self::DirtyTarget => f.write_str(
+                "the target has uncommitted changes; commit or discard them before an update",
+            ),
+            Self::StaleApplication => f.write_str("the applied record entry changed"),
+            Self::InvalidApplication => f.write_str("invalid staged application"),
+            Self::Base {
+                template,
+                revision,
+                reason,
+            } => write!(
+                f,
+                "cannot render merge base for {template} at {revision:?}: {reason}"
+            ),
         }
     }
 }
-impl std::fmt::Debug for UpdateError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(self, f)
+impl std::error::Error for UpdateError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::WithWarnings { source, .. } => Some(source.as_ref()),
+            Self::Admission(e) => Some(e.as_ref()),
+            Self::Resolve(e) => Some(e),
+            Self::Requirements(e) => Some(e),
+            Self::Project(e) => Some(e),
+            _ => None,
+        }
     }
 }
-impl std::error::Error for UpdateError {}
+#[derive(Debug)]
 pub struct Environment<'a, S: crate::context::FixedEnvironmentSource> {
     pub config: &'a crate::config::Config,
     pub registry: &'a crate::registry::Registry,
@@ -94,6 +120,8 @@ pub struct Prepared {
 /// grant. Shared by the one-shot update route and the staged update flow.
 /// How `prepare` grants the environment and computes trust: an `apply` merges
 /// now; a `stage` captures the grant for later batches.
+#[non_exhaustive]
+#[derive(Debug)]
 pub enum PrepareMode {
     Apply,
     Stage,
@@ -102,7 +130,7 @@ pub enum PrepareMode {
 #[allow(clippy::too_many_arguments)]
 pub fn prepare(
     base: &UpdateBase,
-    template_arg: Option<String>,
+    template: &str,
     target: &crate::staging::CanonicalTarget,
     dirs: &Dirs,
     trust: bool,
@@ -114,8 +142,7 @@ pub fn prepare(
     let cwd = environment.cwd;
     let config = environment.config;
     let registry = environment.registry;
-    let arg = template_arg.ok_or(UpdateError::MissingTemplate)?;
-    let resolved = crate::resolve::resolve_template(&arg, config, registry, dirs, cwd)
+    let resolved = crate::resolve::resolve_template(template, config, registry, dirs, cwd)
         .map_err(UpdateError::Resolve)?;
     let base_application = match base {
         UpdateBase::Update => Some(
@@ -187,7 +214,12 @@ pub fn prepare(
         environment.source,
     ) {
         Ok(value) => value,
-        Err(error) => return Err(UpdateError::Error(error)),
+        Err(error) => {
+            return Err(UpdateError::WithWarnings {
+                warnings,
+                source: Box::new(UpdateError::Admission(Box::new(error))),
+            });
+        }
     };
 
     let recorded = match &base_application {
@@ -223,6 +255,20 @@ pub fn resume_prepared(
     trust: bool,
     environment: &mut Environment<impl crate::context::FixedEnvironmentSource>,
 ) -> Result<Prepared, UpdateError> {
+    let admission = admit_resume(saved, base, target)?;
+    resume_admitted(admission, saved, target, dirs, trust, environment)
+}
+
+/// Repository and pinned application admitted before other host inputs are acquired.
+pub struct ResumeAdmission {
+    project: Project,
+    base_application: Option<Application>,
+}
+pub fn admit_resume(
+    saved: &StagedRecord,
+    base: &UpdateBase,
+    target: &crate::staging::CanonicalTarget,
+) -> Result<ResumeAdmission, UpdateError> {
     let project = open_project(target)?;
 
     let base_application = match base {
@@ -239,6 +285,24 @@ pub fn resume_prepared(
         }
         UpdateBase::Baseline => None,
     };
+    Ok(ResumeAdmission {
+        project,
+        base_application,
+    })
+}
+
+pub fn resume_admitted(
+    admission: ResumeAdmission,
+    saved: &StagedRecord,
+    target: &crate::staging::CanonicalTarget,
+    dirs: &Dirs,
+    trust: bool,
+    environment: &mut Environment<impl crate::context::FixedEnvironmentSource>,
+) -> Result<Prepared, UpdateError> {
+    let ResumeAdmission {
+        project,
+        base_application,
+    } = admission;
     let cwd = environment.cwd;
     let config = environment.config;
     let registry = environment.registry;
@@ -416,7 +480,7 @@ fn restore_merge_base(
         dirs,
         cwd,
     )
-    .map_err(|e| failure(format!("{e:?}")))?;
+    .map_err(|e| failure(e.to_string()))?;
     let template = Template::load(&resolved.folder).map_err(|e| failure(e.to_string()))?;
     let context = InvocationContext::new(
         target.clone(),
@@ -502,7 +566,7 @@ impl Prepared {
         runner: &dyn crate::hook::HookRunner,
     ) -> Result<(Merged, UpdateReport), MergeError> {
         if self.context.target() != target {
-            return Err(MergeError::Changed);
+            return Err(MergeError::WrongTarget);
         }
         let revision =
             crate::resolve::applied_revision(&self.resolved.formal_name, &self.resolved.commit)
@@ -551,9 +615,8 @@ pub fn base_of(saved: &StagedRecord) -> Result<UpdateBase, String> {
     if value == BASELINE_MARKER {
         Ok(UpdateBase::Baseline)
     } else {
-        serde_json::from_str::<Value>(value).map_err(|_| {
-            "invalid staged application; run stage TEMPLATE PATH --update".to_owned()
-        })?;
+        serde_json::from_str::<Value>(value)
+            .map_err(|_| "invalid staged application".to_owned())?;
         Ok(UpdateBase::Update)
     }
 }
@@ -601,12 +664,15 @@ pub fn record(
 /// this operation there, and return its `Send` record/response across the worker boundary.
 /// Serialize `record` and rebuild through `resume` for each subsequent request.
 pub struct UpdateSession {
+    initial_rejections: crate::Rejections,
+    ended: Option<crate::Ended>,
     pub prepared: Prepared,
     pub record: StagedRecord,
     pub target: crate::staging::CanonicalTarget,
 }
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum SessionError {
     #[error("{0}")]
     Update(#[from] UpdateError),
@@ -654,49 +720,112 @@ impl UpdateSession {
             answers.clone(),
             reanswer,
         )?;
-        match driven {
-            crate::applied::UpdateDrive::Completed { submissions, .. }
-            | crate::applied::UpdateDrive::Ask { submissions, .. } => {
+        let initial_rejections = match driven {
+            crate::applied::UpdateDrive::Completed { submissions, .. } => {
                 record.submissions = to_stored(submissions);
-                crate::operations::save_document_answers(&prepared.template, &mut record);
+                vec![]
             }
-            crate::applied::UpdateDrive::Ended(_) => {}
-        }
+            crate::applied::UpdateDrive::Ask {
+                submissions,
+                rejections,
+                ..
+            } => {
+                record.submissions = to_stored(submissions);
+                rejections
+            }
+            crate::applied::UpdateDrive::Ended(_) => vec![],
+        };
+        crate::operations::save_document_answers(&prepared.template, &mut record);
         Ok(Self {
             prepared,
             record,
             target,
+            ended: None,
+            initial_rejections,
         })
     }
 
     #[allow(clippy::too_many_arguments, clippy::result_large_err)]
     pub fn resume(
-        mut record: StagedRecord,
+        record: StagedRecord,
         target: crate::staging::CanonicalTarget,
         paths: &Dirs,
         trust: bool,
-        inputs: &[std::path::PathBuf],
-        incoming: &RawAnswers,
         environment: &mut Environment<impl crate::context::FixedEnvironmentSource>,
     ) -> Result<Self, SessionError> {
         let base = base_of(&record).map_err(UpdateError::Error)?;
-        let mut prepared = resume_prepared(&record, &base, &target, paths, trust, environment)?;
-        crate::operations::prepare_staged_documents(
+        let prepared = resume_prepared(&record, &base, &target, paths, trust, environment)?;
+        Self::from_prepared(prepared, record, target)
+    }
+
+    /// Attach an admitted replay record to the matching prepared operation without new file reads.
+    pub fn from_prepared(
+        mut prepared: Prepared,
+        record: StagedRecord,
+        target: crate::staging::CanonicalTarget,
+    ) -> Result<Self, SessionError> {
+        record.invocation_context(&target)?;
+        if prepared.context.target() != &target
+            || record.template != prepared.resolved.formal_name
+            || record.commit != prepared.resolved.commit
+        {
+            return Err(crate::operations::OperationError::Input(
+                "prepared update does not match the replay record and target".into(),
+            )
+            .into());
+        }
+        crate::document::restore_missing(
             &mut prepared.template,
-            target.as_path(),
-            inputs,
-            incoming,
-            &mut record,
+            &crate::operations::recorded_answers(&record),
         )
-        .map_err(crate::operations::OperationError::from)?;
+        .map_err(UpdateError::Error)?;
         Ok(Self {
             prepared,
             record,
             target,
+            ended: None,
+            initial_rejections: vec![],
         })
     }
+    pub fn admit_documents(
+        &mut self,
+        inputs: &[std::path::PathBuf],
+        incoming: &RawAnswers,
+    ) -> Result<(), SessionError> {
+        crate::operations::prepare_staged_documents(
+            &mut self.prepared.template,
+            self.target.as_path(),
+            inputs,
+            incoming,
+            &mut self.record,
+        )
+        .map_err(crate::operations::OperationError::from)?;
+        Ok(())
+    }
+    /// Save replay-normalized accepted progress. Refusal/preview retain the record; an end consumes it.
+    pub fn persist(&mut self, store: &crate::staging::Store) -> Result<(), SessionError> {
+        let submissions = match self.replay()? {
+            crate::applied::UpdateDrive::Completed { submissions, .. }
+            | crate::applied::UpdateDrive::Ask { submissions, .. } => Some(submissions),
+            crate::applied::UpdateDrive::Ended(_) => None,
+        };
+        match submissions {
+            Some(submissions) => {
+                self.record.submissions = to_stored(submissions);
+                crate::operations::save_document_answers(&self.prepared.template, &mut self.record);
+                store.save(&self.target, &self.record)?;
+            }
+            _ => {
+                store.remove(&self.target)?;
+            }
+        }
+        Ok(())
+    }
 
-    fn replay(&self) -> Result<crate::applied::UpdateDrive<'_>, SessionError> {
+    pub fn replay(&self) -> Result<crate::applied::UpdateDrive<'_>, SessionError> {
+        if let Some(ended) = &self.ended {
+            return Ok(crate::applied::UpdateDrive::Ended(ended.clone()));
+        }
         let staged = to_raw_staged(&self.record.submissions).map_err(UpdateError::Error)?;
         Ok(crate::applied::drive_update_resume(
             &self.prepared.template,
@@ -727,9 +856,12 @@ impl UpdateSession {
     fn response(
         &self,
         pending: &crate::Pending<'_>,
-        rejections: crate::Rejections,
+        mut rejections: crate::Rejections,
         submissions: &[RawAnswers],
     ) -> Result<crate::operations::SessionState, SessionError> {
+        if rejections.is_empty() {
+            rejections = self.initial_rejections.clone();
+        }
         let covered = crate::applied::covered_answers(
             pending,
             &self.prepared.recorded,
@@ -780,6 +912,9 @@ impl UpdateSession {
                 covered.extend(answers);
                 submitted = covered;
                 match pending.answer(submitted.clone()) {
+                    Ok(crate::Interview::Ended(ended)) if ended.kind() == crate::EndKind::Abort => {
+                        Some(crate::operations::SessionState::Ended(ended))
+                    }
                     Ok(_) => None,
                     Err(crate::AnswerError::Rejected {
                         pending,
@@ -795,10 +930,18 @@ impl UpdateSession {
             }
         };
         if let Some(state) = rejected {
+            if let crate::operations::SessionState::Ended(ended) = &state {
+                self.ended = Some(ended.clone());
+            }
             return Ok(state);
         }
+        self.initial_rejections.clear();
         self.record.submissions.extend(to_stored(vec![submitted]));
-        self.state()
+        let state = self.state()?;
+        if let crate::operations::SessionState::Ended(ended) = &state {
+            self.ended = Some(ended.clone());
+        }
+        Ok(state)
     }
 
     /// Consume the loaded request while leaving its persisted record intact on preview/refusal/failure.
@@ -845,4 +988,32 @@ pub fn open_project(target: &crate::staging::CanonicalTarget) -> Result<Project,
         Err(error) => return Err(UpdateError::Project(error)),
     }
     Ok(project)
+}
+
+impl std::fmt::Debug for Prepared {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Prepared")
+            .field("resolved", &self.resolved)
+            .field("context", &self.context)
+            .field("trusted", &self.trusted)
+            .field("warnings", &self.warnings)
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for UpdateSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UpdateSession")
+            .field("prepared", &self.prepared)
+            .field("record", &self.record)
+            .field("target", &self.target)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for ResumeAdmission {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResumeAdmission")
+            .field("base_application", &self.base_application)
+            .finish_non_exhaustive()
+    }
 }

@@ -812,6 +812,18 @@ fn apply_dry_run_on_a_completed_staged_update_previews_and_preserves_everything(
 
     let before = capture_state(iso.path(), target.path());
 
+    // A refusal for unapproved hooks must retain the completed stage for --trust retry.
+    let mut untrusted = support::isolated_command(iso.path());
+    untrusted.arg("apply").arg(target.path());
+    let refusal = untrusted.output().unwrap();
+    assert_eq!(refusal.status.code(), Some(0), "trust preview: {refusal:?}");
+    assert!(String::from_utf8_lossy(&refusal.stdout).contains("Hooks need trust"));
+    assert_eq!(
+        before,
+        capture_state(iso.path(), target.path()),
+        "shared_update_needs_trust_retains_stage_for_retry"
+    );
+
     // `apply PATH --dry-run --trust` must preview the merge without writing
     // anything. `--trust` re-asserts the hook trust established at stage, the
     // same as the real apply that follows would need.

@@ -11,6 +11,7 @@ use crate::{
 use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum LikeSelector {
     Reference(String),
 }
@@ -22,12 +23,13 @@ pub struct LikeSeed {
     pub entry: Value,
 }
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum LikeError {
-    #[error("the target is not inside a git repository; --like needs a recorded application")]
-    NoProject,
     #[error(
-        "no application of {name} at target {target}; --like selects a target in the applied record"
+        "the target is not inside a git repository; an application seed requires a recorded application"
     )]
+    NoProject,
+    #[error("no application of {name} at target {target}")]
     Missing { name: String, target: String },
     #[error("{0}")]
     Record(String),
