@@ -9,7 +9,14 @@ tasks:
   test:
     cmds:
       - cargo test
+      - task: test:redaction
       - task: test:consumer
+  test:redaction:
+    desc: Check that library errors keep an echoed credential out without CLI features
+    cmds:
+      - >-
+        cargo test --locked --no-default-features --test source_https
+        an_echoed_basic_credential_cannot_be_recovered_from_errors -- --exact
   test:consumer:
     desc: Exercise public library operations from a separate crate without CLI features
     cmds:
