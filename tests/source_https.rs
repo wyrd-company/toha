@@ -5,6 +5,7 @@
 //! A local smart-HTTP Git endpoint over TLS exercises the real HTTPS transport.
 #[allow(dead_code)]
 mod support;
+use base64::Engine;
 use rustls::{
     ServerConfig, ServerConnection, StreamOwned,
     pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
@@ -16,7 +17,7 @@ use std::{
     path::Path,
     process::{Command, Stdio},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     thread,
@@ -41,8 +42,12 @@ fn git(cwd: &Path, args: &[&str]) {
         .env("GIT_CONFIG_NOSYSTEM", "1");
     checked(cmd);
 }
-fn serve(mut stream: StreamOwned<ServerConnection, std::net::TcpStream>, root: &Path) {
-    if serve_http(&mut stream, root) {
+fn serve(
+    mut stream: StreamOwned<ServerConnection, std::net::TcpStream>,
+    root: &Path,
+    auth: Option<&Auth>,
+) {
+    if serve_http(&mut stream, root, auth) {
         // rustls rejects TCP EOF without the TLS close_notify alert, even after a
         // complete HTTP response. OpenSSL can accept that truncated shutdown.
         stream.conn.send_close_notify();
@@ -50,7 +55,39 @@ fn serve(mut stream: StreamOwned<ServerConnection, std::net::TcpStream>, root: &
     }
 }
 
-fn serve_http(stream: &mut (impl Read + Write), root: &Path) -> bool {
+/// The basic credential an endpoint requires. A misbehaving endpoint echoes a
+/// rejected credential back as its service announcement, which gix reports.
+#[derive(Clone)]
+struct Auth {
+    username: &'static str,
+    password: &'static str,
+    echo: bool,
+    /// The origin an authorized request is redirected to, as `https://host:port`.
+    redirect: Option<String>,
+    /// The origin every request is redirected to before any challenge.
+    moved: Option<String>,
+    /// The decoded basic credential of every request, empty for none.
+    received: Arc<Mutex<Vec<String>>>,
+}
+
+impl Auth {
+    fn new(username: &'static str, password: &'static str) -> Self {
+        Self {
+            username,
+            password,
+            echo: false,
+            redirect: None,
+            moved: None,
+            received: Arc::default(),
+        }
+    }
+
+    fn received(&self) -> Vec<String> {
+        self.received.lock().unwrap().clone()
+    }
+}
+
+fn serve_http(stream: &mut (impl Read + Write), root: &Path, auth: Option<&Auth>) -> bool {
     let mut request = Vec::new();
     let header_end = loop {
         let mut chunk = [0; 8192];
@@ -75,7 +112,17 @@ fn serve_http(stream: &mut (impl Read + Write), root: &Path) -> bool {
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
     let mut content_length = 0;
     let mut content_type = String::new();
+    let mut authorization = None;
     for line in lines {
+        if let Some((name, value)) = line.split_once(':')
+            && name.eq_ignore_ascii_case("authorization")
+        {
+            authorization = value
+                .trim()
+                .strip_prefix("Basic ")
+                .and_then(|v| base64::engine::general_purpose::STANDARD.decode(v).ok())
+                .map(|v| String::from_utf8_lossy(&v).into_owned());
+        }
         if let Some(value) = line
             .strip_prefix("Content-Length: ")
             .or_else(|| line.strip_prefix("content-length: "))
@@ -96,6 +143,48 @@ fn serve_http(stream: &mut (impl Read + Write), root: &Path) -> bool {
             break;
         }
         request.extend_from_slice(&chunk[..size]);
+    }
+    if let Some(auth) = auth {
+        let expected = format!("{}:{}", auth.username, auth.password);
+        let given = authorization.clone().unwrap_or_default();
+        auth.received.lock().unwrap().push(given);
+        if let Some(origin) = &auth.moved {
+            let response = format!(
+                "HTTP/1.1 302 Found\r\nLocation: {origin}{target}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            stream.flush().unwrap();
+            return true;
+        }
+        match authorization {
+            Some(given) if given == expected => {
+                if let Some(origin) = &auth.redirect {
+                    let response = format!(
+                        "HTTP/1.1 302 Found\r\nLocation: {origin}{target}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    );
+                    stream.write_all(response.as_bytes()).unwrap();
+                    stream.flush().unwrap();
+                    return true;
+                }
+            }
+            Some(given) if auth.echo && !given.ends_with(':') => {
+                let line = format!("# service={given}\n");
+                let body = format!("{:04x}{line}0000", line.len() + 4);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/x-git-upload-pack-advertisement\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+                stream.flush().unwrap();
+                return true;
+            }
+            _ => {
+                let response = "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"fixture\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                stream.write_all(response.as_bytes()).unwrap();
+                stream.flush().unwrap();
+                return true;
+            }
+        }
     }
     let mut child = Command::new("git")
         .arg("http-backend")
@@ -256,7 +345,9 @@ fn configure_trust(command: &mut Command, root: &Path, trust: Trust) {
     }
 }
 
-fn run_https_fixture(trust: Trust) {
+/// A template repository at `remote.git` under a new root, with the fixture
+/// certificates, and the TLS configuration that serves them.
+fn https_fixture(trust: Trust) -> (TempDir, ServerConfig) {
     let root = TempDir::new().unwrap();
     let source = root.path().join("source");
     fs::create_dir(&source).unwrap();
@@ -361,33 +452,59 @@ fn run_https_fixture(trust: Trust) {
             PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_der)),
         )
         .unwrap();
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let stop = Arc::new(AtomicBool::new(false));
-    let flag = stop.clone();
-    let root_path = root.path().to_path_buf();
-    let server = thread::spawn(move || {
-        while !flag.load(Ordering::Relaxed) {
-            match listener.accept() {
-                Ok((socket, _)) => {
-                    // Accepted sockets inherit nonblocking mode on some platforms.
-                    socket.set_nonblocking(false).unwrap();
-                    if matches!(trust, Trust::Http) {
-                        let mut socket = socket;
-                        serve_http(&mut socket, &root_path);
-                    } else {
-                        let conn = ServerConnection::new(Arc::new(config.clone())).unwrap();
-                        serve(StreamOwned::new(conn, socket), &root_path);
+    (root, config)
+}
+
+/// A local smart-HTTP endpoint for `root`, over TLS when `tls` is given.
+struct Endpoint {
+    port: u16,
+    stop: Arc<AtomicBool>,
+    server: thread::JoinHandle<()>,
+}
+
+impl Endpoint {
+    fn start(root: &Path, tls: Option<ServerConfig>, auth: Option<Auth>) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = stop.clone();
+        let root_path = root.to_path_buf();
+        let server = thread::spawn(move || {
+            while !flag.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((socket, _)) => {
+                        // Accepted sockets inherit nonblocking mode on some platforms.
+                        socket.set_nonblocking(false).unwrap();
+                        if let Some(config) = &tls {
+                            let conn = ServerConnection::new(Arc::new(config.clone())).unwrap();
+                            serve(StreamOwned::new(conn, socket), &root_path, auth.as_ref());
+                        } else {
+                            let mut socket = socket;
+                            serve_http(&mut socket, &root_path, auth.as_ref());
+                        }
                     }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(std::time::Duration::from_millis(10))
+                    }
+                    Err(e) => panic!("{e}"),
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    thread::sleep(std::time::Duration::from_millis(10))
-                }
-                Err(e) => panic!("{e}"),
             }
-        }
-    });
+        });
+        Self { port, stop, server }
+    }
+
+    fn stop(self) {
+        self.stop.store(true, Ordering::Relaxed);
+        self.server.join().unwrap();
+    }
+}
+
+fn run_https_fixture(trust: Trust) {
+    let (root, config) = https_fixture(trust);
+    let tls = (!matches!(trust, Trust::Http)).then_some(config);
+    let endpoint = Endpoint::start(root.path(), tls, None);
+    let port = endpoint.port;
     // Run the crate API in a child so all transport configuration is scoped to
     // that process, with the same isolation as the command drivers.
     let mut worker = Command::new(std::env::current_exe().unwrap());
@@ -436,8 +553,7 @@ fn run_https_fixture(trust: Trust) {
         .current_dir(root.path())
         .output()
         .unwrap();
-    stop.store(true, Ordering::Relaxed);
-    server.join().unwrap();
+    endpoint.stop();
     assert!(
         fetched.status.success(),
         "{}{}",
@@ -496,4 +612,432 @@ fn https_fetch_worker() {
     assert_eq!(fetched.reference_kind, RefKind::DefaultBranch);
     assert_eq!(fetched.commit.len(), 40);
     assert!(root.join("fetched/template.yml").is_file());
+}
+
+fn private() -> Auth {
+    Auth::new("fixture-user", "fixture-password")
+}
+
+fn other() -> Auth {
+    Auth::new("other-user", "other-password")
+}
+
+/// Run `credential_worker` with `scenario` against `urls`. The worker is its
+/// own process, so its transport configuration stays out of this one.
+fn run_credential_worker(root: &Path, trust: Trust, scenario: &str, urls: &[String]) {
+    let mut worker = Command::new(std::env::current_exe().unwrap());
+    support::isolate(&mut worker, root);
+    configure_trust(&mut worker, root, trust);
+    let output = worker
+        .args(["--ignored", "--exact", "credential_worker", "--nocapture"])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env_remove("GIT_ASKPASS")
+        .env_remove("SSH_ASKPASS")
+        .stdin(Stdio::null())
+        .env("TOHA_CREDENTIAL_SCENARIO", scenario)
+        .env("TOHA_HTTPS_FIXTURE_ROOT", root)
+        .env("TOHA_CREDENTIAL_URLS", urls.join(" "))
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && stdout.contains("1 passed"),
+        "{stdout}{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn url(endpoint: &Endpoint, scheme: &str) -> String {
+    format!("{scheme}://localhost:{}/remote.git", endpoint.port)
+}
+
+/// Serve one private repository over TLS and run `scenario` against it.
+/// Returns the credentials the endpoint received.
+fn run_credential_scenario(scenario: &str, auth: Auth) -> Vec<String> {
+    let (root, config) = https_fixture(Trust::Explicit);
+    let endpoint = Endpoint::start(root.path(), Some(config), Some(auth.clone()));
+    let urls = [url(&endpoint, "https")];
+    run_credential_worker(root.path(), Trust::Explicit, scenario, &urls);
+    endpoint.stop();
+    auth.received()
+}
+
+#[test]
+fn a_credential_resolver_fetches_a_private_https_repository() {
+    run_credential_scenario("answers", private());
+}
+
+#[test]
+fn a_declining_credential_resolver_leaves_git_configuration_in_charge() {
+    run_credential_scenario("declines", private());
+}
+
+#[test]
+fn a_refusing_credential_resolver_fails_with_its_reason() {
+    run_credential_scenario("refuses", private());
+}
+
+#[test]
+fn a_credential_resolver_refuses_another_host_or_repository() {
+    let received = run_credential_scenario("scoped", private());
+    assert!(
+        !received
+            .iter()
+            .any(|given| given.contains("fixture-password")),
+        "{received:?}"
+    );
+}
+
+#[test]
+fn a_rejected_resolver_password_stays_out_of_errors() {
+    run_credential_scenario("rejected", private());
+}
+
+#[test]
+fn an_echoed_resolver_password_stays_out_of_errors() {
+    run_credential_scenario(
+        "echoed",
+        Auth {
+            echo: true,
+            ..private()
+        },
+    );
+}
+
+#[test]
+fn a_credential_resolver_is_not_asked_for_plain_http() {
+    let (root, _) = https_fixture(Trust::Http);
+    let endpoint = Endpoint::start(root.path(), None, Some(private()));
+    run_credential_worker(root.path(), Trust::Http, "plain", &[url(&endpoint, "http")]);
+    endpoint.stop();
+}
+
+/// Serve the repository at a private second origin and a first origin that
+/// redirects to it, `before` or after its own challenge, and run `scenario`.
+/// Returns the credentials each origin received.
+fn run_redirect_scenario(scenario: &str, before: bool) -> (Vec<String>, Vec<String>) {
+    let (root, config) = https_fixture(Trust::Explicit);
+    let target = other();
+    let second = Endpoint::start(root.path(), Some(config.clone()), Some(target.clone()));
+    let origin = Some(format!("https://localhost:{}", second.port));
+    let source = if before {
+        Auth {
+            moved: origin,
+            ..private()
+        }
+    } else {
+        Auth {
+            redirect: origin,
+            ..private()
+        }
+    };
+    let first = Endpoint::start(root.path(), Some(config), Some(source.clone()));
+    let urls = [url(&first, "https"), url(&second, "https")];
+    run_credential_worker(root.path(), Trust::Explicit, scenario, &urls);
+    first.stop();
+    second.stop();
+    (source.received(), target.received())
+}
+
+#[test]
+fn a_redirect_to_another_origin_asks_the_resolver_for_that_origin() {
+    let (first, second) = run_redirect_scenario("moved", true);
+    assert!(
+        first.iter().all(|given| !given.contains("password")),
+        "{first:?}"
+    );
+    assert!(
+        second.contains(&"other-user:other-password".to_owned()),
+        "{second:?}"
+    );
+    assert!(
+        !second
+            .iter()
+            .any(|given| given.contains("fixture-password")),
+        "{second:?}"
+    );
+}
+
+#[test]
+fn a_credential_never_follows_a_redirect_to_another_origin() {
+    let (first, second) = run_redirect_scenario("redirected", false);
+    assert!(
+        first.contains(&"fixture-user:fixture-password".to_owned()),
+        "{first:?}"
+    );
+    assert!(
+        second.iter().all(|given| !given.contains("password")),
+        "{second:?}"
+    );
+}
+
+#[test]
+fn credential_resolvers_of_concurrent_operations_stay_apart() {
+    let (root, config) = https_fixture(Trust::Explicit);
+    let first = Endpoint::start(root.path(), Some(config.clone()), Some(private()));
+    let second = Endpoint::start(root.path(), Some(config), Some(other()));
+    let urls = [url(&first, "https"), url(&second, "https")];
+    run_credential_worker(root.path(), Trust::Explicit, "concurrent", &urls);
+    first.stop();
+    second.stop();
+}
+
+#[test]
+#[ignore = "subprocess helper for the credential resolver scenarios"]
+fn credential_worker() {
+    use toha::{
+        git_target::{RemoteState, probe},
+        source::{
+            Credential, CredentialRequest, CredentialResolver, SourceError,
+            with_credential_resolver,
+        },
+    };
+    let Ok(scenario) = std::env::var("TOHA_CREDENTIAL_SCENARIO") else {
+        return;
+    };
+    let root = std::path::PathBuf::from(std::env::var_os("TOHA_HTTPS_FIXTURE_ROOT").unwrap());
+    let urls: Vec<String> = std::env::var("TOHA_CREDENTIAL_URLS")
+        .unwrap()
+        .split(' ')
+        .map(str::to_owned)
+        .collect();
+    // The address names a user, which the resolver must not receive.
+    let with_user = |url: &str| url.replacen("://", "://address-user@", 1);
+    let port = |url: &str| -> u16 {
+        let authority = url.split('/').nth(2).unwrap();
+        authority.rsplit(':').next().unwrap().parse().unwrap()
+    };
+    let attempt = std::sync::atomic::AtomicUsize::new(0);
+    let fetch_from = |url: &str| -> Result<toha::source::Fetched, SourceError> {
+        let n = attempt.fetch_add(1, Ordering::Relaxed);
+        let address = Address::Git {
+            repo: with_user(url),
+            reference: None,
+            path: None,
+        };
+        fetch(&address, &root.join(format!("fetched-{n}")))
+    };
+    /// Grants `credential` to the challenges it accepts and records each one.
+    struct Recorder<F> {
+        asked: Mutex<Vec<CredentialRequest>>,
+        answer: F,
+    }
+    impl<F> CredentialResolver for Recorder<F>
+    where
+        F: Fn(&CredentialRequest) -> Result<Option<Credential>, String> + Send + Sync,
+    {
+        fn resolve(&self, request: &CredentialRequest) -> Result<Option<Credential>, String> {
+            self.asked.lock().unwrap().push(request.clone());
+            (self.answer)(request)
+        }
+    }
+    fn recorder<F>(answer: F) -> Arc<Recorder<F>>
+    where
+        F: Fn(&CredentialRequest) -> Result<Option<Credential>, String> + Send + Sync,
+    {
+        Arc::new(Recorder {
+            asked: Mutex::default(),
+            answer,
+        })
+    }
+    let grant = |auth: Auth, expected_port: u16| {
+        recorder(move |request: &CredentialRequest| {
+            if request.host != "localhost" || request.port != expected_port {
+                return Err("these credentials belong to another origin".into());
+            }
+            if request.path != "/remote.git" {
+                return Err("these credentials belong to another repository".into());
+            }
+            Ok(Some(Credential::new(auth.username, auth.password)))
+        })
+    };
+    let main = urls[0].clone();
+    let rejected = "rejected-sample-value";
+    match scenario.as_str() {
+        "answers" => {
+            let resolver = grant(private(), port(&main));
+            with_credential_resolver(resolver.clone(), || {
+                let fetched = fetch_from(&main).unwrap();
+                assert_eq!(fetched.commit.len(), 40);
+                assert_eq!(probe(&with_user(&main)), RemoteState::HasHistory);
+            });
+            let asked = resolver.asked.lock().unwrap().clone();
+            assert!(!asked.is_empty());
+            for request in &asked {
+                assert_eq!(request.scheme, "https");
+                assert_eq!(request.host, "localhost");
+                assert_eq!(request.port, port(&main));
+                assert_eq!(request.path, "/remote.git");
+            }
+            // After the operation the default applies again.
+            assert!(fetch_from(&main).is_err());
+            assert_eq!(resolver.asked.lock().unwrap().len(), asked.len());
+        }
+        "declines" => {
+            let unset = fetch_from(&main).unwrap_err().to_string();
+            let unset_probe = probe(&with_user(&main));
+            let resolver = recorder(|_: &CredentialRequest| Ok(None));
+            with_credential_resolver(resolver.clone(), || {
+                let declined = fetch_from(&main).unwrap_err().to_string();
+                assert_eq!(declined, unset);
+                assert_eq!(probe(&with_user(&main)), unset_probe);
+            });
+            assert!(!resolver.asked.lock().unwrap().is_empty());
+        }
+        "refuses" => {
+            let reason = "the sample resolver refuses this remote";
+            let resolver = recorder(move |_: &CredentialRequest| Err(reason.to_owned()));
+            with_credential_resolver(resolver, || {
+                let error = fetch_from(&main).unwrap_err();
+                assert!(error.to_string().contains(reason), "{error}");
+                let probed = probe(&with_user(&main));
+                assert_eq!(probed, RemoteState::Unreachable(reason.into()));
+            });
+        }
+        "scoped" => {
+            let wrong_origin: Arc<dyn CredentialResolver> = grant(private(), port(&main) + 1);
+            let wrong_repository: Arc<dyn CredentialResolver> =
+                recorder(|request: &CredentialRequest| {
+                    if request.path == "/other.git" {
+                        Ok(Some(Credential::new("fixture-user", "fixture-password")))
+                    } else {
+                        Err("these credentials belong to another repository".into())
+                    }
+                });
+            for (resolver, reason) in [
+                (wrong_origin, "another origin"),
+                (wrong_repository, "another repository"),
+            ] {
+                with_credential_resolver(resolver, || {
+                    let error = fetch_from(&main).unwrap_err().to_string();
+                    assert!(error.contains(reason), "{error}");
+                    let RemoteState::Unreachable(probed) = probe(&with_user(&main)) else {
+                        panic!("a refused origin must not be reached");
+                    };
+                    assert!(probed.contains(reason), "{probed}");
+                });
+            }
+        }
+        "rejected" | "echoed" => {
+            let resolver = recorder(move |_: &CredentialRequest| {
+                Ok(Some(Credential::new("fixture-user", rejected)))
+            });
+            let (error, probed) = with_credential_resolver(resolver, || {
+                let error = fetch_from(&main).unwrap_err().to_string();
+                let RemoteState::Unreachable(probed) = probe(&with_user(&main)) else {
+                    panic!("a rejected credential must not reach the remote");
+                };
+                (error, probed)
+            });
+            // gix names an unexpected service announcement as a byte list.
+            let listed = format!("{:?}", rejected.as_bytes());
+            let listed = listed.trim_start_matches('[').trim_end_matches(']');
+            for message in [&error, &probed] {
+                assert!(!message.contains(rejected), "{message}");
+                assert!(!message.contains(listed), "{message}");
+                if scenario == "echoed" {
+                    // The endpoint did echo the credential; Toha removed it.
+                    assert!(message.contains("<redacted>"), "{message}");
+                }
+            }
+        }
+        "plain" => {
+            let resolver = grant(private(), port(&main));
+            with_credential_resolver(resolver.clone(), || {
+                assert!(fetch_from(&main).is_err());
+                assert!(matches!(
+                    probe(&with_user(&main)),
+                    RemoteState::Unreachable(_)
+                ));
+            });
+            assert!(resolver.asked.lock().unwrap().is_empty());
+        }
+        "moved" | "redirected" => {
+            let (first, second) = (port(&main), port(&urls[1]));
+            // Grants each origin its own credential.
+            let resolver = recorder(move |request: &CredentialRequest| {
+                let auth = if request.port == first {
+                    private()
+                } else if request.port == second {
+                    other()
+                } else {
+                    return Err("unknown origin".into());
+                };
+                Ok(Some(Credential::new(auth.username, auth.password)))
+            });
+            let (fetched, probed) = with_credential_resolver(resolver.clone(), || {
+                (fetch_from(&main), probe(&with_user(&main)))
+            });
+            let asked: Vec<u16> = resolver
+                .asked
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|r| r.port)
+                .collect();
+            if scenario == "moved" {
+                // The challenge came from the origin the redirect reached.
+                fetched.unwrap();
+                assert_eq!(probed, RemoteState::HasHistory);
+                assert_eq!(asked, [second, second]);
+            } else {
+                // gix follows no redirect of an authenticated request, so the
+                // operation stops at the first origin.
+                let error = fetched.unwrap_err().to_string();
+                assert!(!error.contains("password"), "{error}");
+                assert!(matches!(probed, RemoteState::Unreachable(_)), "{probed:?}");
+                assert_eq!(asked, [first, first]);
+            }
+        }
+        "concurrent" => {
+            let barrier = std::sync::Barrier::new(3);
+            let (first, second) = (port(&main), port(&urls[1]));
+            let grants = [
+                (grant(private(), first), &urls[0]),
+                (grant(other(), second), &urls[1]),
+            ];
+            thread::scope(|scope| {
+                let workers: Vec<_> = grants
+                    .iter()
+                    .enumerate()
+                    .map(|(n, (resolver, url))| {
+                        let barrier = &barrier;
+                        let root = &root;
+                        scope.spawn(move || {
+                            with_credential_resolver(resolver.clone(), || {
+                                barrier.wait();
+                                let address = Address::Git {
+                                    repo: with_user(url),
+                                    reference: None,
+                                    path: None,
+                                };
+                                fetch(&address, &root.join(format!("concurrent-{n}"))).unwrap();
+                                assert_eq!(probe(&with_user(url)), RemoteState::HasHistory);
+                            })
+                        })
+                    })
+                    .collect();
+                // An operation without a resolver keeps today's behaviour.
+                let unresolved = scope.spawn(|| {
+                    barrier.wait();
+                    let address = Address::Git {
+                        repo: with_user(&main),
+                        reference: None,
+                        path: None,
+                    };
+                    assert!(fetch(&address, &root.join("concurrent-none")).is_err());
+                });
+                for worker in workers {
+                    worker.join().unwrap();
+                }
+                unresolved.join().unwrap();
+            });
+            for (resolver, url) in &grants {
+                let asked = resolver.asked.lock().unwrap();
+                assert!(!asked.is_empty());
+                assert!(asked.iter().all(|r| r.port == port(url)), "{asked:?}");
+            }
+        }
+        other => panic!("unknown scenario {other}"),
+    }
 }

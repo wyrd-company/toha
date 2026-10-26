@@ -7,6 +7,11 @@ use std::{
     path::{Path, PathBuf},
     sync::atomic::AtomicBool,
 };
+mod credentials;
+pub(crate) use credentials::Supplied;
+pub use credentials::{
+    Credential, CredentialRequest, CredentialResolver, with_credential_resolver,
+};
 pub type Hosts = IndexMap<String, String>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Address {
@@ -189,8 +194,10 @@ pub fn without_userinfo(repo: &str) -> String {
     }
     repo.to_string()
 }
-fn git_error(error: impl std::fmt::Display, repo: &str) -> SourceError {
-    SourceError::Git(redacted(&error.to_string(), repo))
+/// The fetch failure for `error`, without the credentials of `repo` or any
+/// password `supplied` saw.
+fn git_error(error: impl std::fmt::Display, repo: &str, supplied: &Supplied) -> SourceError {
+    SourceError::Git(supplied.message(redacted(&error.to_string(), repo)))
 }
 /// `message` with the credentials of `repo` removed wherever it names them.
 pub(crate) fn redacted(message: &str, repo: &str) -> String {
@@ -379,26 +386,31 @@ pub fn fetch(address: &Address, dest: &Path) -> Result<Fetched, SourceError> {
         None
     };
     let mut native_roots = None;
+    let supplied = Supplied::default();
+    let attach = supplied.clone();
     let mut clone = gix::prepare_clone(repo.as_str(), dest)
-        .map_err(|e| git_error(e, repo))?
-        .configure_connection(move |connection| trust_native_roots(connection, &mut native_roots));
+        .map_err(|e| git_error(e, repo, &supplied))?
+        .configure_connection(move |connection| {
+            attach.attach(connection);
+            trust_native_roots(connection, &mut native_roots)
+        });
     if let Some(reference) = reference {
         clone = if kind == RefKind::Commit {
             clone
                 .with_revision(Some(resolved_commit.as_deref().unwrap()))
-                .map_err(|e| git_error(e, repo))?
+                .map_err(|e| git_error(e, repo, &supplied))?
         } else {
             clone
                 .with_ref_name(Some(reference.as_str()))
-                .map_err(|e| git_error(e, repo))?
+                .map_err(|e| git_error(e, repo, &supplied))?
         };
     }
     let (mut checkout, _) = clone
         .fetch_then_checkout(gix::progress::Discard, &AtomicBool::new(false))
-        .map_err(|e| git_error(e, repo))?;
+        .map_err(|e| git_error(e, repo, &supplied))?;
     let (checkout_repo, _) = checkout
         .main_worktree(gix::progress::Discard, &AtomicBool::new(false))
-        .map_err(|e| git_error(e, repo))?;
+        .map_err(|e| git_error(e, repo, &supplied))?;
     if kind == RefKind::Branch
         && reference.as_ref().is_some_and(|r| {
             checkout_repo
@@ -410,7 +422,7 @@ pub fn fetch(address: &Address, dest: &Path) -> Result<Fetched, SourceError> {
     }
     let commit = checkout_repo
         .head_id()
-        .map_err(|e| git_error(e, repo))?
+        .map_err(|e| git_error(e, repo, &supplied))?
         .to_string();
     Ok(Fetched {
         commit,
@@ -510,7 +522,12 @@ mod tests {
             cwd.join("sources/gh_a_b/abc")
         );
         let repo = "https://user:token@host.invalid/o/r";
-        let error = git_error(format!("clone failed for {repo}"), repo).to_string();
+        let error = git_error(
+            format!("clone failed for {repo}"),
+            repo,
+            &Supplied::default(),
+        )
+        .to_string();
         assert!(!error.contains("token"));
         assert!(error.contains("https://host.invalid/o/r"));
     }

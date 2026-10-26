@@ -255,14 +255,17 @@ fn inside_repository(path: &Path) -> Result<bool, GitTargetError> {
 
 /// List the references of the repository at `url`.
 pub fn probe(url: &str) -> RemoteState {
-    match list_refs(url) {
+    let supplied = crate::source::Supplied::default();
+    match list_refs(url, &supplied) {
         Ok(0) => RemoteState::Empty,
         Ok(_) => RemoteState::HasHistory,
-        Err(message) => RemoteState::Unreachable(crate::source::redacted(&message, url)),
+        Err(message) => {
+            RemoteState::Unreachable(supplied.message(crate::source::redacted(&message, url)))
+        }
     }
 }
 
-fn list_refs(url: &str) -> Result<usize, String> {
+fn list_refs(url: &str, supplied: &crate::source::Supplied) -> Result<usize, String> {
     // A remote needs a repository to belong to; a throwaway bare one holds it.
     let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
     let repo = gix::init_bare(scratch.path()).map_err(|e| e.to_string())?;
@@ -274,6 +277,7 @@ fn list_refs(url: &str) -> Result<usize, String> {
     let mut connection = remote
         .connect(gix::remote::Direction::Fetch)
         .map_err(|e| e.to_string())?;
+    supplied.attach(&mut connection);
     let mut roots = None;
     crate::source::trust_native_roots(&mut connection, &mut roots).map_err(|e| e.to_string())?;
     let (map, _) = connection
