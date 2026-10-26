@@ -1548,3 +1548,124 @@ fn an_already_current_normalized_update_writes_no_loose_objects() {
             .is_none()
     );
 }
+
+#[test]
+fn merge_apply_keeps_an_already_current_normalized_update_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q", "-b", "main"]);
+    write(
+        &root.join(".gitattributes"),
+        b"app/app.txt text=auto eol=lf\n",
+    );
+    write(&root.join("app/app.txt"), b"operator bytes\r\n");
+    git(root, &["add", "."]);
+    // Preserve a historical CRLF index entry. Auto-text capture respects this
+    // entry, whereas normalized_files deliberately compares with an empty index.
+    let operator_blob = hash_object(root, b"operator bytes\r\n");
+    git(
+        root,
+        &[
+            "update-index",
+            "--cacheinfo",
+            "100644",
+            &operator_blob,
+            "app/app.txt",
+        ],
+    );
+    git(root, &["commit", "-qm", "operator"]);
+    // The base and candidate have different captured bytes, but both normalize
+    // to a third blob absent from the repository.
+    make_snapshot(root, BASE_ID, "app", &[("app.txt", b"one\r\ntwo\n")]);
+    let project = open(root, "app");
+    let base = read_snapshot(&project, BASE_ID);
+    project.write_application(base.clone()).unwrap();
+    git(root, &["add", ".toha.json"]);
+    git(root, &["commit", "-qm", "record"]);
+
+    let source = tempfile::tempdir().unwrap();
+    write(
+        &source.path().join("template.yml"),
+        b"name: example\ninterview: []\nstatic: ['**']\n",
+    );
+    let source_file = source.path().join("template/app.txt");
+    write(&source_file, b"one\ntwo\r\n");
+    let template = crate::template::Template::load(source.path()).unwrap();
+    let seed = crate::interview::Seed {
+        now: "2026-03-14T09:26:53+00:00[UTC]".parse().unwrap(),
+        defaults: Default::default(),
+        context: crate::context::InvocationContext::for_target(
+            canonical_target(&root.join("app")).unwrap(),
+        ),
+    };
+    let crate::interview::Interview::Complete(completed) =
+        crate::interview::Interview::start(&template, seed).unwrap()
+    else {
+        panic!("the template has no questions");
+    };
+    let normalized = gix::objs::compute_hash(
+        project.repo().object_hash(),
+        gix::objs::Kind::Blob,
+        b"one\ntwo\n",
+    )
+    .unwrap();
+    assert!(
+        project
+            .repo()
+            .try_find_object(normalized)
+            .unwrap()
+            .is_none()
+    );
+    let paths = [
+        root.join("app/app.txt"),
+        source_file,
+        root.join(".gitattributes"),
+        root.join(".toha.json"),
+        root.join(".git/index"),
+    ];
+    let before = paths.each_ref().map(|path| std::fs::read(path).unwrap());
+    let modes_before = paths
+        .each_ref()
+        .map(|path| std::fs::metadata(path).unwrap().permissions());
+    let refs_before = git(root, &["for-each-ref"]);
+    let staged_before = git(root, &["ls-files", "--stage"]);
+    let lock = root.join(".git/index.lock");
+    assert!(!lock.exists());
+
+    let outcome = merge_apply(
+        &project,
+        Base::Application(base),
+        &template,
+        &completed,
+        snapshot_inputs(),
+        MergeOptions {
+            trusted: true,
+            dry_run: false,
+        },
+        &crate::hook::ProcessRunner,
+    )
+    .unwrap();
+
+    assert!(matches!(outcome, Merged::AlreadyCurrent), "{outcome:?}");
+    assert_eq!(git(root, &["for-each-ref"]), refs_before);
+    assert_eq!(git(root, &["ls-files", "--stage"]), staged_before);
+    for ((path, bytes), mode) in paths.iter().zip(before).zip(modes_before) {
+        assert_eq!(
+            std::fs::metadata(path).unwrap().permissions(),
+            mode,
+            "{}",
+            path.display()
+        );
+        assert_eq!(std::fs::read(path).unwrap(), bytes, "{}", path.display());
+    }
+    assert!(!lock.exists(), "the index lock remains absent");
+    // Candidate capture may write objects; only the comparison's normalized
+    // blob must remain absent.
+    assert!(
+        project
+            .repo()
+            .try_find_object(normalized)
+            .unwrap()
+            .is_none()
+    );
+}
