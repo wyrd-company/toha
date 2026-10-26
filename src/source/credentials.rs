@@ -555,6 +555,18 @@ mod tests {
     }
 
     #[test]
+    fn a_longer_secret_goes_first_whatever_the_order() {
+        // Each later secret starts with the earlier one, in text and in base64.
+        let supplied = Supplied::default();
+        supplied.keep_out(USER, "sample-token");
+        supplied.keep_out(USER, "sample-token-2");
+        let mut secrets = vec!["sample-token-2".to_owned()];
+        secrets.extend(encodings(USER, "sample-token-2"));
+        assert!(secrets[1].starts_with(&encodings(USER, "sample-token")[0]));
+        assert_removed(&supplied, &secrets);
+    }
+
+    #[test]
     fn a_resolver_answer_keeps_its_identity_out_of_messages() {
         let mut h = harness();
         (h.callback)(helper::Action::get_for_url(ANSWERED)).unwrap();
