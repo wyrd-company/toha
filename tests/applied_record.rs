@@ -2257,3 +2257,64 @@ fn a_pure_base_apply_failure_names_rebaseline_and_preserves_the_project() {
         "operator\n"
     );
 }
+
+#[test]
+fn autocrlf_update_merges_in_repository_form() {
+    let iso = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let before = "one\ntwo\nthree\nfour\nfive\n";
+    template(source.path(), QUESTION, before);
+    repository(source.path());
+    repository(root.path());
+    git(root.path(), &["config", "core.autocrlf", "true"]);
+    let source_uri = support::file_url(source.path());
+    let address = format!(
+        "{}@{}",
+        source_uri,
+        git(source.path(), &["rev-parse", "HEAD"])
+    );
+    document(&run(
+        iso.path(),
+        &address,
+        root.path(),
+        json!({"label":"sample"}),
+        &[],
+    ));
+    // Simulate an existing CRLF blob committed before normalization was enabled.
+    // The repository's effective setting remains autocrlf=true for UpdateSession.
+    std::fs::write(root.path().join("result.txt"), before.replace('\n', "\r\n")).unwrap();
+    git(root.path(), &["-c", "core.autocrlf=false", "add", "."]);
+    git(
+        root.path(),
+        &["commit", "-q", "-m", "existing CRLF content"],
+    );
+    std::fs::write(
+        source.path().join("template/result.txt"),
+        "one\ntwo\nthree\nfour\nFIVE\n",
+    )
+    .unwrap();
+    commit(source.path());
+    let address = format!(
+        "{}@{}",
+        source_uri,
+        git(source.path(), &["rev-parse", "HEAD"])
+    );
+    let out = run(
+        iso.path(),
+        &address,
+        root.path(),
+        json!({"label":"sample"}),
+        &["--update"],
+    );
+    let value = document(&out);
+    assert_eq!(
+        std::fs::read(root.path().join("result.txt")).unwrap(),
+        b"one\r\ntwo\r\nthree\r\nfour\r\nFIVE\r\n",
+        "{value}"
+    );
+    assert!(
+        git(root.path(), &["ls-files", "-u"]).is_empty(),
+        "unedited text must not conflict"
+    );
+}

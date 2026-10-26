@@ -16,6 +16,7 @@ permissions:
   contents: read
 jobs:
   minimum-rust:
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     env:
       LIBCURL_NO_PKG_CONFIG: "1"
@@ -24,6 +25,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.88.0
       - run: cargo test --locked
   platforms:
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -32,6 +34,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Effective Git line ending setting
+        shell: bash
+        run: git config --show-origin --get core.autocrlf || test "$?" -eq 1
+      - name: Socket clone mode probe
+        run: cargo test --locked --test document_questions cloned_listener_mode_probe -- --nocapture
       - run: cargo test --locked --no-fail-fast
       - name: Local HTTPS Git transport check
         shell: bash
@@ -44,6 +51,7 @@ jobs:
         if: runner.os == 'Windows'
         run: echo "SSH Git transport fixture is Unix-only; Windows SSH coverage is skipped."
   test:
+    timeout-minutes: 25
     runs-on: ubuntu-latest
     env:
       LIBCURL_NO_PKG_CONFIG: "1"
