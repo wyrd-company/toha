@@ -479,7 +479,7 @@ fn merge_inner(
     let mut merge_repo = repo.clone();
     let mut config = merge_repo.config_snapshot_mut();
     config
-        .set_raw_value(&"merge.renormalize", "true")
+        .set_raw_value("merge.renormalize", "true")
         .map_err(git)?;
     config.commit().map_err(git)?;
     let mut outcome = merge_repo
