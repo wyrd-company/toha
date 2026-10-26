@@ -176,9 +176,16 @@ never sent to another origin.
 - `Ok(None)` leaves the challenge to the credentials of the Git
   configuration, as without a resolver.
 - `Err(reason)` fails the operation with `reason`. Do not put a secret in it.
+  A refused `git` question remote stops the apply before it writes, with
+  `GitTargetError::CredentialRefused`, and `git_target::probe` reports
+  `RemoteState::Refused`.
 
 The password stays out of every Toha error and report, and the `Debug` output
-of `Credential` hides it. Toha does not store or erase the credential.
+of `Credential` hides it. Toha does not store or erase the credential. While a
+resolver is in scope, curl's verbose output (`GIT_CURL_VERBOSE` or
+`gitoxide.http.verbose`) is off for the operation's HTTP connections, as it
+writes the request headers that carry the credential. A clone inside the scope
+does not fetch a remote branch named `HEAD`.
 
 ## Choose a hook runner and account for process inputs
 

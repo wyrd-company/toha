@@ -88,6 +88,8 @@ pub enum GitTargetError {
     Discover { path: String, message: String },
     #[error("could not initialize a git repository at {path}: {message}")]
     Init { path: String, message: String },
+    #[error("the credential resolver refused the remote {url}: {reason}")]
+    CredentialRefused { url: String, reason: String },
 }
 
 /// What listing a remote's references found.
@@ -99,6 +101,8 @@ pub enum RemoteState {
     HasHistory,
     /// The remote did not answer; the message says why, without credentials.
     Unreachable(String),
+    /// The operation's credential resolver refused the remote, for this reason.
+    Refused(String),
 }
 
 /// The decision taken before the apply writes anything.
@@ -123,8 +127,9 @@ pub fn default_branch(configured: Option<&str>) -> &str {
 }
 
 /// Decide, before any write, what the apply does for `planned`. A target inside
-/// a repository is left as it is. Otherwise a remote with history stops the
-/// apply; an unreachable remote is a warning, and the apply continues.
+/// a repository is left as it is. Otherwise a remote with history, or a remote
+/// the credential resolver refuses, stops the apply; an unreachable remote is a
+/// warning, and the apply continues.
 pub fn preflight(
     planned: &PlannedGit,
     target: &CanonicalTarget,
@@ -147,6 +152,12 @@ pub(crate) fn preflight_with(
             RemoteState::HasHistory => {
                 return Err(GitTargetError::RemoteHasHistory {
                     url: crate::source::without_userinfo(url),
+                });
+            }
+            RemoteState::Refused(reason) => {
+                return Err(GitTargetError::CredentialRefused {
+                    url: crate::source::without_userinfo(url),
+                    reason,
                 });
             }
             RemoteState::Unreachable(message) => Some(format!(
@@ -259,9 +270,12 @@ pub fn probe(url: &str) -> RemoteState {
     match list_refs(url, &supplied) {
         Ok(0) => RemoteState::Empty,
         Ok(_) => RemoteState::HasHistory,
-        Err(message) => {
-            RemoteState::Unreachable(supplied.message(crate::source::redacted(&message, url)))
-        }
+        Err(message) => match supplied.refusal() {
+            Some(reason) => RemoteState::Refused(reason),
+            None => {
+                RemoteState::Unreachable(supplied.message(crate::source::redacted(&message, url)))
+            }
+        },
     }
 }
 
@@ -277,9 +291,9 @@ fn list_refs(url: &str, supplied: &crate::source::Supplied) -> Result<usize, Str
     let mut connection = remote
         .connect(gix::remote::Direction::Fetch)
         .map_err(|e| e.to_string())?;
-    supplied.attach(&mut connection);
     let mut roots = None;
-    crate::source::trust_native_roots(&mut connection, &mut roots).map_err(|e| e.to_string())?;
+    crate::source::prepare_connection(&mut connection, &mut roots, supplied)
+        .map_err(|e| e.to_string())?;
     let (map, _) = connection
         .ref_map(
             gix::progress::Discard,

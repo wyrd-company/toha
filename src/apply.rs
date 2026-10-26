@@ -243,7 +243,8 @@ impl Plan {
         // leaves every file on disk unchanged.
         let resolved = self.resolve_edits(target, options.force)?;
         // The `git` question's remote is checked before the first write, so a
-        // remote with history leaves the target unchanged.
+        // remote with history, or one the credential resolver refuses, leaves
+        // the target unchanged.
         let git = self
             .git
             .as_ref()

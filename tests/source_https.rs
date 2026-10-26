@@ -622,12 +622,41 @@ fn other() -> Auth {
     Auth::new("other-user", "other-password")
 }
 
+/// The switches that turn on curl and Git transport diagnostics.
+const DIAGNOSTICS: [&str; 6] = [
+    "GIT_CURL_VERBOSE",
+    "GIT_TRACE",
+    "GIT_TRACE_CURL",
+    "GIT_TRACE_PACKET",
+    "GIT_TRACE2",
+    "GIT_TRACE2_EVENT",
+];
+
 /// Run `credential_worker` with `scenario` against `urls`. The worker is its
 /// own process, so its transport configuration stays out of this one.
 fn run_credential_worker(root: &Path, trust: Trust, scenario: &str, urls: &[String]) {
+    run_credential_worker_with(root, trust, scenario, urls, false);
+}
+
+/// [`run_credential_worker`], with every diagnostic switch on when
+/// `diagnostics`. Returns what the worker wrote.
+fn run_credential_worker_with(
+    root: &Path,
+    trust: Trust,
+    scenario: &str,
+    urls: &[String],
+    diagnostics: bool,
+) -> String {
     let mut worker = Command::new(std::env::current_exe().unwrap());
     support::isolate(&mut worker, root);
     configure_trust(&mut worker, root, trust);
+    for switch in DIAGNOSTICS {
+        if diagnostics {
+            worker.env(switch, "1");
+        } else {
+            worker.env_remove(switch);
+        }
+    }
     let output = worker
         .args(["--ignored", "--exact", "credential_worker", "--nocapture"])
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -640,11 +669,12 @@ fn run_credential_worker(root: &Path, trust: Trust, scenario: &str, urls: &[Stri
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success() && stdout.contains("1 passed"),
-        "{stdout}{}",
-        String::from_utf8_lossy(&output.stderr)
+        "{stdout}{stderr}"
     );
+    format!("{stdout}{stderr}")
 }
 
 fn url(endpoint: &Endpoint, scheme: &str) -> String {
@@ -783,6 +813,70 @@ fn credential_resolvers_of_concurrent_operations_stay_apart() {
 }
 
 #[test]
+fn transport_diagnostics_never_show_a_resolver_credential() {
+    let (root, config) = https_fixture(Trust::Explicit);
+    let auth = private();
+    let endpoint = Endpoint::start(root.path(), Some(config), Some(auth.clone()));
+    let urls = [url(&endpoint, "https")];
+    let written = run_credential_worker_with(root.path(), Trust::Explicit, "answers", &urls, true);
+    endpoint.stop();
+    // The endpoint did take the credential, so each request carried it.
+    assert!(
+        auth.received()
+            .contains(&"fixture-user:fixture-password".to_owned())
+    );
+    let basic = base64::engine::general_purpose::STANDARD.encode("fixture-user:fixture-password");
+    let listed = format!("{:?}", "fixture-password".as_bytes());
+    for form in [
+        "fixture-password",
+        basic.as_str(),
+        format!("{:?}", "fixture-password").trim_matches('"'),
+        listed.trim_start_matches('[').trim_end_matches(']'),
+    ] {
+        assert!(!written.contains(form), "{form} in {written}");
+    }
+}
+
+#[test]
+fn a_remote_head_branch_keeps_the_clone_on_the_resolver() {
+    let (root, config) = https_fixture(Trust::Explicit);
+    let source = root.path().join("source");
+    let first = String::from_utf8(checked({
+        let mut command = Command::new("git");
+        command.args(["rev-parse", "HEAD"]).current_dir(&source);
+        command
+    }))
+    .unwrap();
+    git(&source, &["commit", "--allow-empty", "-m", "second"]);
+    git(&source, &["tag", "sample-tag"]);
+    // A tag no branch reaches arrives only when the clone asks for all tags.
+    git(&source, &["checkout", "-q", "-b", "side"]);
+    git(&source, &["commit", "--allow-empty", "-m", "side"]);
+    git(&source, &["tag", "side-tag"]);
+    git(&source, &["checkout", "-q", "main"]);
+    git(
+        &source,
+        &["push", "../remote.git", "main", "sample-tag", "side-tag"],
+    );
+    // A branch named `HEAD` clashes with the clone's own `HEAD` tracking ref.
+    let remote = root.path().join("remote.git");
+    git(&remote, &["update-ref", "refs/heads/HEAD", first.trim()]);
+    let endpoint = Endpoint::start(root.path(), Some(config), Some(private()));
+    run_credential_worker(
+        root.path(),
+        Trust::Explicit,
+        "head-branch",
+        &[url(&endpoint, "https")],
+    );
+    endpoint.stop();
+}
+
+#[test]
+fn an_apply_stops_unchanged_when_the_resolver_refuses_its_remote() {
+    run_credential_scenario("apply-refused", private());
+}
+
+#[test]
 #[ignore = "subprocess helper for the credential resolver scenarios"]
 fn credential_worker() {
     use toha::{
@@ -873,6 +967,109 @@ fn credential_worker() {
             assert!(fetch_from(&main).is_err());
             assert_eq!(resolver.asked.lock().unwrap().len(), asked.len());
         }
+        "head-branch" => {
+            let remote = root.join("remote.git");
+            let main_commit = String::from_utf8(checked({
+                let mut command = Command::new("git");
+                command
+                    .args(["--git-dir", remote.to_str().unwrap()])
+                    .args(["rev-parse", "refs/heads/main"]);
+                command
+            }))
+            .unwrap();
+            let resolver = grant(private(), port(&main));
+            let (fetched, tagged) = with_credential_resolver(resolver.clone(), || {
+                let tagged = Address::Git {
+                    repo: with_user(&main),
+                    reference: Some("sample-tag".into()),
+                    path: None,
+                };
+                (
+                    fetch_from(&main).unwrap(),
+                    fetch(&tagged, &root.join("tagged")).unwrap(),
+                )
+            });
+            assert_eq!(fetched.commit, main_commit.trim());
+            let tags = String::from_utf8(checked({
+                let mut command = Command::new("git");
+                command
+                    .args(["tag", "--list"])
+                    .current_dir(root.join("fetched-0"));
+                command
+            }))
+            .unwrap();
+            assert!(tags.lines().any(|tag| tag == "side-tag"), "{tags}");
+            assert_eq!(fetched.reference_kind, RefKind::DefaultBranch);
+            assert_eq!(tagged.reference_kind, RefKind::Tag);
+            // One challenge on each fetch's only connection.
+            assert_eq!(resolver.asked.lock().unwrap().len(), 2);
+        }
+        "apply-refused" => {
+            let template_root = root.join("git-template");
+            fs::create_dir_all(template_root.join("template")).unwrap();
+            fs::write(
+                template_root.join("template.yml"),
+                "name: sample\ninterview:\n  - id: remote\n    type: git\n    prompt: Remote\n",
+            )
+            .unwrap();
+            fs::write(template_root.join("template/README.md"), "sample\n").unwrap();
+            let template = toha::Template::load(&template_root).unwrap();
+            fs::create_dir(root.join("target")).unwrap();
+            let target = toha::staging::canonical_target(&root.join("target")).unwrap();
+            let seed = toha::Seed {
+                now: "2026-01-02T03:04:05+00:00[UTC]".parse().unwrap(),
+                defaults: Default::default(),
+                context: toha::context::InvocationContext::for_target(target.clone()),
+            };
+            let toha::Interview::Asking(pending) = toha::Interview::start(&template, seed).unwrap()
+            else {
+                panic!("the git question asks");
+            };
+            let answers = [(
+                toha::Id::parse("remote").unwrap(),
+                toha::RawAnswer(serde_json::json!(main)),
+            )]
+            .into_iter()
+            .collect();
+            let toha::Interview::Complete(completed) = pending.answer(answers).unwrap() else {
+                panic!("the interview completes");
+            };
+            let plan = toha::Plan::build(&template, &completed, &target).unwrap();
+            struct NoHooks;
+            impl toha::hook::HookRunner for NoHooks {
+                fn run(
+                    &self,
+                    _: &toha::PlannedHook,
+                    _: &Path,
+                ) -> Result<toha::hook::HookOutcome, toha::hook::HookError> {
+                    panic!("the template has no hooks")
+                }
+            }
+            let reason = "scope denied";
+            let resolver = recorder(move |_: &CredentialRequest| Err(reason.to_owned()));
+            let options = toha::ApplyOptions {
+                force: false,
+                trusted: true,
+            };
+            let applied = with_credential_resolver(resolver, || {
+                plan.apply(&target, options, &NoHooks).map_err(Box::new)
+            });
+            let Err(error) = applied else {
+                panic!("a refused remote must stop the apply");
+            };
+            assert!(
+                matches!(
+                    &*error,
+                    toha::ApplyError::Git(toha::git_target::GitTargetError::CredentialRefused {
+                        reason: refused,
+                        ..
+                    }) if refused == reason
+                ),
+                "{error}"
+            );
+            assert!(error.to_string().contains(reason), "{error}");
+            assert_eq!(fs::read_dir(root.join("target")).unwrap().count(), 0);
+        }
         "declines" => {
             let unset = fetch_from(&main).unwrap_err().to_string();
             let unset_probe = probe(&with_user(&main));
@@ -891,7 +1088,7 @@ fn credential_worker() {
                 let error = fetch_from(&main).unwrap_err();
                 assert!(error.to_string().contains(reason), "{error}");
                 let probed = probe(&with_user(&main));
-                assert_eq!(probed, RemoteState::Unreachable(reason.into()));
+                assert_eq!(probed, RemoteState::Refused(reason.into()));
             });
         }
         "scoped" => {
@@ -911,7 +1108,7 @@ fn credential_worker() {
                 with_credential_resolver(resolver, || {
                     let error = fetch_from(&main).unwrap_err().to_string();
                     assert!(error.contains(reason), "{error}");
-                    let RemoteState::Unreachable(probed) = probe(&with_user(&main)) else {
+                    let RemoteState::Refused(probed) = probe(&with_user(&main)) else {
                         panic!("a refused origin must not be reached");
                     };
                     assert!(probed.contains(reason), "{probed}");

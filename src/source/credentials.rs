@@ -6,7 +6,6 @@
 //! credential helper process or a file on disk.
 use gix::bstr::ByteSlice;
 use gix::credentials::{helper, protocol};
-use gix::protocol::transport::client::blocking_io::Transport;
 use std::{
     cell::RefCell,
     sync::{Arc, Mutex, PoisonError},
@@ -102,6 +101,10 @@ thread_local! {
 /// unwinds. Operations on other threads, and code after this call, keep the
 /// behaviour without a resolver. An inner call replaces the resolver for its
 /// own operation. SSH and local remotes never consult it.
+///
+/// While the resolver is in scope, curl's verbose output is off for the
+/// operation's HTTP connections, and a clone does not fetch a remote branch
+/// named `HEAD`, so that every connection consults the resolver.
 pub fn with_credential_resolver<T>(
     resolver: Arc<dyn CredentialResolver>,
     operation: impl FnOnce() -> T,
@@ -115,6 +118,11 @@ pub fn with_credential_resolver<T>(
     }
     let _restore = Restore(RESOLVER.with(|current| current.replace(Some(resolver))));
     operation()
+}
+
+/// Whether the calling thread's operation has a resolver.
+pub(crate) fn resolving() -> bool {
+    RESOLVER.with(|current| current.borrow().is_some())
 }
 
 fn current_resolver() -> Option<Arc<dyn CredentialResolver>> {
@@ -136,14 +144,19 @@ impl Supplied {
     /// Answer HTTPS challenges on `connection` from the resolver of the
     /// current operation. Other challenges keep the credentials of the Git
     /// configuration, and without a resolver the connection is unchanged.
-    pub(crate) fn attach(
-        &self,
-        connection: &mut gix::remote::Connection<'_, '_, '_, Box<dyn Transport + Send>>,
-    ) {
-        if let Some(resolver) = current_resolver() {
-            let fallback = connection.configured_credentials_for_current_url();
-            connection.set_credentials(self.authenticate(resolver, fallback));
-        }
+    /// Returns whether a resolver is in scope.
+    pub(crate) fn attach(&self, connection: &mut super::Connection<'_, '_, '_>) -> bool {
+        let Some(resolver) = current_resolver() else {
+            return false;
+        };
+        let fallback = connection.configured_credentials_for_current_url();
+        connection.set_credentials(self.authenticate(resolver, fallback));
+        true
+    }
+
+    /// The resolver's refusal, when it refused.
+    pub(crate) fn refusal(&self) -> Option<String> {
+        self.lock().refusal.clone()
     }
 
     // gix fixes the callback's error type.
