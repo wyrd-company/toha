@@ -5,6 +5,13 @@ relationships:
 ---
 -->
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/user/assets/logo-dark.svg">
+    <img src="docs/user/assets/logo.svg" alt="Toha logo" width="160">
+  </picture>
+</p>
+
 # Toha
 
 Generate projects and files from templates.
