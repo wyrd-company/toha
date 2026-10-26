@@ -35,8 +35,6 @@ pub enum Base {
 /// Options for an update merge.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct MergeOptions {
-    /// Replace managed-region drift only for this invocation.
-    pub force: bool,
     pub trusted: bool,
     pub dry_run: bool,
 }
@@ -150,6 +148,23 @@ pub fn merge_apply_reported(
     options: MergeOptions,
     runner: &dyn crate::hook::HookRunner,
 ) -> Result<(Merged, UpdateReport), MergeError> {
+    merge_apply_reported_with_force(
+        project, base, template, completed, inputs, options, false, runner,
+    )
+}
+
+/// Shared update implementation; force is supplied by the current public operation.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn merge_apply_reported_with_force(
+    project: &Project,
+    base: Base,
+    template: &crate::template::Template,
+    completed: &crate::interview::Completed,
+    inputs: RecordInputs,
+    options: MergeOptions,
+    force: bool,
+    runner: &dyn crate::hook::HookRunner,
+) -> Result<(Merged, UpdateReport), MergeError> {
     // Build the plan for the real target with the application's frozen instant.
     let target_path = candidate_target(project)?;
     let mut plan = crate::plan::Plan::build(template, completed, &target_path)
@@ -179,7 +194,7 @@ pub fn merge_apply_reported(
         plan,
         capture_inputs,
         !options.dry_run,
-        options.force,
+        force,
         runner,
     )?;
 

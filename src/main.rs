@@ -2879,7 +2879,6 @@ mod report_tests {
                 revision: Revision::Unversioned,
             },
             MergeOptions {
-                force: false,
                 trusted: true,
                 dry_run: false,
             },

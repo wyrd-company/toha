@@ -245,7 +245,7 @@ pub(super) fn verify() {
                     &runner,
                     Some(&store)
                 )
-                .unwrap()
+                .expect("consumer_region_forced_preview must accept explicit force")
                 .0,
             Merged::Planned { .. }
         ),
@@ -256,6 +256,32 @@ pub(super) fn verify() {
         before,
         "consumer_region_forced_preview_atomic"
     );
+    // Existing low-level callers keep their literal options and safe default.
+    let session = resume();
+    let completed = done(session.state().unwrap());
+    let prep = session.prepared;
+    let revision =
+        toha::resolve::applied_revision(&prep.resolved.formal_name, &prep.resolved.commit).unwrap();
+    let result = toha::applied::merge_apply_reported(
+        &prep.project,
+        prep.merge_base,
+        &prep.template,
+        &completed,
+        toha::applied::RecordInputs {
+            template: prep.resolved.formal_name,
+            revision,
+        },
+        toha::applied::MergeOptions {
+            trusted: true,
+            dry_run: false,
+        },
+        &runner,
+    );
+    assert!(
+        matches!(result, Err(MergeError::Apply(e)) if matches!(*e, toha::ApplyError::Drift(_))),
+        "consumer_region_low_level_default_safe"
+    );
+    assert_eq!(snapshot(&project, &stage_path), before);
     let session = resume();
     let completed = done(session.state().unwrap());
     assert!(

@@ -672,7 +672,7 @@ impl Prepared {
         let revision =
             crate::resolve::applied_revision(&self.resolved.formal_name, &self.resolved.commit)
                 .map_err(|e| MergeError::Io(e.to_string()))?;
-        crate::applied::merge_apply_reported(
+        crate::applied::merge_apply_reported_with_force(
             &self.project,
             self.merge_base,
             &self.template,
@@ -682,10 +682,10 @@ impl Prepared {
                 revision,
             },
             MergeOptions {
-                force: options.force,
                 trusted: self.trusted,
                 dry_run: effective_dry_run(options.dry_run, completed),
             },
+            options.force,
             runner,
         )
     }

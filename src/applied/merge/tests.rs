@@ -144,7 +144,6 @@ fn a_clean_three_way_merge_keeps_operator_and_template_lines() {
         &Base::Application(base),
         &new,
         &MergeOptions {
-            force: false,
             trusted: true,
             dry_run: false,
         },
@@ -195,7 +194,6 @@ fn a_template_removed_file_edited_by_the_operator_is_a_modify_delete_conflict() 
         &Base::Application(base),
         &new,
         &MergeOptions {
-            force: false,
             trusted: true,
             dry_run: false,
         },
@@ -246,7 +244,6 @@ fn an_occupied_path_refuses_and_cleans_up_the_candidate_ref() {
         &Base::Application(base),
         &new,
         &MergeOptions {
-            force: false,
             trusted: true,
             dry_run: false,
         },
@@ -309,7 +306,6 @@ fn a_target_changed_since_the_start_refuses_with_nothing_written() {
         &Base::Application(base),
         &new,
         &MergeOptions {
-            force: false,
             trusted: true,
             dry_run: false,
         },
@@ -372,7 +368,6 @@ fn an_unrelated_dirty_file_in_the_target_fails_the_locked_re_check() {
         &Base::Application(base),
         &new,
         &MergeOptions {
-            force: false,
             trusted: true,
             dry_run: false,
         },
@@ -429,7 +424,6 @@ fn a_dirty_target_refuses_at_the_prewrite_recheck_and_writes_nothing() {
         &Base::Application(base),
         &new,
         &MergeOptions {
-            force: false,
             trusted: true,
             dry_run: false,
         },
@@ -507,7 +501,6 @@ fn a_failure_after_a_write_but_before_commit_rolls_the_transaction_back() {
         &Base::Application(base),
         &new,
         &MergeOptions {
-            force: false,
             trusted: true,
             dry_run: false,
         },
@@ -601,7 +594,6 @@ fn the_write_index_drops_the_stale_cache_tree_extension() {
         &Base::Application(base),
         &new,
         &MergeOptions {
-            force: false,
             trusted: true,
             dry_run: false,
         },
@@ -638,7 +630,6 @@ fn run_merge(root: &Path) -> Merged {
         &Base::Application(base),
         &new,
         &MergeOptions {
-            force: false,
             trusted: true,
             dry_run: false,
         },
@@ -816,7 +807,6 @@ fn behavior_31_a_held_index_lock_refuses_and_removes_the_candidate() {
         &Base::Application(base),
         &new,
         &MergeOptions {
-            force: false,
             trusted: true,
             dry_run: false,
         },
@@ -951,7 +941,6 @@ fn the_candidate_builder_and_merge_apply_a_from_update_end_to_end() {
         &Base::Application(base2),
         &new,
         &MergeOptions {
-            force: false,
             trusted: true,
             dry_run: false,
         },
@@ -1007,7 +996,6 @@ fn a_successful_update_preserves_the_committed_snapshot_ref_and_reports_it() {
         &Base::Application(read_snapshot(&project, BASE_ID)),
         &new,
         &MergeOptions {
-            force: false,
             trusted: true,
             dry_run: false,
         },
@@ -1140,7 +1128,6 @@ fn a_dry_run_previews_the_change_and_saves_nothing() {
         &Base::Application(read_snapshot(&project, BASE_ID)),
         &new,
         &MergeOptions {
-            force: false,
             trusted: true,
             dry_run: true,
         },
@@ -1300,7 +1287,6 @@ fn symlink_write_failures_restore_nodes_record_and_index() {
             &Base::Application(base),
             &new,
             &MergeOptions {
-                force: false,
                 trusted: true,
                 dry_run: false,
             },
@@ -1450,7 +1436,6 @@ fn a_dangling_operator_link_is_occupied_before_any_update_write() {
         &Base::Application(base),
         &new,
         &MergeOptions {
-            force: false,
             trusted: true,
             dry_run: false,
         },
@@ -1658,7 +1643,6 @@ fn merge_apply_keeps_an_already_current_normalized_update_unchanged() {
             &completed,
             snapshot_inputs(),
             MergeOptions {
-                force: false,
                 trusted: true,
                 dry_run,
             },
@@ -1802,7 +1786,6 @@ fn safecrlf_merge_fixture(reject: bool) {
         &completed,
         snapshot_inputs(),
         MergeOptions {
-            force: false,
             trusted: true,
             dry_run: false,
         },

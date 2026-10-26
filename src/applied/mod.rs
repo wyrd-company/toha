@@ -14,6 +14,7 @@ mod record;
 mod replay;
 
 pub use capture::CaptureInputs;
+pub(crate) use merge::merge_apply_reported_with_force;
 pub use merge::{
     Action, Base, Change, ConflictKind, MergeError, MergeOptions, Merged, RecordInputs,
     UpdateReport, merge_apply, merge_apply_reported,
