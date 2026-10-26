@@ -1,7 +1,7 @@
 ---
-docs: true
 title: Authoring templates
 order: 3
+product: toha
 relationships:
   describes: toha
   references: template-format

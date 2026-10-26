@@ -2,7 +2,7 @@
 # relationships:
 #   demonstrates: template-interviews
 # ---
-Output docs/assets/document-input.gif
+Output docs/user/assets/document-input.gif
 Require bash
 Require jq
 Set Shell "bash"

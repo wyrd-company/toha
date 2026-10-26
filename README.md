@@ -19,7 +19,7 @@ Generate projects and files from templates.
 [![CI](https://github.com/wyrd-company/toha/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/wyrd-company/toha/actions/workflows/ci.yml?query=branch%3Amain)
 [![Latest release](https://img.shields.io/github/v/release/wyrd-company/toha)](https://github.com/wyrd-company/toha/releases/latest)
 
-![Toha terminal demo](docs/assets/demo.gif)
+![Toha terminal demo](docs/user/assets/demo.gif)
 
 Toha is a project scaffolding tool and Rust library. Templates ask questions,
 then render file paths and contents with Jinja. Preview the plan before writing.

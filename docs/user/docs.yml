@@ -1,0 +1,136 @@
+# yaml-language-server: $schema=https://wyrd.foo/schemas/docs/v1.json
+# ---
+# relationships:
+#   publishes-to: wyrd-foo
+#   describes: toha
+# ---
+schemaVersion: 1
+assets:
+  - assets/demo.gif
+  - assets/applied-record.gif
+  - assets/document-input.gif
+  - assets/logo.svg
+  - assets/logo-dark.svg
+  - assets/favicon.svg
+  - assets/social-image.png
+products:
+  toha:
+    name: toha
+    version: 0.3.0
+    docs-version: 0.1.0
+    tagline: Generate projects and files from templates.
+    blurb: >-
+      Toha uses one interview for terminal users, scripts, agents, and Rust
+      callers.
+    status: preview
+    category: Templates & Scaffolding
+    order: 4
+    logo: assets/logo.svg
+    logo-dark: assets/logo-dark.svg
+    favicon: assets/favicon.svg
+    social-image: assets/social-image.png
+    highlights:
+      - >-
+        Runs one interview from a terminal, a script, an agent or the Rust
+        crate.
+      - >-
+        Resumes an interview later, or takes its answers from a JSON file,
+        including whole documents.
+      - >-
+        Renders file paths and contents with typed Jinja values, conditions
+        and loops, and previews the plan before it writes.
+      - >-
+        Injects bounded regions and typed JSON values into files that already
+        exist.
+      - >-
+        Records each application in .toha.json, and updates generated projects
+        while it keeps your edits.
+      - >-
+        Runs template hooks only after you trust the template.
+    media:
+      - src: assets/demo.gif
+        caption: Toha applies its bundled demo template, then runs the same interview as a staged script.
+        alt: >-
+          Terminal recording of toha asking for a note title and topic and
+          writing the note, then staging the same interview with JSON output.
+      - src: assets/applied-record.gif
+        caption: Toha records an application, then updates the project from it.
+        alt: >-
+          Terminal recording of toha applying a template, showing the applied
+          record, and running an update.
+    nav:
+      - section: Get started
+        groups:
+          - group: Basics
+            pages: [ overview, install ]
+      - section: Authoring templates
+        groups:
+          - group: Templates
+            pages: [ templates ]
+          - group: The interview
+            pages: [ template-interviews, template-flow, template-jinja ]
+          - group: Output
+            pages: [ template-files, template-injection, template-hooks ]
+      - section: Using Toha
+        groups:
+          - group: Templates
+            pages: [ templates-management, template-registries, configuration ]
+          - group: Projects
+            pages: [ updating-projects, generating-into-subpaths ]
+          - group: Library
+            pages: [ using-toha-from-rust ]
+    kinds:
+      - kind: cli
+        install:
+          - method: homebrew
+            os: [ macos, linux ]
+            default: true
+            command: brew install wyrd-company/tools/toha
+          - method: apt
+            os: [ linux ]
+            label: Debian, Ubuntu
+            command: sudo apt install toha
+          - method: rpm
+            os: [ linux ]
+            label: Fedora, DNF
+            command: sudo dnf install toha
+          - method: aur
+            os: [ linux ]
+            command: paru -S toha-bin
+          - method: cargo
+            os: [ macos, linux, windows ]
+            command: cargo install toha
+          - method: archive
+            os: [ linux ]
+            label: Linux x86_64
+            command: |
+              gh release download --repo wyrd-company/toha --pattern 'toha_*_linux_x86_64.tar.gz'
+              tar -xzf toha_*_linux_x86_64.tar.gz
+              sudo install toha /usr/local/bin/toha
+          - method: archive
+            os: [ linux ]
+            label: Linux aarch64
+            command: |
+              gh release download --repo wyrd-company/toha --pattern 'toha_*_linux_aarch64.tar.gz'
+              tar -xzf toha_*_linux_aarch64.tar.gz
+              sudo install toha /usr/local/bin/toha
+          - method: archive
+            os: [ macos ]
+            label: macOS arm64
+            command: |
+              gh release download --repo wyrd-company/toha --pattern 'toha_*_macos_aarch64.tar.gz'
+              tar -xzf toha_*_macos_aarch64.tar.gz
+              sudo install toha /usr/local/bin/toha
+          - method: archive
+            os: [ macos ]
+            label: macOS x86_64
+            command: |
+              gh release download --repo wyrd-company/toha --pattern 'toha_*_macos_x86_64.tar.gz'
+              tar -xzf toha_*_macos_x86_64.tar.gz
+              sudo install toha /usr/local/bin/toha
+          - method: archive
+            os: [ windows ]
+            label: Windows x86_64
+            command: |
+              gh release download --repo wyrd-company/toha --pattern 'toha_*_windows_x86_64.zip'
+              Expand-Archive -Path toha_*_windows_x86_64.zip -DestinationPath toha

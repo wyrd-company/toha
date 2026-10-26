@@ -1,7 +1,7 @@
 ---
-docs: true
 title: Updating projects
-order: 10
+order: 13
+product: toha
 relationships:
   describes: toha
   references:

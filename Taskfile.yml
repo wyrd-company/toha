@@ -38,7 +38,7 @@ tasks:
       - actionlint .github/workflows/*.yml
       - >-
         ryl check -c .ryl.yml .github/workflows/*.yml Taskfile.yml
-        .intentional/config.yml docs/docs.yml scripts/release/nfpm.yml
+        .intentional/config.yml docs/user/docs.yml scripts/release/nfpm.yml
       - intentional check
       - cargo test --locked --test release_contract
       - cargo publish --dry-run --locked --allow-dirty --target-dir target/publish-check

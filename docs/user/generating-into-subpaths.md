@@ -1,7 +1,7 @@
 ---
-docs: true
 title: Generating into subpaths
-order: 11
+order: 14
+product: toha
 relationships:
   describes: toha
   references:

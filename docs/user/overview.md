@@ -1,7 +1,7 @@
 ---
-docs: true
 title: Toha
 order: 1
+product: toha
 relationships:
   describes: toha
 ---

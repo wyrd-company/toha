@@ -3,7 +3,7 @@
 #   demonstrates: overview
 #   references: interview-protocol
 # ---
-Output docs/assets/demo.gif
+Output docs/user/assets/demo.gif
 
 Require bash
 Require jq

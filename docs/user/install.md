@@ -1,8 +1,8 @@
 ---
-docs: true
 title: Installation
 order: 2
 install: true
+product: toha
 relationships:
   describes: toha
   references: command-line-interface
