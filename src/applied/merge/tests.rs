@@ -99,7 +99,7 @@ fn make_snapshot_entries(dir: &Path, id: &str, target: &str, files: &[(&str, &[u
 }
 fn open(dir: &Path, sub: &str) -> Project {
     let target = canonical_target(&dir.join(sub)).unwrap();
-    Project::open(&target).unwrap().unwrap()
+    Project::open_isolated(&target).unwrap().unwrap()
 }
 
 const BASE_ID: &str = "01JA2B8M4R0C7W1Y5F3H9K2S6E";
@@ -1380,7 +1380,7 @@ fn symlink_blob_bytes_bypass_worktree_text_conversion() {
     write(&root.join(".gitattributes"), b"link text eol=crlf\n");
     git(root, &["add", "."]);
     git(root, &["commit", "-qm", "example"]);
-    let repo = gix::open(root).unwrap();
+    let repo = gix::open_opts(root, gix::open::Options::isolated()).unwrap();
     let (mut pipeline, _) = repo.filter_pipeline(None).unwrap();
     let id = repo.write_blob(b"target\n").unwrap().detach();
     // Prove that this attribute would transform a regular file's bytes.
@@ -1577,7 +1577,9 @@ fn merge_apply_keeps_an_already_current_normalized_update_unchanged() {
     // The base and candidate have different captured bytes, but both normalize
     // to a third blob absent from the repository.
     make_snapshot(root, BASE_ID, "app", &[("app.txt", b"one\r\ntwo\n")]);
+    git(root, &["config", "core.safecrlf", "true"]);
     let project = open(root, "app");
+    assert_local_safecrlf(&project);
     let base = read_snapshot(&project, BASE_ID);
     project.write_application(base.clone()).unwrap();
     git(root, &["add", ".toha.json"]);
@@ -1622,6 +1624,7 @@ fn merge_apply_keeps_an_already_current_normalized_update_unchanged() {
         root.join(".gitattributes"),
         root.join(".toha.json"),
         root.join(".git/index"),
+        root.join(".git/config"),
     ];
     let before = paths.each_ref().map(|path| std::fs::read(path).unwrap());
     let modes_before = paths
@@ -1632,7 +1635,151 @@ fn merge_apply_keeps_an_already_current_normalized_update_unchanged() {
     let lock = root.join(".git/index.lock");
     assert!(!lock.exists());
 
-    let outcome = merge_apply(
+    for dry_run in [true, false] {
+        let outcome = merge_apply(
+            &project,
+            Base::Application(base.clone()),
+            &template,
+            &completed,
+            snapshot_inputs(),
+            MergeOptions {
+                trusted: true,
+                dry_run,
+            },
+            &crate::hook::ProcessRunner,
+        )
+        .unwrap();
+
+        assert!(matches!(outcome, Merged::AlreadyCurrent), "{outcome:?}");
+        assert_eq!(git(root, &["for-each-ref"]), refs_before);
+        assert_eq!(git(root, &["ls-files", "--stage"]), staged_before);
+        for ((path, bytes), mode) in paths.iter().zip(&before).zip(&modes_before) {
+            assert_eq!(
+                std::fs::metadata(path).unwrap().permissions(),
+                *mode,
+                "{}",
+                path.display()
+            );
+            assert_eq!(&std::fs::read(path).unwrap(), bytes, "{}", path.display());
+        }
+        assert!(!lock.exists(), "the index lock remains absent");
+        assert_local_safecrlf(&project);
+        // Candidate capture may write objects; only the comparison's normalized
+        // blob must remain absent.
+        assert!(
+            project
+                .repo()
+                .try_find_object(normalized)
+                .unwrap()
+                .is_none()
+        );
+    }
+}
+
+fn assert_local_safecrlf(project: &Project) {
+    let config = project.repo().config_snapshot();
+    assert_eq!(config.boolean("core.safecrlf"), Some(true));
+    let (_, section) = config
+        .raw_values_with_sections_by("core", None::<&gix::bstr::BStr>, "safecrlf")
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(section.meta().source, gix::config::Source::Local);
+    let options = gix::filter::Pipeline::options(project.repo()).unwrap();
+    assert!(matches!(
+        options.crlf_roundtrip_check,
+        gix::filter::plumbing::pipeline::CrlfRoundTripCheck::Fail
+    ));
+    eprintln!("core.safecrlf: effective=true source=Local pipeline=Fail");
+}
+
+fn safecrlf_merge_fixture(reject: bool) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q", "-b", "main"]);
+    write(
+        &root.join(".gitattributes"),
+        b"app/*.txt text=auto eol=lf\n",
+    );
+    let operator = b"ONE\r\ntwo\nthree\nfour\nfive\n";
+    write(&root.join("app/app.txt"), operator);
+    git(root, &["add", "."]);
+    let operator_blob = hash_object(root, operator);
+    git(
+        root,
+        &[
+            "update-index",
+            "--cacheinfo",
+            "100644",
+            &operator_blob,
+            "app/app.txt",
+        ],
+    );
+    git(root, &["commit", "-qm", "operator"]);
+    make_snapshot(
+        root,
+        BASE_ID,
+        "app",
+        &[("app.txt", b"one\r\ntwo\nthree\nfour\nfive\n")],
+    );
+    let project = open(root, "app");
+    let base = read_snapshot(&project, BASE_ID);
+    project.write_application(base.clone()).unwrap();
+    git(root, &["add", ".toha.json"]);
+    git(root, &["commit", "-qm", "record"]);
+    git(root, &["config", "core.safecrlf", "true"]);
+    let project = open(root, "app");
+    assert_local_safecrlf(&project);
+
+    let source = tempfile::tempdir().unwrap();
+    write(
+        &source.path().join("template.yml"),
+        b"name: example\ninterview: []\nstatic: ['**']\n",
+    );
+    let source_file = source.path().join("template/app.txt");
+    write(&source_file, b"one\ntwo\r\nthree\nfour\nFIVE\n");
+    // This new path has no historical CRLF index entry. Capture must still
+    // enforce safecrlf on its actual admission, before any merge takes place.
+    if reject {
+        write(&source.path().join("template/new.txt"), b"new\r\n");
+    }
+    let template = crate::template::Template::load(source.path()).unwrap();
+    let seed = crate::interview::Seed {
+        now: "2026-03-14T09:26:53+00:00[UTC]".parse().unwrap(),
+        defaults: Default::default(),
+        context: crate::context::InvocationContext::for_target(
+            canonical_target(&root.join("app")).unwrap(),
+        ),
+    };
+    let crate::interview::Interview::Complete(completed) =
+        crate::interview::Interview::start(&template, seed).unwrap()
+    else {
+        panic!("the template has no questions");
+    };
+    let mut paths = vec![
+        root.join("app/app.txt"),
+        root.join(".toha.json"),
+        root.join(".git/index"),
+        root.join(".git/config"),
+        source_file,
+        root.join(".gitattributes"),
+        source.path().join("template.yml"),
+    ];
+    if reject {
+        paths.push(source.path().join("template/new.txt"));
+    }
+    let before = paths
+        .iter()
+        .map(|path| std::fs::read(path).unwrap())
+        .collect::<Vec<_>>();
+    let modes = paths
+        .iter()
+        .map(|path| std::fs::metadata(path).unwrap().permissions())
+        .collect::<Vec<_>>();
+    let refs = git(root, &["for-each-ref"]);
+    let staged = git(root, &["ls-files", "--stage"]);
+    assert!(!root.join(".git/index.lock").exists());
+    let result = merge_apply(
         &project,
         Base::Application(base),
         &template,
@@ -1643,29 +1790,45 @@ fn merge_apply_keeps_an_already_current_normalized_update_unchanged() {
             dry_run: false,
         },
         &crate::hook::ProcessRunner,
-    )
-    .unwrap();
-
-    assert!(matches!(outcome, Merged::AlreadyCurrent), "{outcome:?}");
-    assert_eq!(git(root, &["for-each-ref"]), refs_before);
-    assert_eq!(git(root, &["ls-files", "--stage"]), staged_before);
-    for ((path, bytes), mode) in paths.iter().zip(before).zip(modes_before) {
-        assert_eq!(
-            std::fs::metadata(path).unwrap().permissions(),
-            mode,
-            "{}",
-            path.display()
-        );
-        assert_eq!(std::fs::read(path).unwrap(), bytes, "{}", path.display());
-    }
-    assert!(!lock.exists(), "the index lock remains absent");
-    // Candidate capture may write objects; only the comparison's normalized
-    // blob must remain absent.
-    assert!(
-        project
-            .repo()
-            .try_find_object(normalized)
-            .unwrap()
-            .is_none()
     );
+    if reject {
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("CRLF would be replaced by LF"), "{error}");
+        for ((path, bytes), mode) in paths.iter().zip(before).zip(modes) {
+            assert_eq!(std::fs::read(path).unwrap(), bytes, "{}", path.display());
+            assert_eq!(std::fs::metadata(path).unwrap().permissions(), mode);
+        }
+        assert!(!root.join("app/new.txt").exists());
+        assert_eq!(git(root, &["ls-files", "--stage"]), staged);
+    } else {
+        let outcome = result.unwrap();
+        assert!(
+            matches!(outcome, Merged::Written { ref conflicted, .. } if conflicted.is_empty()),
+            "{outcome:?}"
+        );
+        assert_eq!(
+            std::fs::read(root.join("app/app.txt")).unwrap(),
+            b"ONE\ntwo\nthree\nfour\nFIVE\n"
+        );
+        assert_eq!(
+            git(root, &["show", ":app/app.txt"]),
+            "ONE\ntwo\nthree\nfour\nFIVE"
+        );
+        assert_ne!(std::fs::read(root.join(".toha.json")).unwrap(), before[1]);
+        assert_eq!(std::fs::read(&paths[3]).unwrap(), before[3]);
+        assert_eq!(std::fs::read(&paths[4]).unwrap(), before[4]);
+    }
+    assert_eq!(git(root, &["for-each-ref"]), refs);
+    assert!(!root.join(".git/index.lock").exists());
+    assert_local_safecrlf(&project);
+}
+
+#[test]
+fn safecrlf_allows_a_real_merge_of_historical_crlf_inputs() {
+    safecrlf_merge_fixture(false);
+}
+
+#[test]
+fn safecrlf_still_rejects_candidate_admission_without_changing_operator_state() {
+    safecrlf_merge_fixture(true);
 }

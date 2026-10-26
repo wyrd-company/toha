@@ -51,9 +51,15 @@ not rerun old hooks.
 Commit or discard changes in the target and record before updating. Use
 `--answers FILE` to override recorded answers, `--reanswer` to ask again, or
 `--dry-run` to preview. An unchanged render reports `Already current.` and
-writes nothing. A new update reads current document inputs or `--input FILE`
-and keeps whole recorded documents for the merge base. A staged interview keeps
-each document it has accepted until that interview completes.
+leaves your files, index, applied record and refs unchanged. Update preparation
+can write internal Git objects. A new update reads current document inputs or
+`--input FILE` and keeps whole recorded documents for the merge base. A staged
+interview keeps each document it has accepted until that interview completes.
+
+Updates compare historical line endings under current Git attributes. Read-only
+comparison hashes normalized bytes without storing a comparison blob. Comparison
+and in-memory merge-input normalization skip the `core.safecrlf` check-in check;
+candidate capture and the write transaction retain the repository policy.
 
 An agent can stage the update:
 

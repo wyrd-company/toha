@@ -48,13 +48,32 @@ impl Project {
     /// byte-for-byte as before.
     pub fn open(target: &CanonicalTarget) -> Result<Option<Project>, ProjectError> {
         let discover_from = nearest_existing_ancestor(target.as_path());
-        let mut repo = match gix::discover(&discover_from) {
+        let repo = match gix::discover(&discover_from) {
             Ok(repo) => repo,
             Err(gix::discover::Error::Discover(err)) if is_not_a_repository(&err) => {
                 return Ok(None);
             }
             Err(err) => return Err(ProjectError::Open(err.to_string())),
         };
+        Self::from_repo(target, repo)
+    }
+
+    // Merge fixtures retain local policy without loading developer or system config.
+    #[cfg(test)]
+    pub(super) fn open_isolated(target: &CanonicalTarget) -> Result<Option<Project>, ProjectError> {
+        let repo = gix::discover_opts(
+            nearest_existing_ancestor(target.as_path()),
+            Default::default(),
+            gix::open::Options::isolated(),
+        )
+        .map_err(|err| ProjectError::Open(err.to_string()))?;
+        Self::from_repo(target, repo)
+    }
+
+    fn from_repo(
+        target: &CanonicalTarget,
+        mut repo: gix::Repository,
+    ) -> Result<Option<Project>, ProjectError> {
         strip_drivers(&mut repo)?;
 
         let workdir = repo

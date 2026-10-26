@@ -112,8 +112,12 @@ proposed-design:
     The three merge inputs use built-in repository-form normalization under the
     current Git attributes; the merged result converts to working-tree form.
     Already-current detection also compares these normalized forms; gitoxide
-    reads merge attributes from the operator index. Recorded blob identities
-    remain unchanged. Symlink targets and paths marked
+    reads merge attributes from the operator index. The read-only comparison
+    hashes normalized bytes without storing them. Comparison and in-memory
+    merge-input normalization skip the safecrlf check-in round-trip check;
+    candidate capture and the write transaction retain the repository policy.
+    Candidate capture and merge materialization can write internal objects.
+    Recorded blob identities remain unchanged. Symlink targets and paths marked
     -text retain their byte identities. Rename detection is off. Operator-only
     paths remain ours. Git line merging combines
     disjoint changes and reports overlaps. Driver-attributed paths keep operator
