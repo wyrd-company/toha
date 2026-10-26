@@ -182,7 +182,7 @@ pub fn merge_apply_reported(
     report.messages.extend(candidate_report.messages);
     report.hooks = candidate_report.hooks;
     if let Base::Application(base_application) = &base
-        && is_already_current(base_application, &new, &inputs)
+        && is_already_current(project, base_application, &new, &inputs)?
     {
         return Ok((Merged::AlreadyCurrent, report));
     }
@@ -320,12 +320,59 @@ fn build_candidate_reported(
     Ok((application, report))
 }
 
-fn is_already_current(base: &Application, new: &Application, inputs: &RecordInputs) -> bool {
-    base.revision() == &inputs.revision
-        && base.answers == new.answers
-        && base.parts == new.parts
-        && base.context == new.context
-        && base.files == new.files
+fn is_already_current(
+    project: &Project,
+    base: &Application,
+    new: &Application,
+    inputs: &RecordInputs,
+) -> Result<bool, MergeError> {
+    if base.revision() != &inputs.revision
+        || base.answers != new.answers
+        || base.parts != new.parts
+        || base.context != new.context
+    {
+        return Ok(false);
+    }
+    if base.files == new.files {
+        return Ok(true);
+    }
+    // Captured identities remain immutable. Compare their built-in normalized
+    // forms so a historical CRLF index entry cannot invent another update.
+    Ok(normalized_files(project, base)? == normalized_files(project, new)?)
+}
+
+fn normalized_files(project: &Project, application: &Application) -> Result<Entries, MergeError> {
+    use gix::filter::plumbing::pipeline::convert::ToGitOutcome;
+    let repo = project.repo();
+    let (mut pipeline, _) = repo.filter_pipeline(None).map_err(git)?;
+    // Renormalization deliberately ignores historical indexed CRLF bytes.
+    let empty = gix::index::State::new(repo.object_hash());
+    let mut entries = Entries::new();
+    for (path, (id, kind)) in &application.files {
+        let mode = gix::index::entry::Mode::from(*kind);
+        let id = if *kind == EntryKind::Link {
+            *id
+        } else {
+            let relative = repo_path_for(project.target(), &BString::from(path.as_str()));
+            let bytes = worktree_bytes(repo, &mut pipeline, *id, relative.as_str(), mode)?;
+            let converted = pipeline
+                .convert_to_git(bytes.as_slice(), Path::new(relative.as_str()), &empty)
+                .map_err(git)?;
+            match converted {
+                ToGitOutcome::Unchanged(bytes) => repo.write_blob(bytes),
+                ToGitOutcome::Buffer(bytes) => repo.write_blob(bytes),
+                ToGitOutcome::Process(_) => {
+                    return Err(MergeError::Git(
+                        "unexpected process filter after driver strip".into(),
+                    ));
+                }
+            }
+            .map_err(git)?
+            .detach()
+        };
+        entries.insert(BString::from(path.as_str()), (id, mode));
+    }
+    Ok(entries)
 }
 
 /// Check out `HEAD`'s whole tree into `dest`, with no filter driver (drivers are
@@ -426,7 +473,16 @@ fn merge_inner(
         other: Some("toha (new template)".into()),
     };
 
-    let mut outcome = repo
+    // Compare all three blobs in repository form, including older CRLF blobs.
+    // Only built-in filters remain on Project's repository. Renormalization
+    // respects -text/binary attributes and leaves symlink targets untouched.
+    let mut merge_repo = repo.clone();
+    let mut config = merge_repo.config_snapshot_mut();
+    config
+        .set_raw_value(&"merge.renormalize", "true")
+        .map_err(git)?;
+    config.commit().map_err(git)?;
+    let mut outcome = merge_repo
         .merge_trees(base_full, ours_full, theirs_full, labels, opts.into())
         .map_err(git)?;
     let how = gix::merge::tree::TreatAsUnresolved::git();
