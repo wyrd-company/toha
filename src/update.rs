@@ -44,6 +44,20 @@ pub fn run_update(
     parts: toha::parts::Selection,
     dirs: &Dirs,
 ) -> Outcome {
+    let drift_guidance = crate::guidance::update_drift(
+        &crate::guidance::Invocation::Apply {
+            template: template_arg.as_deref().map(crate::guidance::Arg::Given),
+            path,
+            answers: answers.as_deref().map(crate::guidance::Arg::Given),
+            force,
+            dry_run,
+            trust,
+        },
+        matches!(base, UpdateBase::Baseline),
+        reanswer,
+        input,
+        &parts,
+    );
     let (target, _store) = match setup(path, dirs) {
         Ok(value) => value,
         Err(error) => return Outcome::Error(error),
@@ -119,7 +133,7 @@ pub fn run_update(
         }
     }
     match session.state() {
-        Ok(toha::operations::SessionState::Completed(done)) => finish_merge(session, done, toha::updates::UpdateOptions { force, dry_run }, answers.is_some(), None),
+        Ok(toha::operations::SessionState::Completed(done)) => finish_merge(session, done, toha::updates::UpdateOptions { force, dry_run }, answers.is_some(), None, &drift_guidance),
         Ok(toha::operations::SessionState::Asking { .. }) if answers.is_none() => Outcome::Error("the update has questions the recorded answers do not settle; stage it with `stage --update` to answer them".into()),
         Ok(toha::operations::SessionState::Asking { .. }) => match session.replay() {
             Ok(UpdateDrive::Ask { pending, rejections, .. }) => Outcome::Document(toha::protocol::batch_document(pending.batch(), &crate::context(&target, &session.record), Some(&rejections)), 4),
@@ -246,6 +260,7 @@ pub(crate) fn finish_merge(
     options: toha::updates::UpdateOptions,
     scripted: bool,
     store: Option<&toha::staging::Store>,
+    drift_guidance: &str,
 ) -> Outcome {
     let prep = &session.prepared;
     let target = &session.target;
@@ -306,6 +321,19 @@ pub(crate) fn finish_merge(
             if scripted =>
         {
             crate::scripted_apply_error(*error, &ctx)
+        }
+        Err(toha::updates::SessionError::Merge(toha::applied::MergeError::Apply(error)))
+            if matches!(*error, toha::ApplyError::Drift(_)) =>
+        {
+            Outcome::Error(format!("{error}\n{drift_guidance}"))
+        }
+        Err(toha::updates::SessionError::Merge(toha::applied::MergeError::Apply(error)))
+            if matches!(*error, toha::ApplyError::Conflicts(_)) =>
+        {
+            Outcome::Error(format!(
+                "{error}\n{}",
+                crate::guidance::update_outside_conflict()
+            ))
         }
         Err(error) => Outcome::Error(error.to_string()),
     }

@@ -882,3 +882,178 @@ fn json_takeover_compares_outside_array_indices_numerically() {
     assert_eq!(value["items"][10], 100);
     assert_eq!(value["items"][11], 11);
 }
+
+fn guidance_command(fixture: &Fixture, staged: bool) -> Command {
+    let mut command = support::isolated_command(&fixture.iso);
+    command.arg("apply");
+    if !staged {
+        command.arg(support::refresh_template(&fixture.address));
+    }
+    command.arg(&fixture.target).arg("--trust");
+    if !staged {
+        command.args(["--update", "--reanswer"]);
+    }
+    command
+}
+
+fn stage_for_guidance(fixture: &Fixture) {
+    let output = support::isolated_command(&fixture.iso)
+        .arg("stage")
+        .arg(support::refresh_template(&fixture.address))
+        .arg(&fixture.target)
+        .args(["--update", "--async", "--trust"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+}
+
+fn drift_guidance_retry(staged: bool) {
+    let fixture = Fixture::new();
+    fixture.drift();
+    fixture.unrelated_template_change();
+    if staged {
+        stage_for_guidance(&fixture);
+    }
+    let before = state(&fixture.target);
+    let saved = staged_files(&fixture.iso);
+    let output = guidance_command(&fixture, staged)
+        .arg("--dry-run")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("toha apply"),
+        "missing named force retry: {stderr}"
+    );
+    let retry = support::suggested(&stderr, "to overwrite them:");
+    assert!(!stderr.contains("git error"), "{stderr}");
+    assert!(retry.iter().any(|arg| arg == "--force"), "{stderr}");
+    assert!(retry.iter().any(|arg| arg == "--dry-run"), "{stderr}");
+    assert_eq!(retry.iter().any(|arg| arg == "--update"), !staged);
+    assert_eq!(retry.iter().any(|arg| arg == "--reanswer"), !staged);
+    assert!(retry.iter().any(|arg| arg == "--trust"));
+    assert_eq!(state(&fixture.target), before);
+    assert_eq!(staged_files(&fixture.iso), saved);
+    let preview = support::isolated_command(&fixture.iso)
+        .args(&retry)
+        .output()
+        .unwrap();
+    assert!(preview.status.success(), "suggested preview: {preview:?}");
+    assert_eq!(state(&fixture.target), before);
+    assert_eq!(staged_files(&fixture.iso), saved);
+    let refused = guidance_command(&fixture, staged).output().unwrap();
+    assert_eq!(refused.status.code(), Some(1), "{refused:?}");
+    let retry = support::suggested(
+        &String::from_utf8_lossy(&refused.stderr),
+        "to overwrite them:",
+    );
+    let applied = support::isolated_command(&fixture.iso)
+        .args(&retry)
+        .output()
+        .unwrap();
+    assert!(applied.status.success(), "suggested apply: {applied:?}");
+    let content = fs::read_to_string(fixture.target.join("config.toml")).unwrap();
+    assert!(content.contains("alpha = 1") && !content.contains("alpha = 7"));
+    assert!(content.contains("keep = 2"), "{content}");
+    assert!(fixture.target.join("new.txt").exists());
+    assert!(staged_files(&fixture.iso).is_empty());
+}
+
+#[test]
+fn person_update_drift_guidance_names_a_working_force_retry() {
+    drift_guidance_retry(false);
+}
+
+#[test]
+fn staged_update_drift_guidance_names_a_working_force_retry() {
+    drift_guidance_retry(true);
+}
+
+fn outside_guidance_retry(staged: bool) {
+    let fixture = Fixture::new();
+    let path = fixture.target.join("config.toml");
+    let planned = if staged {
+        // No operator edit: ordinary whole-file text replaces the former block.
+        let planned: String = fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .filter(|line| !line.contains("toha:"))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        fs::write(
+            fixture.template.join("template.yml"),
+            "name: cfg\nignore: [.keep]\n",
+        )
+        .unwrap();
+        planned
+    } else {
+        fs::write(
+            &path,
+            fs::read_to_string(&path)
+                .unwrap()
+                .replace("keep = 1", "keep = 2"),
+        )
+        .unwrap();
+        fixture.commit("outside edit");
+        "[application]\n\n\n[other]\nkeep = 1\n".into()
+    };
+    fs::write(fixture.template.join("template/config.toml"), &planned).unwrap();
+    fixture.unrelated_template_change();
+    if staged {
+        stage_for_guidance(&fixture);
+    }
+    let before = state(&fixture.target);
+    let saved = staged_files(&fixture.iso);
+    for flags in [&[][..], &["--force", "--dry-run"][..]] {
+        let output = guidance_command(&fixture, staged)
+            .args(flags)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("edit and commit the listed project files"),
+            "{stderr}"
+        );
+        assert!(stderr.contains("planned whole-file content"), "{stderr}");
+        assert!(
+            stderr.contains("--force cannot resolve this conflict"),
+            "{stderr}"
+        );
+        assert!(!stderr.contains("git error"), "{stderr}");
+        assert!(!stderr.contains("to overwrite"), "{stderr}");
+        assert_eq!(state(&fixture.target), before);
+        assert_eq!(staged_files(&fixture.iso), saved);
+    }
+    // Follow the instruction against the actual staged/current plan, then retry.
+    if staged {
+        // Retain the old body as ordinary text, as required by the planned file.
+        fs::write(&path, &planned).unwrap();
+    } else {
+        fs::write(
+            &path,
+            fs::read_to_string(&path)
+                .unwrap()
+                .replace("keep = 2", "keep = 1"),
+        )
+        .unwrap();
+    }
+    fixture.commit("reconcile outside content with the planned file");
+    let applied = guidance_command(&fixture, staged).output().unwrap();
+    assert!(applied.status.success(), "manual recovery: {applied:?}");
+    let content = fs::read_to_string(path).unwrap();
+    assert!(content.contains("alpha = 1") && content.contains("keep = 1"));
+    assert!(fixture.target.join("new.txt").exists());
+    assert!(staged_files(&fixture.iso).is_empty());
+}
+
+#[test]
+fn person_update_outside_conflict_guidance_describes_a_working_manual_retry() {
+    outside_guidance_retry(false);
+}
+
+#[test]
+fn staged_update_outside_conflict_guidance_describes_a_working_manual_retry() {
+    outside_guidance_retry(true);
+}

@@ -36,8 +36,10 @@ An operator edit inside a managed region refuses updates and previews with no
 project writes, including when a revision retracts the region or takes whole-file
 ownership. Retry with `--force` only when replacing or retracting that block is
 intended. An edit-to-whole transition conflicts on differing outside bytes even
-with region force; reconcile those bytes before retrying. Staged updates take force on `apply PATH`; trust and saved answers do
-not grant it. A forced preview does not authorize a later write.
+with region force. Edit and commit the project file so its content outside
+previously owned edits matches the planned whole file outside its owned edits,
+then retry; this mismatch can occur without operator changes. Staged updates
+take force on `apply PATH`; trust and saved answers do not grant it. A forced preview does not authorize a later write.
 
 For a template with a `parts: true` question, repeat `--with PART` and
 `--without PART` on apply or stage to change its default, seed, or recorded

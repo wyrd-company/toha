@@ -243,9 +243,13 @@ description: >-
   drift. Trust and accepted or reconstructed interview state do not grant force.
   `stage` records no force choice and has no force flag. Region force permits
   replacement or retraction of the owned block. An edit-owned path becoming
-  whole-owned conflicts when outside bytes differ, with or without region force
-  and even if the old region is undrifted. Matching outside bytes are admitted;
-  ordinary whole-owned three-way merging is unchanged.
+  whole-owned compares committed content with prior owned edits removed against
+  planned whole-file content with prior and new owned edits removed. A mismatch
+  conflicts with or without region force, even without operator changes or if
+  the old region is undrifted. Person and agent refusals tell the caller to edit
+  and commit the listed project files to match that planned outside content and
+  retry; they do not suggest force clears this conflict. Matching outside bytes
+  are admitted; ordinary whole-owned three-way merging is unchanged.
 
   Environment. `toha --help` lists every environment variable that toha
   reads in an `Environment:` section after its options. `TOHA_CONFIG` and

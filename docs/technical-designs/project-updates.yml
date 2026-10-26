@@ -65,8 +65,12 @@ proposed-design:
     image using its recorded revision's marker syntax. Unforced drift refuses
     retained, removed and covered regions. Explicit region force authorizes the
     bounded transition. A prior edit-owned path becoming whole-owned must have
-    matching outside bytes; differing operator content reports a conflict even
-    with force or an undrifted region. No outside template ancestor is inferred.
+    matching outside bytes: committed content with prior owned edits removed
+    must equal planned whole-file content with prior and new owned edits removed.
+    A mismatch reports a conflict even without operator changes, with force or
+    with an undrifted region. Manual recovery edits and commits the project file
+    to match that planned outside content before retry. No outside template
+    ancestor is inferred.
     Whole-owned paths retain their normal three-way merge. The builder retracts uncovered regions
     and JSON values before applying new intent, removing array elements from
     highest index down. A new whole mutation covers all old ownership; a region

@@ -263,6 +263,9 @@ impl<'a> Invocation<'a> {
     }
     /// The request in canonical form: options first, in long form.
     pub fn command(&self) -> String {
+        self.command_with_options(&[])
+    }
+    fn command_with_options(&self, extra_options: &[String]) -> String {
         match *self {
             Self::Stage {
                 template,
@@ -291,7 +294,7 @@ impl<'a> Invocation<'a> {
                 dry_run,
                 trust,
             } => {
-                let mut options = Vec::new();
+                let mut options = extra_options.to_vec();
                 if let Some(answers) = answers {
                     options.push(option_value("--answers", answers));
                 }
@@ -822,6 +825,43 @@ pub fn conflicts(invocation: &Invocation) -> String {
         *force = true;
     }
     format!("to overwrite them: {}", forced.command())
+}
+
+/// A one-shot update must retain its mode and render inputs on a force retry.
+pub fn update_drift(
+    invocation: &Invocation,
+    baseline: bool,
+    reanswer: bool,
+    input: &[std::path::PathBuf],
+    parts: &toha::parts::Selection,
+) -> String {
+    let mut options = vec![if baseline { "--baseline" } else { "--update" }.into()];
+    if reanswer {
+        options.push("--reanswer".into());
+    }
+    for path in input {
+        options.push(option_value("--input", Arg::Given(&path.to_string_lossy())));
+    }
+    for (flag, values) in [("--with", &parts.with), ("--without", &parts.without)] {
+        for value in values {
+            options.push(format!("{flag} {}", word(value)));
+        }
+    }
+    let mut forced = *invocation;
+    if let Invocation::Apply { force, .. } = &mut forced {
+        *force = true;
+    }
+    format!(
+        "to overwrite them: {}",
+        forced.command_with_options(&options)
+    )
+}
+
+/// Region force cannot authorize an edit-to-whole transition's outside bytes.
+pub fn update_outside_conflict() -> &'static str {
+    "edit and commit the listed project files so their content outside previously owned edits \
+     matches the planned whole-file content outside its owned edits, then retry the same apply command; \
+     --force cannot resolve this conflict"
 }
 
 /// `templates add` was given a name, which is not an address.

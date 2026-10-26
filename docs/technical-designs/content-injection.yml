@@ -61,8 +61,10 @@ proposed-design:
     invocation's force choice. Updates also checksum every previously edit-owned
     region against HEAD before retraction or whole-file takeover. Removed and
     covered regions have the same drift refusal as retained regions. A takeover
-    compares outside bytes independently and conflicts on differences even with
-    region force; whole-owned merges retain their existing behavior. JSON ownership converges. Project updates own
+    compares committed content with prior owned edits removed against planned
+    whole-file content with prior and new owned edits removed. Differences
+    conflict even without operator changes or with region force; whole-owned
+    merges retain their existing behavior. JSON ownership converges. Project updates own
     three-way merge, retraction and release semantics. Marker rules reject JSON-family targets
     and structured rules reject other families; whole-file generation remains
     available for either.

@@ -234,8 +234,10 @@ description: >-
   unchanged desired body. New edits are validated separately: injection-only
   targets use current bytes after retraction; a whole-file rule supplies their
   planned image. That image does not authorize replacing prior region drift.
-  Edit-to-whole transitions conflict when outside operator bytes differ, even
-  with region force; matching outside bytes permit the transition.
+  Edit-to-whole transitions compare committed content with prior owned edits
+  removed against planned whole-file content with prior and new owned edits
+  removed. A mismatch conflicts even without operator changes or with region
+  force; matching outside bytes permit the transition.
 
   A `struct` rule owns one typed value at a path in a JSON, JSONC, or JSON5 file,
   selected by the `.json`, `.jsonc`, or `.json5` extension. `struct.path` is

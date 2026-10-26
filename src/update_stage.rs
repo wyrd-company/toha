@@ -353,7 +353,15 @@ pub fn apply_staged(
     }
     match session.state() {
         Ok(SessionState::Completed(done)) => {
-            update::finish_merge(session, done, options, false, Some(&store))
+            let drift_guidance = guidance::conflicts(&guidance::Invocation::Apply {
+                template: None,
+                path,
+                answers: None,
+                force: options.force,
+                dry_run: options.dry_run,
+                trust,
+            });
+            update::finish_merge(session, done, options, false, Some(&store), &drift_guidance)
         }
         Ok(SessionState::Asking { .. }) => {
             let document = match questions(&session) {

@@ -51,8 +51,11 @@ Toha replaces only that block. If someone edits inside the block, that is drift:
 command with `--force`. Updates and previews protect previously edit-owned
 regions with the same rule, including
 when the template's region body is unchanged, retracts the region, or covers
-it with a whole-file rule. A whole-file takeover also requires matching outside
-bytes; region force does not override a conflict there. A staged update takes `--force`
+it with a whole-file rule. A whole-file takeover also compares committed content
+outside previously owned edits with planned whole-file content outside its owned
+edits. These must match even without an operator change; region force does not
+override a conflict there. See [updating projects](updating-projects.md) for
+manual recovery. A staged update takes `--force`
 on `apply PATH`, not on `stage`. Trust and saved answers do not grant force.
 `--force` restores the owned body and never invents a
 missing anchor.
