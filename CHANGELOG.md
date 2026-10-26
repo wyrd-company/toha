@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.4.0
+
+### Features
+
+- Select template parts with --with and --without on apply, stage, and update; report revision and part changes.
+- Library callers can run an operation with a credential resolver that answers the HTTPS Git remotes it connects to, scoped to the challenging origin and repository, without a credential helper process or a file on disk.
+- Expose template resolution, catalog, session and update operations to embedded Rust callers. Preserve rejected update inputs across requests and replay recorded optional empty answers.
+- Record template applications in committed `.toha.json` files with a published schema.
+  
+  Removed: `init`, `snapshots list`, `snapshots clean`, `--from` (use `--update`), and `--like latest` or snapshot ids (use an application target). Remove old `refs/toha/` refs with Git.
+- Accept JSON documents as interview answers with schema URI validation, vendored schemas, default files, and --input overrides.
+
+### Fixes
+
+- Remove internal test names from the updating projects guide.
+- Ask newly introduced part questions on updates, validate part flags before prompting, and preserve dangling operator links at occupied paths.
+- Protect recorded managed regions through update transitions with explicit region force, and refuse whole-file takeovers that replace unowned content.
+- Preserve hook symlinks and operator files during template updates, including transaction rollback.
+- Clarify applied-record guides, part update commits, and explicit Git cleanup of snapshot refs.
+- Clarify how updates ask first-added part questions and how part flags change their defaults.
+- Merge template updates correctly when automatic line-ending conversion is in effect and the repository already holds CRLF content. Preserve operator content edits and Git attributes. Refuse templates that overwrite the applied record on Windows.
+  
+  Keep read-only comparison and in-memory merge-input normalization independent of safecrlf check-in checks while retaining the repository policy for candidate admission. Update preparation can write internal Git objects.
+
 ## 0.3.0
 
 ### Features
