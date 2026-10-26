@@ -105,6 +105,22 @@ fn preflight_stops_for_a_remote_with_history() {
 }
 
 #[test]
+fn preflight_stops_for_a_remote_the_resolver_refuses() {
+    let dir = tempfile::tempdir().unwrap();
+    let planned = PlannedGit {
+        remote: Some("https://user:secret@example.invalid/sample.git".into()),
+    };
+    let error = preflight_with(&planned, &target(dir.path()), &|_| {
+        RemoteState::Refused("scope denied".into())
+    })
+    .unwrap_err();
+    let message = error.to_string();
+    assert!(matches!(error, GitTargetError::CredentialRefused { .. }));
+    assert!(message.ends_with("scope denied"), "{message}");
+    assert!(!message.contains("secret"), "{message}");
+}
+
+#[test]
 fn preflight_warns_and_continues_for_an_unreachable_remote() {
     let dir = tempfile::tempdir().unwrap();
     let planned = PlannedGit {

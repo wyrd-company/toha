@@ -134,6 +134,59 @@ boundary. A loaded update retains a thread-local Git repository and is not
 that operation inside `spawn_blocking`; return the owned response/record. No
 unsafe `Send` implementation or globally shared repository is needed.
 
+## Supply credentials for HTTPS remotes
+
+A credential resolver answers the HTTPS Git remotes of one operation that ask
+for authentication, so a caller can hand Toha short-lived tokens without a
+credential helper process or a file on disk. Run the operation inside
+`with_credential_resolver`:
+
+```rust
+use std::sync::Arc;
+use toha::source::{Credential, CredentialRequest, with_credential_resolver};
+
+let resolver = Arc::new(|request: &CredentialRequest| {
+    if request.host != "git.example.invalid" || request.port != 443 {
+        return Err("no credentials for this origin".to_owned());
+    }
+    if request.path != "/example/templates.git" {
+        return Err("no credentials for this repository".to_owned());
+    }
+    let token = issue_token().map_err(|_| "no token for this repository".to_owned())?;
+    Ok(Some(Credential::new("x-access-token", token)))
+});
+let resolved = with_credential_resolver(resolver, || {
+    toha::resolve::resolve_template(&address, &config, &registry, &paths, &cwd)
+});
+```
+
+The resolver applies to every HTTPS connection the operation opens on the
+calling thread: template fetches, commit lookups and the `git` question's
+remote probe. It stops when the operation returns or unwinds. Concurrent
+operations on other threads each use their own resolver, or none. SSH and
+local remotes never consult it.
+
+Toha asks only when an HTTPS remote challenges, once for each challenge. The
+`CredentialRequest` names the origin that challenged (`scheme`, `host` and
+`port`) and the repository `path` on it. When a redirect reaches another
+origin before the challenge, the request names that origin. A credential is
+never sent to another origin.
+
+- `Ok(Some(credential))` answers that challenge.
+- `Ok(None)` leaves the challenge to the credentials of the Git
+  configuration, as without a resolver.
+- `Err(reason)` fails the operation with `reason`. Do not put a secret in it.
+  A refused `git` question remote stops the apply before it writes, with
+  `GitTargetError::CredentialRefused`, and `git_target::probe` reports
+  `RemoteState::Refused`.
+
+The password stays out of every Toha error and report, and the `Debug` output
+of `Credential` hides it. Toha does not store or erase the credential. While a
+resolver is in scope, curl's verbose output (`GIT_CURL_VERBOSE` or
+`gitoxide.http.verbose`) is off for the operation's HTTP connections, as it
+writes the request headers that carry the credential. A clone inside the scope
+does not fetch a remote branch named `HEAD`.
+
 ## Choose a hook runner and account for process inputs
 
 `HookRunner::run` receives `PlannedHook` and the absolute target. The hook has

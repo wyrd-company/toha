@@ -5,7 +5,12 @@
 //     - architecture
 // ---
 use serde_json::{Value, json};
-use std::{cell::RefCell, path::Path, process::Command};
+use std::{
+    cell::RefCell,
+    path::Path,
+    process::Command,
+    sync::atomic::{AtomicBool, Ordering},
+};
 use toha::{
     Applied, ApplyOptions, Id, RawAnswer, RawAnswers, Template,
     context::{
@@ -144,7 +149,23 @@ fn update_environment<'a>(
         source,
     }
 }
+/// Set when the credential resolver is asked. Every remote in this consumer is
+/// local, and only HTTPS remotes consult the resolver.
+static RESOLVER_ASKED: AtomicBool = AtomicBool::new(false);
+
 fn main() {
+    let resolver = std::sync::Arc::new(|_: &toha::source::CredentialRequest| {
+        RESOLVER_ASKED.store(true, Ordering::Relaxed);
+        Ok(None)
+    });
+    toha::source::with_credential_resolver(resolver, run);
+    assert!(!RESOLVER_ASKED.load(Ordering::Relaxed));
+    println!(
+        "external consumer passed: replay, Send, document refresh, runner, preview, update, parts, pins and credentials"
+    );
+}
+
+fn run() {
     update_null_replay_contract();
     update_start_replay_contract();
     update_start_end_contract();
@@ -1193,9 +1214,6 @@ fn main() {
     domain_diagnostics();
     warning_refusal_contract();
     flow_preview_contract();
-    println!(
-        "external consumer passed: replay, Send, document refresh, runner, preview, update, parts and pins"
-    );
 }
 
 fn catalog_and_assets(root: &Path, paths: &Paths, address: &str) {

@@ -7,6 +7,11 @@ use std::{
     path::{Path, PathBuf},
     sync::atomic::AtomicBool,
 };
+mod credentials;
+pub(crate) use credentials::Supplied;
+pub use credentials::{
+    Credential, CredentialRequest, CredentialResolver, with_credential_resolver,
+};
 pub type Hosts = IndexMap<String, String>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Address {
@@ -189,8 +194,10 @@ pub fn without_userinfo(repo: &str) -> String {
     }
     repo.to_string()
 }
-fn git_error(error: impl std::fmt::Display, repo: &str) -> SourceError {
-    SourceError::Git(redacted(&error.to_string(), repo))
+/// The fetch failure for `error`, without the credentials of `repo` or any
+/// password `supplied` saw.
+fn git_error(error: impl std::fmt::Display, repo: &str, supplied: &Supplied) -> SourceError {
+    SourceError::Git(supplied.message(redacted(&error.to_string(), repo)))
 }
 /// `message` with the credentials of `repo` removed wherever it names them.
 pub(crate) fn redacted(message: &str, repo: &str) -> String {
@@ -302,22 +309,36 @@ fn expand_commit(repo: &str, short: &str, dest: &Path) -> Result<String, SourceE
 /// The roots Toha hands a bundled rustls transport, written once per connection
 /// owner and kept alive for as long as the connection may read them.
 pub(crate) type NativeRoots = Option<tempfile::NamedTempFile>;
+/// A connection Toha opens to a Git remote.
+pub(crate) type Connection<'a, 'b, 'c> = gix::remote::Connection<
+    'a,
+    'b,
+    'c,
+    Box<dyn gix::protocol::transport::client::blocking_io::Transport + Send>,
+>;
+/// Prepare every connection Toha opens: answer HTTPS challenges from the
+/// operation's credential resolver, and set the HTTP options.
+pub(crate) fn prepare_connection(
+    connection: &mut Connection<'_, '_, '_>,
+    native_roots: &mut NativeRoots,
+    supplied: &Supplied,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let resolving = supplied.attach(connection);
+    configure_http(connection, native_roots, resolving)
+}
 /// Point an HTTPS connection at the platform's trusted roots. System curl
 /// backends already use platform trust. Bundled rustls needs a CA bundle when
-/// Git has not supplied one.
-pub(crate) fn trust_native_roots(
-    connection: &mut gix::remote::Connection<
-        '_,
-        '_,
-        '_,
-        Box<dyn gix::protocol::transport::client::blocking_io::Transport + Send>,
-    >,
+/// Git has not supplied one. When `quiet`, curl's verbose output is off, as it
+/// writes request headers, a resolver's credential among them, to stderr.
+fn configure_http(
+    connection: &mut Connection<'_, '_, '_>,
     native_roots: &mut NativeRoots,
+    quiet: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if !curl::Version::get()
+    let rustls = curl::Version::get()
         .ssl_version()
-        .is_some_and(|backend| backend.starts_with("rustls"))
-    {
+        .is_some_and(|backend| backend.starts_with("rustls"));
+    if !rustls && !quiet {
         return Ok(());
     }
     let url = connection.transport_mut().to_url().into_owned();
@@ -330,31 +351,34 @@ pub(crate) fn trust_native_roots(
     };
     if let Some(http) =
         options.downcast_mut::<gix::protocol::transport::client::blocking_io::http::Options>()
-        && http.ssl_ca_info.is_none()
-        && http.ssl_verify
     {
-        if native_roots.is_none() {
-            let loaded = rustls_native_certs::load_native_certs();
-            if loaded.certs.is_empty() {
-                // Plain HTTP does not require CA roots. With no bundle,
-                // curl still verifies and rejects an untrusted TLS peer.
-                connection.set_transport_options(options);
-                return Ok(());
-            }
-            let mut bundle = tempfile::NamedTempFile::new()?;
-            for cert in loaded.certs {
-                writeln!(bundle, "-----BEGIN CERTIFICATE-----")?;
-                let encoded = base64::engine::general_purpose::STANDARD.encode(cert.as_ref());
-                for line in encoded.as_bytes().chunks(64) {
-                    bundle.write_all(line)?;
-                    bundle.write_all(b"\n")?;
-                }
-                writeln!(bundle, "-----END CERTIFICATE-----")?;
-            }
-            bundle.flush()?;
-            *native_roots = Some(bundle);
+        if quiet {
+            http.verbose = false;
         }
-        http.ssl_ca_info = Some(native_roots.as_ref().unwrap().path().to_owned());
+        if rustls && http.ssl_ca_info.is_none() && http.ssl_verify {
+            if native_roots.is_none() {
+                let loaded = rustls_native_certs::load_native_certs();
+                if loaded.certs.is_empty() {
+                    // Plain HTTP does not require CA roots. With no bundle,
+                    // curl still verifies and rejects an untrusted TLS peer.
+                    connection.set_transport_options(options);
+                    return Ok(());
+                }
+                let mut bundle = tempfile::NamedTempFile::new()?;
+                for cert in loaded.certs {
+                    writeln!(bundle, "-----BEGIN CERTIFICATE-----")?;
+                    let encoded = base64::engine::general_purpose::STANDARD.encode(cert.as_ref());
+                    for line in encoded.as_bytes().chunks(64) {
+                        bundle.write_all(line)?;
+                        bundle.write_all(b"\n")?;
+                    }
+                    writeln!(bundle, "-----END CERTIFICATE-----")?;
+                }
+                bundle.flush()?;
+                *native_roots = Some(bundle);
+            }
+            http.ssl_ca_info = Some(native_roots.as_ref().unwrap().path().to_owned());
+        }
     }
     connection.set_transport_options(options);
     Ok(())
@@ -379,26 +403,42 @@ pub fn fetch(address: &Address, dest: &Path) -> Result<Fetched, SourceError> {
         None
     };
     let mut native_roots = None;
+    let supplied = Supplied::default();
+    let attach = supplied.clone();
     let mut clone = gix::prepare_clone(repo.as_str(), dest)
-        .map_err(|e| git_error(e, repo))?
-        .configure_connection(move |connection| trust_native_roots(connection, &mut native_roots));
+        .map_err(|e| git_error(e, repo, &supplied))?
+        .configure_connection(move |connection| {
+            prepare_connection(connection, &mut native_roots, &attach)
+        });
+    if credentials::resolving() {
+        // gix retries a clone whose remote has a `refs/heads/HEAD` branch on a
+        // second connection it does not let Toha prepare, so that connection
+        // would skip the resolver. Excluding the branch removes the retry. Setting
+        // the remote here also means gix leaves tags to it, so ask for all tags,
+        // as a clone does without this setting.
+        clone = clone.configure_remote(|remote| {
+            Ok(remote
+                .with_refspecs(["^refs/heads/HEAD"], gix::remote::Direction::Fetch)?
+                .with_fetch_tags(gix::remote::fetch::Tags::All))
+        });
+    }
     if let Some(reference) = reference {
         clone = if kind == RefKind::Commit {
             clone
                 .with_revision(Some(resolved_commit.as_deref().unwrap()))
-                .map_err(|e| git_error(e, repo))?
+                .map_err(|e| git_error(e, repo, &supplied))?
         } else {
             clone
                 .with_ref_name(Some(reference.as_str()))
-                .map_err(|e| git_error(e, repo))?
+                .map_err(|e| git_error(e, repo, &supplied))?
         };
     }
     let (mut checkout, _) = clone
         .fetch_then_checkout(gix::progress::Discard, &AtomicBool::new(false))
-        .map_err(|e| git_error(e, repo))?;
+        .map_err(|e| git_error(e, repo, &supplied))?;
     let (checkout_repo, _) = checkout
         .main_worktree(gix::progress::Discard, &AtomicBool::new(false))
-        .map_err(|e| git_error(e, repo))?;
+        .map_err(|e| git_error(e, repo, &supplied))?;
     if kind == RefKind::Branch
         && reference.as_ref().is_some_and(|r| {
             checkout_repo
@@ -410,7 +450,7 @@ pub fn fetch(address: &Address, dest: &Path) -> Result<Fetched, SourceError> {
     }
     let commit = checkout_repo
         .head_id()
-        .map_err(|e| git_error(e, repo))?
+        .map_err(|e| git_error(e, repo, &supplied))?
         .to_string();
     Ok(Fetched {
         commit,
@@ -510,7 +550,12 @@ mod tests {
             cwd.join("sources/gh_a_b/abc")
         );
         let repo = "https://user:token@host.invalid/o/r";
-        let error = git_error(format!("clone failed for {repo}"), repo).to_string();
+        let error = git_error(
+            format!("clone failed for {repo}"),
+            repo,
+            &Supplied::default(),
+        )
+        .to_string();
         assert!(!error.contains("token"));
         assert!(error.contains("https://host.invalid/o/r"));
     }
