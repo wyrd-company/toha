@@ -2,4 +2,4 @@
 toha: patch
 ---
 
-Merge template updates correctly in repositories with existing CRLF content and automatic line-ending conversion, preserving operator edits and Git attributes. Refuse templates that overwrite the applied record on Windows.
+Merge template updates correctly when automatic line-ending conversion is in effect and the repository already holds CRLF content. Preserve operator content edits and Git attributes. Refuse templates that overwrite the applied record on Windows.

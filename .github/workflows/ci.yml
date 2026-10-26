@@ -34,11 +34,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Effective Git line ending setting
-        shell: bash
-        run: git config --show-origin --get core.autocrlf || test "$?" -eq 1
-      - name: Socket clone mode probe
-        run: cargo test --locked --test document_questions cloned_listener_mode_probe -- --nocapture
       - run: cargo test --locked --no-fail-fast
       - name: Local HTTPS Git transport check
         shell: bash

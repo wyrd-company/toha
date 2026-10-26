@@ -359,8 +359,9 @@ fn normalized_files(project: &Project, application: &Application) -> Result<Entr
                 .convert_to_git(bytes.as_slice(), Path::new(relative.as_str()), &empty)
                 .map_err(git)?;
             match converted {
-                ToGitOutcome::Unchanged(bytes) => repo.write_blob(bytes),
-                ToGitOutcome::Buffer(bytes) => repo.write_blob(bytes),
+                ToGitOutcome::Unchanged(bytes) | ToGitOutcome::Buffer(bytes) => {
+                    gix::objs::compute_hash(repo.object_hash(), gix::objs::Kind::Blob, bytes)
+                }
                 ToGitOutcome::Process(_) => {
                     return Err(MergeError::Git(
                         "unexpected process filter after driver strip".into(),
@@ -368,7 +369,6 @@ fn normalized_files(project: &Project, application: &Application) -> Result<Entr
                 }
             }
             .map_err(git)?
-            .detach()
         };
         entries.insert(BString::from(path.as_str()), (id, mode));
     }
