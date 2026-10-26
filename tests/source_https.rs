@@ -55,6 +55,65 @@ fn serve(
     }
 }
 
+/// The Basic encodings of a credential that an endpoint can echo, each named by
+/// the first segment of the repository path that selects it.
+const ENCODINGS: [(&str, base64::engine::GeneralPurpose); 4] = [
+    ("standard", base64::engine::general_purpose::STANDARD),
+    (
+        "standard-unpadded",
+        base64::engine::general_purpose::STANDARD_NO_PAD,
+    ),
+    ("url-safe", base64::engine::general_purpose::URL_SAFE),
+    (
+        "url-safe-unpadded",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD,
+    ),
+];
+
+/// What an echoing endpoint announces for the credential `given`: its Basic
+/// encoding when the repository path starts with the name of one, otherwise
+/// the decoded `username:password`.
+fn echoed(path: &str, given: &str) -> String {
+    let first = path.split('/').nth(1).unwrap_or_default();
+    match ENCODINGS.iter().find(|(name, _)| *name == first) {
+        Some((_, engine)) => format!("Basic {}", engine.encode(given)),
+        None => given.to_owned(),
+    }
+}
+
+/// Whether `message` gives back `pair` as gix can write what a remote sent: as
+/// text or as a decimal byte list, holding the pair itself or a Basic encoding
+/// of it in either alphabet, with or without padding.
+fn recovers(message: &str, pair: &str) -> bool {
+    let listed = message.split('[').skip(1).filter_map(|rest| {
+        let list = rest.split_once(']')?.0;
+        let bytes: Option<Vec<u8>> = list.split(',').map(|n| n.trim().parse().ok()).collect();
+        Some(String::from_utf8_lossy(&bytes?).into_owned())
+    });
+    std::iter::once(message.to_owned())
+        .chain(listed)
+        .any(|text| {
+            text.contains(pair)
+                || text
+                    .split(|c: char| !(c.is_ascii_alphanumeric() || "+/-_=".contains(c)))
+                    .any(|word| {
+                        let word = word
+                            .trim_end_matches('=')
+                            .replace('-', "+")
+                            .replace('_', "/");
+                        base64::engine::general_purpose::STANDARD_NO_PAD
+                            .decode(word)
+                            .is_ok_and(|bytes| bytes == pair.as_bytes())
+                    })
+        })
+}
+
+/// The credential the resolver gives an echoing endpoint. Its standard Basic
+/// encoding holds `+` and `/` and ends in padding, so that every encoding in
+/// [`ENCODINGS`] writes it differently.
+const ECHOED_USER: &str = "sample-user";
+const ECHOED_PASSWORD: &str = "sample-secret~~~???";
+
 /// The basic credential an endpoint requires. A misbehaving endpoint echoes a
 /// rejected credential back as its service announcement, which gix reports.
 #[derive(Clone)]
@@ -168,7 +227,7 @@ fn serve_http(stream: &mut (impl Read + Write), root: &Path, auth: Option<&Auth>
                 }
             }
             Some(given) if auth.echo && !given.ends_with(':') => {
-                let line = format!("# service={given}\n");
+                let line = format!("# service={}\n", echoed(path, &given));
                 let body = format!("{:04x}{line}0000", line.len() + 4);
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/x-git-upload-pack-advertisement\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -735,6 +794,37 @@ fn an_echoed_resolver_password_stays_out_of_errors() {
 }
 
 #[test]
+fn an_echoed_basic_credential_cannot_be_recovered_from_errors() {
+    let pair = format!("{ECHOED_USER}:{ECHOED_PASSWORD}");
+    // The fixture credential has the properties that set the encodings apart.
+    let encoded: Vec<String> = ENCODINGS.iter().map(|(_, e)| e.encode(&pair)).collect();
+    assert!(encoded[0].contains('+') && encoded[0].contains('/') && encoded[0].ends_with('='));
+    assert!(encoded[2].contains('-') && encoded[2].contains('_') && encoded[2].ends_with('='));
+    assert_ne!(
+        encoded[0].trim_end_matches('='),
+        encoded[2].trim_end_matches('=')
+    );
+    // Each echo is recoverable from what gix writes for it, so a pass below
+    // means Toha removed it.
+    for echo in &encoded {
+        let line = format!("# service=Basic {echo}");
+        assert!(recovers(&line, &pair) && recovers(&format!("{:?}", line.as_bytes()), &pair));
+    }
+    let received = run_credential_scenario(
+        "encoded-echo",
+        Auth {
+            echo: true,
+            ..private()
+        },
+    );
+    // The endpoint challenged, then received the resolver credential.
+    assert!(
+        received.contains(&pair),
+        "no request carried the credential"
+    );
+}
+
+#[test]
 fn a_credential_resolver_is_not_asked_for_plain_http() {
     let (root, _) = https_fixture(Trust::Http);
     let endpoint = Endpoint::start(root.path(), None, Some(private()));
@@ -1136,6 +1226,87 @@ fn credential_worker() {
                     // The endpoint did echo the credential; Toha removed it.
                     assert!(message.contains("<redacted>"), "{message}");
                 }
+            }
+        }
+        "encoded-echo" => {
+            let expected_port = port(&main);
+            let resolver = recorder(move |request: &CredentialRequest| {
+                if request.host != "localhost" || request.port != expected_port {
+                    return Err("these credentials belong to another origin".into());
+                }
+                Ok(Some(Credential::new(ECHOED_USER, ECHOED_PASSWORD)))
+            });
+            let pair = format!("{ECHOED_USER}:{ECHOED_PASSWORD}");
+            let origin = main.trim_end_matches("/remote.git");
+            let names: Vec<&str> = ["decoded"]
+                .into_iter()
+                .chain(ENCODINGS.iter().map(|(name, _)| *name))
+                .collect();
+            with_credential_resolver(resolver.clone(), || {
+                for name in &names {
+                    let dirs = toha::resolve::Paths {
+                        system_config: root.join("system-config"),
+                        user_config: root.join("user-config"),
+                        local_config_override: None,
+                        system_data: root.join("system-data"),
+                        user_data: root.join("user-data"),
+                        cache: root.join(format!("cache-{name}")),
+                        state: root.join("state"),
+                        home: root.join("home"),
+                    };
+                    let (config, registry, _) = toha::resolve::load_context(&dirs, &root).unwrap();
+                    let url = with_user(&format!("{origin}/{name}/remote.git"));
+                    let address = Address::Git {
+                        repo: url.clone(),
+                        reference: None,
+                        path: None,
+                    };
+                    let error = fetch(&address, &root.join(format!("echo-{name}"))).unwrap_err();
+                    let probed = probe(&url);
+                    let RemoteState::Unreachable(message) = &probed else {
+                        panic!("the {name} echo must leave the remote unreachable");
+                    };
+                    let resolved =
+                        toha::resolve::resolve_template(&url, &config, &registry, &dirs, &root)
+                            .unwrap_err();
+                    let toha::resolve::ResolveError::Error(resolve_message) = &resolved else {
+                        panic!("the {name} echo must fail the resolution");
+                    };
+                    for (output, text) in [
+                        ("fetch error", error.to_string()),
+                        ("fetch error Debug", format!("{error:?}")),
+                        ("probe message", message.clone()),
+                        ("probe Debug", format!("{probed:?}")),
+                        ("resolve message", resolve_message.clone()),
+                        ("resolve Debug", format!("{resolved:?}")),
+                    ] {
+                        // These messages name no value, so that a failure
+                        // writes no credential.
+                        assert!(
+                            !recovers(&text, &pair),
+                            "the {name} echo leaves the credential in the {output}"
+                        );
+                        assert!(
+                            !text.contains(ECHOED_PASSWORD),
+                            "the {name} echo leaves the password in the {output}"
+                        );
+                        assert!(
+                            !text.contains("address-user"),
+                            "the {name} echo leaves the address user in the {output}"
+                        );
+                        // The announcement did reach the error; Toha removed
+                        // the credential from it.
+                        assert!(
+                            text.contains("<redacted>"),
+                            "the {name} echo is missing from the {output}"
+                        );
+                    }
+                }
+            });
+            let asked = resolver.asked.lock().unwrap();
+            for name in &names {
+                let path = format!("/{name}/remote.git");
+                assert!(asked.iter().any(|r| r.path == path), "{name} was not asked");
             }
         }
         "plain" => {

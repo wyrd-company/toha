@@ -4,6 +4,10 @@
 // ---
 //! Credentials a library caller supplies for HTTPS Git remotes, without a
 //! credential helper process or a file on disk.
+use base64::{
+    Engine,
+    engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD},
+};
 use gix::bstr::ByteSlice;
 use gix::credentials::{helper, protocol};
 use std::{
@@ -130,13 +134,14 @@ fn current_resolver() -> Option<Arc<dyn CredentialResolver>> {
 }
 
 /// What the connections of one operation received from credential sources:
-/// the passwords to keep out of its messages and the resolver's refusal.
+/// the secrets to keep out of its messages and the resolver's refusal.
 #[derive(Clone, Default)]
 pub(crate) struct Supplied(Arc<Mutex<State>>);
 
 #[derive(Default)]
 struct State {
-    passwords: Vec<String>,
+    /// Each supplied password, and the Basic encodings of its identity.
+    secrets: Vec<String>,
     refusal: Option<String>,
 }
 
@@ -188,7 +193,7 @@ impl Supplied {
                     match resolver.resolve(&request) {
                         Ok(Some(credential)) => {
                             answered = true;
-                            supplied.keep_out(&credential.password);
+                            supplied.keep_out(&credential.username, &credential.password);
                             return Ok(Some(protocol::Outcome {
                                 identity: gix::sec::identity::Account {
                                     username: credential.username,
@@ -210,27 +215,39 @@ impl Supplied {
             }
             let outcome = fallback(action)?;
             if let Some(outcome) = &outcome {
-                supplied.keep_out(&outcome.identity.password);
+                supplied.keep_out(&outcome.identity.username, &outcome.identity.password);
             }
             Ok(outcome)
         }
     }
 
     /// The text to report for a failed operation: the resolver's refusal when
-    /// it refused, otherwise `message`, with every supplied password removed.
+    /// it refused, otherwise `message`, with every supplied secret removed.
     pub(crate) fn message(&self, message: String) -> String {
         let state = self.lock();
-        let mut message = state.refusal.clone().unwrap_or(message);
-        for password in state.passwords.iter().filter(|p| !p.is_empty()) {
-            for form in written_forms(password) {
-                message = message.replace(&form, "<redacted>");
-            }
-        }
-        message
+        let message = state.refusal.clone().unwrap_or(message);
+        let forms: Vec<String> = state
+            .secrets
+            .iter()
+            .flat_map(|s| written_forms(s))
+            .collect();
+        without(&message, &forms)
     }
 
-    fn keep_out(&self, password: &str) {
-        self.lock().passwords.push(password.to_owned());
+    /// Keep `password` out of the operation's messages, with the standard and
+    /// URL-safe Basic encodings of `username:password`, padded or not, that an
+    /// HTTP request carries and a remote can send back. An empty password
+    /// keeps nothing out.
+    fn keep_out(&self, username: &str, password: &str) {
+        if password.is_empty() {
+            return;
+        }
+        let pair = format!("{username}:{password}");
+        let mut state = self.lock();
+        state.secrets.push(password.to_owned());
+        for engine in [STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD] {
+            state.secrets.push(engine.encode(&pair));
+        }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -238,13 +255,48 @@ impl Supplied {
     }
 }
 
-/// The ways a gix message can write `password`: as text, as Rust escapes it
-/// in a quoted string, and as the byte list gix shows for bytes a remote sent.
-fn written_forms(password: &str) -> [String; 3] {
-    let quoted = format!("{password:?}");
-    let listed = format!("{:?}", password.as_bytes());
+/// `message` with each span that an occurrence of any of `forms` covers
+/// replaced by `<redacted>`. Occurrences are found in the original text and can
+/// overlap: a padded encoding holds the unpadded one, one secret can start
+/// another, and a secret that ends as it starts can be sent back twice sharing
+/// that part. Replacing their union leaves no byte of any of them behind.
+fn without(message: &str, forms: &[String]) -> String {
+    let mut spans = Vec::new();
+    for form in forms.iter().filter(|form| !form.is_empty()) {
+        let step = form.chars().next().map_or(1, char::len_utf8);
+        let mut from = 0;
+        while let Some(found) = message[from..].find(form.as_str()) {
+            let start = from + found;
+            spans.push((start, start + form.len()));
+            from = start + step;
+        }
+    }
+    spans.sort_unstable();
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for (start, end) in spans {
+        match merged.last_mut() {
+            Some(last) if start < last.1 => last.1 = last.1.max(end),
+            _ => merged.push((start, end)),
+        }
+    }
+    let mut kept = String::with_capacity(message.len());
+    let mut copied = 0;
+    for (start, end) in merged {
+        kept.push_str(&message[copied..start]);
+        kept.push_str("<redacted>");
+        copied = end;
+    }
+    kept.push_str(&message[copied..]);
+    kept
+}
+
+/// The ways a gix message can write `secret`: as text, as Rust escapes it in
+/// a quoted string, and as the byte list gix shows for bytes a remote sent.
+fn written_forms(secret: &str) -> [String; 3] {
+    let quoted = format!("{secret:?}");
+    let listed = format!("{:?}", secret.as_bytes());
     [
-        password.to_owned(),
+        secret.to_owned(),
         quoted[1..quoted.len() - 1].to_owned(),
         listed[1..listed.len() - 1].to_owned(),
     ]
@@ -440,7 +492,7 @@ mod tests {
     #[test]
     fn messages_hold_no_written_form_of_a_password() {
         let supplied = Supplied::default();
-        supplied.keep_out("sample\"password");
+        supplied.keep_out("sample-user", "sample\"password");
         let message = supplied.message(format!(
             "raw sample\"password, quoted {:?}, listed {:?}",
             "sample\"password", b"sample\"password"
@@ -454,7 +506,134 @@ mod tests {
     #[test]
     fn an_empty_password_leaves_the_message_intact() {
         let supplied = Supplied::default();
-        supplied.keep_out("");
-        assert_eq!(supplied.message("unchanged".into()), "unchanged");
+        supplied.keep_out("sample-user", "");
+        let message = format!("unchanged {}", STANDARD.encode("sample-user:"));
+        assert_eq!(supplied.message(message.clone()), message);
+    }
+
+    /// An identity whose standard Basic encoding holds `+` and `/` and ends in
+    /// padding, so that every encoding writes it differently.
+    const USER: &str = "sample-user";
+    const PASSWORD: &str = "sample-secret~~~???";
+
+    /// The standard and URL-safe Basic encodings of `username:password`, each
+    /// padded and then unpadded.
+    fn encodings(username: &str, password: &str) -> [String; 4] {
+        let pair = format!("{username}:{password}");
+        [STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD].map(|engine| engine.encode(&pair))
+    }
+
+    /// A message with each written form of `secret`.
+    fn written(secret: &str) -> String {
+        format!(
+            "text {secret}, quoted {secret:?}, listed {:?}",
+            secret.as_bytes()
+        )
+    }
+
+    const REDACTED: &str = "text <redacted>, quoted \"<redacted>\", listed [<redacted>]";
+
+    /// Asserts that `supplied` removes every written form of each secret, and
+    /// writes no secret when it does not.
+    #[track_caller]
+    fn assert_removed(supplied: &Supplied, secrets: &[String]) {
+        for (n, secret) in secrets.iter().enumerate() {
+            let message = supplied.message(written(secret));
+            assert!(message == REDACTED, "secret {n} is not wholly removed");
+        }
+    }
+
+    #[test]
+    fn the_sample_identity_sets_the_encodings_apart() {
+        let [standard, unpadded, url_safe, url_unpadded] = encodings(USER, PASSWORD);
+        assert!(standard.contains('+') && standard.contains('/'));
+        assert!(url_safe.contains('-') && url_safe.contains('_'));
+        assert!(standard.ends_with('=') && url_safe.ends_with('='));
+        assert_eq!(unpadded, standard.trim_end_matches('='));
+        assert_eq!(url_unpadded, url_safe.trim_end_matches('='));
+        assert_ne!(unpadded, url_unpadded);
+    }
+
+    #[test]
+    fn messages_hold_no_written_form_of_a_basic_identity() {
+        let supplied = Supplied::default();
+        supplied.keep_out(USER, PASSWORD);
+        assert_removed(&supplied, &encodings(USER, PASSWORD));
+    }
+
+    #[test]
+    fn a_padded_encoding_leaves_no_padding_behind() {
+        let supplied = Supplied::default();
+        supplied.keep_out(USER, PASSWORD);
+        let [standard, unpadded, ..] = encodings(USER, PASSWORD);
+        let message = supplied.message(format!("{standard} then {unpadded}"));
+        assert!(
+            message == "<redacted> then <redacted>",
+            "padding is left behind"
+        );
+        // As gix lists an announcement a remote sent, with its prefix and newline.
+        let announced = format!("# service=Basic {standard}\n");
+        let message = supplied.message(format!("{:?}", announced.as_bytes()));
+        let prefix = format!("{:?}", b"# service=Basic ");
+        let expected = format!("[{}, <redacted>, 10]", &prefix[1..prefix.len() - 1]);
+        assert!(
+            message == expected,
+            "the listed announcement keeps a fragment"
+        );
+    }
+
+    #[test]
+    fn a_secret_that_starts_another_leaves_no_fragment() {
+        // Each later secret starts with the earlier one, in text and in base64.
+        let supplied = Supplied::default();
+        supplied.keep_out(USER, "sample-token");
+        supplied.keep_out(USER, "sample-token-2");
+        let mut secrets = vec!["sample-token-2".to_owned()];
+        secrets.extend(encodings(USER, "sample-token-2"));
+        assert!(secrets[1].starts_with(&encodings(USER, "sample-token")[0]));
+        assert_removed(&supplied, &secrets);
+    }
+
+    #[test]
+    fn overlapping_occurrences_leave_no_part_of_a_secret() {
+        // Each secret ends as it starts, and the echo shares that part between
+        // two occurrences, which overlap in every written form.
+        let password = "sample-overlap-sample";
+        let [encoded, ..] = encodings(USER, "token-sam");
+        let echoes = [
+            format!("{password}{}", &password[6..]),
+            format!("{encoded}{}", &encoded[4..]),
+        ];
+        let supplied = Supplied::default();
+        supplied.keep_out(USER, password);
+        supplied.keep_out(USER, "token-sam");
+        for (n, (echo, secret)) in echoes.iter().zip([password, encoded.as_str()]).enumerate() {
+            let (first, last) = (echo.find(secret).unwrap(), echo.rfind(secret).unwrap());
+            assert!(
+                first < last && last < first + secret.len(),
+                "echo {n} does not overlap"
+            );
+            let message = supplied.message(written(echo));
+            assert!(message == REDACTED, "echo {n} keeps part of a secret");
+        }
+    }
+
+    #[test]
+    fn a_resolver_answer_keeps_its_identity_out_of_messages() {
+        let mut h = harness();
+        (h.callback)(helper::Action::get_for_url(ANSWERED)).unwrap();
+        assert!(h.forwarded().is_empty());
+        assert_removed(&h.supplied, &encodings("sample-user", "sample-password"));
+    }
+
+    #[test]
+    fn a_configured_answer_keeps_its_identity_out_of_messages() {
+        let mut h = harness();
+        (h.callback)(helper::Action::get_for_url(DEFERRED)).unwrap();
+        assert_eq!(h.forwarded(), ["get"]);
+        assert_removed(
+            &h.supplied,
+            &encodings("configured-user", "configured-password"),
+        );
     }
 }
