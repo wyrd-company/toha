@@ -759,29 +759,33 @@ fn vendored_root_and_reference_make_no_network_connections() {
         atomic::{AtomicBool, AtomicUsize, Ordering},
     };
     let f = Fixture::new();
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    // Share one socket handle: cloning a socket need not preserve its mode.
+    let listener = Arc::new(std::net::TcpListener::bind("127.0.0.1:0").unwrap());
     listener.set_nonblocking(true).unwrap();
     let root_uri = format!("https://{}/catalog", listener.local_addr().unwrap());
     let reference_uri = format!("{root_uri}/title");
-    let worker_listener = listener.try_clone().unwrap();
+    let worker_listener = listener.clone();
     let stop = Arc::new(AtomicBool::new(false));
     let connections = Arc::new(AtomicUsize::new(0));
     let worker_stop = stop.clone();
     let worker_connections = connections.clone();
-    let worker = std::thread::spawn(move || {
-        while !worker_stop.load(Ordering::SeqCst) {
-            match worker_listener.accept() {
-                Ok((stream, _)) => {
-                    worker_connections.fetch_add(1, Ordering::SeqCst);
-                    drop(stream);
+    let mut worker = NetworkMonitor {
+        stop,
+        worker: Some(std::thread::spawn(move || {
+            while !worker_stop.load(Ordering::SeqCst) {
+                match worker_listener.accept() {
+                    Ok((stream, _)) => {
+                        worker_connections.fetch_add(1, Ordering::SeqCst);
+                        drop(stream);
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(1))
+                    }
+                    Err(error) => panic!("listener: {error}"),
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(std::time::Duration::from_millis(1))
-                }
-                Err(error) => panic!("listener: {error}"),
             }
-        }
-    });
+        })),
+    };
     let text = fs::read_to_string(f.template.join("template.yml"))
         .unwrap()
         .replace(URI, &root_uri);
@@ -805,9 +809,15 @@ fn vendored_root_and_reference_make_no_network_connections() {
         json!({"$schema":root_uri,"title":"Vendored"}).to_string(),
     )
     .unwrap();
-    let out = f.apply(&["--input", input.to_str().unwrap()]);
-    stop.store(true, Ordering::SeqCst);
-    worker.join().unwrap();
+    let mut command = support::isolated_command(f.root.path());
+    command
+        .arg("apply")
+        .arg(support::folder_address(&f.template))
+        .arg(&f.target)
+        .arg("--input")
+        .arg(&input);
+    let out = bounded_output(command, std::time::Duration::from_secs(15));
+    worker.stop();
     assert_success(&out);
     assert_eq!(
         connections.load(Ordering::SeqCst),
@@ -1089,4 +1099,169 @@ fn seeded_continue_input_omits_seed_but_stage_and_answered_batch_keep_it() {
         ".",
         "seeded_answered_batch_keeps_seed"
     );
+}
+
+// A deadline diagnoses a stuck owned worker without an unbounded join.
+fn join_before_deadline<T>(
+    worker: &mut Option<std::thread::JoinHandle<T>>,
+    timeout: std::time::Duration,
+    name: &str,
+) -> T {
+    let deadline = std::time::Instant::now() + timeout;
+    while !worker.as_ref().unwrap().is_finished() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{name} did not stop before the deadline"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    worker
+        .take()
+        .unwrap()
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+}
+
+struct NetworkMonitor {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+impl NetworkMonitor {
+    fn stop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        if self.worker.is_some() {
+            join_before_deadline(
+                &mut self.worker,
+                std::time::Duration::from_secs(3),
+                "schema network monitor",
+            );
+        }
+    }
+}
+impl Drop for NetworkMonitor {
+    fn drop(&mut self) {
+        // Retain cleanup on a fixture/child assertion failure too.
+        if std::thread::panicking() {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.stop()));
+        } else {
+            self.stop();
+        }
+    }
+}
+
+fn bounded_output(mut command: std::process::Command, timeout: std::time::Duration) -> Output {
+    struct Child(std::process::Child);
+    impl Drop for Child {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    // Files avoid pipe backpressure and reader threads during a faulty child.
+    let stdout = tempfile::tempfile().unwrap();
+    let stderr = tempfile::tempfile().unwrap();
+    command
+        .stdout(stdout.try_clone().unwrap())
+        .stderr(stderr.try_clone().unwrap());
+    let mut child = Child(command.spawn().unwrap());
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.0.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "schema apply child did not stop before the deadline"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    use std::io::{Read, Seek};
+    let read = |mut file: std::fs::File| {
+        file.rewind().unwrap();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        bytes
+    };
+    Output {
+        status,
+        stdout: read(stdout),
+        stderr: read(stderr),
+    }
+}
+
+#[test]
+fn a_blocked_network_monitor_fails_with_a_bounded_diagnostic() {
+    let (release, blocked) = std::sync::mpsc::channel();
+    let mut worker = Some(std::thread::spawn(move || blocked.recv().unwrap()));
+    // A rescue release also bounds the negative control if the deadline is removed.
+    let rescue = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        let _ = release.send(());
+    });
+    let start = std::time::Instant::now();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        join_before_deadline(
+            &mut worker,
+            std::time::Duration::from_millis(50),
+            "injected blocking schema network monitor",
+        );
+    }));
+    // Always release and join our injected fault, even if the guard regresses.
+    rescue.join().unwrap();
+    if let Some(worker) = worker.take() {
+        worker.join().unwrap();
+    }
+    let panic = result.expect_err("the blocking fault must reach the deadline diagnostic");
+    let message = panic.downcast_ref::<String>().unwrap();
+    assert_eq!(
+        message,
+        "injected blocking schema network monitor did not stop before the deadline"
+    );
+    assert!(start.elapsed() < std::time::Duration::from_secs(2));
+}
+
+#[test]
+fn cloned_listener_mode_probe() {
+    use std::{
+        net::{TcpListener, TcpStream},
+        sync::mpsc,
+        time::Duration,
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let cloned = listener.try_clone().unwrap();
+    // Each accept is released with a real connection if it blocks. This probe
+    // never leaves a blocked socket thread behind, on either host.
+    for (name, socket) in [("original after try_clone", listener), ("clone", cloned)] {
+        let addr = socket.local_addr().unwrap();
+        let (send, receive) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = socket
+                .accept()
+                .map(|(stream, _)| {
+                    drop(stream);
+                    "accepted"
+                })
+                .unwrap_or_else(|error| {
+                    if error.kind() == std::io::ErrorKind::WouldBlock {
+                        "WouldBlock"
+                    } else {
+                        panic!("probe: {error}")
+                    }
+                });
+            send.send(result).unwrap();
+        });
+        let result = match receive.recv_timeout(Duration::from_millis(100)) {
+            Ok(result) => result,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(1)).unwrap();
+                drop(stream);
+                receive.recv_timeout(Duration::from_secs(2)).unwrap();
+                "blocked until connected"
+            }
+            Err(error) => panic!("probe: {error}"),
+        };
+        worker.join().unwrap();
+        eprintln!("socket mode probe: {name}: {result}");
+    }
 }

@@ -270,7 +270,14 @@ fn read_snapshot(project: &Project, id: &str) -> Application {
     APPLICATIONS.with(|apps| {
         apps.borrow()
             .get(&(project.repo().workdir().unwrap().to_owned(), id.to_owned()))
-            .unwrap()
+            .unwrap_or_else(|| {
+                panic!(
+                    "snapshot key missing: workdir={:?}, canonical={:?}, stored={:?}",
+                    project.repo().workdir(),
+                    project.repo().workdir().unwrap().canonicalize(),
+                    apps.borrow().keys().collect::<Vec<_>>()
+                )
+            })
             .clone()
     })
 }
