@@ -73,6 +73,13 @@ fn drift(error: SessionError) {
 }
 
 pub(super) fn verify() {
+    for transition in ["retained", "removal", "takeover"] {
+        verify_transition(transition);
+    }
+}
+
+fn verify_transition(transition: &str) {
+    println!("external region transition: {transition}");
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
     let source = root.join("source");
@@ -81,7 +88,12 @@ pub(super) fn verify() {
     fs::create_dir_all(&target).unwrap();
     write(&source, "template/.keep", "");
     let manifest = "name: sample\nignore: [.keep]\ninject:\n  - into: config.toml\n    region: features\n    content: |\n      alpha = 1\n    anchor: {after: '[application]', occurrence: only}\nhooks:\n  - run: [git, --version]\n";
-    write(&source, "template.yml", manifest);
+    let manifest = if transition == "removal" {
+        manifest.replace("    anchor:", "    marker: '# managed'\n    anchor:")
+    } else {
+        manifest.to_owned()
+    };
+    write(&source, "template.yml", &manifest);
     git(&source, &["init", "-q"]);
     commit(&source);
     git(&project, &["init", "-q"]);
@@ -160,17 +172,97 @@ pub(super) fn verify() {
     commit(&project);
     write(&project, "outside.txt", "staged outside target\n");
     git(&project, &["add", "outside.txt"]);
+    let next_manifest = if transition == "removal" {
+        "name: sample\nignore: [.keep]\nhooks:\n  - run: [git, --version]\n".to_owned()
+    } else {
+        manifest.clone()
+    };
     write(
         &source,
         "template.yml",
         format!(
-            "{manifest}interview:\n  - {{id: color, type: text, prompt: Color, required: true}}\n"
+            "{next_manifest}interview:\n  - {{id: color, type: text, prompt: Color, required: true}}\n"
         ),
     );
+    if transition == "takeover" {
+        write(
+            &source,
+            "template/config.toml",
+            "[application]\n\n\n[other]\nkeep = 2\n",
+        );
+    }
     write(&source, "template/new.txt", "{{ color }}\n");
     commit(&source);
     let store = Store::new(paths.state.clone());
     let mut environment = update_environment(&config, &registry, &root, &mut source_env);
+    if transition == "takeover" {
+        write(
+            &source,
+            "template/config.toml",
+            "[application]\n\n\n[other]\nkeep = 1\n",
+        );
+        commit(&source);
+        let prepared = updates::prepare(
+            &UpdateBase::Update,
+            &address,
+            &target_id,
+            &paths,
+            true,
+            PrepareMode::Stage,
+            false,
+            &mut environment,
+        )
+        .unwrap();
+        let mut stage = UpdateSession::start(
+            prepared,
+            target_id.clone(),
+            UpdateBase::Update,
+            false,
+            Default::default(),
+            &[],
+            &raw("color", json!("blue")),
+        )
+        .unwrap();
+        stage.persist(&store).unwrap();
+        drop(stage);
+        let stage_path = store.path_for(&target_id);
+        let before = snapshot(&project, &stage_path);
+        for force in [false, true] {
+            let wire = fs::read(&stage_path).unwrap();
+            let record = serde_json::from_slice(&wire).unwrap();
+            let session =
+                UpdateSession::resume(record, target_id.clone(), &paths, true, &mut environment)
+                    .unwrap();
+            let completed = done(session.state().unwrap());
+            let error = session
+                .apply_with_options(
+                    &completed,
+                    UpdateOptions {
+                        force,
+                        dry_run: false,
+                    },
+                    &runner,
+                    Some(&store),
+                )
+                .expect_err("consumer_takeover_outside_conflict");
+            assert!(
+                matches!(error, SessionError::Merge(MergeError::Apply(ref e)) if if force { matches!(e.as_ref(), toha::ApplyError::Conflicts(_)) } else { matches!(e.as_ref(), toha::ApplyError::Drift(_)) }),
+                "consumer_takeover_outside_typed: {error:?}"
+            );
+            assert_eq!(
+                snapshot(&project, &stage_path),
+                before,
+                "consumer_takeover_outside_state_preserved"
+            );
+        }
+        store.remove(&target_id).unwrap();
+        write(
+            &source,
+            "template/config.toml",
+            "[application]\n\n\n[other]\nkeep = 2\n",
+        );
+        commit(&source);
+    }
     let prepared = updates::prepare(
         &UpdateBase::Update,
         &address,
@@ -256,60 +348,63 @@ pub(super) fn verify() {
         before,
         "consumer_region_forced_preview_atomic"
     );
-    // Existing low-level callers keep their literal options and safe default.
-    let session = resume();
-    let completed = done(session.state().unwrap());
-    let prep = session.prepared;
-    let revision =
-        toha::resolve::applied_revision(&prep.resolved.formal_name, &prep.resolved.commit).unwrap();
-    let result = toha::applied::merge_apply_reported(
-        &prep.project,
-        prep.merge_base,
-        &prep.template,
-        &completed,
-        toha::applied::RecordInputs {
-            template: prep.resolved.formal_name,
-            revision,
-        },
-        toha::applied::MergeOptions {
-            trusted: true,
-            dry_run: false,
-        },
-        &runner,
-    );
-    assert!(
-        matches!(result, Err(MergeError::Apply(e)) if matches!(*e, toha::ApplyError::Drift(_))),
-        "consumer_region_low_level_default_safe"
-    );
-    assert_eq!(snapshot(&project, &stage_path), before);
-    let session = resume();
-    let completed = done(session.state().unwrap());
-    assert!(
-        matches!(session.prepared.finish(&target_id, &completed, false, &runner), Err(MergeError::Apply(e)) if matches!(*e, toha::ApplyError::Drift(_))),
-        "consumer_region_prepared_default_safe"
-    );
-    let session = resume();
-    let completed = done(session.state().unwrap());
-    assert!(
-        matches!(
-            session
-                .prepared
-                .finish_with_options(
-                    &target_id,
-                    &completed,
-                    UpdateOptions {
-                        force: true,
-                        dry_run: true
-                    },
-                    &runner
-                )
-                .unwrap()
-                .0,
-            Merged::Planned { .. }
-        ),
-        "consumer_region_prepared_force_preview"
-    );
-    assert_eq!(snapshot(&project, &stage_path), before);
+    if transition == "retained" {
+        // Existing low-level callers keep their literal options and safe default.
+        let session = resume();
+        let completed = done(session.state().unwrap());
+        let prep = session.prepared;
+        let revision =
+            toha::resolve::applied_revision(&prep.resolved.formal_name, &prep.resolved.commit)
+                .unwrap();
+        let result = toha::applied::merge_apply_reported(
+            &prep.project,
+            prep.merge_base,
+            &prep.template,
+            &completed,
+            toha::applied::RecordInputs {
+                template: prep.resolved.formal_name,
+                revision,
+            },
+            toha::applied::MergeOptions {
+                trusted: true,
+                dry_run: false,
+            },
+            &runner,
+        );
+        assert!(
+            matches!(result, Err(MergeError::Apply(e)) if matches!(*e, toha::ApplyError::Drift(_))),
+            "consumer_region_low_level_default_safe"
+        );
+        assert_eq!(snapshot(&project, &stage_path), before);
+        let session = resume();
+        let completed = done(session.state().unwrap());
+        assert!(
+            matches!(session.prepared.finish(&target_id, &completed, false, &runner), Err(MergeError::Apply(e)) if matches!(*e, toha::ApplyError::Drift(_))),
+            "consumer_region_prepared_default_safe"
+        );
+        let session = resume();
+        let completed = done(session.state().unwrap());
+        assert!(
+            matches!(
+                session
+                    .prepared
+                    .finish_with_options(
+                        &target_id,
+                        &completed,
+                        UpdateOptions {
+                            force: true,
+                            dry_run: true
+                        },
+                        &runner
+                    )
+                    .unwrap()
+                    .0,
+                Merged::Planned { .. }
+            ),
+            "consumer_region_prepared_force_preview"
+        );
+        assert_eq!(snapshot(&project, &stage_path), before);
+    }
     assert!(
         runner.calls.borrow().is_empty(),
         "consumer_region_refusal_preview_do_not_run_hooks"
@@ -354,7 +449,7 @@ pub(super) fn verify() {
     );
     let content = fs::read_to_string(target.join("config.toml")).unwrap();
     assert!(
-        content.contains("alpha = 1")
+        (content.contains("alpha = 1") == (transition != "removal"))
             && !content.contains("alpha = 7")
             && content.contains("keep = 2"),
         "consumer_region_force_scoped: {content}"

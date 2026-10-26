@@ -57,10 +57,17 @@ proposed-design:
     Content uses Git built-in stored-form conversions only. A preview records
     nothing.
   ownership-transitions: >-
-    Whole ownership replaces the entire captured file; removed whole targets
+    Whole-owned paths use whole-file merge inputs; removed whole targets
     disappear from the template side. Hook-owned paths carry forward from the
     recorded entry unless the new plan owns or changes them. Edit ownership
-    retains region keys and JSON paths. The builder retracts uncovered regions
+    retains region keys and JSON paths. Before any retraction or takeover, every
+    previously edit-owned region is checksum-checked against the committed project
+    image using its recorded revision's marker syntax. Unforced drift refuses
+    retained, removed and covered regions. Explicit region force authorizes the
+    bounded transition. A prior edit-owned path becoming whole-owned must have
+    matching outside bytes; differing operator content reports a conflict even
+    with force or an undrifted region. No outside template ancestor is inferred.
+    Whole-owned paths retain their normal three-way merge. The builder retracts uncovered regions
     and JSON values before applying new intent, removing array elements from
     highest index down. A new whole mutation covers all old ownership; a region
     covers the same key; a JSON value covers values at or below its path.
@@ -86,13 +93,17 @@ proposed-design:
   candidate-and-preview: >-
     Real updates check out HEAD into a temporary directory, apply ownership
     retractions and the new plan through a destination adapter, run trusted
-    hooks there and capture the candidate. Before internal whole-file overwrite,
-    the shared edit resolver checks region drift using the current invocation's
-    force choice. Injection-only targets use the checkout's HEAD image after
-    ownership retractions; a whole-file rule supplies its planned image instead.
+    hooks there and capture the candidate. Prior-region validation runs on HEAD
+    before ownership changes can erase its evidence. The old render reconstructs
+    marker syntax as transient application data; it is not serialized. Separately,
+    before internal whole-file overwrite, the shared edit resolver validates the
+    new plan with the current invocation's force choice. Injection-only targets
+    use HEAD after ownership retractions; a whole-file rule supplies its planned
+    image. That planned image grants no authority to erase prior region drift.
     Unforced drift refuses before project writes, including when the desired
     region body is unchanged. Explicit force replaces the drifted block while
-    preserving surrounding injection-only bytes. Marker, anchor and path errors
+    preserving surrounding operator bytes; it also permits an owned region's
+    retraction. Marker, anchor and path errors
     remain errors under force; JSON values retain convergence without force.
     Planning retains the real project target for invocation facts. Preview uses
     the same candidate builder with hooks suppressed and hook-owned bytes carried

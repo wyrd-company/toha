@@ -228,9 +228,14 @@ description: >-
   an operator edit inside the owned bytes is drift, which `apply` refuses and
   reports as `<path> (<region>)` unless `--force` is given, in which case
   `--force` replaces only that block and never invents a missing anchor.
-  Updates enforce the same drift rule before building the candidate, including
-  an unchanged desired body. Injection-only targets use current project bytes;
-  a whole-file rule supplies the image over which injections fold.
+  Updates check previously edit-owned regions against the committed project
+  image before retaining, retracting or covering them with whole-file ownership.
+  The same unforced drift refusal applies to all three transitions, including an
+  unchanged desired body. New edits are validated separately: injection-only
+  targets use current bytes after retraction; a whole-file rule supplies their
+  planned image. That image does not authorize replacing prior region drift.
+  Edit-to-whole transitions conflict when outside operator bytes differ, even
+  with region force; matching outside bytes permit the transition.
 
   A `struct` rule owns one typed value at a path in a JSON, JSONC, or JSON5 file,
   selected by the `.json`, `.jsonc`, or `.json5` extension. `struct.path` is

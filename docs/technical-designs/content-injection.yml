@@ -58,7 +58,11 @@ proposed-design:
     ownership transitions consume that view. Region checksums govern direct
     drift for direct applies and updates. Candidate construction runs the same
     resolver before its internal whole-file overwrite, using only the current
-    invocation's force choice. JSON ownership converges. Project updates own
+    invocation's force choice. Updates also checksum every previously edit-owned
+    region against HEAD before retraction or whole-file takeover. Removed and
+    covered regions have the same drift refusal as retained regions. A takeover
+    compares outside bytes independently and conflicts on differences even with
+    region force; whole-owned merges retain their existing behavior. JSON ownership converges. Project updates own
     three-way merge, retraction and release semantics. Marker rules reject JSON-family targets
     and structured rules reject other families; whole-file generation remains
     available for either.

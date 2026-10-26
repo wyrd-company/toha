@@ -2,4 +2,4 @@
 toha: patch
 ---
 
-Refuse managed-region drift during updates unless the current apply explicitly requests force.
+Protect recorded managed regions through update transitions with explicit region force, and refuse whole-file takeovers that replace unowned content.

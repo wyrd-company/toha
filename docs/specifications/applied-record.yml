@@ -74,7 +74,11 @@ description: >-
   leaves an ambiguous entry without a base. A hook path uses only its retained object. Missing bytes never replace
   operator edits silently; differing additions conflict add/add, and removals
   conflict modify/delete. Edit-owned paths use HEAD bytes. Candidate construction
-  refuses unforced managed-region drift before internal overwrite; an explicit
+  checks prior edit-owned regions before retraction, takeover or internal overwrite
+  and refuses unforced drift. Their marker syntax is reconstructed from the
+  recorded revision, not persisted as authorization. Edit-to-whole transitions
+  conflict on differing outside bytes, which have no recorded template ancestor;
+  region force never overrides that conflict. An explicit
   force choice belongs to the current apply or preview, not the applied record
   or staged interview. The candidate does
   not replay documents from the old applied entry. Current staged document

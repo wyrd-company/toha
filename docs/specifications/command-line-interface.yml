@@ -235,11 +235,17 @@ description: >-
   value converges without it, and `--force` never creates a target, repairs
   malformed input, or makes an invalid path valid. Updates retain their
   whole-file three-way merge behavior and enforce region drift before the
-  candidate's internal overwrite. This includes `apply --update`, staged
+  candidate's retraction, whole-file takeover or internal overwrite. Prior
+  edit-owned regions are checked against the committed image, independently of
+  the new plan's effective image. This includes `apply --update`, staged
   `apply PATH` and their previews. Retry a refused update with `--force` on that
   apply invocation. An unchanged desired region body still refuses operator
   drift. Trust and accepted or reconstructed interview state do not grant force.
-  `stage` records no force choice and has no force flag.
+  `stage` records no force choice and has no force flag. Region force permits
+  replacement or retraction of the owned block. An edit-owned path becoming
+  whole-owned conflicts when outside bytes differ, with or without region force
+  and even if the old region is undrifted. Matching outside bytes are admitted;
+  ordinary whole-owned three-way merging is unchanged.
 
   Environment. `toha --help` lists every environment variable that toha
   reads in an `Environment:` section after its options. `TOHA_CONFIG` and

@@ -261,15 +261,26 @@ fn build_candidate_reported(
     let checkout = tempfile::tempdir().map_err(|e| MergeError::Io(e.to_string()))?;
 
     checkout_head(repo, checkout.path())?;
-
-    // Group the plan once, since Plan::apply consumes it.
-    let plan_paths = capture::group_plan(&plan);
-
-    // Step 3: retract uncovered base ownership on the checkout before the apply.
+    let checkout_target_path = if target.is_root() {
+        checkout.path().to_owned()
+    } else {
+        checkout.path().join(target.as_str())
+    };
+    let checkout_target = crate::staging::canonical_target(&checkout_target_path)
+        .map_err(|e| MergeError::Io(e.to_string()))?;
     let base_application = match base {
         Base::Application(application) => Some(application),
         Base::Empty => None,
     };
+    if let Some(base_application) = base_application {
+        plan.preflight_owned_regions(&checkout_target, base_application, force)
+            .map_err(|e| MergeError::Apply(Box::new(e)))?;
+    }
+
+    // Group the plan once, since Plan::apply consumes it.
+    let plan_paths = capture::group_plan(&plan);
+
+    // Step 3: retract only after prior region drift has been checked.
     if let Some(base_application) = base_application {
         capture::retract_uncovered(checkout.path(), &target, &plan_paths, base_application)
             .map_err(|e| MergeError::Git(e.to_string()))?;
@@ -286,17 +297,15 @@ fn build_candidate_reported(
     // never initialized or given a remote.
     plan.git = None;
     plan.record = None;
-    let checkout_target_path = if target.is_root() {
-        checkout.path().to_owned()
-    } else {
-        checkout.path().join(target.as_str())
-    };
-    let checkout_target = crate::staging::canonical_target(&checkout_target_path)
-        .map_err(|e| MergeError::Io(e.to_string()))?;
+
     // Retractions and planned whole files define the effective input image.
     // Refuse region drift before candidate apply uses its internal overwrite.
     plan.preflight_edits(&checkout_target, force)
         .map_err(|e| MergeError::Apply(Box::new(e)))?;
+    if let Some(base_application) = base_application {
+        plan.preflight_takeovers(&checkout_target, base_application, force)
+            .map_err(|e| MergeError::Apply(Box::new(e)))?;
+    }
     let before = capture::observe(checkout_target.as_path()).map_err(git)?;
     match plan
         .apply(
