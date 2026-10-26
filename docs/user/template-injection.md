@@ -1,8 +1,11 @@
-<!-- ---
+---
+title: Injecting into existing files
+order: 8
+product: toha
 relationships:
-  realizes: template-format
---- -->
-# Injecting into existing files
+  describes: toha
+  references: template-format
+---
 
 `files` and the source subdirectory write whole files. `inject` changes one
 bounded part of a file that already exists, and leaves the rest alone. Each rule

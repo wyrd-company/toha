@@ -1,7 +1,7 @@
 ---
-docs: true
 title: Using Toha from Rust
-order: 12
+order: 15
+product: toha
 relationships:
   describes: toha
 ---

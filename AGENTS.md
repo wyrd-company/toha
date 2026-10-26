@@ -45,6 +45,7 @@ Nothing is recorded yet.
 
 ## Repository orientation
 
+- `docs/user/` holds the public docs that wyrd.foo publishes: `docs.yml`, the pages and their assets. Everything else under `docs/` is contributor docs.
 - `docs/specifications/` holds the contract and JSON Schemas for the binary.
 - `tests/fixtures/` holds template folders, answers documents, expectations, and expected trees.
 - `task ci` runs the local gate.

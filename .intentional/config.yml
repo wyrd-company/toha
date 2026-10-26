@@ -19,14 +19,30 @@ release-units:
   toha:
     path: .
     projections:
-    - adapter: toml
-      file: Cargo.toml
-      mode: committed
-      pointer: /package/version
     - adapter: cargo
       file: Cargo.toml
       mode: committed
+    # The wyrd.foo product page shows the installed version.
+    - adapter: yaml
+      file: /docs/user/docs.yml
+      mode: committed
+      pointer: /products/toha/version
     tags:
       primary:
         role: primary
         template: '{version}'
+  # The public docs release on their own, so the docs footer can say which
+  # docs describe which toha version. Docs units are tag-only.
+  toha-docs:
+    path: docs/user
+    depends-on:
+    - toha
+    projections:
+    - adapter: yaml
+      file: /docs/user/docs.yml
+      mode: committed
+      pointer: /products/toha/docs-version
+    tags:
+      primary:
+        role: primary
+        template: '{id}@{version}'

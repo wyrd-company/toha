@@ -1,7 +1,7 @@
 ---
-docs: true
 title: Asking questions
 order: 4
+product: toha
 relationships:
   describes: toha
   references: template-format

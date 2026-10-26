@@ -1,7 +1,7 @@
 ---
-docs: true
 title: Hooks and messages
-order: 8
+order: 9
+product: toha
 relationships:
   describes: toha
   references: template-format

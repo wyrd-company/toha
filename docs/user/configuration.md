@@ -1,7 +1,7 @@
 ---
-docs: true
 title: Configuration
-order: 10
+order: 12
+product: toha
 relationships:
   describes: toha
   references: config

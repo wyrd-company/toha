@@ -2,7 +2,7 @@
 # relationships:
 #   demonstrates: applied-record
 # ---
-Output docs/assets/applied-record.gif
+Output docs/user/assets/applied-record.gif
 Require bash
 Require jq
 Require git

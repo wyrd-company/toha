@@ -1,7 +1,7 @@
 ---
-docs: true
 title: Template registries
 order: 11
+product: toha
 relationships:
   describes: toha
   references:
