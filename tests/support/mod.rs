@@ -113,6 +113,9 @@ pub fn isolate(command: &mut Command, root: &Path) {
         command.env(key, path);
     }
     command.env("TOHA_CONFIG", root.join("config/local.yml"));
+    // Match fixture Git commands; user Git config remains under isolated HOME.
+    // Product regressions can still set repository-local core.autocrlf=true.
+    command.env("GIT_CONFIG_NOSYSTEM", "1");
 }
 
 /// `value` quoted as toha quotes a word in a suggested command: single quotes
@@ -211,7 +214,7 @@ pub fn user_data_dir(root: &Path) -> PathBuf {
 }
 
 pub fn file_url(path: &Path) -> String {
-    let path = path.to_string_lossy().replace('\\', "/");
+    let path = folder_address(path).replace('\\', "/");
     if cfg!(windows) {
         format!("file:///{path}")
     } else {
@@ -243,6 +246,13 @@ fn every_platform_directory_input_is_isolated() {
     let root = Path::new("isolated");
     isolate(&mut command, root);
     let actual: std::collections::HashMap<_, _> = command.get_envs().collect();
+    assert_eq!(
+        actual
+            .get(std::ffi::OsStr::new("GIT_CONFIG_NOSYSTEM"))
+            .copied()
+            .flatten(),
+        Some(std::ffi::OsStr::new("1"))
+    );
     for key in [
         "HOME",
         "USERPROFILE",
@@ -544,4 +554,13 @@ pub fn refresh_template(url: &str) -> String {
         );
     }
     url.to_owned()
+}
+
+#[test]
+fn canonical_file_urls_have_no_verbatim_prefix_or_backslashes() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().canonicalize().unwrap();
+    let url = file_url(&path);
+    assert!(!url.contains('?') && !url.contains('\\'), "{url}");
+    assert!(url.starts_with("file:///"), "{url}");
 }

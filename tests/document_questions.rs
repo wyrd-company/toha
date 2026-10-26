@@ -754,38 +754,14 @@ fn continue_input_preserves_flow_stop_for_resume() {
 
 #[test]
 fn vendored_root_and_reference_make_no_network_connections() {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-    };
     let f = Fixture::new();
-    // Share one socket handle: cloning a socket need not preserve its mode.
-    let listener = Arc::new(std::net::TcpListener::bind("127.0.0.1:0").unwrap());
+    // Poll one nonblocking socket while the owned child runs. No duplicated
+    // socket or monitor thread can block cleanup on another host.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let root_uri = format!("https://{}/catalog", listener.local_addr().unwrap());
     let reference_uri = format!("{root_uri}/title");
-    let worker_listener = listener.clone();
-    let stop = Arc::new(AtomicBool::new(false));
-    let connections = Arc::new(AtomicUsize::new(0));
-    let worker_stop = stop.clone();
-    let worker_connections = connections.clone();
-    let mut worker = NetworkMonitor {
-        stop,
-        worker: Some(std::thread::spawn(move || {
-            while !worker_stop.load(Ordering::SeqCst) {
-                match worker_listener.accept() {
-                    Ok((stream, _)) => {
-                        worker_connections.fetch_add(1, Ordering::SeqCst);
-                        drop(stream);
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(std::time::Duration::from_millis(1))
-                    }
-                    Err(error) => panic!("listener: {error}"),
-                }
-            }
-        })),
-    };
+    let mut connections = 0;
     let text = fs::read_to_string(f.template.join("template.yml"))
         .unwrap()
         .replace(URI, &root_uri);
@@ -816,14 +792,20 @@ fn vendored_root_and_reference_make_no_network_connections() {
         .arg(&f.target)
         .arg("--input")
         .arg(&input);
-    let out = bounded_output(command, std::time::Duration::from_secs(15));
-    worker.stop();
+    let out = bounded_output(command, std::time::Duration::from_secs(15), || {
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    connections += 1;
+                    drop(stream);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) => panic!("schema listener: {error}"),
+            }
+        }
+    });
     assert_success(&out);
-    assert_eq!(
-        connections.load(Ordering::SeqCst),
-        0,
-        "a vendored schema caused a fetch attempt"
-    );
+    assert_eq!(connections, 0, "a vendored schema caused a fetch attempt");
     assert!(
         matches!(listener.accept(),Err(error) if error.kind()==std::io::ErrorKind::WouldBlock),
         "a connection remained queued"
@@ -1101,55 +1083,11 @@ fn seeded_continue_input_omits_seed_but_stage_and_answered_batch_keep_it() {
     );
 }
 
-// A deadline diagnoses a stuck owned worker without an unbounded join.
-fn join_before_deadline<T>(
-    worker: &mut Option<std::thread::JoinHandle<T>>,
+fn bounded_output(
+    mut command: std::process::Command,
     timeout: std::time::Duration,
-    name: &str,
-) -> T {
-    let deadline = std::time::Instant::now() + timeout;
-    while !worker.as_ref().unwrap().is_finished() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "{name} did not stop before the deadline"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
-    worker
-        .take()
-        .unwrap()
-        .join()
-        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
-}
-
-struct NetworkMonitor {
-    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    worker: Option<std::thread::JoinHandle<()>>,
-}
-impl NetworkMonitor {
-    fn stop(&mut self) {
-        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
-        if self.worker.is_some() {
-            join_before_deadline(
-                &mut self.worker,
-                std::time::Duration::from_secs(3),
-                "schema network monitor",
-            );
-        }
-    }
-}
-impl Drop for NetworkMonitor {
-    fn drop(&mut self) {
-        // Retain cleanup on a fixture/child assertion failure too.
-        if std::thread::panicking() {
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.stop()));
-        } else {
-            self.stop();
-        }
-    }
-}
-
-fn bounded_output(mut command: std::process::Command, timeout: std::time::Duration) -> Output {
+    mut poll: impl FnMut(),
+) -> Output {
     struct Child(std::process::Child);
     impl Drop for Child {
         fn drop(&mut self) {
@@ -1166,6 +1104,7 @@ fn bounded_output(mut command: std::process::Command, timeout: std::time::Durati
     let mut child = Child(command.spawn().unwrap());
     let deadline = std::time::Instant::now() + timeout;
     let status = loop {
+        poll();
         if let Some(status) = child.0.try_wait().unwrap() {
             break status;
         }
@@ -1190,32 +1129,32 @@ fn bounded_output(mut command: std::process::Command, timeout: std::time::Durati
 }
 
 #[test]
-fn a_blocked_network_monitor_fails_with_a_bounded_diagnostic() {
-    let (release, blocked) = std::sync::mpsc::channel();
-    let mut worker = Some(std::thread::spawn(move || blocked.recv().unwrap()));
-    // A rescue release also bounds the negative control if the deadline is removed.
-    let rescue = std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(250));
-        let _ = release.send(());
-    });
+fn a_blocked_schema_child_fails_with_a_bounded_diagnostic() {
+    const CHILD: &str = "TOHA_TEST_BLOCK_SCHEMA_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        // A finite rescue duration also bounds this control if the guard is
+        // removed. The real guard kills and reaps the child before this ends.
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        return;
+    }
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .arg("--exact")
+        .arg("a_blocked_schema_child_fails_with_a_bounded_diagnostic")
+        .env(CHILD, "1");
     let start = std::time::Instant::now();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        join_before_deadline(
-            &mut worker,
-            std::time::Duration::from_millis(50),
-            "injected blocking schema network monitor",
-        );
+        bounded_output(command, std::time::Duration::from_millis(100), || {});
     }));
-    // Always release and join our injected fault, even if the guard regresses.
-    rescue.join().unwrap();
-    if let Some(worker) = worker.take() {
-        worker.join().unwrap();
-    }
     let panic = result.expect_err("the blocking fault must reach the deadline diagnostic");
-    let message = panic.downcast_ref::<String>().unwrap();
+    let message = panic
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+        .expect("deadline diagnostic text");
     assert_eq!(
         message,
-        "injected blocking schema network monitor did not stop before the deadline"
+        "schema apply child did not stop before the deadline"
     );
     assert!(start.elapsed() < std::time::Duration::from_secs(2));
 }
