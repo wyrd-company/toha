@@ -111,7 +111,9 @@ proposed-design:
     theirs substitutes candidate files. Re-baseline uses an empty base target.
     The three merge inputs use built-in repository-form normalization under the
     current Git attributes; the merged result converts to working-tree form.
-    Recorded blob identities remain unchanged. Symlink targets and paths marked
+    Already-current detection also compares these normalized forms; gitoxide
+    reads merge attributes from the operator index. Recorded blob identities
+    remain unchanged. Symlink targets and paths marked
     -text retain their byte identities. Rename detection is off. Operator-only
     paths remain ours. Git line merging combines
     disjoint changes and reports overlaps. Driver-attributed paths keep operator

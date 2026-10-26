@@ -1506,3 +1506,45 @@ fn normalized_application_identity_preserves_symlink_targets() {
         "link targets are byte identities even with text attributes"
     );
 }
+
+#[test]
+fn an_already_current_normalized_update_writes_no_loose_objects() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q", "-b", "main"]);
+    write(&root.join(".gitattributes"), b"app/app.txt text eol=lf\n");
+    git(root, &["add", "."]);
+    git(root, &["commit", "-qm", "attributes"]);
+    // Both captured forms normalize to a third blob that is not in the
+    // operator repository. Comparing them must not store that third blob.
+    make_snapshot(root, BASE_ID, "app", &[("app.txt", b"one\r\ntwo\n")]);
+    make_snapshot(root, NEW_ID, "app", &[("app.txt", b"one\ntwo\r\n")]);
+    let project = open(root, "app");
+    let base = read_snapshot(&project, BASE_ID);
+    let new = read_snapshot(&project, NEW_ID);
+    assert_ne!(base.files, new.files);
+    let normalized = gix::objs::compute_hash(
+        project.repo().object_hash(),
+        gix::objs::Kind::Blob,
+        b"one\ntwo\n",
+    )
+    .unwrap();
+    assert!(
+        project
+            .repo()
+            .try_find_object(normalized)
+            .unwrap()
+            .is_none()
+    );
+    let before = git(root, &["count-objects", "-v"]);
+    // This check is shared by dry-run and real updates before either merges.
+    assert!(is_already_current(&project, &base, &new, &snapshot_inputs()).unwrap());
+    assert_eq!(git(root, &["count-objects", "-v"]), before);
+    assert!(
+        project
+            .repo()
+            .try_find_object(normalized)
+            .unwrap()
+            .is_none()
+    );
+}
