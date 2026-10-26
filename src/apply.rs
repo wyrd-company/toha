@@ -194,17 +194,7 @@ impl Plan {
                 return Err(ApplyError::Symlink(file.path.clone()));
             }
         }
-        // Every injected target's path is protected before it is read or written.
-        for edit in &self.edits {
-            if has_symlink_component(target.as_path(), edit.path()).map_err(|source| {
-                ApplyError::Io {
-                    path: target.as_path().join(edit.path().as_path()),
-                    source,
-                }
-            })? {
-                return Err(ApplyError::Symlink(edit.path().clone()));
-            }
-        }
+        self.check_edit_paths(target)?;
         // A ready hook's cwd is known now, so it is symlink-checked before any
         // file is written, exactly as before. A deferred hook's cwd is not known
         // until its result-reading fields render, so it is checked in the loop.
@@ -429,6 +419,35 @@ impl Plan {
             after_apply,
             git,
         })
+    }
+
+    /// Validate the same effective edit images used by apply without writing.
+    /// Updates use the invocation's force choice here before their internal
+    /// whole-file overwrite can consume managed-region drift.
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn preflight_edits(
+        &self,
+        target: &CanonicalTarget,
+        force: bool,
+    ) -> Result<(), ApplyError> {
+        self.check_edit_paths(target)?;
+        self.resolve_edits(target, force).map(|_| ())
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn check_edit_paths(&self, target: &CanonicalTarget) -> Result<(), ApplyError> {
+        // Every injected target's path is protected before it is read or written.
+        for edit in &self.edits {
+            if has_symlink_component(target.as_path(), edit.path()).map_err(|source| {
+                ApplyError::Io {
+                    path: target.as_path().join(edit.path().as_path()),
+                    source,
+                }
+            })? {
+                return Err(ApplyError::Symlink(edit.path().clone()));
+            }
+        }
+        Ok(())
     }
 
     /// Resolves every injected target in memory. Each target starts from its

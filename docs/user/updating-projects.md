@@ -48,6 +48,16 @@ conflict. A path whose base bytes cannot be recovered conflicts when the
 candidate differs. Hook output uses its recorded local Git object; Toha does
 not rerun old hooks.
 
+An edit inside a managed region refuses the update before any project file,
+index or record write. This also applies when the template changes only an
+unrelated file. To replace that edited block, retry the same apply command with
+`--force`. For a staged update, use `toha apply ./project --force`; the refused
+update keeps its stage. Force preserves edits outside the injected block and
+does not repair invalid markers or missing anchors. `--dry-run --force` previews
+that replacement without writing or granting force to a later apply. Ordinary
+whole-file updates still use the three-way merge, and owned JSON values converge
+without force.
+
 Commit or discard changes in the target and record before updating. Use
 `--answers FILE` to override recorded answers, `--reanswer` to ask again, or
 `--dry-run` to preview. An unchanged render reports `Already current.` and

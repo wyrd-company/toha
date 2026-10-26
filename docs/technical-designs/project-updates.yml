@@ -86,13 +86,23 @@ proposed-design:
   candidate-and-preview: >-
     Real updates check out HEAD into a temporary directory, apply ownership
     retractions and the new plan through a destination adapter, run trusted
-    hooks there and capture the candidate. Planning retains the real project
-    target for invocation facts. Preview uses the same builder on in-memory HEAD
-    images with hooks suppressed and hook-owned bytes carried forward; those
-    outputs are marked not previewed. CLI dry-run and interview DryRun both
+    hooks there and capture the candidate. Before internal whole-file overwrite,
+    the shared edit resolver checks region drift using the current invocation's
+    force choice. Injection-only targets use the checkout's HEAD image after
+    ownership retractions; a whole-file rule supplies its planned image instead.
+    Unforced drift refuses before project writes, including when the desired
+    region body is unchanged. Explicit force replaces the drifted block while
+    preserving surrounding injection-only bytes. Marker, anchor and path errors
+    remain errors under force; JSON values retain convergence without force.
+    Planning retains the real project target for invocation facts. Preview uses
+    the same candidate builder with hooks suppressed and hook-owned bytes carried
+    forward; those outputs are marked not previewed. CLI dry-run and interview DryRun both
     select this path. Preview changes no project file, index, record or staged
     record. Equal revision, answers, parts, referenced context and output produce
-    already-current without a retained candidate.
+    already-current without a retained candidate. UpdateOptions carries force and
+    dry-run for one apply or preview. UpdateSession::apply and Prepared::finish
+    default to unforced; their with-options variants accept the explicit choice.
+    Staged records retain interview progress and trust, not force authorization.
   merge: >-
     Base is HEAD with the target replaced by the merge base rendered from the
     recorded revision, answers (documents included), parts, generated instant

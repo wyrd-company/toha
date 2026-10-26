@@ -48,7 +48,10 @@ the markers rather than the anchor, so the block does not duplicate. If the
 template body is unchanged, the apply is a no-op. If you change the template body,
 Toha replaces only that block. If someone edits inside the block, that is drift:
 `apply` refuses it, prints `config/app.toml (features)`, and names the same
-command with `--force`. `--force` restores the owned body and never invents a
+command with `--force`. The same rule applies to updates and previews, including
+when the template's region body is unchanged. A staged update takes `--force`
+on `apply PATH`, not on `stage`. Trust and saved answers do not grant force.
+`--force` restores the owned body and never invents a
 missing anchor.
 
 The block's body comes from an inline `content` template or, with `source`, the

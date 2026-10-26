@@ -45,8 +45,10 @@ design-challenges:
     modality, and must produce the same answers and output as an uninterrupted
     run.
   safe-output: >-
-    No rendered path leaves the target directory or enters `.git`, no existing
-    file is overwritten without `--force`, and no hook runs without trust.
+    No rendered path leaves the target directory or enters `.git`. A fresh
+    apply requires force for whole-file collisions. Bounded injections and
+    three-way project updates enforce their ownership rules; managed-region
+    drift requires the current invocation's force choice. Hooks require trust.
 proposed-design:
   high-level-overview: >-
     One Cargo package named `toha` holds a library and a binary. The library

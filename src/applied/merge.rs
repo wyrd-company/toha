@@ -33,7 +33,10 @@ pub enum Base {
 }
 
 /// Options for an update merge.
+#[derive(Debug, Default, Clone, Copy)]
 pub struct MergeOptions {
+    /// Replace managed-region drift only for this invocation.
+    pub force: bool,
     pub trusted: bool,
     pub dry_run: bool,
 }
@@ -176,6 +179,7 @@ pub fn merge_apply_reported(
         plan,
         capture_inputs,
         !options.dry_run,
+        options.force,
         runner,
     )?;
 
@@ -223,7 +227,7 @@ fn build_candidate(
     run_hooks: bool,
     runner: &dyn crate::hook::HookRunner,
 ) -> Result<Application, MergeError> {
-    build_candidate_reported(project, base, plan, inputs, run_hooks, runner)
+    build_candidate_reported(project, base, plan, inputs, run_hooks, false, runner)
         .map(|(application, _)| application)
 }
 
@@ -233,6 +237,7 @@ fn build_candidate_reported(
     plan: crate::plan::Plan,
     inputs: CaptureInputs,
     run_hooks: bool,
+    force: bool,
     runner: &dyn crate::hook::HookRunner,
 ) -> Result<(Application, UpdateReport), MergeError> {
     let mut report = UpdateReport::default();
@@ -273,6 +278,10 @@ fn build_candidate_reported(
     };
     let checkout_target = crate::staging::canonical_target(&checkout_target_path)
         .map_err(|e| MergeError::Io(e.to_string()))?;
+    // Retractions and planned whole files define the effective input image.
+    // Refuse region drift before candidate apply uses its internal overwrite.
+    plan.preflight_edits(&checkout_target, force)
+        .map_err(|e| MergeError::Apply(Box::new(e)))?;
     let before = capture::observe(checkout_target.as_path()).map_err(git)?;
     match plan
         .apply(

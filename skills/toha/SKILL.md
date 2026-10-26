@@ -32,6 +32,10 @@ an application's source and target from `.toha.json`. Recorded ordinary answers
 replay; document questions use current inputs. `--baseline` re-adopts against
 an empty merge base when a recorded revision is unavailable or a folder template
 has no reproducible revision. An unchanged update reports `already-current`.
+An operator edit inside a managed region refuses updates and previews with no
+project writes. Retry the apply with `--force` only when replacing that block is
+intended. Staged updates take force on `apply PATH`; trust and saved answers do
+not grant it. A forced preview does not authorize a later write.
 
 For a template with a `parts: true` question, repeat `--with PART` and
 `--without PART` on apply or stage to change its default, seed, or recorded

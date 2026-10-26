@@ -254,7 +254,7 @@ commands:
       - name: force
         flags: [ -f, --force ]
         kind: flag
-        description: Overwrite existing files.
+        description: Overwrite existing files or replace drifted managed regions.
       - name: answers
         flags: [ -A, --answers ]
         kind: option

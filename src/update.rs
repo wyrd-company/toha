@@ -37,6 +37,7 @@ pub fn run_update(
     path: &Path,
     answers: Option<String>,
     reanswer: bool,
+    force: bool,
     dry_run: bool,
     trust: bool,
     input: &[PathBuf],
@@ -118,7 +119,7 @@ pub fn run_update(
         }
     }
     match session.state() {
-        Ok(toha::operations::SessionState::Completed(done)) => finish_merge(session, done, dry_run, answers.is_some(), None),
+        Ok(toha::operations::SessionState::Completed(done)) => finish_merge(session, done, toha::updates::UpdateOptions { force, dry_run }, answers.is_some(), None),
         Ok(toha::operations::SessionState::Asking { .. }) if answers.is_none() => Outcome::Error("the update has questions the recorded answers do not settle; stage it with `stage --update` to answer them".into()),
         Ok(toha::operations::SessionState::Asking { .. }) => match session.replay() {
             Ok(UpdateDrive::Ask { pending, rejections, .. }) => Outcome::Document(toha::protocol::batch_document(pending.batch(), &crate::context(&target, &session.record), Some(&rejections)), 4),
@@ -242,13 +243,13 @@ pub(crate) fn resume_prepared(
 pub(crate) fn finish_merge(
     session: toha::updates::UpdateSession,
     completed: toha::Completed,
-    dry_run: bool,
+    options: toha::updates::UpdateOptions,
     scripted: bool,
     store: Option<&toha::staging::Store>,
 ) -> Outcome {
     let prep = &session.prepared;
     let target = &session.target;
-    let dry_run = toha::updates::effective_dry_run(dry_run, &completed);
+    let dry_run = toha::updates::effective_dry_run(options.dry_run, &completed);
     // The result documents carry the invocation context; build it from `prep`
     // before the merge consumes the base.
     let saved = crate::StagedRecord::new_with_context(
@@ -287,7 +288,7 @@ pub(crate) fn finish_merge(
     } else {
         &ProcessRunner
     };
-    match session.apply(&completed, dry_run, runner, store) {
+    match session.apply_with_options(&completed, options, runner, store) {
         Ok((merged, report)) => {
             let outcome = match merged_outcome(merged, &ctx, base_id.as_deref()) {
                 Outcome::Document(document, code) => {
@@ -300,6 +301,11 @@ pub(crate) fn finish_merge(
             } else {
                 crate::update_output::text_outcome(outcome, &report, dry_run)
             }
+        }
+        Err(toha::updates::SessionError::Merge(toha::applied::MergeError::Apply(error)))
+            if scripted =>
+        {
+            crate::scripted_apply_error(*error, &ctx)
         }
         Err(error) => Outcome::Error(error.to_string()),
     }

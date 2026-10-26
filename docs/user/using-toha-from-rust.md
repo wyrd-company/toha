@@ -105,6 +105,11 @@ and return data. They do not parse arguments, prompt or print command reports.
   Its question document omits answers already covered by valid recorded values.
   `resume` checks that the pinned application still matches; `apply` accepts
   the caller's runner and preserves staged state on preview or failure.
+  `UpdateSession::apply` and `Prepared::finish` refuse managed-region drift by
+  default. Their `apply_with_options` and `finish_with_options` variants accept
+  `updates::UpdateOptions { force, dry_run }` for an explicit choice on one
+  request. Force replaces a drifted region; dry-run previews that choice without
+  project writes. Persisted trust and answers do not retain force authorization.
 - `bundled` exposes the offline demo; `assets` lists, reads and exports the
   embedded agent guidance without enabling the CLI feature.
 

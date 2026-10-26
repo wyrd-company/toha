@@ -302,7 +302,7 @@ enum Command {
         /// {"template": <formal>, "answers": {...}}.
         #[arg(short = 'A', long, value_name = "FILE")]
         answers: Option<String>,
-        /// Overwrite existing files.
+        /// Overwrite existing files or replace drifted managed regions.
         #[arg(short, long)]
         force: bool,
         /// Print the files, messages, and hooks apply would produce, and change nothing.
@@ -1956,7 +1956,14 @@ fn run(
         && let Some(saved) = &existing
         && update_stage::is_staged_update(saved)
     {
-        return update_stage::apply_staged(saved.clone(), path, dry_run, trust, input, dirs);
+        return update_stage::apply_staged(
+            saved.clone(),
+            path,
+            toha::updates::UpdateOptions { force, dry_run },
+            trust,
+            input,
+            dirs,
+        );
     }
     let (config, registry, cwd) = match environment(dirs) {
         Ok(v) => v,
@@ -2428,7 +2435,8 @@ fn main() -> ExitCode {
                     update::UpdateBase::Baseline
                 };
                 return update::run_update(
-                    base, template, &path, answers, reanswer, dry_run, trust, &input, parts, &dirs,
+                    base, template, &path, answers, reanswer, force, dry_run, trust, &input, parts,
+                    &dirs,
                 )
                 .finish();
             }
@@ -2871,6 +2879,7 @@ mod report_tests {
                 revision: Revision::Unversioned,
             },
             MergeOptions {
+                force: false,
                 trusted: true,
                 dry_run: false,
             },

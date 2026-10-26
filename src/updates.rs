@@ -17,6 +17,13 @@ use crate::{
 use indexmap::IndexMap;
 use serde_json::{Value, json};
 use std::path::Path;
+/// Choices for one update apply or preview. Never stored in a staged record.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct UpdateOptions {
+    /// Explicitly replace a drifted managed region in this invocation.
+    pub force: bool,
+    pub dry_run: bool,
+}
 /// The base an update merges from.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -640,6 +647,25 @@ impl Prepared {
         dry_run: bool,
         runner: &dyn crate::hook::HookRunner,
     ) -> Result<(Merged, UpdateReport), MergeError> {
+        self.finish_with_options(
+            target,
+            completed,
+            UpdateOptions {
+                dry_run,
+                ..Default::default()
+            },
+            runner,
+        )
+    }
+
+    /// Preview or apply with an explicit, invocation-local region force choice.
+    pub fn finish_with_options(
+        self,
+        target: &crate::staging::CanonicalTarget,
+        completed: &crate::Completed,
+        options: UpdateOptions,
+        runner: &dyn crate::hook::HookRunner,
+    ) -> Result<(Merged, UpdateReport), MergeError> {
         if self.context.target() != target {
             return Err(MergeError::WrongTarget);
         }
@@ -656,8 +682,9 @@ impl Prepared {
                 revision,
             },
             MergeOptions {
+                force: options.force,
                 trusted: self.trusted,
-                dry_run: effective_dry_run(dry_run, completed),
+                dry_run: effective_dry_run(options.dry_run, completed),
             },
             runner,
         )
@@ -1041,10 +1068,31 @@ impl UpdateSession {
         runner: &dyn crate::hook::HookRunner,
         store: Option<&crate::staging::Store>,
     ) -> Result<(Merged, UpdateReport), SessionError> {
-        let preview = effective_dry_run(dry_run, completed);
+        self.apply_with_options(
+            completed,
+            UpdateOptions {
+                dry_run,
+                ..Default::default()
+            },
+            runner,
+            store,
+        )
+    }
+
+    /// Apply or preview with a force choice for this request only. Trust and
+    /// persisted interview progress do not authorize replacement of region drift.
+    #[allow(clippy::result_large_err)]
+    pub fn apply_with_options(
+        self,
+        completed: &crate::Completed,
+        options: UpdateOptions,
+        runner: &dyn crate::hook::HookRunner,
+        store: Option<&crate::staging::Store>,
+    ) -> Result<(Merged, UpdateReport), SessionError> {
+        let preview = effective_dry_run(options.dry_run, completed);
         let result = self
             .prepared
-            .finish(&self.target, completed, preview, runner)?;
+            .finish_with_options(&self.target, completed, options, runner)?;
         if !preview
             && matches!(result.0, Merged::Written { .. } | Merged::AlreadyCurrent)
             && let Some(store) = store

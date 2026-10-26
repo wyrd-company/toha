@@ -149,6 +149,8 @@ fn update_environment<'a>(
         source,
     }
 }
+mod region_safety;
+
 /// Set when the credential resolver is asked. Every remote in this consumer is
 /// local, and only HTTPS remotes consult the resolver.
 static RESOLVER_ASKED: AtomicBool = AtomicBool::new(false);
@@ -166,6 +168,7 @@ fn main() {
 }
 
 fn run() {
+    region_safety::verify();
     update_null_replay_contract();
     update_start_replay_contract();
     update_start_end_contract();
