@@ -67,6 +67,8 @@ proposed-design:
     bounded transition. A prior edit-owned path becoming whole-owned must have
     matching outside bytes: committed content with prior owned edits removed
     must equal planned whole-file content with prior and new owned edits removed.
+    An absent committed file contributes empty outside content, without parsing
+    a nonexistent document; the planned image is still masked normally.
     A mismatch reports a conflict even without operator changes, with force or
     with an undrifted region. Manual recovery edits and commits the project file
     to match that planned outside content before retry. No outside template

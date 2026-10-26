@@ -142,8 +142,11 @@ fn mode(path: &Path) -> u32 {
 }
 fn state(target: &Path) -> State {
     let mut files = Vec::new();
-    for name in ["config.toml", ".toha.json"] {
+    for name in ["config.toml", ".toha.json", "outside.txt"] {
         let path = target.join(name);
+        if !path.exists() {
+            continue;
+        }
         files.push((name.into(), fs::read(&path).unwrap(), mode(&path)));
     }
     assert!(
@@ -1056,4 +1059,76 @@ fn person_update_outside_conflict_guidance_describes_a_working_manual_retry() {
 #[test]
 fn staged_update_outside_conflict_guidance_describes_a_working_manual_retry() {
     outside_guidance_retry(true);
+}
+
+#[test]
+fn deleted_edit_owned_file_takeover_compares_empty_outside_bytes() {
+    let fixture = Fixture::new();
+    git(&fixture.target, &["rm", "config.toml"]);
+    fs::write(fixture.target.join("outside.txt"), "operator bytes\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for name in ["outside.txt", ".toha.json"] {
+            fs::set_permissions(fixture.target.join(name), fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+    }
+    fixture.commit("operator deletes edit-owned file");
+    fs::write(
+        fixture.template.join("template.yml"),
+        "name: cfg\nignore: [.keep]\n",
+    )
+    .unwrap();
+    fs::write(
+        fixture.template.join("template/config.toml"),
+        "[other]\nkeep = 1\n",
+    )
+    .unwrap();
+    fixture.unrelated_template_change();
+    let before = state(&fixture.target);
+    for flags in [
+        &["--update", "--dry-run"][..],
+        &["--update"][..],
+        &["--update", "--force", "--dry-run"][..],
+        &["--update", "--force"][..],
+    ] {
+        let output = fixture.apply(flags);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "deleted edit-owned takeover must conflict: {output:?}"
+        );
+        let document = support::first_document(&output.stdout);
+        assert_eq!(document["kind"], "conflict", "{document}");
+        assert!(
+            document["message"]
+                .as_str()
+                .unwrap()
+                .contains("conflicting files"),
+            "{document}"
+        );
+        assert_eq!(state(&fixture.target), before, "refusal must be atomic");
+        assert!(!fixture.target.join("config.toml").exists());
+    }
+    // Absence is empty content, not a blanket refusal of missing targets.
+    fs::write(fixture.template.join("template/config.toml"), "").unwrap();
+    let preview = fixture.apply(&["--update", "--dry-run"]);
+    assert!(
+        preview.status.success(),
+        "matching empty preview: {preview:?}"
+    );
+    assert_eq!(state(&fixture.target), before);
+    let output = fixture.apply(&["--update"]);
+    assert!(output.status.success(), "matching empty apply: {output:?}");
+    assert!(
+        fs::read(fixture.target.join("config.toml"))
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        fs::read(fixture.target.join("outside.txt")).unwrap(),
+        b"operator bytes\n"
+    );
+    assert!(fixture.target.join("new.txt").exists());
 }

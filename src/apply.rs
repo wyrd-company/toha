@@ -487,9 +487,7 @@ impl Plan {
         let mut conflicts = Vec::new();
         for (path, regions, values, index) in takeovers {
             check_edit_path(target, path)?;
-            let Some(current) = read_current(target, path)? else {
-                continue;
-            };
+            let current = read_current(target, path)?;
             let desired = match resolved.iter().find(|edit| &edit.path == path) {
                 Some(edit) => edit
                     .image
@@ -497,7 +495,13 @@ impl Plan {
                     .expect("a whole-file image always writes"),
                 None => self.file_image(index)?,
             };
-            let outside = self.outside_owned(&current, path, regions, values, base, false)?;
+            let outside = match current {
+                Some(current) => {
+                    self.outside_owned(&current, path, regions, values, base, false)?
+                }
+                // There is no document to mask after a committed deletion.
+                None => Vec::new(),
+            };
             let candidate = self.outside_owned(&desired, path, regions, values, base, true)?;
             if outside != candidate {
                 conflicts.push(path.clone());

@@ -62,15 +62,17 @@ without force.
 When a file changes from bounded edits to whole-file ownership, Toha compares
 its committed content with previously owned edits removed against the planned
 whole-file content with previous and new owned edits removed. Those bytes must
-match. If the planned file has no managed blocks or values, its whole content
+match. An absent committed file contributes empty outside content, so a
+committed deletion conflicts with non-empty planned outside content even with
+force. If the planned file has no managed blocks or values, its whole content
 is compared. A mismatch can occur without an operator change: lines previously
 inside a managed block can appear as ordinary text in the planned whole file.
 The transition then conflicts, even if the old region is undrifted or you use
 `--force`.
 
-To continue, edit and commit the listed project files so their content outside
+To continue, restore or edit the listed project files so their content outside
 previously owned edits matches the planned whole-file content outside its owned
-edits, then retry the same apply command. For example, if a formerly managed
+edits. Commit those changes, then retry the same apply command. For example, if a formerly managed
 line becomes ordinary text in the planned file, retain that line as ordinary
 text in the project file by removing its old region markers. Force cannot
 resolve this outside-content conflict. Files already owned as whole files

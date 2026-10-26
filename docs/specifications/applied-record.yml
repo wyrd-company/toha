@@ -79,8 +79,9 @@ description: >-
   recorded revision, not persisted as authorization. Edit-to-whole transitions
   compare committed content with prior owned edits removed against planned
   whole-file content with prior and new owned edits removed. Mismatched outside
-  bytes conflict even without operator changes; they have no recorded template
-  ancestor. Region force never overrides that conflict. An explicit
+  bytes conflict even without operator changes; an absent committed file has
+  empty outside content and still participates in this comparison. Those bytes
+  have no recorded template ancestor. Region force never overrides that conflict. An explicit
   force choice belongs to the current apply or preview, not the applied record
   or staged interview. The candidate does
   not replay documents from the old applied entry. Current staged document
