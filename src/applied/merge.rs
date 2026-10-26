@@ -345,8 +345,13 @@ fn normalized_files(project: &Project, application: &Application) -> Result<Entr
     use gix::filter::plumbing::pipeline::convert::ToGitOutcome;
     let repo = project.repo();
     let (mut pipeline, _) = repo.filter_pipeline(None).map_err(git)?;
-    // Renormalization deliberately ignores historical indexed CRLF bytes.
-    let empty = gix::index::State::new(repo.object_hash());
+    // This pipeline only compares bytes and computes hashes. It never admits
+    // content to the index or writes blobs, so safecrlf's check-in round-trip
+    // policy must not reject historical inputs during comparison.
+    let (comparison, _) = repo.filter_pipeline(None).map_err(git)?;
+    let (mut comparison, mut attributes) = comparison.into_parts();
+    comparison.options_mut().crlf_roundtrip_check =
+        gix::filter::plumbing::pipeline::CrlfRoundTripCheck::Skip;
     let mut entries = Entries::new();
     for (path, (id, kind)) in &application.files {
         let mode = gix::index::entry::Mode::from(*kind);
@@ -355,8 +360,19 @@ fn normalized_files(project: &Project, application: &Application) -> Result<Entr
         } else {
             let relative = repo_path_for(project.target(), &BString::from(path.as_str()));
             let bytes = worktree_bytes(repo, &mut pipeline, *id, relative.as_str(), mode)?;
-            let converted = pipeline
-                .convert_to_git(bytes.as_slice(), Path::new(relative.as_str()), &empty)
+            let entry = attributes
+                .at_path(Path::new(relative.as_str()), None, &repo.objects)
+                .map_err(git)?;
+            let converted = comparison
+                .convert_to_git(
+                    bytes.as_slice(),
+                    Path::new(relative.as_str()),
+                    &mut |_, attrs| {
+                        entry.matching_attributes(attrs);
+                    },
+                    // Renormalize independently of historical indexed CRLF.
+                    &mut |_| Ok(None),
+                )
                 .map_err(git)?;
             match converted {
                 ToGitOutcome::Unchanged(bytes) | ToGitOutcome::Buffer(bytes) => {
@@ -482,13 +498,54 @@ fn merge_inner(
         .set_raw_value("merge.renormalize", "true")
         .map_err(git)?;
     config.commit().map_err(git)?;
-    let mut outcome = merge_repo
-        .merge_trees(base_full, ours_full, theirs_full, labels, opts.into())
+    // Only the merge input converter gets this exception. It reads stored
+    // objects into memory buffers; capture and the write transaction keep the
+    // repository's safecrlf policy. The merge result writer receives bytes
+    // separately and never uses this filter pipeline.
+    let mut blob_merge = merge_repo
+        .merge_resource_cache(Default::default())
         .map_err(git)?;
+    blob_merge.filter.filter.options_mut().crlf_roundtrip_check =
+        gix::filter::plumbing::pipeline::CrlfRoundTripCheck::Skip;
+    let mut diff_cache = merge_repo
+        .diff_resource_cache_for_tree_diff()
+        .map_err(git)?;
+    let mut outcome = gix::merge::plumbing::tree(
+        base_full.as_ref(),
+        ours_full.as_ref(),
+        theirs_full.as_ref(),
+        labels,
+        &merge_repo,
+        |buf| merge_repo.write_blob(buf).map(|id| id.detach()),
+        &mut Default::default(),
+        &mut diff_cache,
+        &mut blob_merge,
+        opts,
+    )
+    .map_err(git)?;
     let how = gix::merge::tree::TreatAsUnresolved::git();
 
     // Compute the change list from the merged tree vs the operator's target.
-    let merged_full = outcome.tree.write().map_err(git)?.detach();
+    let merged_full = outcome.tree.write(|tree| {
+        // Preserve the porcelain editor's entry validation before this tree
+        // is stored. The plumbing editor cannot be wrapped directly.
+        use gix::objs::WriteTo;
+        let mut data = Vec::new();
+        tree.write_to(&mut data).map_err(git)?;
+        let id = gix::objs::compute_hash(merge_repo.object_hash(), gix::objs::Kind::Tree, &data)
+            .map_err(git)?;
+        gix::Tree::from_data(id, data, &merge_repo)
+            .edit()
+            .map_err(git)?
+            .write()
+            .map(|id| id.detach())
+            .map_err(git)
+    })?;
+    let mut outcome = gix::merge::tree::Outcome {
+        tree: merge_repo.edit_tree(merged_full).map_err(git)?,
+        conflicts: outcome.conflicts,
+        failed_on_first_unresolved_conflict: outcome.failed_on_first_unresolved_conflict,
+    };
     let theirs_sub = subtree(project, theirs_full, target)?;
     let merged_sub = subtree(project, merged_full, target)?;
     let ours_sub = subtree(project, ours_full, target)?;
