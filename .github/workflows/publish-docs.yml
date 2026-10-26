@@ -3,21 +3,65 @@
 #   publishes: docs
 # ---
 name: Publish docs
+
+# Publishes docs/user/ to wyrd.foo through the wyrd.foo reusable workflow:
+# when the CD workflow succeeds for a pushed release tag, on a push of a
+# toha-docs tag, and by dispatch for an existing tag or commit. The docs come
+# from the ref. A plain push to main does not publish. The publisher reads the
+# release tag's GitHub Release, which the CD workflow creates, so a release
+# publishes only after that workflow succeeds.
 on:
+  workflow_run:  # zizmor: ignore[dangerous-triggers]
+    workflows: [ CD ]
+    types: [ completed ]
   push:
-    branches: [main]
-    paths:
-      - docs/**
+    tags:
+      - "toha-docs@*"
   workflow_dispatch:
-permissions:
-  contents: read
+    inputs:
+      ref:
+        description: Tag or commit to publish
+        required: true
+        type: string
+      feature:
+        description: Feature a product on the front page
+        type: boolean
+        default: false
+      feature-product:
+        description: The product key to feature; empty when the repo has one product
+        type: string
+        default: ""
+      feature-days:
+        description: How long the feature lasts, in days
+        type: string
+        default: "14"
+      feature-reason:
+        description: For example "New MCP server"; default "New release"
+        type: string
+        default: ""
+
+permissions: {}
+
 jobs:
   publish:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      # ryl disable-line rule:line-length
-      - uses: wyrd-company/wyrd.foo/.github/actions/publish-docs@fdb54b12e88eaf51a2b22714db63c80aba2ed88a # v1
-        with:
-          app-id: ${{ secrets.WYRD_TOOLS_DOCS_PUBLISHER_APP_ID }}
-          private-key: ${{ secrets.WYRD_TOOLS_DOCS_PUBLISHER_PRIVATE_KEY }}
+    name: Publish to wyrd.foo
+    # The CD workflow runs for release tags and by dispatch. A dispatched run
+    # publishes nothing, so only a successful run from a push, which names a
+    # release tag as its head branch, publishes docs.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository)
+    permissions:
+      contents: read
+    uses: wyrd-company/wyrd.foo/.github/workflows/publish-docs.yml@v2
+    with:
+      ref: ${{ inputs.ref || github.event.workflow_run.head_branch || github.ref_name }}
+      feature: ${{ inputs.feature || false }}
+      feature-product: ${{ inputs.feature-product || '' }}
+      feature-days: ${{ inputs.feature-days || '14' }}
+      feature-reason: ${{ inputs.feature-reason || '' }}
+    secrets:
+      WYRD_TOOLS_DOCS_PUBLISHER_APP_ID: ${{ secrets.WYRD_TOOLS_DOCS_PUBLISHER_APP_ID }}
+      WYRD_TOOLS_DOCS_PUBLISHER_PRIVATE_KEY: ${{ secrets.WYRD_TOOLS_DOCS_PUBLISHER_PRIVATE_KEY }}

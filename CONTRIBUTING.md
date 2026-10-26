@@ -36,6 +36,10 @@ use the bump that fits the change. Run `intentional status` and
 `intentional check`. Do not apply an intent in a feature pull request; applying
 it is a release operation.
 
+The public docs in `docs/user/` are their own release unit, `toha-docs`. A change
+to those docs alone carries an intent for `toha-docs`, so the docs release
+without a new `toha` version.
+
 ## Releases
 
 A pushed stable SemVer tag that matches the `Cargo.toml` version runs the CD
@@ -45,9 +49,14 @@ and then publishes to these channels:
 - crates.io: the `toha` crate
 - Homebrew: the `wyrd-company/tools` tap
 - APT and RPM: `repo.wyrd.foo`
-- Documentation: `wyrd.tools/docs/toha`, when the GitHub Release is published
+- Documentation: `wyrd.foo/docs/toha`, through the Publish docs workflow after
+  the CD workflow succeeds
 
 A run started by hand builds the binaries and publishes nothing.
+
+A pushed `toha-docs@<version>` tag publishes the docs alone, and a manual run of
+the Publish docs workflow publishes the docs at a given tag or commit. A push to
+`main` publishes nothing.
 
 ### Preparing a release
 
@@ -65,7 +74,8 @@ acceptance. Each step names the tool that owns it; see
    ```
 
 2. Apply the release and refresh the lock file. `intentional apply` writes
-   `Cargo.toml` and `CHANGELOG.md` and consumes the intents; `cargo update -p
+   `Cargo.toml`, `CHANGELOG.md` and the versions in `docs/user/docs.yml`, and
+   consumes the intents; `cargo update -p
    toha` refreshes the `toha` entry in `Cargo.lock` that Intentional does not
    project:
 
@@ -76,7 +86,7 @@ acceptance. Each step names the tool that owns it; see
    ```
 
 3. Commit the applied release as one commit: `Cargo.toml`, `Cargo.lock`,
-   `CHANGELOG.md`, and the consumed intent deletions.
+   `CHANGELOG.md`, `docs/user/docs.yml`, and the consumed intent deletions.
 
 4. Validate the applied commit. `intentional status` reports no pending intents,
    tag authority at the previous version, and manifest drift at the new version;
