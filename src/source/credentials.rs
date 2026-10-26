@@ -225,20 +225,13 @@ impl Supplied {
     /// it refused, otherwise `message`, with every supplied secret removed.
     pub(crate) fn message(&self, message: String) -> String {
         let state = self.lock();
-        let mut message = state.refusal.clone().unwrap_or(message);
-        let mut forms: Vec<String> = state
+        let message = state.refusal.clone().unwrap_or(message);
+        let forms: Vec<String> = state
             .secrets
             .iter()
             .flat_map(|s| written_forms(s))
             .collect();
-        // A form can hold a shorter one, as a padded encoding holds the
-        // unpadded one. Longer forms go first, so that none leaves a fragment.
-        forms.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
-        forms.dedup();
-        for form in forms {
-            message = message.replace(&form, "<redacted>");
-        }
-        message
+        without(&message, &forms)
     }
 
     /// Keep `password` out of the operation's messages, with the standard and
@@ -260,6 +253,41 @@ impl Supplied {
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
+}
+
+/// `message` with each span that an occurrence of any of `forms` covers
+/// replaced by `<redacted>`. Occurrences are found in the original text and can
+/// overlap: a padded encoding holds the unpadded one, one secret can start
+/// another, and a secret that ends as it starts can be sent back twice sharing
+/// that part. Replacing their union leaves no byte of any of them behind.
+fn without(message: &str, forms: &[String]) -> String {
+    let mut spans = Vec::new();
+    for form in forms.iter().filter(|form| !form.is_empty()) {
+        let step = form.chars().next().map_or(1, char::len_utf8);
+        let mut from = 0;
+        while let Some(found) = message[from..].find(form.as_str()) {
+            let start = from + found;
+            spans.push((start, start + form.len()));
+            from = start + step;
+        }
+    }
+    spans.sort_unstable();
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for (start, end) in spans {
+        match merged.last_mut() {
+            Some(last) if start < last.1 => last.1 = last.1.max(end),
+            _ => merged.push((start, end)),
+        }
+    }
+    let mut kept = String::with_capacity(message.len());
+    let mut copied = 0;
+    for (start, end) in merged {
+        kept.push_str(&message[copied..start]);
+        kept.push_str("<redacted>");
+        copied = end;
+    }
+    kept.push_str(&message[copied..]);
+    kept
 }
 
 /// The ways a gix message can write `secret`: as text, as Rust escapes it in
@@ -555,7 +583,7 @@ mod tests {
     }
 
     #[test]
-    fn a_longer_secret_goes_first_whatever_the_order() {
+    fn a_secret_that_starts_another_leaves_no_fragment() {
         // Each later secret starts with the earlier one, in text and in base64.
         let supplied = Supplied::default();
         supplied.keep_out(USER, "sample-token");
@@ -564,6 +592,30 @@ mod tests {
         secrets.extend(encodings(USER, "sample-token-2"));
         assert!(secrets[1].starts_with(&encodings(USER, "sample-token")[0]));
         assert_removed(&supplied, &secrets);
+    }
+
+    #[test]
+    fn overlapping_occurrences_leave_no_part_of_a_secret() {
+        // Each secret ends as it starts, and the echo shares that part between
+        // two occurrences, which overlap in every written form.
+        let password = "sample-overlap-sample";
+        let [encoded, ..] = encodings(USER, "token-sam");
+        let echoes = [
+            format!("{password}{}", &password[6..]),
+            format!("{encoded}{}", &encoded[4..]),
+        ];
+        let supplied = Supplied::default();
+        supplied.keep_out(USER, password);
+        supplied.keep_out(USER, "token-sam");
+        for (n, (echo, secret)) in echoes.iter().zip([password, encoded.as_str()]).enumerate() {
+            let (first, last) = (echo.find(secret).unwrap(), echo.rfind(secret).unwrap());
+            assert!(
+                first < last && last < first + secret.len(),
+                "echo {n} does not overlap"
+            );
+            let message = supplied.message(written(echo));
+            assert!(message == REDACTED, "echo {n} keeps part of a secret");
+        }
     }
 
     #[test]
