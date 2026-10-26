@@ -2258,16 +2258,27 @@ fn a_pure_base_apply_failure_names_rebaseline_and_preserves_the_project() {
     );
 }
 
-#[test]
-fn autocrlf_update_merges_in_repository_form() {
+// Exercise the public CLI / UpdateSession boundary with the same blob forms
+// as a repository whose CRLF files were committed by a different Git client.
+fn autocrlf_update_case(operator: &str, attributes: &str, normalized_head: bool) {
     let iso = tempfile::tempdir().unwrap();
     let source = tempfile::tempdir().unwrap();
     let root = tempfile::tempdir().unwrap();
-    let before = "one\ntwo\nthree\nfour\nfive\n";
+    let before = "one\r\ntwo\r\nthree\r\nfour\r\nfive\r\n";
     template(source.path(), QUESTION, before);
     repository(source.path());
+    // Keep source fixture bytes independent of the host's Git configuration.
+    git(source.path(), &["config", "core.autocrlf", "false"]);
     repository(root.path());
     git(root.path(), &["config", "core.autocrlf", "true"]);
+    std::fs::write(
+        root.path().join(".gitattributes"),
+        format!("untouched.bin -text\n{attributes}"),
+    )
+    .unwrap();
+    let untouched = b"operator\r\nuntouched\nbytes\0";
+    std::fs::write(root.path().join("untouched.bin"), untouched).unwrap();
+    commit(root.path());
     let source_uri = support::file_url(source.path());
     let address = format!(
         "{}@{}",
@@ -2281,17 +2292,75 @@ fn autocrlf_update_merges_in_repository_form() {
         json!({"label":"sample"}),
         &[],
     ));
-    // Simulate an existing CRLF blob committed before normalization was enabled.
-    // The repository's effective setting remains autocrlf=true for UpdateSession.
-    std::fs::write(root.path().join("result.txt"), before.replace('\n', "\r\n")).unwrap();
-    git(root.path(), &["-c", "core.autocrlf=false", "add", "."]);
-    git(
+    let base = record(root.path(), ".toha.json")["applications"][0]["paths"]["result.txt"]["blob"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let expected_base = if attributes.contains("-text") {
+        before.to_owned()
+    } else {
+        before.replace("\r\n", "\n")
+    };
+    assert_eq!(
+        blob_bytes(root.path(), &base),
+        expected_base.as_bytes(),
+        "captured base form"
+    );
+    std::fs::write(root.path().join("result.txt"), operator).unwrap();
+    // Git's automatic clean conversion deliberately preserves an existing
+    // indexed CRLF blob. Model such history without changing the effective
+    // configuration used by the update itself.
+    if normalized_head {
+        commit(root.path());
+    } else {
+        git(root.path(), &["-c", "core.autocrlf=false", "add", "."]);
+        git(
+            root.path(),
+            &["commit", "-q", "-m", "existing CRLF content"],
+        );
+        assert_eq!(
+            blob_bytes(root.path(), "HEAD:result.txt"),
+            operator.as_bytes()
+        );
+    }
+    assert_eq!(
+        git(root.path(), &["config", "--get", "core.autocrlf"]),
+        "true"
+    );
+    assert!(
+        git(root.path(), &["check-attr", "text", "--", "result.txt"]).contains(
+            if attributes.contains("-text") {
+                "unset"
+            } else if attributes.contains("text ") {
+                "set"
+            } else {
+                "unspecified"
+            }
+        )
+    );
+    let prior_record = std::fs::read(root.path().join(".toha.json")).unwrap();
+    let unchanged = document(&run(
+        iso.path(),
+        &address,
         root.path(),
-        &["commit", "-q", "-m", "existing CRLF content"],
+        json!({}),
+        &["--update"],
+    ));
+    assert_eq!(
+        unchanged["status"], "already-current",
+        "equivalent captured forms: {unchanged}"
+    );
+    assert_eq!(
+        std::fs::read(root.path().join("result.txt")).unwrap(),
+        operator.as_bytes()
+    );
+    assert_eq!(
+        std::fs::read(root.path().join(".toha.json")).unwrap(),
+        prior_record
     );
     std::fs::write(
         source.path().join("template/result.txt"),
-        "one\ntwo\nthree\nfour\nFIVE\n",
+        "one\r\ntwo\r\nthree\r\nfour\r\nFIVE\r\n",
     )
     .unwrap();
     commit(source.path());
@@ -2300,21 +2369,207 @@ fn autocrlf_update_merges_in_repository_form() {
         source_uri,
         git(source.path(), &["rev-parse", "HEAD"])
     );
-    let out = run(
+    let value = document(&run(
         iso.path(),
         &address,
         root.path(),
-        json!({"label":"sample"}),
+        json!({}),
         &["--update"],
-    );
-    let value = document(&out);
+    ));
+    let actual = std::fs::read(root.path().join("result.txt")).unwrap();
+    let conflict = attributes.contains("-merge") || operator.contains("operator-five");
+    if attributes.contains("-merge") {
+        assert_eq!(
+            actual,
+            operator.as_bytes(),
+            "binary conflict retains exact operator bytes"
+        );
+    } else if conflict {
+        let actual = String::from_utf8(actual).unwrap();
+        assert!(actual.contains("<<<<<<< operator\r\n"), "{actual:?}");
+        assert!(
+            actual.starts_with(
+                "one\r\ntwo\r\nthree\r\nfour\r\n<<<<<<< operator\r\noperator-five\r\n"
+            ),
+            "operator conflict hunk must retain its bytes: {actual:?}"
+        );
+    } else {
+        let expected = operator.replace("five", "FIVE");
+        let expected = if attributes.contains("eol=lf") {
+            expected.replace("\r\n", "\n")
+        } else {
+            expected
+        };
+        assert_eq!(actual, expected.as_bytes(), "{value}");
+    }
     assert_eq!(
-        std::fs::read(root.path().join("result.txt")).unwrap(),
-        b"one\r\ntwo\r\nthree\r\nfour\r\nFIVE\r\n",
+        !git(root.path(), &["ls-files", "-u"]).is_empty(),
+        conflict,
         "{value}"
     );
+    assert_eq!(
+        std::fs::read(root.path().join("untouched.bin")).unwrap(),
+        untouched,
+        "unmerged operator bytes must not change"
+    );
+    if !conflict {
+        commit(root.path());
+        assert_eq!(
+            document(&run(
+                iso.path(),
+                &address,
+                root.path(),
+                json!({}),
+                &["--update"]
+            ))["status"],
+            "already-current"
+        );
+    }
+}
+
+fn blob_bytes(root: &Path, name: &str) -> Vec<u8> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["cat-file", "blob", name])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    out.stdout
+}
+
+#[test]
+fn autocrlf_update_merges_in_repository_form() {
+    autocrlf_update_case("one\r\ntwo\r\nthree\r\nfour\r\nfive\r\n", "", false);
+}
+#[test]
+fn autocrlf_update_keeps_disjoint_operator_edits() {
+    autocrlf_update_case("OPERATOR\r\ntwo\r\nthree\r\nfour\r\nfive\r\n", "", false);
+}
+#[test]
+fn autocrlf_update_preserves_a_real_conflict() {
+    autocrlf_update_case(
+        "one\r\ntwo\r\nthree\r\nfour\r\noperator-five\r\n",
+        "",
+        false,
+    );
+}
+#[test]
+fn autocrlf_update_respects_binary_attributes() {
+    autocrlf_update_case(
+        "OPERATOR\r\ntwo\r\nthree\r\nfour\r\nfive\r\n",
+        "result.txt -text -merge\n",
+        false,
+    );
+}
+#[test]
+fn autocrlf_update_respects_explicit_lf_attributes() {
+    autocrlf_update_case(
+        "OPERATOR\r\ntwo\r\nthree\r\nfour\r\nfive\r\n",
+        "result.txt text eol=lf\n",
+        true,
+    );
+}
+#[test]
+fn autocrlf_update_with_normalized_blobs_is_clean() {
+    autocrlf_update_case("one\r\ntwo\r\nthree\r\nfour\r\nfive\r\n", "", true);
+}
+
+#[test]
+fn autocrlf_update_respects_unset_text_attributes() {
+    autocrlf_update_case(
+        "OPERATOR\r\ntwo\r\nthree\r\nfour\r\nfive\r\n",
+        "result.txt -text\n",
+        false,
+    );
+}
+
+#[test]
+fn system_autocrlf_and_another_git_client_reproduce_the_windows_blob_forms() {
+    let iso = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    template(source.path(), QUESTION, "first {{ label }}\n");
+    repository(source.path());
+    repository(root.path());
+    // Model the runner: Toha reads autocrlf from system config, while fixture
+    // commits ignore system config. A user can also inherit CRLF blobs from
+    // another client or enable autocrlf after those blobs were committed.
+    let config = iso.path().join("fixture-git-system-config");
+    std::fs::write(&config, "[core]\n\tautocrlf = true\n").unwrap();
+    let invoke = |flags: &[&str]| {
+        let address = format!(
+            "{}@{}",
+            support::file_url(source.path()),
+            git(source.path(), &["rev-parse", "HEAD"])
+        );
+        let answers = iso.path().join("answers.json");
+        std::fs::write(
+            &answers,
+            json!({"template":address,"answers":{"label":"sample"}}).to_string(),
+        )
+        .unwrap();
+        let out = support::isolated_command(iso.path())
+            .env_remove("GIT_CONFIG_NOSYSTEM")
+            .env("GIT_CONFIG_SYSTEM", &config)
+            .arg("apply")
+            .arg(&address)
+            .arg(root.path())
+            .arg("--answers")
+            .arg(answers)
+            .args(flags)
+            .output()
+            .unwrap();
+        document(&out)
+    };
+    invoke(&[]);
+    let captured = |root: &Path| {
+        record(root, ".toha.json")["applications"][0]["paths"]["result.txt"]["blob"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let base = captured(root.path());
+    assert_eq!(
+        blob_bytes(root.path(), &base),
+        b"first sample\n",
+        "base is normalized LF"
+    );
+    assert_eq!(
+        std::fs::read(root.path().join("result.txt")).unwrap(),
+        b"first sample\r\n",
+        "source checkout is CRLF"
+    );
+    commit(root.path());
+    assert_eq!(
+        blob_bytes(root.path(), "HEAD:result.txt"),
+        b"first sample\r\n",
+        "other client's HEAD is raw CRLF"
+    );
+    std::fs::write(
+        source.path().join("template/result.txt"),
+        "second {{ label }}\n",
+    )
+    .unwrap();
+    commit(source.path());
+    let result = invoke(&["--update"]);
     assert!(
-        git(root.path(), &["ls-files", "-u"]).is_empty(),
-        "unedited text must not conflict"
+        result["merge"]["conflicted"].as_array().unwrap().is_empty(),
+        "{result}"
+    );
+    let candidate = captured(root.path());
+    assert_eq!(
+        blob_bytes(root.path(), &candidate),
+        b"second sample\r\n",
+        "candidate capture preserves indexed CRLF form"
+    );
+    assert_eq!(
+        std::fs::read(root.path().join("result.txt")).unwrap(),
+        b"second sample\r\n"
+    );
+    assert_eq!(
+        blob_bytes(root.path(), &base),
+        b"first sample\n",
+        "recorded old-source identity remains unchanged"
     );
 }

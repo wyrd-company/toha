@@ -267,17 +267,16 @@ fn an_occupied_path_refuses_and_cleans_up_the_candidate_ref() {
 }
 
 fn read_snapshot(project: &Project, id: &str) -> Application {
+    let root = project
+        .repo()
+        .workdir()
+        .unwrap()
+        .canonicalize()
+        .expect("canonical fixture repository");
     APPLICATIONS.with(|apps| {
         apps.borrow()
-            .get(&(project.repo().workdir().unwrap().to_owned(), id.to_owned()))
-            .unwrap_or_else(|| {
-                panic!(
-                    "snapshot key missing: workdir={:?}, canonical={:?}, stored={:?}",
-                    project.repo().workdir(),
-                    project.repo().workdir().unwrap().canonicalize(),
-                    apps.borrow().keys().collect::<Vec<_>>()
-                )
-            })
+            .get(&(root, id.to_owned()))
+            .expect("fixture snapshot")
             .clone()
     })
 }
@@ -1054,11 +1053,15 @@ fn an_already_current_update_reports_no_change_and_carries_the_frozen_instant() 
         "2026-03-14T09:26:53+00:00[UTC]"
     );
     // Behavior 15: it is already current.
-    assert!(super::is_already_current(
-        &read_snapshot(&project, BASE_ID),
-        &new,
-        &snapshot_inputs()
-    ));
+    assert!(
+        super::is_already_current(
+            &project,
+            &read_snapshot(&project, BASE_ID),
+            &new,
+            &snapshot_inputs()
+        )
+        .unwrap()
+    );
 
     // A different (edited) template output is NOT already current.
     let src2 = tempfile::tempdir().unwrap();
@@ -1071,11 +1074,15 @@ fn an_already_current_update_reports_no_change_and_carries_the_frozen_instant() 
         &crate::hook::ProcessRunner,
     )
     .unwrap();
-    assert!(!super::is_already_current(
-        &read_snapshot(&project, BASE_ID),
-        &new2,
-        &snapshot_inputs()
-    ));
+    assert!(
+        !super::is_already_current(
+            &project,
+            &read_snapshot(&project, BASE_ID),
+            &new2,
+            &snapshot_inputs()
+        )
+        .unwrap()
+    );
 }
 
 #[test]
@@ -1467,4 +1474,35 @@ fn snapshot_fixture_keys_follow_canonical_repository_identity() {
     let project = open(&alias, "app");
     let application = read_snapshot(&project, BASE_ID);
     assert_eq!(application.target().as_str(), "app");
+}
+
+#[test]
+fn normalized_application_identity_preserves_symlink_targets() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q", "-b", "main"]);
+    git(root, &["config", "core.autocrlf", "true"]);
+    write(&root.join(".gitattributes"), b"app/link text eol=crlf\n");
+    git(root, &["add", "."]);
+    git(root, &["commit", "-qm", "attributes"]);
+    make_snapshot_entries(
+        root,
+        BASE_ID,
+        "app",
+        &[("link", b"target\n", EntryKind::Link)],
+    );
+    make_snapshot_entries(
+        root,
+        NEW_ID,
+        "app",
+        &[("link", b"target\r\n", EntryKind::Link)],
+    );
+    let project = open(root, "app");
+    let base = read_snapshot(&project, BASE_ID);
+    let new = read_snapshot(&project, NEW_ID);
+    assert_ne!(
+        normalized_files(&project, &base).unwrap(),
+        normalized_files(&project, &new).unwrap(),
+        "link targets are byte identities even with text attributes"
+    );
 }

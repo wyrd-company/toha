@@ -640,11 +640,15 @@ impl Plan {
         }
         let project =
             crate::applied::Project::open(target).map_err(|e| PlanError::Path(e.to_string()))?;
-        let root = project
-            .as_ref()
-            .and_then(|p| p.repo().workdir())
-            .unwrap_or(target.as_path());
-        let record = crate::applied::project::record_relative(root)
+        // CanonicalTarget uses the OS canonical form (including Windows verbatim
+        // prefixes). Use that same form for the repository's reserved path.
+        let root = match project.as_ref().and_then(|p| p.repo().workdir()) {
+            Some(root) => root
+                .canonicalize()
+                .map_err(|e| PlanError::Path(e.to_string()))?,
+            None => target.as_path().to_owned(),
+        };
+        let record = crate::applied::project::record_relative(&root)
             .map_err(|e| PlanError::Path(e.to_string()))?;
         for mutation in plan.mutations() {
             let path = match mutation {
