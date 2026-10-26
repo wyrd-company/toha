@@ -955,6 +955,19 @@ fn replace_node(node: CstNode, input: CstInputValue) {
 // Retraction — removing an ownership a later template version dropped
 // ---------------------------------------------------------------------------
 
+/// Check prior ownership without using the new desired body. Missing regions
+/// follow retraction's idempotent absence rule; malformed markers remain errors.
+pub(crate) fn region_has_drift(
+    current: &[u8],
+    region: &RegionKey,
+    marker: &MarkerStyle,
+) -> Result<bool, RegionError> {
+    let text = std::str::from_utf8(current).map_err(|_| RegionError::NotUtf8(region.clone()))?;
+    Ok(find_region(text, marker, region)?.is_some_and(|located| {
+        checksum(&text[located.body_start..located.end_start]) != located.recorded
+    }))
+}
+
 /// Remove the managed region `region` from `current`, leaving the operator's
 /// surrounding content. Returns the bytes unchanged when the region is absent,
 /// so retraction is idempotent.

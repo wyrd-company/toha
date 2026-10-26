@@ -57,10 +57,23 @@ proposed-design:
     Content uses Git built-in stored-form conversions only. A preview records
     nothing.
   ownership-transitions: >-
-    Whole ownership replaces the entire captured file; removed whole targets
+    Whole-owned paths use whole-file merge inputs; removed whole targets
     disappear from the template side. Hook-owned paths carry forward from the
     recorded entry unless the new plan owns or changes them. Edit ownership
-    retains region keys and JSON paths. The builder retracts uncovered regions
+    retains region keys and JSON paths. Before any retraction or takeover, every
+    previously edit-owned region is checksum-checked against the committed project
+    image using its recorded revision's marker syntax. Unforced drift refuses
+    retained, removed and covered regions. Explicit region force authorizes the
+    bounded transition. A prior edit-owned path becoming whole-owned must have
+    matching outside bytes: committed content with prior owned edits removed
+    must equal planned whole-file content with prior and new owned edits removed.
+    An absent committed file contributes empty outside content, without parsing
+    a nonexistent document; the planned image is still masked normally.
+    A mismatch reports a conflict even without operator changes, with force or
+    with an undrifted region. Manual recovery edits and commits the project file
+    to match that planned outside content before retry. No outside template
+    ancestor is inferred.
+    Whole-owned paths retain their normal three-way merge. The builder retracts uncovered regions
     and JSON values before applying new intent, removing array elements from
     highest index down. A new whole mutation covers all old ownership; a region
     covers the same key; a JSON value covers values at or below its path.
@@ -86,13 +99,27 @@ proposed-design:
   candidate-and-preview: >-
     Real updates check out HEAD into a temporary directory, apply ownership
     retractions and the new plan through a destination adapter, run trusted
-    hooks there and capture the candidate. Planning retains the real project
-    target for invocation facts. Preview uses the same builder on in-memory HEAD
-    images with hooks suppressed and hook-owned bytes carried forward; those
-    outputs are marked not previewed. CLI dry-run and interview DryRun both
+    hooks there and capture the candidate. Prior-region validation runs on HEAD
+    before ownership changes can erase its evidence. The old render reconstructs
+    marker syntax as transient application data; it is not serialized. Separately,
+    before internal whole-file overwrite, the shared edit resolver validates the
+    new plan with the current invocation's force choice. Injection-only targets
+    use HEAD after ownership retractions; a whole-file rule supplies its planned
+    image. That planned image grants no authority to erase prior region drift.
+    Unforced drift refuses before project writes, including when the desired
+    region body is unchanged. Explicit force replaces the drifted block while
+    preserving surrounding operator bytes; it also permits an owned region's
+    retraction. Marker, anchor and path errors
+    remain errors under force; JSON values retain convergence without force.
+    Planning retains the real project target for invocation facts. Preview uses
+    the same candidate builder with hooks suppressed and hook-owned bytes carried
+    forward; those outputs are marked not previewed. CLI dry-run and interview DryRun both
     select this path. Preview changes no project file, index, record or staged
     record. Equal revision, answers, parts, referenced context and output produce
-    already-current without a retained candidate.
+    already-current without a retained candidate. UpdateOptions carries force and
+    dry-run for one apply or preview. UpdateSession::apply and Prepared::finish
+    default to unforced; their with-options variants accept the explicit choice.
+    Staged records retain interview progress and trust, not force authorization.
   merge: >-
     Base is HEAD with the target replaced by the merge base rendered from the
     recorded revision, answers (documents included), parts, generated instant

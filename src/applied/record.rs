@@ -223,6 +223,8 @@ pub struct Application {
     pub context: BTreeMap<String, Value>,
     paths: Vec<PathOwnership>,
     pub(crate) files: BTreeMap<String, (gix::ObjectId, gix::objs::tree::EntryKind)>,
+    /// Marker syntax reconstructed from the recorded revision; never serialized.
+    pub(crate) region_markers: BTreeMap<(String, String), crate::inject::MarkerStyle>,
 }
 
 impl fmt::Debug for Application {
@@ -261,7 +263,17 @@ impl Application {
             parts,
             paths,
             files: BTreeMap::new(),
+            region_markers: BTreeMap::new(),
         }
+    }
+    pub(crate) fn region_marker(&self, path: &TargetPath, key: &str) -> crate::inject::MarkerStyle {
+        self.region_markers
+            .get(&(path.to_string(), key.to_owned()))
+            .cloned()
+            .unwrap_or_else(|| {
+                crate::inject::MarkerStyle::infer(path)
+                    .unwrap_or(crate::inject::MarkerStyle::line("#"))
+            })
     }
     pub fn template(&self) -> &str {
         &self.template

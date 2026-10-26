@@ -194,17 +194,7 @@ impl Plan {
                 return Err(ApplyError::Symlink(file.path.clone()));
             }
         }
-        // Every injected target's path is protected before it is read or written.
-        for edit in &self.edits {
-            if has_symlink_component(target.as_path(), edit.path()).map_err(|source| {
-                ApplyError::Io {
-                    path: target.as_path().join(edit.path().as_path()),
-                    source,
-                }
-            })? {
-                return Err(ApplyError::Symlink(edit.path().clone()));
-            }
-        }
+        self.check_edit_paths(target)?;
         // A ready hook's cwd is known now, so it is symlink-checked before any
         // file is written, exactly as before. A deferred hook's cwd is not known
         // until its result-reading fields render, so it is checked in the loop.
@@ -431,6 +421,178 @@ impl Plan {
         })
     }
 
+    /// Protect every recorded region against HEAD before retraction or takeover
+    /// can erase it. The new plan's effective image is checked independently.
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn preflight_owned_regions(
+        &self,
+        target: &CanonicalTarget,
+        base: &crate::applied::Application,
+        force: bool,
+    ) -> Result<(), ApplyError> {
+        let mut drift = Vec::new();
+        for owned in base.paths() {
+            let crate::applied::Origin::Edit { regions, .. } = owned.origin() else {
+                continue;
+            };
+            if regions.is_empty() {
+                continue;
+            }
+            let path = owned.path();
+            check_edit_path(target, path)?;
+            let Some(bytes) = read_current(target, path)? else {
+                continue;
+            };
+            for key in regions {
+                let region = RegionKey::parse(key).map_err(ApplyError::Record)?;
+                let marker = base.region_marker(path, key);
+                if crate::inject::region_has_drift(&bytes, &region, &marker)? && !force {
+                    drift.push((path.clone(), region));
+                }
+            }
+        }
+        if drift.is_empty() {
+            Ok(())
+        } else {
+            Err(ApplyError::Drift(drift))
+        }
+    }
+
+    /// An edit-owned path has no template ancestor for its outside bytes.
+    /// Whole-file takeover can proceed only when that operator content agrees.
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn preflight_takeovers(
+        &self,
+        target: &CanonicalTarget,
+        base: &crate::applied::Application,
+        force: bool,
+    ) -> Result<(), ApplyError> {
+        let takeovers: Vec<_> = base
+            .paths()
+            .iter()
+            .filter_map(|owned| {
+                let crate::applied::Origin::Edit { regions, values } = owned.origin() else {
+                    return None;
+                };
+                self.files
+                    .iter()
+                    .position(|file| &file.path == owned.path())
+                    .map(|index| (owned.path(), regions, values, index))
+            })
+            .collect();
+        if takeovers.is_empty() {
+            return Ok(());
+        }
+        let resolved = self.resolve_edits(target, force)?;
+        let mut conflicts = Vec::new();
+        for (path, regions, values, index) in takeovers {
+            check_edit_path(target, path)?;
+            let current = read_current(target, path)?;
+            let desired = match resolved.iter().find(|edit| &edit.path == path) {
+                Some(edit) => edit
+                    .image
+                    .clone()
+                    .expect("a whole-file image always writes"),
+                None => self.file_image(index)?,
+            };
+            let outside = match current {
+                Some(current) => {
+                    self.outside_owned(&current, path, regions, values, base, false)?
+                }
+                // There is no document to mask after a committed deletion.
+                None => Vec::new(),
+            };
+            let candidate = self.outside_owned(&desired, path, regions, values, base, true)?;
+            if outside != candidate {
+                conflicts.push(path.clone());
+            }
+        }
+        if conflicts.is_empty() {
+            Ok(())
+        } else {
+            Err(ApplyError::Conflicts(conflicts))
+        }
+    }
+
+    #[allow(clippy::too_many_arguments, clippy::result_large_err)]
+    fn outside_owned(
+        &self,
+        bytes: &[u8],
+        path: &TargetPath,
+        regions: &[String],
+        values: &[String],
+        base: &crate::applied::Application,
+        candidate: bool,
+    ) -> Result<Vec<u8>, ApplyError> {
+        let mut bytes = bytes.to_vec();
+        for key in regions {
+            let region = RegionKey::parse(key).map_err(ApplyError::Record)?;
+            bytes = crate::inject::retract_region(&bytes, &region, &base.region_marker(path, key))?;
+        }
+        let mut values = values.to_vec();
+        if candidate {
+            for edit in self.edits.iter().filter(|edit| edit.path() == path) {
+                match edit {
+                    PlannedEdit::Region(region) => {
+                        bytes =
+                            crate::inject::retract_region(&bytes, &region.region, &region.marker)?
+                    }
+                    PlannedEdit::JsonValue(value) => values.push(value.json_path.to_string()),
+                }
+            }
+        }
+        let mut values = values
+            .into_iter()
+            .map(|value| crate::inject::JsonPath::parse(&value).map_err(ApplyError::Record))
+            .collect::<Result<Vec<_>, _>>()?;
+        // Remove array siblings by numeric index, including multi-digit indexes.
+        values.sort_by(|left, right| {
+            use crate::inject::JsonPathSegment::{Index, Key};
+            for (a, b) in left.segments().iter().zip(right.segments()) {
+                let ordering = match (a, b) {
+                    (Key(a), Key(b)) => a.cmp(b),
+                    (Index(a), Index(b)) => a.cmp(b),
+                    (Key(_), Index(_)) => std::cmp::Ordering::Less,
+                    (Index(_), Key(_)) => std::cmp::Ordering::Greater,
+                };
+                if ordering != std::cmp::Ordering::Equal {
+                    return ordering;
+                }
+            }
+            left.segments().len().cmp(&right.segments().len())
+        });
+        values.dedup();
+        for json_path in values.into_iter().rev() {
+            bytes = crate::inject::retract_json_value(
+                &bytes,
+                &json_path,
+                crate::applied::capture::json_format(path),
+            )?;
+        }
+        Ok(bytes)
+    }
+
+    /// Validate the same effective edit images used by apply without writing.
+    /// Updates use the invocation's force choice here before their internal
+    /// whole-file overwrite can consume managed-region drift.
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn preflight_edits(
+        &self,
+        target: &CanonicalTarget,
+        force: bool,
+    ) -> Result<(), ApplyError> {
+        self.check_edit_paths(target)?;
+        self.resolve_edits(target, force).map(|_| ())
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn check_edit_paths(&self, target: &CanonicalTarget) -> Result<(), ApplyError> {
+        for edit in &self.edits {
+            check_edit_path(target, edit.path())?;
+        }
+        Ok(())
+    }
+
     /// Resolves every injected target in memory. Each target starts from its
     /// whole-file image when a `files:` rule supplies one, otherwise from the
     /// current bytes read once; its edits fold in source order. Returns one entry
@@ -554,6 +716,18 @@ impl Plan {
         })?;
         Ok(())
     }
+}
+
+/// Protect an injected or previously edit-owned path before reading its bytes.
+#[allow(clippy::result_large_err)]
+fn check_edit_path(target: &CanonicalTarget, path: &TargetPath) -> Result<(), ApplyError> {
+    if has_symlink_component(target.as_path(), path).map_err(|source| ApplyError::Io {
+        path: target.as_path().join(path.as_path()),
+        source,
+    })? {
+        return Err(ApplyError::Symlink(path.clone()));
+    }
+    Ok(())
 }
 
 /// Reads a target's current bytes, or `None` when it does not yet exist.

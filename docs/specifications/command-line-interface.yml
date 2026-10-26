@@ -202,8 +202,9 @@ description: >-
   an operand starts with `-`, then the operands. `stage` places `--async`
   after its operands unless they follow `--`.
 
-  Overwriting. `apply` writes no file over an existing file unless `--force` is
-  given. When any target file exists and `--force` is absent, `apply` writes
+  Overwriting. A fresh `apply` writes no whole file over an existing file unless
+  `--force` is given. When a whole-file target exists and `--force` is absent,
+  a fresh `apply` writes
   nothing and exits with code 1. On the person and agent routes it lists the
   conflicting paths on standard error one per line after `conflicting files:`
   and names the same command with `--force`; the scripted route reports an
@@ -232,7 +233,23 @@ description: >-
   with `--force`, while the scripted route reports an `error` document of kind
   `conflict`. `--force` replaces only a drifted region; a changed owned JSON
   value converges without it, and `--force` never creates a target, repairs
-  malformed input, or makes an invalid path valid.
+  malformed input, or makes an invalid path valid. Updates retain their
+  whole-file three-way merge behavior and enforce region drift before the
+  candidate's retraction, whole-file takeover or internal overwrite. Prior
+  edit-owned regions are checked against the committed image, independently of
+  the new plan's effective image. This includes `apply --update`, staged
+  `apply PATH` and their previews. Retry a refused update with `--force` on that
+  apply invocation. An unchanged desired region body still refuses operator
+  drift. Trust and accepted or reconstructed interview state do not grant force.
+  `stage` records no force choice and has no force flag. Region force permits
+  replacement or retraction of the owned block. An edit-owned path becoming
+  whole-owned compares committed content with prior owned edits removed against
+  planned whole-file content with prior and new owned edits removed. A mismatch
+  conflicts with or without region force, even without operator changes or if
+  the old region is undrifted. Person and agent refusals tell the caller to edit
+  and commit the listed project files to match that planned outside content and
+  retry; they do not suggest force clears this conflict. Matching outside bytes
+  are admitted; ordinary whole-owned three-way merging is unchanged.
 
   Environment. `toha --help` lists every environment variable that toha
   reads in an `Environment:` section after its options. `TOHA_CONFIG` and

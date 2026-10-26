@@ -268,7 +268,7 @@ pub(crate) fn retract_uncovered(
         let rel = owned.path().to_string();
         if let Origin::Edit { regions, values } = owned.origin() {
             let uncovered = uncovered_ownership(regions, values, plan_index.get(rel.as_str()));
-            apply_retraction(source_dir, target, &rel, &uncovered)?;
+            apply_retraction(source_dir, target, &rel, &uncovered, base)?;
         }
     }
     Ok(())
@@ -562,6 +562,7 @@ fn apply_retraction(
     target: &RepoPath,
     rel: &str,
     uncovered: &Uncovered,
+    base: &Application,
 ) -> Result<(), RecordError> {
     if uncovered.regions.is_empty() && uncovered.values.is_empty() {
         return Ok(());
@@ -583,8 +584,7 @@ fn apply_retraction(
             path: rel.to_owned(),
             message,
         })?;
-        let marker = crate::inject::MarkerStyle::infer(&tpath)
-            .unwrap_or(crate::inject::MarkerStyle::line("#"));
+        let marker = base.region_marker(&tpath, key);
         bytes = crate::inject::retract_region(&bytes, &region, &marker)
             .map_err(|e| RecordError::Git(e.to_string()))?;
     }
@@ -609,7 +609,7 @@ fn apply_retraction(
 }
 
 /// The JSON family of a target by extension, defaulting to strict JSON.
-fn json_format(path: &TargetPath) -> crate::inject::JsonFormat {
+pub(crate) fn json_format(path: &TargetPath) -> crate::inject::JsonFormat {
     match path
         .as_path()
         .extension()
@@ -644,6 +644,17 @@ pub(crate) fn restore_base(
     application: &mut Application,
     mut plan: Plan,
 ) -> Result<(), RecordError> {
+    application.region_markers = plan
+        .edits
+        .iter()
+        .filter_map(|edit| match edit {
+            crate::inject::PlannedEdit::Region(region) => Some((
+                (region.path.to_string(), region.region.to_string()),
+                region.marker.clone(),
+            )),
+            _ => None,
+        })
+        .collect();
     let repo = project.repo();
     let head = repo.head_tree().map_err(git_error)?;
     let rendered: BTreeSet<_> = plan
