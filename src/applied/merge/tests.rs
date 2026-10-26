@@ -1794,6 +1794,8 @@ fn safecrlf_merge_fixture(reject: bool) {
     if reject {
         let error = result.unwrap_err().to_string();
         assert!(error.contains("CRLF would be replaced by LF"), "{error}");
+        assert!(error.contains("app/new.txt"), "{error}");
+        eprintln!("candidate admission refused: {error}");
         for ((path, bytes), mode) in paths.iter().zip(before).zip(modes) {
             assert_eq!(std::fs::read(path).unwrap(), bytes, "{}", path.display());
             assert_eq!(std::fs::metadata(path).unwrap().permissions(), mode);
