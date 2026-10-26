@@ -188,7 +188,15 @@ never sent to another origin.
   `RemoteState::Refused`.
 
 The password stays out of every Toha error and report, and the `Debug` output
-of `Credential` hides it. Toha does not store or erase the credential. While a
+of `Credential` hides it. So does the Basic encoding of `username:password`
+that an HTTPS request carries, in standard and URL-safe base64, with or without
+padding, when a remote sends it back. Toha removes these as plain text, as Rust
+escapes them in a quoted string, and as the decimal byte list that a Git
+transport error shows for what a remote sent. The same applies to a credential
+from the Git configuration that answers a challenge while a resolver is in
+scope. A remote that sends a credential back in another form, such as another
+encoding, is outside this protection. Toha does not store or erase the
+credential. While a
 resolver is in scope, curl's verbose output (`GIT_CURL_VERBOSE` or
 `gitoxide.http.verbose`) is off for the operation's HTTP connections, as it
 writes the request headers that carry the credential. A clone inside the scope
