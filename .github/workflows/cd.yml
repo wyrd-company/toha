@@ -7,6 +7,14 @@ on:
   push:
     tags: [ "[0-9]+.[0-9]+.[0-9]+" ]
   workflow_dispatch:
+    inputs:
+      mode:
+        description: >-
+          build-only builds the release binaries and publishes nothing.
+          crates-0.4.0-recovery publishes or verifies only the toha 0.4.0 crate.
+        type: choice
+        options: [ build-only, crates-0.4.0-recovery ]
+        default: build-only
 permissions:
   contents: read
 concurrency:
@@ -15,6 +23,7 @@ concurrency:
 jobs:
   credential-preflight:
     name: Verify publication credentials are configured
+    if: github.event_name != 'workflow_dispatch' || inputs.mode != 'crates-0.4.0-recovery'
     runs-on: ubuntu-latest
     permissions: {}
     steps:
@@ -25,7 +34,6 @@ jobs:
         if: github.event_name == 'push'
         shell: bash
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
           FORMULAE_PUBLISH_KEY: ${{ secrets.FORMULAE_PUBLISH_KEY }}
           REPO_WYRD_FOO_PUBLISHER_APP_ID: ${{ secrets.REPO_WYRD_FOO_PUBLISHER_APP_ID }}
           REPO_WYRD_FOO_PUBLISHER_PRIVATE_KEY: ${{ secrets.REPO_WYRD_FOO_PUBLISHER_PRIVATE_KEY }}
@@ -34,7 +42,7 @@ jobs:
         run: |
           set -euo pipefail
           missing=0
-          for variable in CARGO_REGISTRY_TOKEN FORMULAE_PUBLISH_KEY \
+          for variable in FORMULAE_PUBLISH_KEY \
             REPO_WYRD_FOO_PUBLISHER_APP_ID REPO_WYRD_FOO_PUBLISHER_PRIVATE_KEY \
             WYRD_TOOLS_DOCS_PUBLISHER_APP_ID WYRD_TOOLS_DOCS_PUBLISHER_PRIVATE_KEY; do
             if [[ -z "${!variable}" ]]; then
@@ -226,14 +234,112 @@ jobs:
     if: github.event_name == 'push'
     needs: release
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: dtolnay/rust-toolchain@1.88.0
+      - name: Package the crate before authentication
+        shell: bash
+        run: cargo package --locked
+      # crates.io Trusted Publishing: exchange this run's GitHub OIDC token for
+      # a temporary publish token. The action revokes it when the job ends.
+      - name: Authenticate to crates.io
+        id: auth
+        uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1
       - name: Publish or verify the crate
         shell: bash
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: scripts/release/ensure-crate.sh "$GITHUB_REF_NAME"
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$CARGO_REGISTRY_TOKEN" ]]; then
+            echo "::error::crates.io Trusted Publishing returned no temporary token."
+            exit 1
+          fi
+          scripts/release/ensure-crate.sh "$GITHUB_REF_NAME"
+
+  # Publishes or verifies the toha 0.4.0 crate from the 0.4.0 tag's commit.
+  # It runs only from a crates-0.4.0-recovery dispatch on main and touches no
+  # other channel.
+  crates-recovery:
+    name: Recover the toha 0.4.0 crate
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'crates-0.4.0-recovery'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: e85881a5cab643488fe0000b982177d18784fad1
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - name: Verify recovery source identity
+        shell: bash
+        env:
+          RECOVERY_VERSION: 0.4.0
+          RECOVERY_COMMIT: e85881a5cab643488fe0000b982177d18784fad1
+          RECOVERY_TAG_OBJECT: eebc73aa821c9e764f7ec29be8667c7810cb79e7
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          [[ "$GITHUB_REF" == refs/heads/main ]] ||
+            fail "Dispatch the recovery from main, not $GITHUB_REF."
+          [[ "$(git rev-parse HEAD)" == "$RECOVERY_COMMIT" ]] ||
+            fail "HEAD is not $RECOVERY_COMMIT."
+          tag="refs/tags/$RECOVERY_VERSION"
+          [[ "$(git cat-file -t "$tag")" == tag ]] ||
+            fail "$tag is not an annotated tag."
+          [[ "$(git rev-parse "$tag")" == "$RECOVERY_TAG_OBJECT" ]] ||
+            fail "$tag is not tag object $RECOVERY_TAG_OBJECT."
+          [[ "$(git rev-parse "$tag^{commit}")" == "$RECOVERY_COMMIT" ]] ||
+            fail "$tag does not point to $RECOVERY_COMMIT."
+          manifest_version="$(sed -nE 's/^version = "([^"]+)"/\1/p' Cargo.toml | head -1)"
+          [[ "$manifest_version" == "$RECOVERY_VERSION" ]] ||
+            fail "Cargo.toml declares $manifest_version, not $RECOVERY_VERSION."
+          git ls-files --error-unmatch Cargo.lock >/dev/null ||
+            fail "Cargo.lock is not committed."
+          [[ -z "$(git status --porcelain --untracked-files=all)" ]] ||
+            fail "The recovery checkout is not clean."
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - name: Package the crate before authentication
+        shell: bash
+        env:
+          RECOVERY_COMMIT: e85881a5cab643488fe0000b982177d18784fad1
+        run: |
+          set -euo pipefail
+          cargo package --locked
+          archive=target/package/toha-0.4.0.crate
+          vcs_commit="$(tar -xzOf "$archive" toha-0.4.0/.cargo_vcs_info.json | jq -r .git.sha1)"
+          if [[ "$vcs_commit" != "$RECOVERY_COMMIT" ]]; then
+            echo "::error::The package records commit $vcs_commit, not $RECOVERY_COMMIT."
+            exit 1
+          fi
+          sha256sum "$archive"
+      - name: Authenticate to crates.io
+        id: auth
+        uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1
+      - name: Publish or verify the crate
+        shell: bash
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$CARGO_REGISTRY_TOKEN" ]]; then
+            echo "::error::crates.io Trusted Publishing returned no temporary token."
+            exit 1
+          fi
+          scripts/release/ensure-crate.sh 0.4.0
+      - name: Record the crate package identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive=target/package/toha-0.4.0.crate
+          sha256sum "$archive"
+          tar -xzOf "$archive" toha-0.4.0/.cargo_vcs_info.json
 
   homebrew:
     if: github.event_name == 'push'
