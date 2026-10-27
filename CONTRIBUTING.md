@@ -52,9 +52,7 @@ and then publishes to these channels:
 - Documentation: `wyrd.foo/docs/toha`, through the Publish docs workflow after
   the CD workflow succeeds
 
-A run started by hand in the default `build-only` mode builds the binaries and
-publishes nothing. The `crates-0.4.0-recovery` mode publishes only the `toha`
-0.4.0 crate; see [Recovering the 0.4.0 crate](#recovering-the-040-crate).
+A run started by hand builds the binaries and publishes nothing.
 
 A pushed `toha-docs@<version>` tag publishes the docs alone, and a manual run of
 the Publish docs workflow publishes the docs at a given tag or commit. A push to
@@ -152,8 +150,8 @@ crates.io publication uses
 [Trusted Publishing](https://crates.io/docs/trusted-publishing) and needs no
 repository secret. The `toha` crate accepts new versions only through Trusted
 Publishing, from repository `wyrd-company/toha` and workflow `cd.yml` with no
-environment. Each crate publishing job exchanges the run's GitHub OIDC token for
-a temporary crates.io token with the pinned `rust-lang/crates-io-auth-action`,
+environment. The `crates` job exchanges the run's GitHub OIDC token for a
+temporary crates.io token with the pinned `rust-lang/crates-io-auth-action`,
 right before publication. Only the publication step receives the token, and the
 action revokes it when the job ends. A rejected exchange stops the job before
 publication; there is no stored-token fallback.
@@ -168,23 +166,3 @@ corrections with the next product release.
 
 `task release:check` runs a crates.io publish dry run, so a package that does
 not build from its published files fails the local gate.
-
-### Recovering the 0.4.0 crate
-
-The `crates-0.4.0-recovery` mode publishes or verifies the `toha` 0.4.0 crate
-from its released source. Dispatch it on `main`:
-
-```sh
-gh workflow run cd.yml --ref main -f mode=crates-0.4.0-recovery
-```
-
-The run starts only the `crates-recovery` job: no credential preflight, build,
-GitHub Release, Homebrew, or package job. The job checks out commit
-`e85881a5cab643488fe0000b982177d18784fad1` and stops before authentication
-unless the run is on `main`, HEAD is that commit, `0.4.0` is the annotated tag
-object `eebc73aa821c9e764f7ec29be8667c7810cb79e7` for that commit, `Cargo.toml`
-declares 0.4.0, `Cargo.lock` is committed, the checkout is clean, and the locked
-package's `.cargo_vcs_info.json` records that commit. It then runs that commit's
-`scripts/release/ensure-crate.sh 0.4.0` with Rust 1.88.0 and logs the package
-checksum. The Trusted Publishing provenance of the run names the `main` workflow
-commit; the package names the release commit.
