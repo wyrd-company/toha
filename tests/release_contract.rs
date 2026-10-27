@@ -712,3 +712,863 @@ fn transport_command_mutations_expose_windows_ssh_false_coverage() {
             .contains("Task must report Windows SSH")
     );
 }
+
+// Crate publication: the job selector, Trusted Publishing authentication and
+// the 0.4.0 recovery source identity. The job scripts run against a real Git
+// fixture with Cargo and the crates.io index stubbed.
+
+const AUTH_ACTION: &str =
+    "rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9";
+const AUTH_TOKEN: &str = "${{ steps.auth.outputs.token }}";
+const RECOVERY_MODE: &str = "crates-0.4.0-recovery";
+const RECOVERY_VERSION: &str = "0.4.0";
+const RECOVERY_COMMIT: &str = "e85881a5cab643488fe0000b982177d18784fad1";
+const RECOVERY_TAG_OBJECT: &str = "eebc73aa821c9e764f7ec29be8667c7810cb79e7";
+const PUBLISHING_JOBS: [&str; 2] = ["crates", "crates-recovery"];
+
+#[derive(Debug, PartialEq)]
+enum Operand {
+    Text(String),
+    Null,
+    Bool(bool),
+}
+
+impl Operand {
+    fn truthy(&self) -> bool {
+        match self {
+            Operand::Text(text) => !text.is_empty(),
+            Operand::Null => false,
+            Operand::Bool(value) => *value,
+        }
+    }
+
+    fn equals(&self, other: &Operand) -> bool {
+        match (self, other) {
+            (Operand::Text(left), Operand::Text(right)) => left.eq_ignore_ascii_case(right),
+            (left, right) => left == right,
+        }
+    }
+}
+
+/// A GitHub expression over the operands CD job conditions use:
+/// `github.event_name`, `inputs.mode` and string literals, joined by `==`,
+/// `!=`, `&&`, `||` and parentheses. Anything else, such as a status function,
+/// is an error.
+struct Condition<'a> {
+    tokens: Vec<String>,
+    at: usize,
+    event: &'a str,
+    mode: Option<&'a str>,
+}
+
+impl Condition<'_> {
+    fn evaluate(text: &str, event: &str, mode: Option<&str>) -> Result<bool, String> {
+        let mut tokens = Vec::new();
+        let mut rest = text.trim();
+        while !rest.is_empty() {
+            let token = if let Some(literal) = rest.strip_prefix('\'') {
+                let end = literal.find('\'').ok_or("unterminated literal")?;
+                rest[..end + 2].to_owned()
+            } else if let Some(operator) = ["==", "!=", "&&", "||", "(", ")"]
+                .into_iter()
+                .find(|operator| rest.starts_with(operator))
+            {
+                operator.to_owned()
+            } else {
+                let end = rest
+                    .find(|c: char| !(c.is_ascii_alphanumeric() || c == '.' || c == '_'))
+                    .unwrap_or(rest.len());
+                if end == 0 {
+                    return Err(format!("unsupported condition: {text}"));
+                }
+                rest[..end].to_owned()
+            };
+            rest = rest[token.len()..].trim_start();
+            tokens.push(token);
+        }
+        let mut condition = Condition {
+            tokens,
+            at: 0,
+            event,
+            mode,
+        };
+        let value = condition.or()?;
+        if condition.at != condition.tokens.len() {
+            return Err(format!("unsupported condition: {text}"));
+        }
+        Ok(value.truthy())
+    }
+
+    fn next_is(&self, token: &str) -> bool {
+        self.tokens.get(self.at).is_some_and(|next| next == token)
+    }
+
+    fn or(&mut self) -> Result<Operand, String> {
+        let mut value = self.and()?;
+        while self.next_is("||") {
+            self.at += 1;
+            let right = self.and()?;
+            value = Operand::Bool(value.truthy() || right.truthy());
+        }
+        Ok(value)
+    }
+
+    fn and(&mut self) -> Result<Operand, String> {
+        let mut value = self.compare()?;
+        while self.next_is("&&") {
+            self.at += 1;
+            let right = self.compare()?;
+            value = Operand::Bool(value.truthy() && right.truthy());
+        }
+        Ok(value)
+    }
+
+    fn compare(&mut self) -> Result<Operand, String> {
+        let left = self.primary()?;
+        for (operator, equal) in [("==", true), ("!=", false)] {
+            if self.next_is(operator) {
+                self.at += 1;
+                let right = self.primary()?;
+                return Ok(Operand::Bool(left.equals(&right) == equal));
+            }
+        }
+        Ok(left)
+    }
+
+    fn primary(&mut self) -> Result<Operand, String> {
+        let token = self
+            .tokens
+            .get(self.at)
+            .ok_or("incomplete condition")?
+            .clone();
+        self.at += 1;
+        match token.as_str() {
+            "(" => {
+                let value = self.or()?;
+                if !self.next_is(")") {
+                    return Err("unbalanced condition".into());
+                }
+                self.at += 1;
+                Ok(value)
+            }
+            "github.event_name" => Ok(Operand::Text(self.event.to_owned())),
+            "inputs.mode" => Ok(self
+                .mode
+                .map_or(Operand::Null, |mode| Operand::Text(mode.to_owned()))),
+            literal if literal.starts_with('\'') => {
+                Ok(Operand::Text(literal.trim_matches('\'').to_owned()))
+            }
+            other => Err(format!("unsupported condition operand: {other}")),
+        }
+    }
+}
+
+/// The jobs a run for `event` starts. A job runs when its condition holds and
+/// every job it needs ran; a status function in a condition is unsupported.
+fn planned_jobs(
+    workflow: &Value,
+    event: &str,
+    mode: Option<&str>,
+) -> Result<std::collections::BTreeSet<String>, String> {
+    let jobs = workflow["jobs"].as_object().unwrap();
+    let mut planned = std::collections::BTreeSet::new();
+    let mut decided = std::collections::BTreeSet::new();
+    while decided.len() < jobs.len() {
+        let before = decided.len();
+        for (name, job) in jobs {
+            let needs: Vec<&str> = match &job["needs"] {
+                Value::Null => vec![],
+                Value::String(need) => vec![need.as_str()],
+                Value::Array(needs) => needs.iter().filter_map(Value::as_str).collect(),
+                other => return Err(format!("unsupported needs: {other}")),
+            };
+            if decided.contains(name) || !needs.iter().all(|need| decided.contains(*need)) {
+                continue;
+            }
+            let condition = match &job["if"] {
+                Value::Null => true,
+                Value::String(text) => Condition::evaluate(text, event, mode)?,
+                other => return Err(format!("unsupported job condition: {other}")),
+            };
+            if condition && needs.iter().all(|need| planned.contains(*need)) {
+                planned.insert(name.clone());
+            }
+            decided.insert(name.clone());
+        }
+        if decided.len() == before {
+            return Err("job dependencies do not resolve".into());
+        }
+    }
+    Ok(planned)
+}
+
+fn job_set(names: &[&str]) -> std::collections::BTreeSet<String> {
+    names.iter().map(|name| (*name).to_owned()).collect()
+}
+
+fn selector_contract(workflow: &Value) -> Result<(), String> {
+    let input = &workflow["on"]["workflow_dispatch"]["inputs"]["mode"];
+    if input["type"] != "choice"
+        || input["options"] != serde_json::json!(["build-only", RECOVERY_MODE])
+        || input["default"] != "build-only"
+    {
+        return Err("dispatch mode must default to build-only with one recovery choice".into());
+    }
+    let push = planned_jobs(workflow, "push", None)?;
+    let channels = [
+        "credential-preflight",
+        "build",
+        "release",
+        "crates",
+        "homebrew",
+        "packages",
+    ];
+    if push != job_set(&channels) {
+        return Err(format!(
+            "a tag push must run every release channel: {push:?}"
+        ));
+    }
+    // The default, the explicit choice, and an omitted input all build only.
+    for mode in [input["default"].as_str(), Some("build-only"), None] {
+        let manual = planned_jobs(workflow, "workflow_dispatch", mode)?;
+        if manual != job_set(&["credential-preflight", "build"]) {
+            return Err(format!("a build-only dispatch must only build: {manual:?}"));
+        }
+    }
+    let recovery = planned_jobs(workflow, "workflow_dispatch", Some(RECOVERY_MODE))?;
+    if recovery != job_set(&["crates-recovery"]) {
+        return Err(format!(
+            "a recovery dispatch must run only crates-recovery: {recovery:?}"
+        ));
+    }
+    if !workflow["jobs"]["crates-recovery"]["needs"].is_null() {
+        return Err("crates-recovery must not depend on another job".into());
+    }
+    Ok(())
+}
+
+fn strings<'a>(value: &'a Value, found: &mut Vec<&'a str>) {
+    match value {
+        Value::String(text) => found.push(text),
+        Value::Array(items) => items.iter().for_each(|item| strings(item, found)),
+        Value::Object(map) => map.values().for_each(|item| strings(item, found)),
+        _ => {}
+    }
+}
+
+fn contains(value: &Value, needle: &str) -> bool {
+    let mut found = Vec::new();
+    strings(value, &mut found);
+    found.iter().any(|text| text.contains(needle))
+}
+
+fn auth_contract(workflow: &Value) -> Result<(), String> {
+    if workflow["permissions"] != serde_json::json!({"contents": "read"}) {
+        return Err("workflow permissions must stay read-only".into());
+    }
+    if contains(workflow, "secrets.CARGO_REGISTRY_TOKEN") || contains(workflow, "cargo login") {
+        return Err("crate publication must not use a stored crates.io token".into());
+    }
+    for (name, job) in workflow["jobs"].as_object().unwrap() {
+        let publishing = PUBLISHING_JOBS.contains(&name.as_str());
+        if publishing != (job["permissions"]["id-token"] == "write") {
+            return Err(format!(
+                "only crate publishing jobs may request id-token: {name}"
+            ));
+        }
+        if job.get("environment").is_some() {
+            return Err(format!("{name} must not name an environment"));
+        }
+    }
+    for name in PUBLISHING_JOBS {
+        let job = &workflow["jobs"][name];
+        if job["permissions"] != serde_json::json!({"contents": "read", "id-token": "write"}) {
+            return Err(format!(
+                "{name} permissions must be contents read and id-token write"
+            ));
+        }
+        if contains(job, "secrets.") {
+            return Err(format!("{name} must not read a repository secret"));
+        }
+        let steps = steps(workflow, name);
+        let auth: Vec<_> = steps
+            .iter()
+            .enumerate()
+            .filter(|(_, step)| contains(&step["uses"], "crates-io-auth-action"))
+            .collect();
+        let [(at, step)] = auth.as_slice() else {
+            return Err(format!("{name} must authenticate exactly once"));
+        };
+        if step["uses"] != AUTH_ACTION
+            || step["id"] != "auth"
+            || step.get("with").is_some()
+            || step.get("if").is_some()
+            || step.get("continue-on-error").is_some()
+        {
+            return Err(format!(
+                "{name} must use the pinned official auth action as id auth"
+            ));
+        }
+        // Authentication sits right before publication, after packaging.
+        let publish = steps.get(at + 1).ok_or("missing publication after auth")?;
+        if publish["name"] != "Publish or verify the crate"
+            || publish["env"] != serde_json::json!({"CARGO_REGISTRY_TOKEN": AUTH_TOKEN})
+            || publish.get("if").is_some()
+            || publish.get("continue-on-error").is_some()
+        {
+            return Err(format!(
+                "{name} must publish next with only the auth output token"
+            ));
+        }
+        for (index, step) in steps.iter().enumerate() {
+            if index != at + 1
+                && (contains(step, "steps.auth.outputs") || contains(step, "ensure-crate.sh"))
+            {
+                return Err(format!(
+                    "{name} uses the temporary token or publishes in another step"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn recovery_identity_contract(workflow: &Value) -> Result<(), String> {
+    let checkout = &steps(workflow, "crates-recovery")[0];
+    if !contains(&checkout["uses"], "actions/checkout@")
+        || checkout["with"]["ref"] != RECOVERY_COMMIT
+        || checkout["with"]["fetch-depth"] != 0
+        || checkout["with"]["persist-credentials"] != false
+    {
+        return Err("recovery must check out full history at the 0.4.0 commit".into());
+    }
+    let identity = named_step(
+        workflow,
+        "crates-recovery",
+        "Verify recovery source identity",
+    );
+    let package = named_step(
+        workflow,
+        "crates-recovery",
+        "Package the crate before authentication",
+    );
+    if identity["env"]
+        != serde_json::json!({
+            "RECOVERY_VERSION": RECOVERY_VERSION,
+            "RECOVERY_COMMIT": RECOVERY_COMMIT,
+            "RECOVERY_TAG_OBJECT": RECOVERY_TAG_OBJECT,
+        })
+        || package["env"] != serde_json::json!({"RECOVERY_COMMIT": RECOVERY_COMMIT})
+    {
+        return Err("recovery identity must name the immutable 0.4.0 tag and commit".into());
+    }
+    let publish = named_step(workflow, "crates-recovery", "Publish or verify the crate");
+    let invocations: Vec<Vec<&str>> = publish["run"]
+        .as_str()
+        .unwrap()
+        .lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>())
+        .filter(|words| words.first() == Some(&"scripts/release/ensure-crate.sh"))
+        .collect();
+    if invocations != [["scripts/release/ensure-crate.sh", RECOVERY_VERSION]] {
+        return Err("recovery must run the tagged ensure-crate.sh with literal 0.4.0".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn crate_publication_runs_only_where_its_mode_selects() {
+    selector_contract(&workflow()).unwrap();
+}
+
+#[test]
+fn crate_publication_authenticates_only_through_trusted_publishing() {
+    let workflow = workflow();
+    auth_contract(&workflow).unwrap();
+    recovery_identity_contract(&workflow).unwrap();
+}
+
+#[derive(Clone, Copy)]
+enum Exchange {
+    Token,
+    Empty,
+    Rejected,
+}
+
+type Fixup<'a> = &'a dyn Fn(&Path);
+
+/// One run of a publishing job's steps against a tagged fixture checkout.
+struct Run<'a> {
+    workflow: Value,
+    job: &'a str,
+    event: &'a str,
+    git_ref: &'a str,
+    exchange: Exchange,
+    index_status: &'a str,
+    /// The index body; `{local}` stands for the checksum of the local package.
+    index_body: String,
+    /// Changes the release commit before the fixture records its identity.
+    release: Fixup<'a>,
+    /// Changes the checkout after the fixture records its identity.
+    checkout: Fixup<'a>,
+    /// The commit the package records, when it is not the checkout HEAD.
+    vcs_commit: Option<&'a str>,
+}
+
+impl Default for Run<'_> {
+    fn default() -> Self {
+        Run {
+            workflow: workflow(),
+            job: "crates-recovery",
+            event: "workflow_dispatch",
+            git_ref: "refs/heads/main",
+            exchange: Exchange::Token,
+            index_status: "404",
+            index_body: String::new(),
+            release: &|_| {},
+            checkout: &|_| {},
+            vcs_commit: None,
+        }
+    }
+}
+
+impl Run<'_> {
+    fn push() -> Self {
+        Run {
+            job: "crates",
+            event: "push",
+            git_ref: "refs/tags/0.4.0",
+            ..Run::default()
+        }
+    }
+}
+
+fn git(repo: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .args([
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+        ])
+        .args(["-c", "commit.gpgSign=false", "-c", "tag.gpgSign=false"])
+        .args(args)
+        .current_dir(repo)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", repo)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+fn retag(repo: &Path) {
+    git(
+        repo,
+        &["tag", "-f", "-a", "-m", "release", RECOVERY_VERSION, "HEAD"],
+    );
+}
+
+// Records each call. `cargo package` packs the checkout like Cargo does,
+// recording HEAD in `.cargo_vcs_info.json`, with fixed archive metadata.
+const CARGO_STUB: &str = r#"#!/bin/bash
+set -euo pipefail
+version="$(sed -nE 's/^version = "([^"]+)"/\1/p' Cargo.toml | head -1)"
+case "$*" in
+  'metadata --locked --no-deps --format-version 1')
+    printf '{"packages":[{"name":"toha","version":"%s"}]}\n' "$version" ;;
+  'package --locked')
+    echo package >> "$TRACE"
+    stage="$(mktemp -d)/toha-$version"
+    mkdir -p "$stage" target/package
+    printf '{"git":{"sha1":"%s"},"path_in_vcs":""}\n' "${VCS_COMMIT:-$(git rev-parse HEAD)}" \
+      > "$stage/.cargo_vcs_info.json"
+    cp Cargo.toml Cargo.lock "$stage/"
+    tar --mtime=@0 --owner=0 --group=0 --numeric-owner --sort=name \
+      -C "$(dirname "$stage")" -cf - "toha-$version" | gzip -n > "target/package/toha-$version.crate" ;;
+  'publish --locked')
+    echo "publish token=${CARGO_REGISTRY_TOKEN:-absent}" >> "$TRACE" ;;
+  *) echo "unexpected cargo $*" >&2; exit 1 ;;
+esac
+"#;
+
+const CURL_STUB: &str = r#"#!/bin/bash
+set -euo pipefail
+echo lookup >> "$TRACE"
+local="$(sha256sum target/package/toha-*.crate | cut -d' ' -f1)"
+while (( $# )); do
+  if [[ $1 == --output ]]; then sed "s/{local}/$local/" "$INDEX_BODY" > "$2"; shift; fi
+  shift
+done
+printf '%s' "$INDEX_STATUS"
+"#;
+
+/// Runs the job's steps in order. Actions are simulated; each `run` script is
+/// the workflow's own text, run the way GitHub runs `shell: bash`. Returns the
+/// result and the trace of package, auth, lookup and publish calls.
+fn run_publication(run: &Run) -> (Result<(), String>, Vec<String>) {
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path();
+    let repo = root.join("repo");
+    fs::create_dir_all(repo.join("scripts/release")).unwrap();
+    fs::write(
+        repo.join("Cargo.toml"),
+        format!("[package]\nname = \"toha\"\nversion = \"{RECOVERY_VERSION}\"\n"),
+    )
+    .unwrap();
+    fs::write(repo.join("Cargo.lock"), "version = 4\n").unwrap();
+    fs::write(repo.join(".gitignore"), "/target/\n").unwrap();
+    executable(
+        &repo.join("scripts/release/ensure-crate.sh"),
+        include_str!("../scripts/release/ensure-crate.sh"),
+    );
+    git(&repo, &["init", "--quiet", "--initial-branch=main"]);
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "--quiet", "-m", "release"]);
+    retag(&repo);
+    (run.release)(&repo);
+    let commit = git(&repo, &["rev-parse", "HEAD"]);
+    let tag_object = git(&repo, &["rev-parse", RECOVERY_VERSION]);
+    (run.checkout)(&repo);
+
+    let bin = root.join("bin");
+    fs::create_dir(&bin).unwrap();
+    executable(&bin.join("cargo"), CARGO_STUB);
+    executable(&bin.join("curl"), CURL_STUB);
+    fs::write(root.join("index"), &run.index_body).unwrap();
+    let trace = root.join("trace");
+    fs::write(&trace, "").unwrap();
+    let outcome = |result| {
+        let calls = fs::read_to_string(&trace).unwrap();
+        (result, calls.lines().map(str::to_owned).collect())
+    };
+
+    let mut token = None;
+    for step in steps(&run.workflow, run.job) {
+        if let Some(action) = step["uses"].as_str() {
+            if action == AUTH_ACTION {
+                fs::write(&trace, fs::read_to_string(&trace).unwrap() + "auth\n").unwrap();
+                token = match run.exchange {
+                    Exchange::Token => Some("fixture-temporary-token"),
+                    Exchange::Empty => Some(""),
+                    Exchange::Rejected => {
+                        return outcome(Err("auth: crates.io rejected the exchange".into()));
+                    }
+                };
+            } else if !action.starts_with("actions/checkout@")
+                && !action.starts_with("dtolnay/rust-toolchain@")
+            {
+                return outcome(Err(format!("unsupported action: {action}")));
+            }
+            continue;
+        }
+        let script = step["run"].as_str().unwrap();
+        assert!(
+            !script.contains("${{"),
+            "run scripts take inputs through env"
+        );
+        let mut command = Command::new("bash");
+        command
+            .args(["--noprofile", "--norc", "-eo", "pipefail", "-c", script])
+            .current_dir(&repo)
+            .env_clear()
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .env("HOME", root)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("TRACE", &trace)
+            .env("INDEX_BODY", root.join("index"))
+            .env("INDEX_STATUS", run.index_status)
+            .env("GITHUB_EVENT_NAME", run.event)
+            .env("GITHUB_REF", run.git_ref)
+            .env("GITHUB_REF_NAME", run.git_ref.rsplit('/').next().unwrap());
+        if let Some(vcs_commit) = run.vcs_commit {
+            command.env("VCS_COMMIT", vcs_commit);
+        }
+        for (name, value) in step["env"].as_object().into_iter().flatten() {
+            let value = match value.as_str().unwrap() {
+                AUTH_TOKEN => token.expect("the token step runs after auth").to_owned(),
+                // A fixture cannot recreate the real object IDs; the identity
+                // contract pins the declared values.
+                RECOVERY_COMMIT => commit.clone(),
+                RECOVERY_TAG_OBJECT => tag_object.clone(),
+                other if other.contains("${{") => panic!("unsupported step env: {other}"),
+                other => other.to_owned(),
+            };
+            command.env(name, value);
+        }
+        let output = command.output().unwrap();
+        if !output.status.success() {
+            return outcome(Err(format!(
+                "{}: {}{}",
+                step["name"].as_str().unwrap_or("step"),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+    }
+    outcome(Ok(()))
+}
+
+fn index_line(version: &str, checksum: &str) -> String {
+    format!("{{\"name\":\"toha\",\"vers\":\"{version}\",\"cksum\":\"{checksum}\"}}\n")
+}
+
+const VERIFIED: [&str; 4] = ["package", "auth", "package", "lookup"];
+const PUBLISHED: [&str; 5] = [
+    "package",
+    "auth",
+    "package",
+    "lookup",
+    "publish token=fixture-temporary-token",
+];
+
+#[test]
+fn recovery_publishes_the_tagged_crate_from_a_main_dispatch() {
+    // GITHUB_REF_NAME is `main`; ensure-crate.sh still gets 0.4.0.
+    let (result, trace) = run_publication(&Run::default());
+    result.unwrap();
+    assert_eq!(trace, PUBLISHED);
+    let (result, trace) = run_publication(&Run {
+        index_status: "200",
+        index_body: index_line("0.3.0", &"0".repeat(64)),
+        ..Run::default()
+    });
+    result.unwrap();
+    assert_eq!(trace, PUBLISHED, "an index without 0.4.0 publishes");
+}
+
+#[test]
+fn push_publication_authenticates_through_trusted_publishing() {
+    let (result, trace) = run_publication(&Run::push());
+    result.unwrap();
+    assert_eq!(trace, PUBLISHED);
+}
+
+#[test]
+fn recovery_follows_the_index_checksum() {
+    let (result, trace) = run_publication(&Run {
+        index_status: "200",
+        index_body: index_line(RECOVERY_VERSION, "{local}"),
+        ..Run::default()
+    });
+    result.unwrap();
+    assert_eq!(trace, VERIFIED, "matching bytes skip publication");
+    for (status, body, expected) in [
+        (
+            "200",
+            index_line(RECOVERY_VERSION, &"f".repeat(64)),
+            "different package bytes",
+        ),
+        ("500", String::new(), "failed with HTTP 500"),
+    ] {
+        let (result, trace) = run_publication(&Run {
+            index_status: status,
+            index_body: body,
+            ..Run::default()
+        });
+        let error = result.unwrap_err();
+        assert!(error.contains(expected), "{error}");
+        assert_eq!(trace, VERIFIED, "{expected}: no publication");
+    }
+}
+
+#[test]
+fn a_failed_exchange_stops_before_publication() {
+    for base in [Run::default(), Run::push()] {
+        let job = base.job;
+        let (result, trace) = run_publication(&Run {
+            exchange: Exchange::Rejected,
+            ..base
+        });
+        assert!(result.unwrap_err().starts_with("auth:"), "{job}");
+        assert_eq!(trace, ["package", "auth"], "{job}: rejected exchange");
+    }
+    for base in [Run::default(), Run::push()] {
+        let job = base.job;
+        let (result, trace) = run_publication(&Run {
+            exchange: Exchange::Empty,
+            ..base
+        });
+        let error = result.unwrap_err();
+        assert!(
+            error.contains("returned no temporary token"),
+            "{job}: {error}"
+        );
+        assert_eq!(trace, ["package", "auth"], "{job}: missing token");
+    }
+}
+
+/// Each case breaks one part of the recovery identity and names the refusal.
+fn identity_refusals(workflow: &Value) -> Result<(), String> {
+    let none: Fixup = &|_| {};
+    let later: Fixup = &|repo| {
+        git(repo, &["commit", "--quiet", "--allow-empty", "-m", "later"]);
+    };
+    let lightweight: Fixup = &|repo| {
+        git(repo, &["tag", "-f", RECOVERY_VERSION, "HEAD"]);
+    };
+    let bumped: Fixup = &|repo| {
+        fs::write(
+            repo.join("Cargo.toml"),
+            "[package]\nname = \"toha\"\nversion = \"0.4.1\"\n",
+        )
+        .unwrap();
+        git(repo, &["commit", "--quiet", "--amend", "--no-edit", "-a"]);
+        retag(repo);
+    };
+    let unlocked: Fixup = &|repo| {
+        fs::write(repo.join(".gitignore"), "/target/\n/Cargo.lock\n").unwrap();
+        git(repo, &["rm", "--quiet", "--cached", "Cargo.lock"]);
+        git(repo, &["commit", "--quiet", "--amend", "--no-edit", "-a"]);
+        retag(repo);
+    };
+    let modified: Fixup = &|repo| fs::write(repo.join("Cargo.lock"), "changed\n").unwrap();
+    let untracked: Fixup = &|repo| fs::write(repo.join("extra.rs"), "").unwrap();
+    let cases: [(&str, Fixup, Fixup, Option<&str>, &str); 9] = [
+        ("moved HEAD", none, later, None, "HEAD is not"),
+        (
+            "lightweight tag",
+            none,
+            lightweight,
+            None,
+            "is not an annotated tag",
+        ),
+        (
+            "replaced tag object",
+            none,
+            &|repo| {
+                git(
+                    repo,
+                    &["tag", "-f", "-a", "-m", "replaced", RECOVERY_VERSION],
+                );
+            },
+            None,
+            "is not tag object",
+        ),
+        (
+            "tag on another commit",
+            later,
+            none,
+            None,
+            "does not point to",
+        ),
+        (
+            "manifest version",
+            bumped,
+            none,
+            None,
+            "declares 0.4.1, not 0.4.0",
+        ),
+        (
+            "uncommitted lockfile",
+            unlocked,
+            none,
+            None,
+            "Cargo.lock is not committed",
+        ),
+        (
+            "modified source",
+            none,
+            modified,
+            None,
+            "checkout is not clean",
+        ),
+        (
+            "untracked source",
+            none,
+            untracked,
+            None,
+            "checkout is not clean",
+        ),
+        (
+            "package commit",
+            none,
+            none,
+            Some("0123456789abcdef0123456789abcdef01234567"),
+            "The package records commit",
+        ),
+    ];
+    for (case, release, checkout, vcs_commit, expected) in cases {
+        let (result, trace) = run_publication(&Run {
+            workflow: workflow.clone(),
+            release,
+            checkout,
+            vcs_commit,
+            ..Run::default()
+        });
+        match result {
+            Err(error) if error.contains(expected) => {}
+            other => return Err(format!("{case} must refuse with {expected:?}: {other:?}")),
+        }
+        if trace.iter().any(|call| call == "auth") {
+            return Err(format!("{case} reached authentication: {trace:?}"));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn each_wrong_recovery_identity_refuses_before_authentication() {
+    identity_refusals(&workflow()).unwrap();
+    let (result, trace) = run_publication(&Run {
+        git_ref: "refs/heads/feature",
+        ..Run::default()
+    });
+    let error = result.unwrap_err();
+    assert!(error.contains("Dispatch the recovery from main"), "{error}");
+    assert!(trace.is_empty(), "{trace:?}");
+}
+
+#[test]
+fn crate_publication_controls_expose_bypassed_guards() {
+    // A selector widened with `||` runs the recovery on every dispatch.
+    let mut widened = workflow();
+    widened["jobs"]["crates-recovery"]["if"] =
+        format!("github.event_name == 'workflow_dispatch' || inputs.mode == '{RECOVERY_MODE}'")
+            .into();
+    let error = selector_contract(&widened).unwrap_err();
+    assert!(
+        error.contains("a build-only dispatch must only build"),
+        "{error}"
+    );
+
+    // A stored token as fallback for the exchange output.
+    let mut fallback = workflow();
+    let publish = fallback["jobs"]["crates"]["steps"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|step| step["name"] == "Publish or verify the crate")
+        .unwrap();
+    publish["env"]["CARGO_REGISTRY_TOKEN"] =
+        "${{ steps.auth.outputs.token || secrets.CARGO_REGISTRY_TOKEN }}".into();
+    let error = auth_contract(&fallback).unwrap_err();
+    assert!(
+        error.contains("must not use a stored crates.io token"),
+        "{error}"
+    );
+
+    // Without the tag object check, a replaced 0.4.0 tag reaches authentication.
+    let mut unchecked = workflow();
+    let identity = unchecked["jobs"]["crates-recovery"]["steps"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|step| step["name"] == "Verify recovery source identity")
+        .unwrap();
+    let script = identity["run"].as_str().unwrap();
+    let guard = "[[ \"$(git rev-parse \"$tag\")\" == \"$RECOVERY_TAG_OBJECT\" ]] ||\n  fail \"$tag is not tag object $RECOVERY_TAG_OBJECT.\"\n";
+    assert_eq!(script.matches(guard).count(), 1, "tag object guard site");
+    identity["run"] = script.replace(guard, "").into();
+    let error = identity_refusals(&unchecked).unwrap_err();
+    assert!(
+        error.starts_with("replaced tag object must refuse"),
+        "{error}"
+    );
+}
