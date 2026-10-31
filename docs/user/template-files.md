@@ -141,13 +141,15 @@ with `--force`.
 
 New sections use their template defaults. To remove or rename an existing
 section, first move any content you want to keep and remove its markers in the
-target. A template that drops an existing section otherwise fails, so an update
+target. While the file remains generated, a template that drops an existing
+section otherwise fails, so an update
 does not silently discard user content. Preserve the marker pair when editing a
 section; deleting both markers makes the section new on the next apply.
 
 This works for rendered source files and `files` rules. `static` files are
 copied unchanged. Ordinary whole-file conflict checks still apply: use
 `apply --force` when replacing an existing file, or commit edits and use
-`apply --update` for a recorded application. Force preserves user sections. Injections in the same file must stay outside
+`apply --update` for a recorded application. File removal follows the normal whole-file update rules.
+Force preserves user sections. Injections in the same file must stay outside
 user-section bodies.
 For the inverse ownership, see [managed injection regions](template-injection.md).

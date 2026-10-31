@@ -209,7 +209,7 @@ description: >-
   markers fail. Planning validates the rendered source. Before writing any file,
   apply resolves each section against the current UTF-8 target and copies its
   body byte for byte into the rendered image. New sections retain rendered
-  defaults. Existing sections absent from the template fail until the caller
+  defaults. In a retained file, existing sections absent from the template fail until the caller
   moves their content and removes their markers. Force does not bypass these
   checks or replace section bodies. Injections that change a user-section body
   fail before writes. Static files are copied unchanged. Updates
