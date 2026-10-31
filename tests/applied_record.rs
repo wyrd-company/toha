@@ -190,6 +190,124 @@ fn record_override_is_repository_relative_and_written_for_an_unborn_repository()
 }
 
 #[test]
+fn apply_in_bare_repository_worktrees_uses_worktree_attributes_with_or_without_head() {
+    for unborn in [true, false] {
+        let iso = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        let sandbox = tempfile::tempdir().unwrap();
+        let bare = sandbox.path().join("repository.git");
+        let root = sandbox.path().join("working-tree");
+        template(source.path(), QUESTION, "{{ label }}\r\n");
+        std::fs::write(
+            source.path().join("template/.gitattributes"),
+            "result.txt text eol=crlf\n",
+        )
+        .unwrap();
+        git(
+            sandbox.path(),
+            &["init", "--bare", "-q", bare.to_str().unwrap()],
+        );
+        git(
+            &bare,
+            &[
+                "worktree",
+                "add",
+                "--orphan",
+                "-b",
+                "example",
+                root.to_str().unwrap(),
+            ],
+        );
+        if !unborn {
+            commit(&root);
+        }
+        let config_before = std::fs::read(bare.join("config")).unwrap();
+        let head_before = std::fs::read(bare.join("worktrees/working-tree/HEAD")).unwrap();
+        repository(source.path());
+        let source_uri = support::file_url(source.path());
+        let address = format!(
+            "{}@{}",
+            source_uri,
+            git(source.path(), &["rev-parse", "HEAD"])
+        );
+        let result = document(&run(
+            iso.path(),
+            &address,
+            &root,
+            json!({"label":"sample"}),
+            &[],
+        ));
+        assert_eq!(result["status"], "applied");
+        assert_eq!(
+            std::fs::read(root.join("result.txt")).unwrap(),
+            b"sample\r\n"
+        );
+        let applied = record(&root, ".toha.json");
+        let app = &applied["applications"][0];
+        assert_eq!(app["target"], ".");
+        assert_eq!(app["answers"], json!({"label":"sample"}));
+        assert_eq!(
+            app["paths"]["result.txt"]["blob"],
+            git(&root, &["hash-object", "result.txt"])
+        );
+        assert_eq!(app["paths"]["result.txt"]["mode"], "100644");
+        assert_eq!(std::fs::read(bare.join("config")).unwrap(), config_before);
+        assert_eq!(
+            std::fs::read(bare.join("worktrees/working-tree/HEAD")).unwrap(),
+            head_before
+        );
+        assert_eq!(git(&root, &["ls-files"]), "");
+        if unborn {
+            assert!(git(&bare, &["for-each-ref", "refs/heads/example"]).is_empty());
+        }
+        // Once committed, the same linked worktree supports the update path.
+        commit(&root);
+        std::fs::write(
+            source.path().join("template/result.txt"),
+            "updated {{ label }}\r\n",
+        )
+        .unwrap();
+        commit(source.path());
+        let next = format!(
+            "{}@{}",
+            source_uri,
+            git(source.path(), &["rev-parse", "HEAD"])
+        );
+        document(&run(iso.path(), &next, &root, json!({}), &["--update"]));
+        assert_eq!(
+            std::fs::read(root.join("result.txt")).unwrap(),
+            b"updated sample\r\n"
+        );
+        assert_eq!(
+            record(&root, ".toha.json")["applications"][0]["paths"]["result.txt"]["blob"],
+            git(&root, &["hash-object", "result.txt"])
+        );
+        assert_eq!(std::fs::read(bare.join("config")).unwrap(), config_before);
+    }
+}
+
+#[test]
+fn apply_to_a_bare_repository_without_a_worktree_is_refused_before_writes() {
+    let iso = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    template(source.path(), QUESTION, "{{ label }}\n");
+    git(root.path(), &["init", "--bare", "-q"]);
+    let address = support::formal_name(source.path());
+    let out = run(
+        iso.path(),
+        &address,
+        root.path(),
+        json!({"label":"sample"}),
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("the repository has no working tree"));
+    assert!(!root.path().join("result.txt").exists());
+    assert!(!root.path().join(".toha.json").exists());
+}
+
+#[test]
 fn invalid_record_override_is_refused_before_questions_or_writes() {
     let iso = tempfile::tempdir().unwrap();
     let source = tempfile::tempdir().unwrap();
