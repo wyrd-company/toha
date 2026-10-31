@@ -212,7 +212,9 @@ description: >-
   defaults. In a retained file, existing sections absent from the template fail until the caller
   moves their content and removes their markers. Force does not bypass these
   checks or replace section bodies. Injections that change a user-section body
-  fail before writes. Static files are copied unchanged. Updates
+  fail before writes. Apply also validates marker pairs in final injection images
+  before writes, including images that introduce their first user section.
+  Static files are copied unchanged. Updates
   use the same resolver in the candidate checkout; the applied record retains
   whole-file ownership and blob identity.
 

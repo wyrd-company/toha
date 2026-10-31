@@ -700,3 +700,37 @@ fn inject_only_plans_cannot_overwrite_existing_user_sections() {
         original
     );
 }
+
+#[test]
+fn malformed_injected_user_sections_refuse_before_any_file_is_written() {
+    for whole_file in [false, true] {
+        for flags in [&[][..], &["--force"][..], &["--dry-run"][..]] {
+            let temp = tempfile::tempdir().unwrap();
+            let template = make_template(
+                temp.path(),
+                "name: sample\ninject:\n  - into: z.toml\n    region: generated\n    create: true\n    content: '# >>> toha:user notes >>>'\n",
+            );
+            fs::write(template.join("template/a.txt"), "new\n").unwrap();
+            if whole_file {
+                fs::write(template.join("template/z.toml"), "version = 1\n").unwrap();
+            }
+            let target = temp.path().join("out");
+            fs::create_dir(&target).unwrap();
+            let result = apply(&template, &target, flags);
+            if flags == ["--dry-run"] {
+                assert!(result.status.success(), "{}", stderr(&result));
+                assert!(!target.join("a.txt").exists());
+                assert!(!target.join("z.toml").exists());
+                continue;
+            }
+            assert!(!result.status.success(), "{}", stdout(&result));
+            assert!(
+                stderr(&result).contains("unpaired user section"),
+                "{}",
+                stderr(&result)
+            );
+            assert!(!target.join("a.txt").exists());
+            assert!(!target.join("z.toml").exists());
+        }
+    }
+}
