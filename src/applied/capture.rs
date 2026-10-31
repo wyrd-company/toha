@@ -95,8 +95,7 @@ fn collect(
     let plan_index: BTreeMap<&str, &PlanOwnership> =
         plan_paths.iter().map(|(p, o)| (p.as_str(), o)).collect();
 
-    let (mut pipeline, index) = repo
-        .filter_pipeline(None)
+    let (mut pipeline, index) = super::project::worktree_filter_pipeline(repo)
         .map_err(|err| RecordError::Git(err.to_string()))?;
     let state: &gix::index::State = &index;
     let head = head_target_oids(repo, target)?;
@@ -688,7 +687,8 @@ pub(crate) fn restore_base(
         &crate::hook::ProcessRunner,
     )
     .map_err(git_error)?;
-    let (mut pipeline, index) = repo.filter_pipeline(None).map_err(git_error)?;
+    let (mut pipeline, index) =
+        super::project::worktree_filter_pipeline(repo).map_err(git_error)?;
     application.files.clear();
     for owned in application.paths().to_vec() {
         let path = owned.path().to_string();
