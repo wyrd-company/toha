@@ -74,8 +74,11 @@ Each rule has a rendered `path` relative to the target. `each` is optional;
 without it, Toha creates one directory. `when` can skip a rule. Toha creates
 parents, combines repeated paths, and keeps existing directories and contents.
 A file or symlink in the directory path is an error, including with `--force`.
-Paths cannot escape the target or enter `.git`. Dry runs list missing directories
-without creating them.
+Paths cannot escape the target, enter `.git`, or use the applied record path
+(or its descendants), including a custom `TOHA_RECORD` path. Dry runs list
+missing directories without creating them. Apply reports only directories it
+creates. If baseline or update fails, Toha removes newly created empty
+directories and keeps existing directories and contents added by another writer.
 
 Apply, baseline and update create these directories. Toha does not remove a
 directory when its rule is removed or skipped. Directories do not carry file

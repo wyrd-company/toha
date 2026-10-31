@@ -697,6 +697,17 @@ impl Plan {
         };
         let record = crate::applied::project::record_relative(&root)
             .map_err(|e| PlanError::Path(e.to_string()))?;
+        for directory in &plan.directories {
+            if target
+                .as_path()
+                .join(directory.as_path())
+                .starts_with(root.join(&record))
+            {
+                return Err(PlanError::Path(format!(
+                    "the applied record path {record} is reserved"
+                )));
+            }
+        }
         for mutation in plan.mutations() {
             let path = match mutation {
                 FileMutation::Whole { path }
