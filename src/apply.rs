@@ -77,8 +77,6 @@ pub enum ApplyError {
     },
     #[error("target path contains symlink: {0}")]
     Symlink(TargetPath),
-    #[error("{0}")]
-    Directory(String),
     #[error("hook {index} failed: {hook:?}, outcome: {outcome:?}")]
     Hook {
         index: usize,
@@ -172,7 +170,8 @@ impl Plan {
         runner: &dyn HookRunner,
         on_written: &mut dyn FnMut(&TargetPath),
     ) -> Result<Applied, ApplyError> {
-        crate::plan::check_directories(&self.directories, target).map_err(ApplyError::Directory)?;
+        crate::plan::check_directories(&self.directories, target)
+            .map_err(|message| ApplyError::Deferred(PlanError::Path(message)))?;
         let mut conflicts = self.conflicts.clone();
         for file in &self.files {
             if target.as_path().join(file.path.as_path()).exists()
