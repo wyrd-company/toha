@@ -299,6 +299,7 @@ fn installed_approval_is_used_and_revocation_or_changed_surface_refuses_dispatch
     let repo = iso.path().join("repo");
     let source = iso.path().join("source");
     std::fs::create_dir_all(source.join("template")).unwrap();
+    let source = source.canonicalize().unwrap();
     std::fs::create_dir(&repo).unwrap();
     std::fs::write(
         source.join("template.yml"),
