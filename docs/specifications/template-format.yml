@@ -201,6 +201,23 @@ description: >-
   the exact failing segment. Each fault also names the support or source file;
   a source-content fault keeps its source-file diagnostic.
 
+  User sections. Rendered whole files may reserve bodies with paired standalone
+  marker lines containing `>>> toha:user <key> >>>` and
+  `<<< toha:user <key> <<<`. Prefix and suffix text must match between the
+  pair; authors use the target's comment syntax. Keys follow the region-key
+  grammar and are unique per file. Nested, duplicate, mismatched and unpaired
+  markers fail. Planning validates the rendered source. Before writing any file,
+  apply resolves each section against the current UTF-8 target and copies its
+  body byte for byte into the rendered image. New sections retain rendered
+  defaults. In a retained file, existing sections absent from the template fail until the caller
+  moves their content and removes their markers. Force does not bypass these
+  checks or replace section bodies. Injections that change a user-section body
+  fail before writes. Apply also validates marker pairs in final injection images
+  before writes, including images that introduce their first user section.
+  Static files are copied unchanged. Updates
+  use the same resolver in the candidate checkout; the applied record retains
+  whole-file ownership and blob identity.
+
   Injection. `inject` is a list of rules that each change one bounded part of an
   existing target file, rather than replacing the whole file as `files` and the
   source subdirectory do. Every rule names its target with `into`, a template
