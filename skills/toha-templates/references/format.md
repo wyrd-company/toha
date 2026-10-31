@@ -48,3 +48,13 @@ Each `interview[]` node is exactly one of these shapes:
 A hook command has exactly one of `run` or `script`. `run` is a nonempty array of template strings (argument vector). `script` is a path string relative to the template root. `args` is an array of template strings. `cwd` is a template string relative to the target directory. Optional `each` (`<expression> as <identifier>`) runs the hook once per item, in item order, with the item bound while `run`, `args`, and `cwd` render; an empty sequence runs nothing. Top-level hooks also accept `when` (expression), evaluated once before `each`; interview hook nodes accept `each` inside `hook` and `when` on the node.
 
 Each `files[]` rule has `each` (`<expression> as <identifier>`), `source` (support file path relative to the template root), and `path` (template string relative to target), all required. Optional `when` is an expression.
+
+Rendered source files and `files` bodies can reserve user sections with paired
+marker lines: `# >>> toha:user settings >>>` and
+`# <<< toha:user settings <<<` for a TOML file. Use matching comment wrappers for
+the target language. The key uses lowercase letters, digits, `_`, and `-` and
+must be unique per file; sections cannot nest. Apply and update preserve the
+existing body byte for byte, including under `--force`; new sections use the
+rendered default. Keep injections outside user sections. Removing a section
+requires first moving its content and removing its target markers. Malformed
+markers fail before writes. `static` files are copied unchanged.

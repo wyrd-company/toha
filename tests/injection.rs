@@ -556,3 +556,122 @@ fn missing_target_without_create_is_an_error_and_create_makes_it() {
         serde_json::from_str(&fs::read_to_string(target.join("package.json")).unwrap()).unwrap();
     assert_eq!(value["scripts"]["build"], serde_json::json!("tsc"));
 }
+
+#[test]
+fn generated_files_preserve_user_sections_even_with_force() {
+    let temp = tempfile::tempdir().unwrap();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/user-sections");
+    let target = temp.path().join("out");
+    let first = apply(&fixture, &target, &[]);
+    assert!(first.status.success(), "{}", stderr(&first));
+    let file = target.join("app.toml");
+    let rendered = fs::read_to_string(&file).unwrap();
+    assert!(rendered.contains("enabled = false"));
+    fs::write(
+        &file,
+        rendered
+            .replace("enabled = false", "enabled = true\nextra = 42")
+            .replace("version = 1", "version = 99"),
+    )
+    .unwrap();
+    let refused = apply(&fixture, &target, &[]);
+    assert!(!refused.status.success());
+    let again = apply(&fixture, &target, &["--force"]);
+    assert!(again.status.success(), "{}", stderr(&again));
+    let expected = rendered.replace("enabled = false", "enabled = true\nextra = 42");
+    assert_eq!(fs::read_to_string(&file).unwrap(), expected);
+    let repeat = apply(&fixture, &target, &["--force"]);
+    assert!(repeat.status.success(), "{}", stderr(&repeat));
+    assert_eq!(fs::read_to_string(file).unwrap(), expected);
+}
+
+#[test]
+fn malformed_user_sections_refuse_before_any_file_is_written() {
+    let temp = tempfile::tempdir().unwrap();
+    let template = make_template(temp.path(), "name: sample\n");
+    fs::write(template.join("template/a.txt"), "new\n").unwrap();
+    fs::write(
+        template.join("template/z.txt"),
+        "# >>> toha:user notes >>>\ndefault\n# <<< toha:user notes <<<\n",
+    )
+    .unwrap();
+    let target = temp.path().join("out");
+    fs::create_dir(&target).unwrap();
+    fs::write(target.join("a.txt"), "old\n").unwrap();
+    let broken = "# >>> toha:user notes >>>\noperator\n";
+    fs::write(target.join("z.txt"), broken).unwrap();
+    let result = apply(&template, &target, &["--force"]);
+    assert!(!result.status.success());
+    assert!(
+        stderr(&result).contains("unpaired user section"),
+        "{}",
+        stderr(&result)
+    );
+    assert_eq!(fs::read_to_string(target.join("a.txt")).unwrap(), "old\n");
+    assert_eq!(fs::read_to_string(target.join("z.txt")).unwrap(), broken);
+}
+
+#[test]
+fn file_rules_preserve_user_sections_and_fold_outside_injections() {
+    let temp = tempfile::tempdir().unwrap();
+    let template = make_template(
+        temp.path(),
+        "name: sample\nfiles:\n  - each: \"['single'] as item\"\n    source: body.toml\n    path: app.toml\ninject:\n  - into: app.toml\n    region: generated\n    content: 'generated = true'\n",
+    );
+    let body = "version = 1\n# >>> toha:user settings >>>\nenabled = false\n# <<< toha:user settings <<<\n";
+    fs::write(template.join("body.toml"), body).unwrap();
+    let target = temp.path().join("out");
+    let first = apply(&template, &target, &[]);
+    assert!(first.status.success(), "{}", stderr(&first));
+    let file = target.join("app.toml");
+    let current = fs::read_to_string(&file)
+        .unwrap()
+        .replace("enabled = false", "enabled = true");
+    fs::write(&file, &current).unwrap();
+    let next = apply(&template, &target, &["--force"]);
+    assert!(next.status.success(), "{}", stderr(&next));
+    assert_eq!(fs::read_to_string(file).unwrap(), current);
+}
+
+#[test]
+fn malformed_template_user_sections_fail_during_planning() {
+    let temp = tempfile::tempdir().unwrap();
+    let template = make_template(temp.path(), "name: sample\n");
+    fs::write(
+        template.join("template/app.txt"),
+        ">>> toha:user notes >>>\nunfinished\n",
+    )
+    .unwrap();
+    let target = temp.path().join("out");
+    let result = apply(&template, &target, &["--dry-run"]);
+    assert!(!result.status.success());
+    assert!(
+        stderr(&result).contains("unpaired user section"),
+        "{}",
+        stderr(&result)
+    );
+    assert!(!target.join("app.txt").exists());
+}
+
+#[test]
+fn injections_cannot_overwrite_user_owned_bodies() {
+    let temp = tempfile::tempdir().unwrap();
+    let template = make_template(
+        temp.path(),
+        "name: sample\ninject:\n  - into: app.toml\n    region: generated\n    anchor: {after: '# >>> toha:user settings >>>'}\n    content: 'generated = true'\n",
+    );
+    fs::write(
+        template.join("template/app.toml"),
+        "# >>> toha:user settings >>>\nenabled = false\n# <<< toha:user settings <<<\n",
+    )
+    .unwrap();
+    let target = temp.path().join("out");
+    let result = apply(&template, &target, &[]);
+    assert!(!result.status.success());
+    assert!(
+        stderr(&result).contains("injection changes a user-owned section"),
+        "{}",
+        stderr(&result)
+    );
+    assert!(!target.join("app.toml").exists());
+}

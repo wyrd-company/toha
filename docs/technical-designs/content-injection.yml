@@ -26,6 +26,15 @@ proposed-design:
     owned body: matching desired bytes are unchanged, a matching recorded body
     accepts template replacement, and operator drift requires force. Malformed
     markers and missing or ambiguous anchors remain errors under force.
+  user-sections: >-
+    Rendered whole files reserve user bodies with paired toha:user marker lines.
+    The pure user-section resolver validates unique non-nested pairs, matches
+    keys across the current and desired images, and transplants current bodies
+    before injection folding. New keys retain rendered defaults. Dropped keys
+    fail before writes so the caller can move content and remove markers.
+    Whole-file conflict checks and force retain their existing roles. Candidate
+    updates apply the same resolver to the committed checkout. Whole-file blob
+    capture retains the resulting bodies without a new ownership variant.
   structured-values: >-
     JsonPath contains object keys and array indexes, begins with a key, and
     parses escaped dots, brackets and backslashes. Missing object parents are

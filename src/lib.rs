@@ -67,3 +67,5 @@ pub mod operations;
 
 /// Prepared baseline and recorded-application update operations.
 pub mod updates;
+
+mod user_sections;
