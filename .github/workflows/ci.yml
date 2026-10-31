@@ -90,7 +90,9 @@ jobs:
             https://github.com/wyrd-company/intentional/releases/download/0.3.0/intentional-linux-x86_64.tar.gz \
             --output "$RUNNER_TEMP/intentional-linux-x86_64.tar.gz"
           cd "$RUNNER_TEMP"
-          echo "d27d8cb38037efd0bf8bcad8aea31e4abb68accfe75b6bb78029a257d58aea04  intentional-linux-x86_64.tar.gz" | sha256sum --check
+          printf '%s  %s\n' \
+            d27d8cb38037efd0bf8bcad8aea31e4abb68accfe75b6bb78029a257d58aea04 \
+            intentional-linux-x86_64.tar.gz | sha256sum --check
           tar -xzf intentional-linux-x86_64.tar.gz
           echo "$RUNNER_TEMP/intentional-linux-x86_64" >> "$GITHUB_PATH"
       - run: actionlint .github/workflows/*.yml
