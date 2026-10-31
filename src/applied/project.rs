@@ -287,6 +287,32 @@ pub fn record_relative(root: &std::path::Path) -> Result<String, ProjectError> {
     Ok(path.to_string())
 }
 
+/// Build a filter pipeline from the project's working tree and index.
+/// A linked worktree can inherit `core.bare=true` from its common repository.
+/// Gitoxide's `Repository::filter_pipeline` then uses HEAD-only attributes and
+/// fails on unborn HEAD. Project targets always have a working directory, so
+/// select working-tree attributes explicitly, including before the first commit.
+#[allow(clippy::result_large_err)]
+pub(crate) fn worktree_filter_pipeline(
+    repo: &gix::Repository,
+) -> Result<
+    (
+        gix::filter::Pipeline<'_>,
+        gix::worktree::IndexPersistedOrInMemory,
+    ),
+    gix::repository::filter::pipeline::Error,
+> {
+    let index = repo.index_or_empty()?;
+    let attributes = repo.attributes_only(
+        &index,
+        gix::worktree::stack::state::attributes::Source::WorktreeThenIdMapping,
+    )?;
+    Ok((
+        gix::filter::Pipeline::new(repo, attributes.detach())?,
+        gix::worktree::IndexPersistedOrInMemory::Persisted(index),
+    ))
+}
+
 /// Remove every named `filter.<name>` and `merge.<name>` driver subsection from
 /// the repository's in-memory configuration.
 ///
