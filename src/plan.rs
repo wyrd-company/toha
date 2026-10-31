@@ -1115,30 +1115,6 @@ fn recompile_tmpl(tmpl: &Tmpl) -> Tmpl {
 fn recompile_expr(expr: &Expr) -> Expr {
     Expr::compile(expr.source().to_owned()).expect("previously compiled expression")
 }
-#[cfg(test)]
-mod tests {
-    use super::TargetPath;
-    #[test]
-    fn target_path() {
-        assert_eq!(TargetPath::parse("a/./b/../c").unwrap().to_string(), "a/c");
-        for bad in [
-            "",
-            ".",
-            "../a",
-            "a/../../b",
-            "/a",
-            "a/.git/b",
-            "a\\b",
-            "C:/a",
-            "a/C:/b",
-            "//server/share",
-            "\\\\server\\share",
-        ] {
-            assert!(TargetPath::parse(bad).is_err(), "{bad}");
-        }
-    }
-}
-
 /// Validate explicit directories and every existing ancestor without following links.
 pub(crate) fn check_directories(
     paths: &[TargetPath],
@@ -1162,4 +1138,28 @@ pub(crate) fn check_directories(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TargetPath;
+    #[test]
+    fn target_path() {
+        assert_eq!(TargetPath::parse("a/./b/../c").unwrap().to_string(), "a/c");
+        for bad in [
+            "",
+            ".",
+            "../a",
+            "a/../../b",
+            "/a",
+            "a/.git/b",
+            "a\\b",
+            "C:/a",
+            "a/C:/b",
+            "//server/share",
+            "\\\\server\\share",
+        ] {
+            assert!(TargetPath::parse(bad).is_err(), "{bad}");
+        }
+    }
 }
