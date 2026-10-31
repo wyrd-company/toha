@@ -253,3 +253,239 @@ fn update_recreates_a_missing_directory_even_when_files_are_current() {
         "sample"
     );
 }
+
+fn git_bytes(root: &Path, args: &[&str]) -> Vec<u8> {
+    let output = std::process::Command::new("git")
+        .current_dir(root)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    output.stdout
+}
+
+#[test]
+fn reserved_record_directories_refuse_before_any_transaction_writes() {
+    for record in [".toha.json", "metadata/applied.json", "app/applied.json"] {
+        for subtarget in ["", "app"] {
+            let relative = if subtarget == "app" && record.starts_with("app/") {
+                &record[4..]
+            } else if subtarget == "app" {
+                continue;
+            } else {
+                record
+            };
+            for suffix in ["", "/child"] {
+                for flags in [
+                    vec![],
+                    vec!["--dry-run"],
+                    vec!["--baseline"],
+                    vec!["--baseline", "--dry-run"],
+                ] {
+                    let root = tempfile::tempdir().unwrap();
+                    let template = local_template(
+                        root.path(),
+                        &format!("directories:\n  - path: {relative}{suffix}"),
+                    );
+                    fs::write(template.join("template/note.txt"), "sample").unwrap();
+                    let target = tempfile::tempdir().unwrap();
+                    git(target.path(), &["init", "-q"]);
+                    fs::write(target.path().join("seed.txt"), "seed").unwrap();
+                    git(target.path(), &["add", "."]);
+                    git(target.path(), &["commit", "-qm", "seed"]);
+                    let destination = target.path().join(subtarget);
+                    fs::create_dir_all(&destination).unwrap();
+                    let index = fs::read(target.path().join(".git/index")).unwrap();
+                    let refs = git_bytes(target.path(), &["show-ref"]);
+                    let answers = root.path().join("answers.json");
+                    fs::write(
+                        &answers,
+                        support::envelope_text(
+                            &support::formal_name(&template),
+                            &serde_json::json!({}),
+                        ),
+                    )
+                    .unwrap();
+                    let result = support::isolated_command(root.path())
+                        .env("TOHA_RECORD", record)
+                        .arg("apply")
+                        .arg(&template)
+                        .arg(&destination)
+                        .arg("--answers")
+                        .arg(answers)
+                        .args(&flags)
+                        .output()
+                        .unwrap();
+                    assert_eq!(
+                        result.status.code(),
+                        Some(1),
+                        "{record} {subtarget} {suffix} {flags:?}: {}",
+                        String::from_utf8_lossy(&result.stdout)
+                    );
+                    assert!(
+                        format!(
+                            "{}{}",
+                            String::from_utf8_lossy(&result.stdout),
+                            String::from_utf8_lossy(&result.stderr)
+                        )
+                        .contains("reserved"),
+                        "{result:?}"
+                    );
+                    assert_eq!(fs::read(target.path().join(".git/index")).unwrap(), index);
+                    assert_eq!(git_bytes(target.path(), &["show-ref"]), refs);
+                    assert!(!target.path().join(record).exists());
+                    assert!(!destination.join("note.txt").exists());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn existing_directories_are_omitted_from_preview_and_apply_reports() {
+    let root = tempfile::tempdir().unwrap();
+    let template = local_template(
+        root.path(),
+        "directories:\n  - path: existing\n  - path: new",
+    );
+    let target = tempfile::tempdir().unwrap();
+    fs::create_dir(target.path().join("existing")).unwrap();
+    for flags in [vec!["--dry-run"], vec![]] {
+        let result = apply(&template, target.path(), &flags);
+        assert!(result.status.success());
+        let doc = support::first_document(&result.stdout);
+        let text = doc.to_string();
+        assert!(!text.contains("existing"), "{doc}");
+        assert!(text.contains("new"), "{doc}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn directory_permission_failure_preserves_baseline_and_update_state() {
+    use std::os::unix::fs::PermissionsExt;
+    for update in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let template = local_template(
+            root.path(),
+            "directories:\n  - path: created/nested\n  - path: locked/new",
+        );
+        fs::write(template.join("template/note.txt"), "sample").unwrap();
+        let address = support::versioned_template(&template);
+        let iso = tempfile::tempdir().unwrap();
+        let answers = iso.path().join("answers.json");
+        fs::write(
+            &answers,
+            support::envelope_text(&address, &serde_json::json!({})),
+        )
+        .unwrap();
+        let target = tempfile::tempdir().unwrap();
+        git(target.path(), &["init", "-q"]);
+        fs::create_dir(target.path().join("locked")).unwrap();
+        fs::write(target.path().join("locked/keep.txt"), "keep").unwrap();
+        git(target.path(), &["add", "."]);
+        git(target.path(), &["commit", "-qm", "seed"]);
+        let run = |flag: &str| {
+            support::isolated_command(iso.path())
+                .arg("apply")
+                .arg(&address)
+                .arg(target.path())
+                .arg("--answers")
+                .arg(&answers)
+                .arg(flag)
+                .output()
+                .unwrap()
+        };
+        if update {
+            let initial = run("--baseline");
+            assert!(
+                initial.status.success(),
+                "{}",
+                String::from_utf8_lossy(&initial.stdout)
+            );
+            git(target.path(), &["commit", "-qam", "baseline"]);
+            fs::remove_dir_all(target.path().join("created")).unwrap();
+            fs::remove_dir(target.path().join("locked/new")).unwrap();
+        }
+        let index = fs::read(target.path().join(".git/index")).unwrap();
+        let refs = git_bytes(target.path(), &["show-ref"]);
+        let record = fs::read(target.path().join(".toha.json")).ok();
+        let note = fs::read(target.path().join("note.txt")).ok();
+        fs::set_permissions(
+            target.path().join("locked"),
+            fs::Permissions::from_mode(0o555),
+        )
+        .unwrap();
+        // Prove this host enforces the fixture's real filesystem permission failure.
+        assert!(fs::create_dir(target.path().join("locked/probe")).is_err());
+        let result = run(if update { "--update" } else { "--baseline" });
+        fs::set_permissions(
+            target.path().join("locked"),
+            fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        assert_eq!(result.status.code(), Some(1));
+        assert!(
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            )
+            .contains("Permission denied"),
+            "{result:?}"
+        );
+        assert_eq!(fs::read(target.path().join(".git/index")).unwrap(), index);
+        assert_eq!(git_bytes(target.path(), &["show-ref"]), refs);
+        assert_eq!(fs::read(target.path().join(".toha.json")).ok(), record);
+        assert_eq!(fs::read(target.path().join("note.txt")).ok(), note);
+        assert_eq!(
+            fs::read_to_string(target.path().join("locked/keep.txt")).unwrap(),
+            "keep"
+        );
+        assert!(!target.path().join("created").exists());
+        assert!(!target.path().join("locked/new").exists());
+        assert!(!target.path().join(".git/index.lock").exists());
+    }
+}
+
+#[test]
+fn library_report_omits_existing_directories() {
+    let root = tempfile::tempdir().unwrap();
+    let folder = local_template(
+        root.path(),
+        "directories:\n  - path: existing\n  - path: new",
+    );
+    let template = toha::Template::load(&folder).unwrap();
+    let target = tempfile::tempdir().unwrap();
+    fs::create_dir(target.path().join("existing")).unwrap();
+    let target = toha::staging::canonical_target(target.path()).unwrap();
+    let toha::Interview::Complete(completed) = toha::Interview::start(
+        &template,
+        toha::Seed {
+            now: "2026-01-02T03:04:05+00:00[UTC]".parse().unwrap(),
+            defaults: Default::default(),
+            context: toha::context::InvocationContext::for_target(target.clone()),
+        },
+    )
+    .unwrap() else {
+        panic!("no questions")
+    };
+    let plan = toha::Plan::build(&template, &completed, &target).unwrap();
+    let toha::Applied::Written { files, .. } = plan
+        .apply(
+            &target,
+            toha::ApplyOptions {
+                force: false,
+                trusted: true,
+            },
+            &toha::hook::RecordingRunner::new(),
+        )
+        .unwrap()
+    else {
+        panic!("trusted")
+    };
+    assert_eq!(
+        files.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        vec!["new"]
+    );
+}

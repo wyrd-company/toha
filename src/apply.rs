@@ -243,7 +243,12 @@ impl Plan {
             .map(|planned| crate::git_target::preflight(planned, target))
             .transpose()?;
         let mut written = Vec::new();
-        for directory in &self.directories {
+        let missing_directories: Vec<_> = self
+            .directories
+            .iter()
+            .filter(|directory| !target.as_path().join(directory.as_path()).is_dir())
+            .collect();
+        for directory in missing_directories {
             let path = target.as_path().join(directory.as_path());
             fs::create_dir_all(&path).map_err(|source| ApplyError::Io { path, source })?;
             on_written(directory);
