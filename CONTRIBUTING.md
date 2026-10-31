@@ -12,7 +12,7 @@ tested it.
 
 Use Rust stable (minimum supported version 1.88) and [Task](https://taskfile.dev).
 Install `actionlint` for GitHub workflow validation, `ryl` for YAML validation,
-and Intentional 0.3.0 for the `contract-1` release configuration and intents.
+and Intentional 0.4.1 for the `contract-2` release configuration and intents.
 Install `vhs` when editing the terminal demo.
 
 Linux release builds require `cargo-zigbuild` 0.23.4 and Zig 0.14.1. Install

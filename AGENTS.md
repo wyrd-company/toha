@@ -52,6 +52,5 @@ Nothing is recorded yet.
 
 ## Contributor tooling constraint
 
-Use Intentional 0.3.0 with the repository's `contract-1` release configuration.
-Intentional 0.4.1 rejects that contract. Upgrade the configuration and CI
-installer together when adopting a newer Intentional release.
+Use Intentional 0.4.1 with the repository's `contract-2` release configuration.
+Keep the configuration and CI installer compatible when upgrading Intentional.

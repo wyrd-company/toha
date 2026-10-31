@@ -83,15 +83,15 @@ jobs:
         run: |
           /home/linuxbrew/.linuxbrew/bin/brew install actionlint ryl
           echo "/home/linuxbrew/.linuxbrew/bin" >> "$GITHUB_PATH"
-      # Keep the installer aligned with the contract-1 configuration (see AGENTS.md).
-      - name: Install Intentional 0.3.0
+      # Keep the installer aligned with the contract-2 configuration (see AGENTS.md).
+      - name: Install Intentional 0.4.1
         run: |
           curl --fail --silent --show-error --location \
-            https://github.com/wyrd-company/intentional/releases/download/0.3.0/intentional-linux-x86_64.tar.gz \
+            https://github.com/wyrd-company/intentional/releases/download/0.4.1/intentional-linux-x86_64.tar.gz \
             --output "$RUNNER_TEMP/intentional-linux-x86_64.tar.gz"
           cd "$RUNNER_TEMP"
           printf '%s  %s\n' \
-            d27d8cb38037efd0bf8bcad8aea31e4abb68accfe75b6bb78029a257d58aea04 \
+            d149b90aabb0fd8b424c6ecd2fa0b657afa1b08c2dda83a53042cbc1f5dbb22a \
             intentional-linux-x86_64.tar.gz | sha256sum --check
           tar -xzf intentional-linux-x86_64.tar.gz
           echo "$RUNNER_TEMP/intentional-linux-x86_64" >> "$GITHUB_PATH"
