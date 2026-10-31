@@ -695,6 +695,19 @@ impl Plan {
                     }
                 }
             }
+            // Injection content can introduce markers even when the starting
+            // image had no user sections. Validate the final image before writes.
+            if let Some(text) = buffer
+                .as_deref()
+                .and_then(|image| std::str::from_utf8(image).ok())
+            {
+                crate::user_sections::validate(text).map_err(|message| {
+                    ApplyError::UserSections {
+                        path: path.clone(),
+                        message,
+                    }
+                })?;
+            }
             if let (Some(before), Some(after)) = (&user_image, &buffer) {
                 let after_text =
                     std::str::from_utf8(after).expect("text injection preserves UTF-8");
