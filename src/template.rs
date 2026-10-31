@@ -58,6 +58,7 @@ pub struct Template {
     /// resolves includes against the same root without a runtime loader.
     pub partials: Partials,
     pub files: Vec<FileRule>,
+    pub directories: Vec<DirectoryRule>,
     pub inject: Vec<InjectRule>,
     pub ignore: GlobSet,
     pub static_files: GlobSet,
@@ -377,8 +378,14 @@ pub struct FileRule {
     /// non-UTF-8 source, which planning surfaces on its existing read path.
     pub body: Option<FileTmpl>,
 }
-/// `<expression> as <name>`: the expression yields a sequence, and each item is
-/// bound to `binding` in turn.
+/// An explicitly created directory, optionally repeated and conditional.
+#[derive(Debug)]
+pub struct DirectoryRule {
+    pub path: Tmpl,
+    pub each: Option<Each>,
+    pub when: Option<Expr>,
+}
+/// `<expression> as <name>`: each sequence item is bound to `binding` in turn.
 #[derive(Debug)]
 pub struct Each {
     pub expr: Expr,
@@ -563,6 +570,7 @@ struct RawTemplate {
     data: Option<Map<String, Value>>,
     interview: Option<Vec<Value>>,
     files: Option<Vec<Value>>,
+    directories: Option<Vec<Value>>,
     inject: Option<Vec<Value>>,
     ignore: Option<Vec<String>>,
     #[serde(rename = "static")]
@@ -1716,6 +1724,29 @@ impl Template {
                 });
             }
         }
+        let mut directories = Vec::new();
+        for (i, value) in raw
+            .directories
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .enumerate()
+        {
+            let field = format!("directories[{i}]");
+            let Some(map) = value.as_object() else {
+                continue;
+            };
+            let each = map
+                .get("each")
+                .and_then(|value| b.each(Some(value), &format!("{field}.each")));
+            let when = b.expr(map.get("when"), &format!("{field}.when"), &[]);
+            let path = b.bound(each.as_ref(), |b| {
+                b.tmpl(map.get("path"), &format!("{field}.path"))
+            });
+            if let Some(path) = path {
+                directories.push(DirectoryRule { path, each, when });
+            }
+        }
         let mut inject = Vec::new();
         for (i, value) in raw.inject.as_deref().unwrap_or_default().iter().enumerate() {
             let path = format!("inject[{i}]");
@@ -1789,6 +1820,7 @@ impl Template {
         settle_hook_results(
             &interview,
             &files,
+            &directories,
             &inject,
             &hooks,
             &messages,
@@ -1804,6 +1836,7 @@ impl Template {
         let (environment_need, context_references) = compute_environment_need(
             &interview,
             &files,
+            &directories,
             &inject,
             &hooks,
             &messages,
@@ -1819,6 +1852,7 @@ impl Template {
             root,
             partials,
             files,
+            directories,
             inject,
             ignore,
             static_files,
@@ -1975,9 +2009,11 @@ fn compile_source_tree(
 
 /// The first surface, in deterministic order, whose compiled Jinja can observe
 /// a fixed environment value, or `EnvironmentNeed::None`.
+#[allow(clippy::too_many_arguments)]
 fn compute_environment_need(
     interview: &[Node],
     files: &[FileRule],
+    directories: &[DirectoryRule],
     inject: &[InjectRule],
     hooks: &[HookNode],
     messages: &ApplyMessages,
@@ -2005,6 +2041,14 @@ fn compute_environment_need(
         if let Some(body) = &rule.body {
             find.file_tmpl(body, &format!("{path}.source"));
         }
+    }
+    for (i, rule) in directories.iter().enumerate() {
+        let field = format!("directories[{i}]");
+        find.opt_expr(rule.when.as_ref(), &format!("{field}.when"));
+        if let Some(each) = &rule.each {
+            find.expr(&each.expr, &format!("{field}.each"));
+        }
+        find.tmpl(&rule.path, &format!("{field}.path"));
     }
     for entry in render_program {
         let label = entry.source.display().to_string();
@@ -2366,6 +2410,7 @@ fn collect_interview_producers(
 fn settle_hook_results(
     interview: &[Node],
     files: &[FileRule],
+    directories: &[DirectoryRule],
     inject: &[InjectRule],
     hooks: &[HookNode],
     messages: &ApplyMessages,
@@ -2436,6 +2481,14 @@ fn settle_hook_results(
         if let Some(body) = &rule.body {
             settle.deny(body.references(), &format!("{path}.source"));
         }
+    }
+    for (i, rule) in directories.iter().enumerate() {
+        let field = format!("directories[{i}]");
+        settle.deny_opt_expr(rule.when.as_ref(), &format!("{field}.when"));
+        if let Some(each) = &rule.each {
+            settle.deny(each.expr.references(), &format!("{field}.each"));
+        }
+        settle.deny(rule.path.references(), &format!("{field}.path"));
     }
     for entry in render_program {
         let label = entry.source.display().to_string();

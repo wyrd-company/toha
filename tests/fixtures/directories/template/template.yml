@@ -1,0 +1,10 @@
+name: sample
+ignore: [ .gitkeep ]
+data:
+  names: [ alpha, beta, alpha ]
+directories:
+  - path: empty/nested
+  - each: names as item
+    path: 'groups/{{ item }}'
+  - path: skipped
+    when: 'false'

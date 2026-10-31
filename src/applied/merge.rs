@@ -188,6 +188,12 @@ pub(crate) fn merge_apply_reported_with_force(
         .record
         .take()
         .expect("a completed plan has record inputs");
+    let directories = plan.directories.clone();
+    let missing_directories: Vec<_> = directories
+        .iter()
+        .filter(|path| !target_path.as_path().join(path.as_path()).is_dir())
+        .cloned()
+        .collect();
     let (new, candidate_report) = build_candidate_reported(
         project,
         &base,
@@ -200,13 +206,23 @@ pub(crate) fn merge_apply_reported_with_force(
 
     report.messages.extend(candidate_report.messages);
     report.hooks = candidate_report.hooks;
-    if let Base::Application(base_application) = &base
+    if missing_directories.is_empty()
+        && let Base::Application(base_application) = &base
         && is_already_current(project, base_application, &new, &inputs)?
     {
         return Ok((Merged::AlreadyCurrent, report));
     }
-    let result = merge_into_worktree(project, &base, &new, &options);
-    result.map(|merged| (merged, report))
+    crate::plan::check_directories(&directories, &target_path).map_err(MergeError::Io)?;
+    let mut merged = merge_inner(project, &base, &new, &options, &directories)?;
+    if let Merged::Planned { changes } | Merged::Written { changes, .. } = &mut merged {
+        for directory in &missing_directories {
+            changes.push(Change {
+                path: repo_path_for(project.target(), &BString::from(directory.to_string())),
+                action: Action::Added,
+            });
+        }
+    }
+    Ok((merged, report))
 }
 
 /// The candidate target: a `CanonicalTarget` for the project's real target.
@@ -449,13 +465,14 @@ pub(super) fn checkout_head(repo: &gix::Repository, dest: &Path) -> Result<(), M
 
 /// Merge the new application into the operator's working tree against `base`. The
 /// candidate and reconstructed base hold transient verified file entries.
+#[cfg(test)]
 pub(crate) fn merge_into_worktree(
     project: &Project,
     base: &Base,
     new: &Application,
     options: &MergeOptions,
 ) -> Result<Merged, MergeError> {
-    merge_inner(project, base, new, options)
+    merge_inner(project, base, new, options, &[])
 }
 
 fn merge_inner(
@@ -463,6 +480,7 @@ fn merge_inner(
     base: &Base,
     new: &Application,
     options: &MergeOptions,
+    directories: &[crate::TargetPath],
 ) -> Result<Merged, MergeError> {
     let repo = project.repo();
     let target = project.target();
@@ -737,6 +755,7 @@ fn merge_inner(
         head_start,
         index_digest_start,
         new,
+        directories,
     )?;
 
     Ok(Merged::Written {
@@ -785,6 +804,7 @@ fn commit_transaction(
     head_start: gix::ObjectId,
     index_digest_start: Option<Vec<u8>>,
     application: &Application,
+    directories: &[crate::TargetPath],
 ) -> Result<(), MergeError> {
     let repo = project.repo();
     let workdir = repo
@@ -814,6 +834,17 @@ fn commit_transaction(
 
     let (mut pipeline, index) = repo.filter_pipeline(None).map_err(git)?;
     let state: &gix::index::State = &index;
+
+    // Directory creation shares the index lock and lifetime of the file transaction.
+    // On failure remove only directories this invocation created, and only if empty.
+    let target_path = candidate_target(project)?;
+    crate::plan::check_directories(directories, &target_path).map_err(MergeError::Io)?;
+    let mut created = CreatedDirectories::default();
+    for directory in directories {
+        let path = repo_path_for(target, &BString::from(directory.to_string()));
+        let path = crate::TargetPath::parse(path.as_str()).map_err(MergeError::Io)?;
+        created.create(&workdir, &path)?;
+    }
 
     // Step 7: write, tracking each path for rollback.
     let mut done: Vec<Restorable> = Vec::new();
@@ -861,7 +892,37 @@ fn commit_transaction(
         rollback(repo, &mut pipeline, state, &workdir, &done)?;
         return Err(err);
     }
+    created.0.clear();
     Ok(())
+}
+
+#[derive(Default)]
+struct CreatedDirectories(Vec<std::path::PathBuf>);
+
+impl CreatedDirectories {
+    fn create(&mut self, root: &Path, directory: &crate::TargetPath) -> Result<(), MergeError> {
+        let mut path = root.to_owned();
+        for component in directory.as_path().components() {
+            path.push(component);
+            match std::fs::create_dir(&path) {
+                Ok(()) => self.0.push(path.clone()),
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::AlreadyExists
+                        && path.symlink_metadata().is_ok_and(|meta| meta.is_dir()) => {}
+                Err(error) => return Err(MergeError::Io(error.to_string())),
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Drop for CreatedDirectories {
+    fn drop(&mut self) {
+        for path in self.0.iter().rev() {
+            // Never recurse: preserve contents added by another writer.
+            let _ = std::fs::remove_dir(path);
+        }
+    }
 }
 
 /// Write every merged target file that differs from the operator and delete the

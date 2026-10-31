@@ -34,6 +34,10 @@ properties:
     type: array
     items:
       $ref: "#/$defs/file-rule"
+  directories:
+    type: array
+    items:
+      $ref: "#/$defs/directory-rule"
   inject:
     type: array
     items:
@@ -370,6 +374,17 @@ $defs:
       label:
         description: A diagnostic name reported when the action fires.
         type: string
+      when:
+        $ref: "#/$defs/when"
+  directory-rule:
+    type: object
+    additionalProperties: false
+    required: [ path ]
+    properties:
+      path:
+        $ref: "#/$defs/template"
+      each:
+        $ref: "#/$defs/each"
       when:
         $ref: "#/$defs/when"
   file-rule:

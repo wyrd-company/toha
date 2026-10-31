@@ -105,6 +105,8 @@ pub struct Plan {
     /// Inputs for the applied record. Internal candidate renders clear this.
     pub record: Option<crate::applied::CaptureInputs>,
     pub files: Vec<PlannedFile>,
+    /// Explicit directories; these carry no file ownership in the applied record.
+    pub directories: Vec<TargetPath>,
     pub edits: Vec<PlannedEdit>,
     pub conflicts: Vec<TargetPath>,
     pub hooks: Vec<Planned<PlannedHook>>,
@@ -461,6 +463,7 @@ impl Plan {
                 parts: template.selected_parts(completed),
             }),
             files: vec![],
+            directories: vec![],
             edits: vec![],
             conflicts: vec![],
             hooks: vec![],
@@ -558,11 +561,55 @@ impl Plan {
                 plan.add(path, content, origin.clone(), target.as_path())?;
             }
         }
+        for (i, rule) in template.directories.iter().enumerate() {
+            let origin = template.root.join("template.yml");
+            let fault = |field: &str, message: String| PlanError::Render {
+                path: origin.clone(),
+                message: format!("directories[{i}].{field}: {message}"),
+            };
+            if let Some(when) = &rule.when
+                && !when
+                    .eval(&ctx)
+                    .map_err(|e| fault("when", e.to_string()))?
+                    .is_true()
+            {
+                continue;
+            }
+            let contexts = match &rule.each {
+                Some(each) => each.contexts(&ctx).map_err(|e| fault("each", e))?,
+                None => vec![ctx.clone()],
+            };
+            for local in contexts {
+                let text = rule
+                    .path
+                    .render(&local)
+                    .map_err(|e| fault("path", e.to_string()))?;
+                let path = TargetPath::parse(&text).map_err(PlanError::Path)?;
+                if !plan.directories.contains(&path) {
+                    plan.directories.push(path);
+                }
+            }
+        }
         // Content injection: render each rule to a bounded edit. Planning is pure
         // over the template and answers and reads no target bytes.
         for (i, rule) in template.inject.iter().enumerate() {
             plan.add_edit(rule, i, &ctx)?;
         }
+        for directory in &plan.directories {
+            for file in plan
+                .files
+                .iter()
+                .map(|file| &file.path)
+                .chain(plan.edits.iter().map(|edit| edit.path()))
+            {
+                if directory.as_path().starts_with(file.as_path()) {
+                    return Err(PlanError::Path(format!(
+                        "directory `{directory}` conflicts with file `{file}`"
+                    )));
+                }
+            }
+        }
+        check_directories(&plan.directories, target).map_err(PlanError::Path)?;
         // Interview hooks were rendered during the interview; they may produce a
         // result but never read one, so they are always ready.
         for hook in &completed.hooks {
@@ -650,6 +697,17 @@ impl Plan {
         };
         let record = crate::applied::project::record_relative(&root)
             .map_err(|e| PlanError::Path(e.to_string()))?;
+        for directory in &plan.directories {
+            if target
+                .as_path()
+                .join(directory.as_path())
+                .starts_with(root.join(&record))
+            {
+                return Err(PlanError::Path(format!(
+                    "the applied record path {record} is reserved"
+                )));
+            }
+        }
         for mutation in plan.mutations() {
             let path = match mutation {
                 FileMutation::Whole { path }
@@ -1068,6 +1126,31 @@ fn recompile_tmpl(tmpl: &Tmpl) -> Tmpl {
 fn recompile_expr(expr: &Expr) -> Expr {
     Expr::compile(expr.source().to_owned()).expect("previously compiled expression")
 }
+/// Validate explicit directories and every existing ancestor without following links.
+pub(crate) fn check_directories(
+    paths: &[TargetPath],
+    target: &CanonicalTarget,
+) -> Result<(), String> {
+    for path in paths {
+        let mut full = target.as_path().to_owned();
+        for component in path.as_path().components() {
+            full.push(component);
+            match fs::symlink_metadata(&full) {
+                Ok(meta) if meta.file_type().is_symlink() => {
+                    return Err(format!("target path contains symlink: {path}"));
+                }
+                Ok(meta) if !meta.is_dir() => {
+                    return Err(format!("directory `{path}` conflicts with a non-directory"));
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(format!("{path}: {error}")),
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::TargetPath;

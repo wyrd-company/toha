@@ -170,6 +170,8 @@ impl Plan {
         runner: &dyn HookRunner,
         on_written: &mut dyn FnMut(&TargetPath),
     ) -> Result<Applied, ApplyError> {
+        crate::plan::check_directories(&self.directories, target)
+            .map_err(|message| ApplyError::Deferred(PlanError::Path(message)))?;
         let mut conflicts = self.conflicts.clone();
         for file in &self.files {
             if target.as_path().join(file.path.as_path()).exists()
@@ -241,6 +243,17 @@ impl Plan {
             .map(|planned| crate::git_target::preflight(planned, target))
             .transpose()?;
         let mut written = Vec::new();
+        let missing_directories: Vec<_> = self
+            .directories
+            .iter()
+            .filter(|directory| !target.as_path().join(directory.as_path()).is_dir())
+            .collect();
+        for directory in missing_directories {
+            let path = target.as_path().join(directory.as_path());
+            fs::create_dir_all(&path).map_err(|source| ApplyError::Io { path, source })?;
+            on_written(directory);
+            written.push(directory.clone());
+        }
         // Whole-file targets that carry no edit write exactly as before. A target
         // with edits is committed once below, from its folded image.
         for file in &self.files {
@@ -841,6 +854,7 @@ mod tests {
                     source: source.to_owned(),
                 })
                 .collect(),
+            directories: vec![],
             edits: vec![],
             conflicts: vec![],
             hooks: (0..hooks)
