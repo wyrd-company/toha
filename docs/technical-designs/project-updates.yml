@@ -25,7 +25,10 @@ proposed-design:
     transaction writes results.
   repository-boundary: >-
     Discovery starts at the target's closest existing ancestor and validates the
-    target relative to the canonical working tree. OS components convert to
+    target relative to the canonical working tree. Linked working trees of bare
+    repositories use working-tree semantics, including before their first
+    commit. Filter pipelines use the working tree and index for attributes
+    regardless of inherited core.bare configuration. OS components convert to
     slash-separated RepoPath values at that boundary. The in-memory Git
     configuration removes configured clean, smudge, process and merge drivers
     before status, checkout, conversion or merge. Built-in line-ending and

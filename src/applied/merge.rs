@@ -377,11 +377,11 @@ fn is_already_current(
 fn normalized_files(project: &Project, application: &Application) -> Result<Entries, MergeError> {
     use gix::filter::plumbing::pipeline::convert::ToGitOutcome;
     let repo = project.repo();
-    let (mut pipeline, _) = repo.filter_pipeline(None).map_err(git)?;
+    let (mut pipeline, _) = super::project::worktree_filter_pipeline(repo).map_err(git)?;
     // This pipeline only compares bytes and computes hashes. It never admits
     // content to the index or writes blobs, so safecrlf's check-in round-trip
     // policy must not reject historical inputs during comparison.
-    let (comparison, _) = repo.filter_pipeline(None).map_err(git)?;
+    let (comparison, _) = super::project::worktree_filter_pipeline(repo).map_err(git)?;
     let (mut comparison, mut attributes) = comparison.into_parts();
     comparison.options_mut().crlf_roundtrip_check =
         gix::filter::plumbing::pipeline::CrlfRoundTripCheck::Skip;
@@ -812,7 +812,7 @@ fn commit_transaction(
         return Err(MergeError::Changed);
     }
 
-    let (mut pipeline, index) = repo.filter_pipeline(None).map_err(git)?;
+    let (mut pipeline, index) = super::project::worktree_filter_pipeline(repo).map_err(git)?;
     let state: &gix::index::State = &index;
 
     // Step 7: write, tracking each path for rollback.
