@@ -58,6 +58,30 @@ These glob patterns are also relative to the source directory. A static
 file's contents are not rendered; its path still follows the normal path
 rendering rules.
 
+## Create directories
+
+Use `directories` to create directories without placeholder files:
+
+```yaml
+directories:
+  - path: cache/empty
+  - each: tags as tag
+    path: "tags/{{ tag | kebab }}"
+    when: tags | length > 0
+```
+
+Each rule has a rendered `path` relative to the target. `each` is optional;
+without it, Toha creates one directory. `when` can skip a rule. Toha creates
+parents, combines repeated paths, and keeps existing directories and contents.
+A file or symlink in the directory path is an error, including with `--force`.
+Paths cannot escape the target or enter `.git`. Dry runs list missing directories
+without creating them.
+
+Apply, baseline and update create these directories. Toha does not remove a
+directory when its rule is removed or skipped. Directories do not carry file
+ownership in `.toha.json`. Git does not preserve empty directories on clone;
+apply or update the template to create them again.
+
 ## Make one file for each item
 
 Use `files` when one support file should produce several output files. For

@@ -872,6 +872,7 @@ fn plan_of(files: Vec<crate::plan::PlannedFile>) -> crate::plan::Plan {
     crate::plan::Plan {
         record: None,
         files,
+        directories: vec![],
         edits: vec![],
         conflicts: vec![],
         hooks: vec![],

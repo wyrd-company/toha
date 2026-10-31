@@ -201,6 +201,19 @@ description: >-
   the exact failing segment. Each fault also names the support or source file;
   a source-content fault keeps its source-file diagnostic.
 
+  Directories. `directories` creates empty directories with target-relative
+  rendered `path` values. Optional `each` and `when` use the same expressions
+  and binding rules as `files`; without `each`, a rule emits one directory.
+  Parent directories are created. Repeated directory paths coalesce. Existing
+  directories and their contents are preserved. A directory path or ancestor
+  occupied by a file or symlink is an error before writes, including with
+  force. Planned file and injection targets cannot be a directory or an
+  ancestor of one. The normal target path bounds also apply. Dry runs report
+  missing directories without creating them. Apply, baseline and update create
+  the selected directories. Directories are not file ownership entries in the
+  applied record; deselection or removal of a rule does not delete them. Git
+  does not preserve empty directories when cloning a generated repository.
+
   Injection. `inject` is a list of rules that each change one bounded part of an
   existing target file, rather than replacing the whole file as `files` and the
   source subdirectory do. Every rule names its target with `into`, a template
