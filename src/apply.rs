@@ -658,6 +658,19 @@ impl Plan {
                     None => read_current(target, path)?,
                 },
             };
+            // An injection-only plan must respect sections declared by an
+            // earlier application, even without a whole-file rule in this plan.
+            let user_image = user_image.or_else(|| {
+                if whole_file.is_some() {
+                    return None;
+                }
+                buffer
+                    .as_ref()
+                    .filter(|image| {
+                        std::str::from_utf8(image).is_ok_and(|text| text.contains("toha:user "))
+                    })
+                    .cloned()
+            });
             // A whole-file rule always writes; a pure injection writes only when
             // an edit changes the target.
             let mut changed = whole_file.is_some();
