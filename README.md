@@ -30,6 +30,7 @@ then render file paths and contents with Jinja. Preview the plan before writing.
 - Select template parts and update generated projects while preserving edits.
 - Render typed Jinja values, file paths, loops, and static files.
 - Reserve user-editable sections inside generated files.
+- Create empty directories with rendered paths and optional loops.
 - Use Git templates, short names, aliases, and hooks gated by trust.
 - Read embedded agent guidance with `toha skills`.
 

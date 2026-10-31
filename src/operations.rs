@@ -611,6 +611,15 @@ pub fn classify_paths(
 ) -> Result<Vec<crate::protocol::PlannedPath>, crate::ApplyError> {
     use crate::{EditReport, PlannedEdit};
     let mut paths = Vec::new();
+    for directory in &plan.directories {
+        if !target.as_path().join(directory.as_path()).is_dir() {
+            paths.push(crate::protocol::PlannedPath {
+                path: directory.to_string(),
+                action: "create".into(),
+                owner: None,
+            });
+        }
+    }
     for file in &plan.files {
         let action = if plan.conflicts.contains(&file.path) {
             if force { "overwrite" } else { "conflict" }

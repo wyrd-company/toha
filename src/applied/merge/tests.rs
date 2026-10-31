@@ -496,7 +496,7 @@ fn a_failure_after_a_write_but_before_commit_rolls_the_transaction_back() {
 
     // Fail after the first push: a.txt is written (BTreeMap order), then abort.
     super::inject_fail::arm(1);
-    let result = merge_into_worktree(
+    let result = merge_inner(
         &project,
         &Base::Application(base),
         &new,
@@ -504,8 +504,10 @@ fn a_failure_after_a_write_but_before_commit_rolls_the_transaction_back() {
             trusted: true,
             dry_run: false,
         },
+        &[crate::TargetPath::parse("empty/nested").unwrap()],
     );
     super::inject_fail::disarm();
+    assert!(!root.join("app/empty").exists());
     assert!(
         result.is_err(),
         "the injected transaction failure aborts: {result:?}"
@@ -872,6 +874,7 @@ fn plan_of(files: Vec<crate::plan::PlannedFile>) -> crate::plan::Plan {
     crate::plan::Plan {
         record: None,
         files,
+        directories: vec![],
         edits: vec![],
         conflicts: vec![],
         hooks: vec![],
@@ -1833,4 +1836,32 @@ fn safecrlf_allows_a_real_merge_of_historical_crlf_inputs() {
 #[test]
 fn safecrlf_still_rejects_candidate_admission_without_changing_operator_state() {
     safecrlf_merge_fixture(true);
+}
+
+#[test]
+fn directory_rollback_preserves_existing_and_concurrent_contents() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("existing")).unwrap();
+    {
+        let mut created = CreatedDirectories::default();
+        created
+            .create(
+                root.path(),
+                &crate::TargetPath::parse("existing/empty").unwrap(),
+            )
+            .unwrap();
+        created
+            .create(
+                root.path(),
+                &crate::TargetPath::parse("new/nested").unwrap(),
+            )
+            .unwrap();
+        std::fs::write(root.path().join("new/nested/concurrent.txt"), "keep").unwrap();
+    }
+    assert!(root.path().join("existing").is_dir());
+    assert!(!root.path().join("existing/empty").exists());
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("new/nested/concurrent.txt")).unwrap(),
+        "keep"
+    );
 }
