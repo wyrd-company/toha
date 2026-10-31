@@ -18,7 +18,7 @@ pub fn verify() {
     for field in [
         "run: [tool, '{{ toha_env_user }}']",
         "run: [tool]\n      when: toha_env_user == 'sample'",
-        "run: [tool]\n      each: '[toha_env_user]'",
+        "run: [tool]\n      each: '[toha_env_user] as item'",
         "run: [tool]\n      cwd: '{{ toha_env_user }}'",
     ] {
         std::fs::write(
