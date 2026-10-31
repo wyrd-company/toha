@@ -18,6 +18,24 @@ description: >-
   which is relative to the target, and `ignore` and `static` globs, which are
   relative to the source subdirectory.
 
+  Events. The optional events mapping associates slug names with ordered lists
+  of hook commands. Event commands support run or script, args, cwd, each and
+  when; result identities, capture, parse and allow-failure are not supported.
+  They do not participate in interview or apply execution. Explicit event
+  dispatch discovers the applied record at the containing Git repository,
+  honors TOHA_RECORD, and loads every application's recorded template revision.
+  It prepares matching handlers against that application's static data, recorded
+  raw answers and context. Event fields participate in context-reference and
+  environment-admission analysis during apply. Dispatch reconstructs template
+  identity bindings and uses the recorded context without live host or environment
+  capture. It does not replay computed answers or hook results.
+  All participating templates require matching hook-surface approval or explicit
+  trust before any handler executes. Event names, declarations and script bytes
+  are included in that surface. Dry run prepares without execution. Each cwd
+  stays inside its application target, including symlink resolution. Dispatch
+  runs in application and declaration order, stops on failure, and preserves
+  earlier effects. It neither commits nor changes applied-record ownership.
+
   Parts. At most one top-level multiselect question has parts: true. It has
   no when, precedes every flow node, and has literal unique option strings
   matching ^[a-z0-9][a-z0-9_-]*$. Each option names one part; there are no

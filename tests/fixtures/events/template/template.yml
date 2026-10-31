@@ -1,0 +1,17 @@
+# ---
+# relationships:
+#   verifies: template-format
+# ---
+name: example
+data:
+  prefix: changed
+interview:
+  - id: label
+    type: text
+    prompt: Label
+events:
+  refresh:
+    - run: [tool, '{{ prefix }}', '{{ label }}']
+      cwd: .
+    - run: [tool, skipped]
+      when: 'false'

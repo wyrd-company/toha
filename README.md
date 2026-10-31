@@ -30,6 +30,7 @@ then render file paths and contents with Jinja. Preview the plan before writing.
 - Select template parts and update generated projects while preserving edits.
 - Render typed Jinja values, file paths, loops, and static files.
 - Use Git templates, short names, aliases, and hooks gated by trust.
+- Coordinate recorded applications with named template events (`toha event`).
 - Read embedded agent guidance with `toha skills`.
 
 Read the [Toha documentation](https://wyrd.foo/docs/toha) for detailed guides.

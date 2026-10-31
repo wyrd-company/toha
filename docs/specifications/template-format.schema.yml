@@ -52,6 +52,23 @@ properties:
     type: array
     items:
       $ref: "#/$defs/hook-command"
+  events:
+    description: Named coordination events, dispatched explicitly through the applied record.
+    type: object
+    propertyNames:
+      $ref: "#/$defs/slug"
+    additionalProperties:
+      type: array
+      items:
+        allOf:
+          - $ref: "#/$defs/hook-command"
+          - not:
+              anyOf:
+                - required: [ id ]
+                - required: [ status-id ]
+                - required: [ capture ]
+                - required: [ parse ]
+                - required: [ allow-failure ]
   messages:
     type: object
     additionalProperties: false
