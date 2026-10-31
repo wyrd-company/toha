@@ -54,7 +54,8 @@ pub struct ResolvedTemplate {
     pub commit: String,
     pub folder: PathBuf,
     /// The approved executable-surface digest for a template resolved by name
-    /// from a writable registry, or `None` for an address, folder, or local
+    /// from a writable registry (also retained for recorded applications by
+    /// formal identity), or `None` for an address, folder, or local
     /// template, which run hooks only through `--trust`.
     pub approval: Option<ReviewDigest>,
     pub named: bool,
@@ -488,7 +489,7 @@ pub fn resume_application_template(
     cwd: &Path,
 ) -> Result<ResolvedTemplate, ResolveError> {
     use crate::applied::Revision;
-    match revision {
+    let mut resolved = match revision {
         Revision::Content(digest) => {
             bundled::resume(formal, digest.as_str(), dirs).unwrap_or_else(|| {
                 Err(ResolveError::text(
@@ -500,7 +501,12 @@ pub fn resume_application_template(
             resume_template(formal, commit.as_str(), false, config, registry, dirs, cwd)
         }
         Revision::Unversioned => resume_template(formal, "", false, config, registry, dirs, cwd),
-    }
+    }?;
+    // Recorded identities may use the effective approval even though this is
+    // not a fresh name selection. The caller must compare the resolved bytes
+    // with this digest; registry revision or alias changes grant no trust.
+    resolved.approval = entry(formal.into(), registry).and_then(|entry| entry.approval);
+    Ok(resolved)
 }
 
 #[cfg(test)]

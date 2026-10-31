@@ -188,6 +188,20 @@ Arguments:
 enum Command {
     /// Manage installed templates.
     Templates(cli::templates::TemplatesArgs),
+    /// Fire a named event for all recorded applications in a repository.
+    Event {
+        /// Event name declared by templates.
+        name: String,
+        /// Directory inside the repository; defaults to the current directory.
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Permit the recorded templates to run event handlers.
+        #[arg(long)]
+        trust: bool,
+        /// Prepare and validate handlers without executing them.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Read the agent skills embedded in toha.
     Skills {
         #[command(subcommand)]
@@ -2382,6 +2396,15 @@ fn main() -> ExitCode {
             input,
         } => continue_run(path, answers, &input, &dirs).finish(),
         Command::Abort { path } => abort(path, &dirs).finish(),
+        Command::Event {
+            name,
+            path,
+            trust,
+            dry_run,
+        } => match event_run(&name, &path, trust, dry_run, &dirs) {
+            Ok(lines) => Outcome::Written(lines).finish(),
+            Err(message) => Outcome::Error(message).finish(),
+        },
         Command::Templates(args) => {
             let cwd = match std::env::current_dir() {
                 Ok(cwd) => cwd,
@@ -3013,4 +3036,30 @@ mod seed_diagnostic_tests {
             _ => panic!("seed error changed category"),
         }
     }
+}
+
+fn event_run(
+    name: &str,
+    path: &std::path::Path,
+    trust: bool,
+    dry_run: bool,
+    dirs: &Dirs,
+) -> Result<Vec<String>, String> {
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let report = toha::events::fire(
+        name,
+        path,
+        toha::events::EventOptions { trust, dry_run },
+        dirs,
+        &cwd,
+        &toha::hook::ProcessRunner,
+    )?;
+    for warning in report.warnings {
+        eprintln!("warning: {warning}");
+    }
+    Ok(vec![format!(
+        "event {name}: {} handler(s) {}",
+        report.handler_count,
+        if dry_run { "planned" } else { "executed" }
+    )])
 }
