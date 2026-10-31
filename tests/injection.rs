@@ -560,7 +560,8 @@ fn missing_target_without_create_is_an_error_and_create_makes_it() {
 #[test]
 fn generated_files_preserve_user_sections_even_with_force() {
     let temp = tempfile::tempdir().unwrap();
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/user-sections");
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/user-sections/template");
     let target = temp.path().join("out");
     let first = apply(&fixture, &target, &[]);
     assert!(first.status.success(), "{}", stderr(&first));
@@ -674,4 +675,28 @@ fn injections_cannot_overwrite_user_owned_bodies() {
         stderr(&result)
     );
     assert!(!target.join("app.toml").exists());
+}
+
+#[test]
+fn inject_only_plans_cannot_overwrite_existing_user_sections() {
+    let temp = tempfile::tempdir().unwrap();
+    let template = make_template(
+        temp.path(),
+        "name: sample\ninject:\n  - into: app.toml\n    region: generated\n    anchor: {after: '# >>> toha:user settings >>>'}\n    content: 'generated = true'\n",
+    );
+    let target = temp.path().join("out");
+    fs::create_dir(&target).unwrap();
+    let original = "# >>> toha:user settings >>>\nenabled = true\n# <<< toha:user settings <<<\n";
+    fs::write(target.join("app.toml"), original).unwrap();
+    let result = apply(&template, &target, &["--force"]);
+    assert!(!result.status.success());
+    assert!(
+        stderr(&result).contains("injection changes a user-owned section"),
+        "{}",
+        stderr(&result)
+    );
+    assert_eq!(
+        fs::read_to_string(target.join("app.toml")).unwrap(),
+        original
+    );
 }
