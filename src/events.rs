@@ -38,7 +38,23 @@ pub fn prepare(
         context.insert(id.as_str().to_owned(), value.clone());
     }
     context.extend(application.answers.clone());
-    context.extend(application.context.clone());
+    // Reconstruct identity bindings; only recorded host/environment values
+    // are replayed. Never capture the dispatching process's live context.
+    let invocation = crate::context::InvocationContext::new(
+        crate::staging::canonical_target(&target).map_err(|e| e.to_string())?,
+        crate::context::SelectedTemplate::new(
+            application.template().into(),
+            template.name.clone(),
+            vec![],
+            None,
+        ),
+        crate::context::HostFacts::new(String::new(), String::new(), None, None, vec![]),
+        crate::context::ExecutionFacts::new(false, false),
+        crate::context::EnvironmentSnapshot::Unavailable,
+    )
+    .map_err(|e| e.to_string())?
+    .with_recorded(application.context.clone());
+    invocation.project(&mut context);
     let mut planned = Vec::new();
     for hook in handlers {
         if let Some(when) = &hook.when

@@ -330,7 +330,10 @@ An event with no handlers succeeds.
 
 Handlers use ordinary `run`, `script`, `args`, `cwd`, `each`, and `when` fields.
 They render from static template data, recorded raw answers, and recorded
-context. Computed answers and hook results are not replayed. There is no new
+context. Context references in event fields are captured during apply under the
+same environment permission rules as other template fields. Template names are
+reconstructed from the recorded identity and loaded template. Computed answers
+and hook results are not replayed. There is no new
 interview. Working directories are relative to each application's target.
 Handlers do not run on ordinary apply, and dispatch does not run apply hooks.
 Event handlers do not capture results or tolerate failures.
