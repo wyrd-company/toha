@@ -372,6 +372,14 @@ description: >-
   ones are asked again. Staging copies the seed's answers and parts. Seeded
   result documents name the seed target. The applied-record specification
   defines record path, shape, validation and ownership.
+  Events. `event NAME [PATH]` dispatches a named event to every application in
+  the containing Git repository's applied record. PATH defaults to the current
+  directory. `--dry-run` prepares without execution; `--trust` permits scripts
+  when approval is absent or stale. Preparation and trust checks complete before
+  execution. The command reports the event name and handler count on stdout,
+  errors on stderr, and stops on the first failure with exit code 1. No matching
+  handlers succeeds. A missing repository or record fails with exit code 1.
+
 format: cli
 validation-criteria: >-
   A conforming command line matches

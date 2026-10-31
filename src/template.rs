@@ -62,6 +62,9 @@ pub struct Template {
     pub ignore: GlobSet,
     pub static_files: GlobSet,
     pub hooks: Vec<HookNode>,
+    /// Named coordination handlers, separate from apply hooks.
+    pub events: IndexMap<String, Vec<HookNode>>,
+    pub event_hook_nodes: IndexMap<String, Vec<Value>>,
     pub messages: ApplyMessages,
     /// The programs that must be on `PATH` before the interview starts, in
     /// declaration order.
@@ -568,6 +571,7 @@ struct RawTemplate {
     #[serde(rename = "static")]
     static_files: Option<Vec<String>>,
     hooks: Option<Vec<Value>>,
+    events: Option<IndexMap<String, Vec<Value>>>,
     messages: Option<Map<String, Value>>,
     requires: Option<Vec<Value>>,
 }
@@ -1738,6 +1742,20 @@ impl Template {
                 b.hook(map, &format!("hooks[{i}]"), when)
             })
             .collect();
+        let mut events = IndexMap::new();
+        for (event, nodes) in raw.events.as_ref().into_iter().flatten() {
+            let handlers = nodes
+                .iter()
+                .enumerate()
+                .filter_map(|(i, v)| {
+                    let map = v.as_object()?;
+                    let label = format!("events.{event}[{i}]");
+                    let when = b.expr(map.get("when"), &format!("{label}.when"), &[]);
+                    b.hook(map, &label, when)
+                })
+                .collect();
+            events.insert(event.clone(), handlers);
+        }
         let messages = raw.messages.as_ref();
         let messages = ApplyMessages {
             before_apply: b.tmpl(
@@ -1823,6 +1841,8 @@ impl Template {
             ignore,
             static_files,
             hooks,
+            events,
+            event_hook_nodes: raw.events.unwrap_or_default(),
             messages,
             requires: requirements(raw.requires.as_deref().unwrap_or_default()),
             interview_hook_nodes,

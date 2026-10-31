@@ -28,6 +28,8 @@ pub enum HookOrigin {
     Interview { index: usize },
     /// The `index`-th top-level `hooks` entry.
     TopLevel { index: usize },
+    /// Handler in the flattened event declaration order.
+    Event { index: usize },
 }
 
 /// One executed in-tree file: its template-relative path and content hash.
@@ -186,6 +188,16 @@ impl HookSurface {
                 scripts,
             });
         }
+        for (event, nodes) in &template.event_hook_nodes {
+            for node in nodes {
+                let scripts = executed_files(node, &template.root)?;
+                hooks.push(HookView {
+                    origin: HookOrigin::Event { index: hooks.len() },
+                    node: serde_json::json!({"event": event, "handler": node}),
+                    scripts,
+                });
+            }
+        }
         Ok(Self { hooks })
     }
 
@@ -203,6 +215,7 @@ impl HookSurface {
             let (tag, index) = match view.origin {
                 HookOrigin::Interview { index } => (0u8, index),
                 HookOrigin::TopLevel { index } => (1u8, index),
+                HookOrigin::Event { index } => (2u8, index),
             };
             hasher.update([tag]);
             frame_len(&mut hasher, index);

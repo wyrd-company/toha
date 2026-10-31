@@ -15,6 +15,30 @@ options:
       Print `toha <VERSION>` and exit with code 0. `<VERSION>` is the SemVer
       version of the build.
 commands:
+  - name: event
+    summary: Fire a named event for all recorded applications in a repository.
+    positional-arguments:
+      - name: name
+        position: 0
+        required: true
+        description: Event name declared by templates.
+        value:
+          type: string
+      - name: path
+        position: 1
+        required: false
+        description: Directory inside the repository; defaults to the current directory.
+        value:
+          type: directory
+    options:
+      - name: trust
+        flags: [ --trust ]
+        kind: flag
+        description: Permit recorded templates to run event handlers.
+      - name: dry-run
+        flags: [ --dry-run ]
+        kind: flag
+        description: Prepare and validate all handlers without executing them.
   - name: stage
     summary: Run the interview for a template and save the answers without writing files.
     mode: interactive
