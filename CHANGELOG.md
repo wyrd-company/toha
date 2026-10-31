@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.1
+
+### Features
+
+- Preserve named user sections inside generated files on apply and update.
+- Create empty directories from rendered template paths with optional each and
+  when rules. Preserve existing directories and their contents, preview missing
+  directories, and create them during apply, baseline and update.
+
+### Fixes
+
+- Allow applying templates into unborn worktrees of bare repositories and honor their working-tree attributes.
+- Validate the locked public-library consumer in hosted CI and document refreshing both release lockfiles.
+
 ## 0.4.0
 
 ### Features
