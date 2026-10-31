@@ -77,6 +77,8 @@ pub enum ApplyError {
     },
     #[error("target path contains symlink: {0}")]
     Symlink(TargetPath),
+    #[error("{0}")]
+    Directory(String),
     #[error("hook {index} failed: {hook:?}, outcome: {outcome:?}")]
     Hook {
         index: usize,
@@ -170,6 +172,7 @@ impl Plan {
         runner: &dyn HookRunner,
         on_written: &mut dyn FnMut(&TargetPath),
     ) -> Result<Applied, ApplyError> {
+        crate::plan::check_directories(&self.directories, target).map_err(ApplyError::Directory)?;
         let mut conflicts = self.conflicts.clone();
         for file in &self.files {
             if target.as_path().join(file.path.as_path()).exists()
@@ -241,6 +244,12 @@ impl Plan {
             .map(|planned| crate::git_target::preflight(planned, target))
             .transpose()?;
         let mut written = Vec::new();
+        for directory in &self.directories {
+            let path = target.as_path().join(directory.as_path());
+            fs::create_dir_all(&path).map_err(|source| ApplyError::Io { path, source })?;
+            on_written(directory);
+            written.push(directory.clone());
+        }
         // Whole-file targets that carry no edit write exactly as before. A target
         // with edits is committed once below, from its folded image.
         for file in &self.files {
@@ -841,6 +850,7 @@ mod tests {
                     source: source.to_owned(),
                 })
                 .collect(),
+            directories: vec![],
             edits: vec![],
             conflicts: vec![],
             hooks: (0..hooks)

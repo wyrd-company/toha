@@ -188,6 +188,12 @@ pub(crate) fn merge_apply_reported_with_force(
         .record
         .take()
         .expect("a completed plan has record inputs");
+    let directories = plan.directories.clone();
+    let missing_directories: Vec<_> = directories
+        .iter()
+        .filter(|path| !target_path.as_path().join(path.as_path()).is_dir())
+        .cloned()
+        .collect();
     let (new, candidate_report) = build_candidate_reported(
         project,
         &base,
@@ -200,13 +206,29 @@ pub(crate) fn merge_apply_reported_with_force(
 
     report.messages.extend(candidate_report.messages);
     report.hooks = candidate_report.hooks;
-    if let Base::Application(base_application) = &base
+    if missing_directories.is_empty()
+        && let Base::Application(base_application) = &base
         && is_already_current(project, base_application, &new, &inputs)?
     {
         return Ok((Merged::AlreadyCurrent, report));
     }
-    let result = merge_into_worktree(project, &base, &new, &options);
-    result.map(|merged| (merged, report))
+    crate::plan::check_directories(&directories, &target_path).map_err(MergeError::Io)?;
+    let mut merged = merge_into_worktree(project, &base, &new, &options)?;
+    if let Merged::Planned { changes } | Merged::Written { changes, .. } = &mut merged {
+        for directory in &missing_directories {
+            changes.push(Change {
+                path: repo_path_for(project.target(), &BString::from(directory.to_string())),
+                action: Action::Added,
+            });
+        }
+    }
+    if matches!(merged, Merged::Written { .. }) {
+        for directory in directories {
+            let path = target_path.as_path().join(directory.as_path());
+            std::fs::create_dir_all(path).map_err(|error| MergeError::Io(error.to_string()))?;
+        }
+    }
+    Ok((merged, report))
 }
 
 /// The candidate target: a `CanonicalTarget` for the project's real target.
