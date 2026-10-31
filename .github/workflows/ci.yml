@@ -58,10 +58,45 @@ jobs:
       - name: Install local SSH test server
         run: sudo apt-get update && sudo apt-get install -y openssh-server
       - run: cargo fmt --all -- --check
+      - run: cargo fmt --manifest-path tests/consumer/Cargo.toml -- --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --locked
       - name: Local HTTPS Git transport check
         run: cargo test --locked --test source_https fetches_https_git_repository
       - name: Local Unix SSH Git transport check
         run: cargo test --locked --test source_ssh fetches_ssh_git_repository_with_key_authentication -- --ignored
+      - name: Locked public library consumer without CLI features
+        run: cargo run --locked --manifest-path tests/consumer/Cargo.toml
+      - name: Credential redaction without CLI features
+        run: >-
+          cargo test --locked --no-default-features --test source_https
+          an_echoed_basic_credential_cannot_be_recovered_from_errors -- --exact
       - run: cargo publish --dry-run --locked --target-dir target/publish-check
+  release-config:
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install release configuration validators
+        run: |
+          /home/linuxbrew/.linuxbrew/bin/brew install actionlint ryl
+          echo "/home/linuxbrew/.linuxbrew/bin" >> "$GITHUB_PATH"
+      # Keep the installer aligned with the contract-2 configuration (see AGENTS.md).
+      - name: Install Intentional 0.4.1
+        run: |
+          curl --fail --silent --show-error --location \
+            https://github.com/wyrd-company/intentional/releases/download/0.4.1/intentional-linux-x86_64.tar.gz \
+            --output "$RUNNER_TEMP/intentional-linux-x86_64.tar.gz"
+          cd "$RUNNER_TEMP"
+          printf '%s  %s\n' \
+            d149b90aabb0fd8b424c6ecd2fa0b657afa1b08c2dda83a53042cbc1f5dbb22a \
+            intentional-linux-x86_64.tar.gz | sha256sum --check
+          tar -xzf intentional-linux-x86_64.tar.gz
+          echo "$RUNNER_TEMP/intentional-linux-x86_64" >> "$GITHUB_PATH"
+      - run: actionlint .github/workflows/*.yml
+      - run: >-
+          ryl check -c .ryl.yml .github/workflows/*.yml Taskfile.yml
+          .intentional/config.yml docs/user/docs.yml scripts/release/nfpm.yml
+      - run: intentional check

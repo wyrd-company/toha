@@ -12,8 +12,8 @@ tested it.
 
 Use Rust stable (minimum supported version 1.88) and [Task](https://taskfile.dev).
 Install `actionlint` for GitHub workflow validation, `ryl` for YAML validation,
-and `intentional` for release intents. Install `vhs` when editing the terminal
-demo.
+and Intentional 0.4.1 for the `contract-2` release configuration and intents.
+Install `vhs` when editing the terminal demo.
 
 Linux release builds require `cargo-zigbuild` 0.23.4 and Zig 0.14.1. Install
 `cargo-zigbuild` with `cargo install --locked cargo-zigbuild --version 0.23.4`
@@ -73,20 +73,25 @@ acceptance. Each step names the tool that owns it; see
    intentional plan > release-plan.json
    ```
 
-2. Apply the release and refresh the lock file. `intentional apply` writes
+2. Apply the release and refresh both lockfiles. `intentional apply` writes
    `Cargo.toml`, `CHANGELOG.md` and the versions in `docs/user/docs.yml`, and
-   consumes the intents; `cargo update -p
-   toha` refreshes the `toha` entry in `Cargo.lock` that Intentional does not
-   project:
+   consumes the intents. Refresh the `toha` path-package entry in both the
+   root and independent consumer lockfiles that Intentional does not project:
 
    ```sh
    intentional apply --dry-run
    intentional apply
    cargo update -p toha
+   cargo update --manifest-path tests/consumer/Cargo.toml -p toha
+   git diff -- Cargo.lock tests/consumer/Cargo.lock
    ```
 
+   Check that both lockfile diffs contain only the expected package-version
+   bookkeeping. Investigate dependency graph changes before continuing.
+
 3. Commit the applied release as one commit: `Cargo.toml`, `Cargo.lock`,
-   `CHANGELOG.md`, `docs/user/docs.yml`, and the consumed intent deletions.
+   `tests/consumer/Cargo.lock`, `CHANGELOG.md`, `docs/user/docs.yml`, and the
+   consumed intent deletions.
 
 4. Validate the applied commit. `intentional status` reports no pending intents,
    tag authority at the previous version, and manifest drift at the new version;
@@ -168,5 +173,29 @@ package bytes also needs a successful exchange.
 Same-tag retries reject formula bytes that differ from the tap. Publish formula
 corrections with the next product release.
 
-`task release:check` runs a crates.io publish dry run, so a package that does
-not build from its published files fails the local gate.
+### Release validation coverage
+
+`task ci` is the local gate for an applied release. Hosted CI divides the checks
+between Linux jobs and keeps the minimum-Rust, macOS, and Windows root suites.
+
+| Contract | Local gate | Hosted CI |
+| --- | --- | --- |
+| Root and consumer formatting | `fmt-check` | Linux `test` job |
+| Root lint and tests, including release artifact contracts | `lint`, `test` | Linux `test` job |
+| Public library without CLI features, with a consistent consumer lockfile | `test:consumer` through `test` | Linux `test` job: `cargo run --locked --manifest-path tests/consumer/Cargo.toml` |
+| Credential redaction without CLI features | `test:redaction` through `test` | Linux `test` job |
+| Workflow syntax, YAML, and release intent configuration | `release:check` | Linux `release-config` job |
+| Crate builds from its published files | `release:check` publish dry run | Linux `test` job publish dry run |
+
+The independent consumer is outside the root Cargo package. Root tests and
+`cargo metadata --no-deps` do not establish its lockfile consistency. The locked
+consumer run rejects a stale path-package version before compilation; it also
+executes public library operations when the lockfile is consistent. Hosted CI
+runs this check once, and runs the publish dry run once. Local `release:check`
+explicitly repeats the release artifact contract tests so it can run alone;
+hosted root tests already include them.
+
+Local HTTPS and Unix SSH transport fixtures are available through
+`task test:network`; hosted CI runs them on Linux and macOS, with HTTPS coverage
+on Windows. Building the host packages and acceptance remain separate release
+steps.
