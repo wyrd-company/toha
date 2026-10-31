@@ -156,6 +156,10 @@ right before publication. Only the publication step receives the token, and the
 action revokes it when the job ends. A rejected exchange stops the job before
 publication; there is no stored-token fallback.
 
+Keep the auth action pinned to a full commit SHA and its version comment set to
+the matching upstream release tag. Renovate uses that comment for digest
+lookups. This action publishes full version tags such as `v1.0.6`.
+
 The GitHub Release, crates.io, and Homebrew steps can run again for the same
 tag. Each leaves a channel that already holds the same release unchanged and
 fails when the channel holds different content for that version. The crates.io
