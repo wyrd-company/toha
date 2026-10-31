@@ -382,6 +382,7 @@ fn apply_captures_event_only_context_for_each_application_target() {
     let repo = iso.path().join("repo");
     let source = iso.path().join("source");
     std::fs::create_dir_all(source.join("template")).unwrap();
+    let source = source.canonicalize().unwrap();
     std::fs::create_dir_all(repo.join("child")).unwrap();
     std::fs::write(source.join("template.yml"), "name: example\nevents:\n  refresh:\n    - run: [sh, '-c', 'printf \"%s\\n\" \"$@\" > observed.txt', event, '{{ toha_target_name }}', '{{ toha_template_name }}', '{{ toha_template_formal_name }}', '{{ toha_host_os }}']\n").unwrap();
     std::fs::write(source.join("template/keep.txt"), "kept\n").unwrap();
