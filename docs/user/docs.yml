@@ -77,6 +77,8 @@ products:
             pages: [ templates-management, template-registries, configuration ]
           - group: Projects
             pages: [ updating-projects, generating-into-subpaths ]
+      - section: Library
+        groups:
           - group: Library
             pages: [ using-toha-from-rust ]
     kinds:
