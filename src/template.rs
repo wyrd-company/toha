@@ -1824,6 +1824,7 @@ impl Template {
             &files,
             &inject,
             &hooks,
+            &events,
             &messages,
             &render_program,
         );
@@ -1995,11 +1996,13 @@ fn compile_source_tree(
 
 /// The first surface, in deterministic order, whose compiled Jinja can observe
 /// a fixed environment value, or `EnvironmentNeed::None`.
+#[allow(clippy::too_many_arguments)]
 fn compute_environment_need(
     interview: &[Node],
     files: &[FileRule],
     inject: &[InjectRule],
     hooks: &[HookNode],
+    events: &IndexMap<String, Vec<HookNode>>,
     messages: &ApplyMessages,
     render_program: &[SourceEntry],
 ) -> (EnvironmentNeed, HashSet<String>) {
@@ -2010,6 +2013,11 @@ fn compute_environment_need(
     }
     for (i, hook) in hooks.iter().enumerate() {
         find.hook(hook, &format!("hooks[{i}]"));
+    }
+    for (name, handlers) in events {
+        for (i, hook) in handlers.iter().enumerate() {
+            find.hook(hook, &format!("events.{name}[{i}]"));
+        }
     }
     if let Some(t) = &messages.before_apply {
         find.tmpl(t, "messages.before-apply");

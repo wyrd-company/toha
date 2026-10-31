@@ -292,3 +292,182 @@ fn child_event_updates_parent_file_with_recorded_answers() {
         record.to_json_bytes().unwrap()
     );
 }
+
+#[test]
+fn installed_approval_is_used_and_revocation_or_changed_surface_refuses_dispatch() {
+    let iso = tempfile::tempdir().unwrap();
+    let repo = iso.path().join("repo");
+    let source = iso.path().join("source");
+    std::fs::create_dir_all(source.join("template")).unwrap();
+    std::fs::create_dir(&repo).unwrap();
+    std::fs::write(
+        source.join("template.yml"),
+        "name: example\nevents:\n  refresh:\n    - run: [git, init, -q, marker]\n",
+    )
+    .unwrap();
+    assert!(
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .arg(&repo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mut record = AppliedRecord::default();
+    let app = application(".");
+    record.replace(Application::new(
+        source.to_str().unwrap().into(),
+        Revision::Unversioned,
+        app.target().clone(),
+        app.generated().clone(),
+        app.answers.clone(),
+        app.context.clone(),
+        vec![],
+        vec![],
+    ));
+    std::fs::write(repo.join(".toha.json"), record.to_json_bytes().unwrap()).unwrap();
+    let run = |args: &[&str]| {
+        support::isolated_command(iso.path())
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let ok = |out: std::process::Output| {
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        )
+    };
+    ok(run(&[
+        "templates",
+        "add",
+        source.to_str().unwrap(),
+        "--alias",
+        "sample",
+    ]));
+    ok(run(&["templates", "trust", "sample"]));
+    ok(run(&["event", "refresh", repo.to_str().unwrap()]));
+    assert!(repo.join("marker/.git").exists());
+    std::fs::remove_dir_all(repo.join("marker")).unwrap();
+    ok(run(&["templates", "untrust", "sample"]));
+    let refused = run(&["event", "refresh", repo.to_str().unwrap()]);
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("require trust"));
+    assert!(!repo.join("marker").exists());
+    ok(run(&[
+        "event",
+        "refresh",
+        repo.to_str().unwrap(),
+        "--trust",
+    ]));
+    std::fs::remove_dir_all(repo.join("marker")).unwrap();
+    ok(run(&["templates", "trust", "sample"]));
+    std::fs::write(
+        source.join("template.yml"),
+        "name: example\nevents:\n  refresh:\n    - run: [git, init, -q, changed]\n",
+    )
+    .unwrap();
+    let refused = run(&["event", "refresh", repo.to_str().unwrap()]);
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("require trust"));
+    assert!(!repo.join("changed").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn apply_captures_event_only_context_for_each_application_target() {
+    let iso = tempfile::tempdir().unwrap();
+    let repo = iso.path().join("repo");
+    let source = iso.path().join("source");
+    std::fs::create_dir_all(source.join("template")).unwrap();
+    std::fs::create_dir_all(repo.join("child")).unwrap();
+    std::fs::write(source.join("template.yml"), "name: example\nevents:\n  refresh:\n    - run: [sh, '-c', 'printf \"%s\\n\" \"$@\" > observed.txt', event, '{{ toha_target_name }}', '{{ toha_template_name }}', '{{ toha_template_formal_name }}', '{{ toha_host_os }}']\n").unwrap();
+    std::fs::write(source.join("template/keep.txt"), "kept\n").unwrap();
+    let git = |args: &[&str]| {
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    };
+    git(&["init", "-q"]);
+    git(&[
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "--allow-empty",
+        "-qm",
+        "seed",
+    ]);
+    let answers = iso.path().join("answers.json");
+    std::fs::write(
+        &answers,
+        serde_json::json!({"template": source, "answers": {}}).to_string(),
+    )
+    .unwrap();
+    for target in [repo.clone(), repo.join("child")] {
+        let out = support::isolated_command(iso.path())
+            .arg("apply")
+            .arg(&source)
+            .arg(&target)
+            .arg("--baseline")
+            .arg("--answers")
+            .arg(&answers)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        git(&["add", "."]);
+        git(&[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "apply",
+        ]);
+    }
+    let record = AppliedRecord::parse(&std::fs::read(repo.join(".toha.json")).unwrap()).unwrap();
+    for app in record.applications() {
+        assert!(
+            app.context.contains_key("toha_target_name"),
+            "{:?}",
+            app.context
+        );
+        assert!(app.context.contains_key("toha_host_os"));
+    }
+    let out = support::isolated_command(iso.path())
+        .args(["event", "refresh"])
+        .arg(repo.join("child"))
+        .arg("--trust")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    for (path, name) in [(&repo, "repo"), (&repo.join("child"), "child")] {
+        let lines = std::fs::read_to_string(path.join("observed.txt")).unwrap();
+        assert_eq!(
+            lines.lines().collect::<Vec<_>>(),
+            [
+                name,
+                "example",
+                source.to_str().unwrap(),
+                std::env::consts::OS
+            ]
+        );
+    }
+}

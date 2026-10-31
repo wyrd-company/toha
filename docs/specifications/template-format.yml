@@ -25,7 +25,10 @@ description: >-
   dispatch discovers the applied record at the containing Git repository,
   honors TOHA_RECORD, and loads every application's recorded template revision.
   It prepares matching handlers against that application's static data, recorded
-  raw answers and context. It does not replay computed answers or hook results.
+  raw answers and context. Event fields participate in context-reference and
+  environment-admission analysis during apply. Dispatch reconstructs template
+  identity bindings and uses the recorded context without live host or environment
+  capture. It does not replay computed answers or hook results.
   All participating templates require matching hook-surface approval or explicit
   trust before any handler executes. Event names, declarations and script bytes
   are included in that surface. Dry run prepares without execution. Each cwd
