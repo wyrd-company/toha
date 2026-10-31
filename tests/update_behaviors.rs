@@ -515,3 +515,39 @@ fn released_file_survives(json: bool, reclaim: bool) {
         "operator files must remain in the index: {tracked:?}"
     );
 }
+
+#[test]
+fn user_sections_survive_template_default_changes_and_repeated_updates() {
+    let iso = tempfile::tempdir().unwrap();
+    let template = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    std::fs::create_dir(template.path().join("template")).unwrap();
+    std::fs::write(template.path().join("template.yml"), "name: sample\n").unwrap();
+    let original = "version = 1\n# >>> toha:user settings >>>\nenabled = false\n# <<< toha:user settings <<<\n";
+    let source = template.path().join("template/app.toml");
+    std::fs::write(&source, original).unwrap();
+    target_repo(target.path());
+    let address = support::versioned_template(template.path());
+    let env = envelope(iso.path(), "answers.json", &address, serde_json::json!({}));
+    let snapshot = plain_apply(iso.path(), &address, &env, target.path());
+    let file = target.path().join("app.toml");
+    let edited = original.replace("enabled = false", "enabled = true\nextra = 42");
+    std::fs::write(&file, &edited).unwrap();
+    commit(target.path(), "user customization");
+    for version in [2, 3] {
+        std::fs::write(
+            &source,
+            original
+                .replace("version = 1", &format!("version = {version}"))
+                .replace("enabled = false", "new_default = true"),
+        )
+        .unwrap();
+        let document = update_from(iso.path(), &address, &snapshot, Some(&env), target.path());
+        assert_eq!(document["status"], "applied", "{document}");
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            edited.replace("version = 1", &format!("version = {version}"))
+        );
+        commit(target.path(), "template update");
+    }
+}

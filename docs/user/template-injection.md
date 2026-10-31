@@ -18,6 +18,9 @@ leaves every file unchanged, and it replaces each changed file atomically. A rul
 that changes nothing writes nothing. A rule fails when its target is missing
 unless you set `create: true`.
 
+For the inverse ownership, a generated file can reserve
+[user-editable sections](template-files.md#reserve-sections-for-user-edits).
+
 ## A managed region
 
 A `region` rule owns a block of lines, marked by comments and a checksum:

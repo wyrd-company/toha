@@ -100,6 +100,9 @@ pub enum ApplyError {
     /// A region edit could not be resolved against the target.
     #[error("{0}")]
     Region(#[from] RegionError),
+    /// A user-section marker or ownership overlap could not be resolved.
+    #[error("user sections in {path}: {message}")]
+    UserSections { path: TargetPath, message: String },
     /// A JSON-family edit could not be resolved against the target.
     #[error("{0}")]
     Json(#[from] JsonEditError),
@@ -605,16 +608,69 @@ impl Plan {
     ) -> Result<Vec<EditedTarget>, ApplyError> {
         let mut resolved: Vec<EditedTarget> = Vec::new();
         let mut drift: Vec<(TargetPath, RegionKey)> = Vec::new();
-        for edit in &self.edits {
+        // Fold user-owned bodies before injections, and validate all affected
+        // targets before the apply loop writes its first file.
+        for (index, file) in self.files.iter().enumerate() {
+            let Content::Rendered(text) = &file.content else {
+                continue;
+            };
+            check_edit_path(target, &file.path)?;
+            let current = match read_current(target, &file.path) {
+                Ok(current) => current,
+                // Ordinary whole-file write errors retain their apply-loop
+                // behavior; only a declared section requires readable input.
+                Err(_) if !text.contains("toha:user ") => continue,
+                Err(error) => return Err(error),
+            };
+            if let Some(image) =
+                crate::user_sections::preserve(text, current.as_deref()).map_err(|message| {
+                    ApplyError::UserSections {
+                        path: file.path.clone(),
+                        message,
+                    }
+                })?
+            {
+                resolved.push(EditedTarget {
+                    path: file.path.clone(),
+                    image: Some(image),
+                    whole_file: Some(index),
+                });
+            }
+        }
+        for (edit_index, edit) in self.edits.iter().enumerate() {
             let path = edit.path();
-            if resolved.iter().any(|e| &e.path == path) {
+            if self.edits[..edit_index]
+                .iter()
+                .any(|other| other.path() == path)
+            {
                 continue;
             }
+            let preserved = resolved
+                .iter()
+                .position(|e| &e.path == path)
+                .map(|index| resolved.remove(index));
+            let user_image = preserved.as_ref().and_then(|target| target.image.clone());
             let whole_file = self.files.iter().position(|f| &f.path == path);
-            let mut buffer = match whole_file {
-                Some(index) => Some(self.file_image(index)?),
-                None => read_current(target, path)?,
+            let mut buffer = match preserved {
+                Some(target) => target.image,
+                None => match whole_file {
+                    Some(index) => Some(self.file_image(index)?),
+                    None => read_current(target, path)?,
+                },
             };
+            // An injection-only plan must respect sections declared by an
+            // earlier application, even without a whole-file rule in this plan.
+            let user_image = user_image.or_else(|| {
+                if whole_file.is_some() {
+                    return None;
+                }
+                buffer
+                    .as_ref()
+                    .filter(|image| {
+                        std::str::from_utf8(image).is_ok_and(|text| text.contains("toha:user "))
+                    })
+                    .cloned()
+            });
             // A whole-file rule always writes; a pure injection writes only when
             // an edit changes the target.
             let mut changed = whole_file.is_some();
@@ -637,6 +693,37 @@ impl Plan {
                             drift.push((path.clone(), region.region.clone()));
                         }
                     }
+                }
+            }
+            // Injection content can introduce markers even when the starting
+            // image had no user sections. Validate the final image before writes.
+            if let Some(text) = buffer
+                .as_deref()
+                .and_then(|image| std::str::from_utf8(image).ok())
+            {
+                crate::user_sections::validate(text).map_err(|message| {
+                    ApplyError::UserSections {
+                        path: path.clone(),
+                        message,
+                    }
+                })?;
+            }
+            if let (Some(before), Some(after)) = (&user_image, &buffer) {
+                let after_text =
+                    std::str::from_utf8(after).expect("text injection preserves UTF-8");
+                if crate::user_sections::preserve(after_text, Some(before))
+                    .map_err(|message| ApplyError::UserSections {
+                        path: path.clone(),
+                        message,
+                    })?
+                    .is_some_and(|preserved| preserved != *after)
+                {
+                    return Err(ApplyError::UserSections {
+                        path: path.clone(),
+                        message:
+                            "injection changes a user-owned section; place it outside the section"
+                                .into(),
+                    });
                 }
             }
             resolved.push(EditedTarget {
