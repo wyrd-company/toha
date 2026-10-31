@@ -190,7 +190,9 @@ enum Command {
     Templates(cli::templates::TemplatesArgs),
     /// Fire a named event for all recorded applications in a repository.
     Event {
+        /// Event name declared by templates.
         name: String,
+        /// Directory inside the repository; defaults to the current directory.
         #[arg(default_value = ".")]
         path: PathBuf,
         /// Permit the recorded templates to run event handlers.
