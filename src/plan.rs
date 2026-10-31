@@ -679,6 +679,12 @@ impl Plan {
                 second: source,
             });
         }
+        if let Content::Rendered(text) = &content {
+            crate::user_sections::validate(text).map_err(|message| PlanError::Render {
+                path: source.clone(),
+                message,
+            })?;
+        }
         let destination = target.join(path.as_path());
         if has_symlink_component(target, &path).map_err(|source| PlanError::Io {
             path: destination.clone(),

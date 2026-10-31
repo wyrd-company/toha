@@ -1553,7 +1553,9 @@ fn scripted_apply_error(error: toha::ApplyError, context: &Context) -> Outcome {
     let kind = match &error {
         E::Conflicts(_) | E::Drift(_) | E::Symlink(_) => ErrorKind::Conflict,
         E::Hook { .. } | E::HookIo { .. } | E::HookOutput { .. } => ErrorKind::Hook,
-        E::Io { .. } | E::Deferred(_) | E::Region(_) | E::Json(_) => ErrorKind::Render,
+        E::Io { .. } | E::Deferred(_) | E::Region(_) | E::Json(_) | E::UserSections { .. } => {
+            ErrorKind::Render
+        }
         E::Git(_) | E::Record(_) => ErrorKind::Git,
     };
     scripted_error(kind, error.to_string(), vec![], Some(context))

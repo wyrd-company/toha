@@ -111,3 +111,43 @@ To change part of a file that already exists instead of writing a whole file,
 see [Injecting into existing files](/docs/toha/template-injection). For commands
 to run after writing files, continue with
 [Hooks and messages](/docs/toha/template-hooks).
+
+## Reserve sections for user edits
+
+A rendered file can leave named sections for the caller to edit. Put a matching
+marker pair on separate lines in the source file:
+
+```toml
+version = 1
+# >>> toha:user settings >>>
+enabled = false
+# <<< toha:user settings <<<
+```
+
+Toha generates the whole file. On first creation, the section contains the
+rendered default (`enabled = false` here). On later applies and updates, Toha
+copies the existing section body byte for byte, while the template supplies the
+marker lines and everything outside them. Changing a template's section default
+does not replace an existing body, including an empty body. The key connects a
+section across template versions, so its position may change.
+
+Keys use lowercase letters, digits, `_`, and `-`, and are unique within each
+file. Use the file's comment syntax around the markers, such as
+`// >>> toha:user settings >>>` in Rust or
+`<!-- >>> toha:user settings >>> -->` in Markdown. The end marker uses `<<<` at
+both ends. Both marker lines must have the same prefix and suffix. Sections
+cannot nest. Malformed pairs stop the apply before files are written, including
+with `--force`.
+
+New sections use their template defaults. To remove or rename an existing
+section, first move any content you want to keep and remove its markers in the
+target. A template that drops an existing section otherwise fails, so an update
+does not silently discard user content. Preserve the marker pair when editing a
+section; deleting both markers makes the section new on the next apply.
+
+This works for rendered source files and `files` rules. `static` files are
+copied unchanged. Ordinary whole-file conflict checks still apply: use
+`apply --force` when replacing an existing file, or commit edits and use
+`apply --update` for a recorded application. Force preserves user sections. Injections in the same file must stay outside
+user-section bodies.
+For the inverse ownership, see [managed injection regions](template-injection.md).
