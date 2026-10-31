@@ -348,8 +348,9 @@ proposed-design:
     system paths, and passes it to `config`, `registry`, and `staging`. The
     orchestration library receives those paths and the caller's working
     directory explicitly. Existing TOHA_RECORD overrides, PATH executable lookup
-    and Git global configuration (including HOME/XDG) remain part of lower-level
-    contracts. Explicit Toha paths do not establish process isolation. `config::load(&Dirs, cwd) ->
+    and Git global configuration (including HOME/XDG), along with the calling
+    thread's HTTPS credential resolver (`source::with_credential_resolver`), remain
+    part of lower-level contracts. Explicit Toha paths do not establish process isolation. `config::load(&Dirs, cwd) ->
     Result<Config, ConfigError>` validates each layer against the embedded
     configuration schema and merges them by the rules in the configuration
     specification. `ConfigEntry<T>` keeps each winning value and origin

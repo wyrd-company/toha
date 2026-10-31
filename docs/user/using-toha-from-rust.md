@@ -200,7 +200,9 @@ credential. While a
 resolver is in scope, curl's verbose output (`GIT_CURL_VERBOSE` or
 `gitoxide.http.verbose`) is off for the operation's HTTP connections, as it
 writes the request headers that carry the credential. A clone inside the scope
-does not fetch a remote branch named `HEAD`.
+does not fetch a remote branch named `HEAD`, so an explicit
+`@refs/heads/HEAD` selection fails inside the scope. Outside a resolver scope,
+that selection works.
 
 ## Choose a hook runner and account for process inputs
 
