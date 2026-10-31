@@ -49,3 +49,9 @@ Nothing is recorded yet.
 - `docs/specifications/` holds the contract and JSON Schemas for the binary.
 - `tests/fixtures/` holds template folders, answers documents, expectations, and expected trees.
 - `task ci` runs the local gate.
+
+## Contributor tooling constraint
+
+Use Intentional 0.3.0 with the repository's `contract-1` release configuration.
+Intentional 0.4.1 rejects that contract. Upgrade the configuration and CI
+installer together when adopting a newer Intentional release.
