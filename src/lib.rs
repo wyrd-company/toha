@@ -22,6 +22,7 @@ pub mod requirement;
 pub mod review;
 pub mod source;
 pub mod staging;
+pub mod stop;
 pub mod template;
 
 pub use apply::{Applied, ApplyError, ApplyOptions, HookReport};

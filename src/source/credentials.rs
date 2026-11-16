@@ -129,7 +129,8 @@ pub(crate) fn resolving() -> bool {
     RESOLVER.with(|current| current.borrow().is_some())
 }
 
-fn current_resolver() -> Option<Arc<dyn CredentialResolver>> {
+/// The calling thread's resolver, for a thread that works for its operation.
+pub(crate) fn current_resolver() -> Option<Arc<dyn CredentialResolver>> {
     RESOLVER.with(|current| current.borrow().clone())
 }
 

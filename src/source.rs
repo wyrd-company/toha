@@ -5,13 +5,13 @@ use indexmap::IndexMap;
 use std::{
     io::Write,
     path::{Path, PathBuf},
-    sync::atomic::AtomicBool,
+    sync::atomic::{AtomicBool, Ordering},
 };
 mod credentials;
-pub(crate) use credentials::Supplied;
 pub use credentials::{
     Credential, CredentialRequest, CredentialResolver, with_credential_resolver,
 };
+pub(crate) use credentials::{Supplied, current_resolver};
 pub type Hosts = IndexMap<String, String>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Address {
@@ -43,6 +43,14 @@ pub enum SourceError {
     Io(PathBuf, #[source] std::io::Error),
     #[error("git fetch failed: {0}")]
     Git(String),
+    /// The operation's [stop signal](crate::stop) fired.
+    #[error("the fetch was stopped")]
+    Stopped,
+}
+impl From<crate::stop::Stopped> for SourceError {
+    fn from(_: crate::stop::Stopped) -> Self {
+        Self::Stopped
+    }
 }
 fn split_git(value: &str) -> Result<(&str, Option<String>, Option<String>), SourceError> {
     let (before_path, path) = value
@@ -284,7 +292,12 @@ fn windows_local_git_path(local: &str) -> &str {
         local
     }
 }
-fn expand_commit(repo: &str, short: &str, dest: &Path) -> Result<String, SourceError> {
+fn expand_commit(
+    repo: &str,
+    short: &str,
+    dest: &Path,
+    interrupt: &AtomicBool,
+) -> Result<String, SourceError> {
     if short.len() == 40 {
         return Ok(short.into());
     }
@@ -301,13 +314,14 @@ fn expand_commit(repo: &str, short: &str, dest: &Path) -> Result<String, SourceE
         .ok_or_else(|| SourceError::Address("destination has no parent".into()))?;
     let temporary = tempfile::tempdir_in(parent).map_err(|e| SourceError::Io(parent.into(), e))?;
     let lookup = temporary.path().join("lookup");
-    fetch(
+    clone_into(
         &Address::Git {
             repo: repo.into(),
             reference: None,
             path: None,
         },
         &lookup,
+        interrupt,
     )?;
     gix::open(&lookup)
         .map_err(|e| SourceError::Git(e.to_string()))?
@@ -392,7 +406,60 @@ fn configure_http(
     connection.set_transport_options(options);
     Ok(())
 }
+/// Clone `address` into `dest`, which must not exist, and check out the
+/// selected revision.
+///
+/// Inside [`with_stop_signal`](crate::stop::with_stop_signal) the clone runs
+/// on a thread Toha starts, into a temporary folder beside `dest` that the
+/// thread owns, and is moved to `dest` once complete. A stopped fetch returns
+/// [`SourceError::Stopped`] at once, even while the remote sends nothing, and
+/// leaves `dest` absent. The thread ends, and removes its folder, when the
+/// remote next sends or closes the connection.
 pub fn fetch(address: &Address, dest: &Path) -> Result<Fetched, SourceError> {
+    if !crate::stop::scoped() {
+        return clone_into(address, dest, &AtomicBool::new(false));
+    }
+    if dest.exists() {
+        return Err(SourceError::Address(format!(
+            "destination exists: {}",
+            dest.display()
+        )));
+    }
+    let parent = dest
+        .parent()
+        .ok_or_else(|| SourceError::Address("destination has no parent".into()))?;
+    let (folder, fetched) = fetch_temporary(address, parent, ".tmp")?;
+    std::fs::rename(folder.path().join("repo"), dest)
+        .map_err(|e| SourceError::Io(dest.to_owned(), e))?;
+    Ok(fetched)
+}
+/// Clone `address` into the `repo` entry of a new temporary folder in
+/// `parent`, named with `prefix`. Inside a stop signal's scope the clone runs
+/// on a Toha thread that owns the folder until it returns it, so a stopped
+/// fetch leaves the folder to that thread, which removes it when it ends.
+pub(crate) fn fetch_temporary(
+    address: &Address,
+    parent: &Path,
+    prefix: &'static str,
+) -> Result<(tempfile::TempDir, Fetched), SourceError> {
+    let address = address.clone();
+    let parent = parent.to_owned();
+    crate::stop::run(move |interrupt| {
+        let folder = tempfile::Builder::new()
+            .prefix(prefix)
+            .tempdir_in(&parent)
+            .map_err(|e| SourceError::Io(parent.clone(), e))?;
+        let fetched = clone_into(&address, &folder.path().join("repo"), interrupt)?;
+        Ok((folder, fetched))
+    })?
+}
+/// Clone `address` into `dest` on the calling thread, with `interrupt` as
+/// gix's interrupt flag.
+fn clone_into(
+    address: &Address,
+    dest: &Path,
+    interrupt: &AtomicBool,
+) -> Result<Fetched, SourceError> {
     let Address::Git {
         repo, reference, ..
     } = address
@@ -407,7 +474,12 @@ pub fn fetch(address: &Address, dest: &Path) -> Result<Fetched, SourceError> {
         )));
     }
     let resolved_commit = if kind == RefKind::Commit {
-        Some(expand_commit(repo, reference.as_deref().unwrap(), dest)?)
+        Some(expand_commit(
+            repo,
+            reference.as_deref().unwrap(),
+            dest,
+            interrupt,
+        )?)
     } else {
         None
     };
@@ -442,12 +514,17 @@ pub fn fetch(address: &Address, dest: &Path) -> Result<Fetched, SourceError> {
                 .map_err(|e| git_error(e, repo, &supplied))?
         };
     }
-    let (mut checkout, _) = clone
-        .fetch_then_checkout(gix::progress::Discard, &AtomicBool::new(false))
-        .map_err(|e| git_error(e, repo, &supplied))?;
-    let (checkout_repo, _) = checkout
-        .main_worktree(gix::progress::Discard, &AtomicBool::new(false))
-        .map_err(|e| git_error(e, repo, &supplied))?;
+    let fetched = clone.fetch_then_checkout(gix::progress::Discard, interrupt);
+    if interrupt.load(Ordering::SeqCst) {
+        return Err(SourceError::Stopped);
+    }
+    let (mut checkout, _) = fetched.map_err(|e| git_error(e, repo, &supplied))?;
+    let checked_out = checkout.main_worktree(gix::progress::Discard, interrupt);
+    // An interrupted checkout still returns `Ok`.
+    if interrupt.load(Ordering::SeqCst) {
+        return Err(SourceError::Stopped);
+    }
+    let (checkout_repo, _) = checked_out.map_err(|e| git_error(e, repo, &supplied))?;
     if kind == RefKind::Branch
         && reference.as_ref().is_some_and(|r| {
             checkout_repo

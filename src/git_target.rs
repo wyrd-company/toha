@@ -90,6 +90,10 @@ pub enum GitTargetError {
     Init { path: String, message: String },
     #[error("the credential resolver refused the remote {url}: {reason}")]
     CredentialRefused { url: String, reason: String },
+    /// The operation's [stop signal](crate::stop) fired while the remote was
+    /// probed.
+    #[error("the remote check was stopped")]
+    Stopped,
 }
 
 /// What listing a remote's references found.
@@ -103,6 +107,9 @@ pub enum RemoteState {
     Unreachable(String),
     /// The operation's credential resolver refused the remote, for this reason.
     Refused(String),
+    /// The operation's [stop signal](crate::stop) fired before the remote
+    /// answered.
+    Stopped,
 }
 
 /// The decision taken before the apply writes anything.
@@ -160,6 +167,7 @@ pub(crate) fn preflight_with(
                     reason,
                 });
             }
+            RemoteState::Stopped => return Err(GitTargetError::Stopped),
             RemoteState::Unreachable(message) => Some(format!(
                 "warning: could not inspect the remote {}; added it without a history check: {message}",
                 crate::source::without_userinfo(url)
@@ -274,18 +282,26 @@ fn inside_repository(path: &Path) -> Result<bool, GitTargetError> {
 }
 
 /// List the references of the repository at `url`.
+///
+/// Inside [`with_stop_signal`](crate::stop::with_stop_signal) the listing runs
+/// on a thread Toha starts, and a stopped probe returns
+/// [`RemoteState::Stopped`] at once, even while the remote sends nothing.
 pub fn probe(url: &str) -> RemoteState {
-    let supplied = crate::source::Supplied::default();
-    match list_refs(url, &supplied) {
-        Ok(0) => RemoteState::Empty,
-        Ok(_) => RemoteState::HasHistory,
-        Err(message) => match supplied.refusal() {
-            Some(reason) => RemoteState::Refused(reason),
-            None => {
-                RemoteState::Unreachable(supplied.message(crate::source::redacted(&message, url)))
-            }
-        },
-    }
+    let url = url.to_owned();
+    crate::stop::run(move |_| {
+        let supplied = crate::source::Supplied::default();
+        match list_refs(&url, &supplied) {
+            Ok(0) => RemoteState::Empty,
+            Ok(_) => RemoteState::HasHistory,
+            Err(message) => match supplied.refusal() {
+                Some(reason) => RemoteState::Refused(reason),
+                None => RemoteState::Unreachable(
+                    supplied.message(crate::source::redacted(&message, &url)),
+                ),
+            },
+        }
+    })
+    .unwrap_or(RemoteState::Stopped)
 }
 
 fn list_refs(url: &str, supplied: &crate::source::Supplied) -> Result<usize, String> {

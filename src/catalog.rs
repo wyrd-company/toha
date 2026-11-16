@@ -78,6 +78,16 @@ pub enum CatalogError {
         name: String,
         matches: Vec<String>,
     },
+    /// The operation's [stop signal](crate::stop) fired during a fetch.
+    Stopped,
+}
+impl From<source::SourceError> for CatalogError {
+    fn from(error: source::SourceError) -> Self {
+        match error {
+            source::SourceError::Stopped => Self::Stopped,
+            error => Self::text(error),
+        }
+    }
 }
 impl From<ResolveError> for CatalogError {
     fn from(value: ResolveError) -> Self {
@@ -216,13 +226,7 @@ fn clone_sibling(
         .parent()
         .ok_or_else(|| CatalogError::text("install path has no parent"))?;
     fs::create_dir_all(parent).map_err(CatalogError::text)?;
-    let container = tempfile::Builder::new()
-        .prefix(".toha-clone-")
-        .tempdir_in(parent)
-        .map_err(CatalogError::text)?;
-    let fetched =
-        source::fetch(address, &container.path().join("repo")).map_err(CatalogError::text)?;
-    Ok((container, fetched))
+    Ok(source::fetch_temporary(address, parent, ".toha-clone-")?)
 }
 struct SwappedClone {
     install: PathBuf,
@@ -797,6 +801,7 @@ impl std::fmt::Display for CatalogError {
             Self::Ambiguous { name, matches } => {
                 write!(f, "template {name} is ambiguous: {}", matches.join(", "))
             }
+            Self::Stopped => f.write_str("the template fetch was stopped"),
         }
     }
 }

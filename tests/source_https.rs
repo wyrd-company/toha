@@ -757,6 +757,11 @@ fn a_credential_resolver_fetches_a_private_https_repository() {
 }
 
 #[test]
+fn a_credential_resolver_answers_a_fetch_under_a_stop_signal() {
+    run_credential_scenario("answers-under-stop-signal", private());
+}
+
+#[test]
 fn a_declining_credential_resolver_leaves_git_configuration_in_charge() {
     run_credential_scenario("declines", private());
 }
@@ -1056,6 +1061,22 @@ fn credential_worker() {
             // After the operation the default applies again.
             assert!(fetch_from(&main).is_err());
             assert_eq!(resolver.asked.lock().unwrap().len(), asked.len());
+        }
+        "answers-under-stop-signal" => {
+            // With a signal in scope the fetch and the probe run on a Toha
+            // thread, which answers from the calling thread's resolver.
+            let resolver = grant(private(), port(&main));
+            let signal = toha::stop::StopSignal::new();
+            with_credential_resolver(resolver.clone(), || {
+                toha::stop::with_stop_signal(signal.clone(), || {
+                    let fetched = fetch_from(&main).unwrap();
+                    assert_eq!(fetched.commit.len(), 40);
+                    assert!(root.join("fetched-0/template.yml").is_file());
+                    assert_eq!(probe(&with_user(&main)), RemoteState::HasHistory);
+                })
+            });
+            assert!(!signal.is_stopped());
+            assert!(!resolver.asked.lock().unwrap().is_empty());
         }
         "head-branch" => {
             let remote = root.join("remote.git");
