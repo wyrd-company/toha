@@ -42,8 +42,8 @@ These variables configure Toha's paths and runtime behavior:
 | `TOHA_USER_CONFIG` | User configuration file; defaults to `$XDG_CONFIG_HOME/toha/config.yml` on Linux and macOS, or `%APPDATA%\toha\config.yml` on Windows. |
 | `XDG_CONFIG_HOME` | Base of the user configuration file on Linux and macOS; defaults to `~/.config`. |
 | `XDG_DATA_HOME` | Base of the user registry and installed templates on Linux; defaults to `~/.local/share`. macOS uses `~/Library/Application Support/toha`. |
-| `XDG_CACHE_HOME` | Base of cached Git templates on Linux; defaults to `~/.cache`. macOS uses `~/Library/Caches/toha`. |
-| `XDG_STATE_HOME` | Base of staged interviews on Linux; defaults to `~/.local/state`. macOS uses `~/Library/Application Support/toha/staged`. |
+| `XDG_CACHE_HOME` | Base of cached Git templates in `$XDG_CACHE_HOME/toha/` on Linux; defaults to `~/.cache`. macOS uses `~/Library/Caches/toha`. |
+| `XDG_STATE_HOME` | Base of staged interviews in `$XDG_STATE_HOME/toha/staged/` on Linux; defaults to `~/.local/state`. macOS uses `~/Library/Application Support/toha/staged`. |
 | `HOME` | Home directory for `~` in addresses and the defaults above. |
 | `USERPROFILE` | Home directory when `HOME` is unset. |
 | `APPDATA` | Windows base for user configuration, registry, and installed templates in `%APPDATA%\toha`. |
