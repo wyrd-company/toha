@@ -2,11 +2,11 @@
 // relationships:
 //   implements: architecture
 // ---
-//! A caller's signal that stops a template fetch.
+//! A caller's signal that stops a template fetch or an apply.
 //!
 //! Run the operation inside [`with_stop_signal`] and call [`StopSignal::stop`]
 //! from any thread. The operation returns the `Stopped` variant of its error
-//! soon after.
+//! soon after, and writes no further file.
 use std::{
     cell::RefCell,
     panic::{self, AssertUnwindSafe},
@@ -66,7 +66,7 @@ thread_local! {
 }
 
 /// Run `operation` so that `signal` can stop it: template fetches and commit
-/// lookups, and the `git` question's remote probe.
+/// lookups, the `git` question's remote probe, an apply and an update.
 ///
 /// The signal applies on the calling thread until `operation` returns or
 /// unwinds. Operations on other threads, and code after this call, keep the
@@ -75,10 +75,11 @@ thread_local! {
 ///
 /// Once the signal fires, the operation returns the `Stopped` variant of its
 /// error: [`SourceError`](crate::source::SourceError),
-/// [`ResolveError`](crate::resolve::ResolveError) or
-/// [`CatalogError`](crate::catalog::CatalogError), carried by the errors that
-/// wrap them. A probe reports
-/// [`RemoteState::Stopped`](crate::git_target::RemoteState).
+/// [`ResolveError`](crate::resolve::ResolveError),
+/// [`CatalogError`](crate::catalog::CatalogError),
+/// [`ApplyError`](crate::ApplyError) or
+/// [`MergeError`](crate::applied::MergeError), carried by the errors that wrap
+/// them. A probe reports [`RemoteState::Stopped`](crate::git_target::RemoteState).
 ///
 /// While a signal is in scope, a fetch and a probe run on a thread Toha
 /// starts, so that the calling thread can return while a remote holds the
@@ -106,6 +107,31 @@ fn current() -> Option<StopSignal> {
 /// Whether the calling thread's operation has a signal.
 pub(crate) fn scoped() -> bool {
     SIGNAL.with(|current| current.borrow().is_some())
+}
+
+/// Whether the calling thread's operation was stopped.
+pub(crate) fn requested() -> bool {
+    SIGNAL.with(|current| {
+        current
+            .borrow()
+            .as_ref()
+            .is_some_and(StopSignal::is_stopped)
+    })
+}
+
+/// `Err(Stopped)` once the calling thread's operation was stopped. Called
+/// before each write.
+pub(crate) fn check() -> Result<(), Stopped> {
+    if requested() { Err(Stopped) } else { Ok(()) }
+}
+
+/// Call `operation` with gix's interrupt flag for the calling thread's
+/// operation: the signal's, or one that never fires.
+pub(crate) fn with_interrupt<T>(operation: impl FnOnce(&AtomicBool) -> T) -> T {
+    match current() {
+        Some(signal) => operation(&signal.0.stopped),
+        None => operation(&AtomicBool::new(false)),
+    }
 }
 
 /// Run `work`, which may block on a remote, so that the calling thread's
@@ -180,10 +206,6 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant};
 
-    fn requested() -> bool {
-        current().as_ref().is_some_and(StopSignal::is_stopped)
-    }
-
     #[test]
     fn without_a_signal_work_runs_on_the_calling_thread() {
         let caller = std::thread::current().id();
@@ -192,7 +214,8 @@ mod tests {
             std::thread::current().id()
         });
         assert_eq!(ran, Ok(caller));
-        assert!(!scoped());
+        assert!(!requested());
+        assert_eq!(check(), Ok(()));
     }
 
     #[test]
@@ -202,6 +225,7 @@ mod tests {
         let inner = StopSignal::new();
         with_stop_signal(signal.clone(), || {
             assert!(requested());
+            assert_eq!(check(), Err(Stopped));
             with_stop_signal(inner.clone(), || assert!(!requested()));
             assert!(requested());
             assert!(!std::thread::spawn(requested).join().unwrap());

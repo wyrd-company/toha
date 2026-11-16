@@ -1557,6 +1557,7 @@ fn scripted_apply_error(error: toha::ApplyError, context: &Context) -> Outcome {
             ErrorKind::Render
         }
         E::Git(_) | E::Record(_) => ErrorKind::Git,
+        E::Stopped => unreachable!("the command line runs no apply under a stop signal"),
     };
     scripted_error(kind, error.to_string(), vec![], Some(context))
 }

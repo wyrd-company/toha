@@ -16,7 +16,7 @@
 
 use std::num::NonZeroU8;
 use std::path::Path;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 use gix::bstr::{BString, ByteSlice};
 use gix::filter::plumbing::pipeline::convert::ToWorktreeOutcome;
@@ -99,6 +99,16 @@ pub enum MergeError {
     Changed,
     #[error("{0}")]
     Io(String),
+    /// The operation's [stop signal](crate::stop) fired. The update wrote
+    /// nothing to the working tree, or restored what it wrote.
+    #[error("the update was stopped")]
+    Stopped,
+}
+
+impl From<crate::stop::Stopped> for MergeError {
+    fn from(_: crate::stop::Stopped) -> Self {
+        Self::Stopped
+    }
 }
 
 fn git(err: impl std::fmt::Display) -> MergeError {
@@ -194,6 +204,8 @@ pub(crate) fn merge_apply_reported_with_force(
         .filter(|path| !target_path.as_path().join(path.as_path()).is_dir())
         .cloned()
         .collect();
+    // The candidate is built in a throwaway checkout, so once the signal
+    // fired any failure there is the stop.
     let (new, candidate_report) = build_candidate_reported(
         project,
         &base,
@@ -202,7 +214,14 @@ pub(crate) fn merge_apply_reported_with_force(
         !options.dry_run,
         force,
         runner,
-    )?;
+    )
+    .map_err(|error| {
+        if crate::stop::requested() {
+            MergeError::Stopped
+        } else {
+            error
+        }
+    })?;
 
     report.messages.extend(candidate_report.messages);
     report.hooks = candidate_report.hooks;
@@ -450,16 +469,23 @@ pub(super) fn checkout_head(repo: &gix::Repository, dest: &Path) -> Result<(), M
         .map_err(git)?;
     opts.destination_is_initially_empty = true;
     std::fs::create_dir_all(dest).map_err(|e| MergeError::Io(e.to_string()))?;
-    gix::worktree::state::checkout(
-        &mut index,
-        dest,
-        repo.objects.clone().into_arc().map_err(git)?,
-        &gix::progress::Discard,
-        &gix::progress::Discard,
-        &AtomicBool::new(false),
-        opts,
-    )
-    .map_err(git)?;
+    let objects = repo.objects.clone().into_arc().map_err(git)?;
+    crate::stop::with_interrupt(|interrupt| {
+        let checked_out = gix::worktree::state::checkout(
+            &mut index,
+            dest,
+            objects,
+            &gix::progress::Discard,
+            &gix::progress::Discard,
+            interrupt,
+            opts,
+        );
+        // An interrupted checkout still returns `Ok`.
+        if interrupt.load(Ordering::SeqCst) {
+            return Err(MergeError::Stopped);
+        }
+        checked_out.map_err(git)
+    })?;
     Ok(())
 }
 
@@ -487,6 +513,7 @@ fn merge_inner(
 
     // Step 0: record HEAD and the index checksum, so the locked re-check before
     // the write can refuse if either drifted.
+    crate::stop::check()?;
     let head_start = repo.head_id().map_err(git)?.detach();
     let index_digest_start = index_digest(repo);
 
@@ -842,6 +869,7 @@ fn commit_transaction(
     crate::plan::check_directories(directories, &target_path).map_err(MergeError::Io)?;
     let mut created = CreatedDirectories::default();
     for directory in directories {
+        crate::stop::check()?;
         let path = repo_path_for(target, &BString::from(directory.to_string()));
         let path = crate::TargetPath::parse(path.as_str()).map_err(MergeError::Io)?;
         created.create(&workdir, &path)?;
@@ -860,7 +888,9 @@ fn commit_transaction(
         keep_operator,
         &mut done,
     );
-    if let Err(err) = result {
+    // The applied record is a later write too: a stop after the last file
+    // restores the files instead.
+    if let Err(err) = result.and_then(|()| crate::stop::check().map_err(MergeError::from)) {
         rollback(repo, &mut pipeline, state, &workdir, &done)?;
         return Err(err);
     }
@@ -953,6 +983,7 @@ fn write_all(
             // whose ancestor stays the operator's file, keeps the operator's disk.
             continue;
         }
+        crate::stop::check()?;
         drift_check(pipeline, state, &repo_rel, expected.map(|(o, _)| *o))?;
         let bytes = worktree_bytes(repo, pipeline, *id, &repo_rel, *mode)?;
         write_atomically(workdir, &repo_rel, &bytes, *mode)?;
@@ -973,6 +1004,7 @@ fn write_all(
         if keep_operator.contains(&repo_rel) {
             continue; // a modify/delete conflict keeps the operator's file on disk
         }
+        crate::stop::check()?;
         drift_check(pipeline, state, &repo_rel, Some(*id))?;
         let full = workdir.join(&repo_rel);
         if full.symlink_metadata().is_ok() {
@@ -1004,6 +1036,20 @@ mod inject_fail {
         static AFTER: Cell<Option<usize>> = const { Cell::new(None) };
         static COUNT: Cell<usize> = const { Cell::new(0) };
         static OBSERVED: RefCell<Vec<(String, Option<Vec<u8>>)>> = const { RefCell::new(Vec::new()) };
+        static STOP: RefCell<Option<(usize, crate::stop::StopSignal)>> = const { RefCell::new(None) };
+    }
+
+    /// Fire `signal` after the `after`-th push (1-based), as a caller can while
+    /// the write loop runs. Resets the count.
+    pub(super) fn stop_after(after: usize, signal: crate::stop::StopSignal) {
+        AFTER.with(|a| a.set(None));
+        COUNT.with(|c| c.set(0));
+        STOP.with(|s| *s.borrow_mut() = Some((after, signal)));
+    }
+
+    /// The pushes since the hook was last armed: each is one path written.
+    pub(super) fn count() -> usize {
+        COUNT.with(Cell::get)
     }
 
     /// Arm the hook to fail after the `after`-th push (1-based). Resets the count.
@@ -1015,6 +1061,7 @@ mod inject_fail {
 
     pub(super) fn disarm() {
         AFTER.with(|a| a.set(None));
+        STOP.with(|s| s.borrow_mut().take());
     }
 
     /// The bytes or raw link target of each path at the moment of failure.
@@ -1029,6 +1076,13 @@ mod inject_fail {
             let v = c.get() + 1;
             c.set(v);
             v
+        });
+        STOP.with(|s| {
+            if let Some((after, signal)) = s.borrow().as_ref()
+                && *after == n
+            {
+                signal.stop();
+            }
         });
         if AFTER.with(|a| a.get()) == Some(n) {
             let snap: Vec<_> = done

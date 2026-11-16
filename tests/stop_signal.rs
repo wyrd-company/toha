@@ -3,7 +3,7 @@
 //   implements: architecture
 // ---
 //! A stop signal ends a fetch, and a remote probe, that a stalled Git remote
-//! holds.
+//! holds, and stops an apply in its file loop.
 #[allow(dead_code)]
 mod support;
 use std::{
@@ -300,6 +300,63 @@ fn a_remote_probe_held_by_a_stalled_remote_ends_soon_after_the_stop_signal() {
 #[test]
 fn a_signal_that_never_fires_fetches_as_before() {
     run_scenario("unstopped", Stall::Nothing);
+}
+
+#[test]
+// `ApplyError` is large, as elsewhere in the crate.
+#[allow(clippy::result_large_err)]
+fn a_stop_during_the_apply_file_loop_writes_no_later_file() {
+    let root = tempfile::tempdir().unwrap();
+    let folder = root.path().join("template");
+    fs::create_dir_all(folder.join("template")).unwrap();
+    fs::write(folder.join("template.yml"), "name: sample\ninterview: []\n").unwrap();
+    for name in ["a.txt", "b.txt", "c.txt"] {
+        fs::write(folder.join("template").join(name), name).unwrap();
+    }
+    let template = toha::Template::load(&folder).unwrap();
+    let target = root.path().join("target");
+    fs::create_dir(&target).unwrap();
+    let target = toha::staging::canonical_target(&target).unwrap();
+    let toha::Interview::Complete(completed) = toha::Interview::start(
+        &template,
+        toha::Seed {
+            now: "2026-01-02T03:04:05+00:00[UTC]".parse().unwrap(),
+            defaults: Default::default(),
+            context: toha::context::InvocationContext::for_target(target.clone()),
+        },
+    )
+    .unwrap() else {
+        panic!("no interview questions")
+    };
+    let plan = toha::Plan::build(&template, &completed, &target).unwrap();
+    assert_eq!(plan.files.len(), 3);
+    // The caller's request ends while the first file is written.
+    let signal = StopSignal::new();
+    let mut written = vec![];
+    let result = with_stop_signal(signal.clone(), || {
+        plan.apply_reporting(
+            &target,
+            toha::ApplyOptions {
+                force: false,
+                trusted: true,
+            },
+            &toha::hook::ProcessRunner,
+            &mut |path| {
+                written.push(path.to_string());
+                signal.stop();
+            },
+        )
+    });
+    assert!(
+        matches!(result, Err(toha::ApplyError::Stopped)),
+        "{result:?}"
+    );
+    assert_eq!(written.len(), 1, "{written:?}");
+    let on_disk: Vec<_> = fs::read_dir(target.as_path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert_eq!(on_disk, written, "no file after the first was written");
 }
 
 /// Run `operation` on a worker thread inside a stop signal's scope, wait until
