@@ -197,7 +197,8 @@ pub fn without_userinfo(repo: &str) -> String {
 /// The fetch failure for `error`, without the credentials of `repo` or any
 /// password `supplied` saw.
 fn git_error(error: impl std::fmt::Display, repo: &str, supplied: &Supplied) -> SourceError {
-    SourceError::Git(supplied.message(redacted(&error.to_string(), repo)))
+    // gix's alternate Display retains the diagnostic chain before redaction.
+    SourceError::Git(supplied.message(redacted(&format!("{error:#}"), repo)))
 }
 /// `message` with the credentials of `repo` removed wherever it names them.
 pub(crate) fn redacted(message: &str, repo: &str) -> String {

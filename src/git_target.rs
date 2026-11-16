@@ -290,19 +290,19 @@ pub fn probe(url: &str) -> RemoteState {
 
 fn list_refs(url: &str, supplied: &crate::source::Supplied) -> Result<usize, String> {
     // A remote needs a repository to belong to; a throwaway bare one holds it.
-    let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
-    let repo = gix::init_bare(scratch.path()).map_err(|e| e.to_string())?;
+    let scratch = tempfile::tempdir().map_err(|e| format!("{e:#}"))?;
+    let repo = gix::init_bare(scratch.path()).map_err(|e| format!("{e:#}"))?;
     let remote = repo
         .remote_at(url)
-        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("{e:#}"))?
         .with_refspecs(["+refs/*:refs/probe/*"], gix::remote::Direction::Fetch)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("{e:#}"))?;
     let mut connection = remote
         .connect(gix::remote::Direction::Fetch)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("{e:#}"))?;
     let mut roots = None;
     crate::source::prepare_connection(&mut connection, &mut roots, supplied)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("{e:#}"))?;
     let (map, _) = connection
         .ref_map(
             gix::progress::Discard,
@@ -311,7 +311,7 @@ fn list_refs(url: &str, supplied: &crate::source::Supplied) -> Result<usize, Str
                 ..Default::default()
             },
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("{e:#}"))?;
     // An empty repository still advertises its unborn `HEAD`; only a reference
     // that names an object is history.
     Ok(map
