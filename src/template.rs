@@ -480,6 +480,10 @@ pub struct Problem {
 #[derive(Debug)]
 pub struct LoadError {
     pub problems: Vec<Problem>,
+    /// The operation's [stop signal](crate::stop) fired before the load
+    /// failed, such as while it fetched a document schema. The interrupted
+    /// fetch is among `problems`.
+    pub stopped: bool,
 }
 impl fmt::Display for LoadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -505,6 +509,7 @@ fn error(path: impl Into<String>, message: impl Into<String>) -> LoadError {
             path: path.into(),
             message: message.into(),
         }],
+        stopped: false,
     }
 }
 /// The node-kind keys a flow node cannot be combined with.
@@ -1496,6 +1501,15 @@ impl Template {
     }
 
     fn load_with(folder: &Path, reserves_context: bool) -> Result<Self, LoadError> {
+        // A load fetches document schemas; once the operation's stop signal
+        // fired, a failure is the stop.
+        Self::load_unstopped(folder, reserves_context).map_err(|error| LoadError {
+            stopped: crate::stop::requested(),
+            ..error
+        })
+    }
+
+    fn load_unstopped(folder: &Path, reserves_context: bool) -> Result<Self, LoadError> {
         let root = folder
             .canonicalize()
             .map_err(|e| error("template.yml", e.to_string()))?;
@@ -1512,7 +1526,10 @@ impl Template {
             &mut problems,
         );
         if !problems.is_empty() {
-            return Err(LoadError { problems });
+            return Err(LoadError {
+                problems,
+                stopped: false,
+            });
         }
         let doc: Value =
             serde_json::to_value(yaml).map_err(|e| error("template.yml", e.to_string()))?;
@@ -1522,7 +1539,10 @@ impl Template {
             check_flow(interview, false, "template.yml/interview", &mut problems);
         }
         if !problems.is_empty() {
-            return Err(LoadError { problems });
+            return Err(LoadError {
+                problems,
+                stopped: false,
+            });
         }
         for e in SCHEMA.iter_errors(&doc) {
             problem(
@@ -1532,7 +1552,10 @@ impl Template {
             );
         }
         if !problems.is_empty() {
-            return Err(LoadError { problems });
+            return Err(LoadError {
+                problems,
+                stopped: false,
+            });
         }
         let raw: RawTemplate =
             serde_json::from_value(doc).map_err(|e| error("template.yml", e.to_string()))?;
@@ -1783,6 +1806,7 @@ impl Template {
         if !b.problems.is_empty() {
             return Err(LoadError {
                 problems: b.problems,
+                stopped: false,
             });
         }
         let mut interview_hook_nodes = Vec::new();
@@ -1812,6 +1836,7 @@ impl Template {
         if !b.problems.is_empty() {
             return Err(LoadError {
                 problems: b.problems,
+                stopped: false,
             });
         }
         // Resolve every hook-result read to a strictly-earlier producer, enforce
@@ -1831,6 +1856,7 @@ impl Template {
         if !b.problems.is_empty() {
             return Err(LoadError {
                 problems: b.problems,
+                stopped: false,
             });
         }
         let (environment_need, context_references) = compute_environment_need(

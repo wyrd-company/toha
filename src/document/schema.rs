@@ -10,6 +10,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 #[derive(Clone, Debug, Default)]
@@ -108,12 +109,42 @@ fn schema_files(directory: &Path, root: &Path, paths: &mut Vec<PathBuf>) -> Resu
     }
     Ok(())
 }
+/// What a schema fetch the operation's [stop signal](crate::stop) ended
+/// reports.
+const STOPPED: &str = "the schema fetch was stopped";
+/// The longest a stoppable fetch waits for curl before it checks the signal.
+const STOP_CHECK: Duration = Duration::from_millis(100);
+/// A fetched schema body, up to 1 MiB.
+#[derive(Default)]
+struct Body {
+    bytes: Vec<u8>,
+    oversized: bool,
+}
+impl curl::easy::Handler for Body {
+    fn write(&mut self, chunk: &[u8]) -> Result<usize, curl::easy::WriteError> {
+        if self.bytes.len() + chunk.len() > 1024 * 1024 {
+            self.oversized = true;
+            return Ok(0);
+        }
+        self.bytes.extend_from_slice(chunk);
+        Ok(chunk.len())
+    }
+}
+/// Fetch the schema at `uri`, on the calling thread.
+///
+/// Inside a stop signal's scope the transfer runs on a curl multi handle that
+/// this thread drives, checking the signal at least every [`STOP_CHECK`],
+/// also while the endpoint sends nothing. curl's own progress callback is not
+/// called while some builds wait for a TLS handshake. Once the signal fires,
+/// the transfer is removed and its handle dropped, which closes its
+/// connection, before this returns. Without a signal the transfer runs as
+/// before.
 fn fetch(uri: &str) -> Result<Value, String> {
     let parsed = Uri::parse(uri).map_err(|e| e.to_string())?;
     if parsed.scheme().as_str() != "https" {
         return Err("schema fetch requires HTTPS".into());
     }
-    let mut easy = curl::easy::Easy::new();
+    let mut easy = curl::easy::Easy2::new(Body::default());
     easy.url(uri).map_err(|e| e.to_string())?;
     easy.fail_on_error(true).map_err(|e| e.to_string())?;
     // Use the same platform roots as HTTPS template sources, including bundled rustls.
@@ -139,32 +170,49 @@ fn fetch(uri: &str) -> Result<Value, String> {
             easy.cainfo(roots.path()).map_err(|e| e.to_string())?;
         }
     }
-    let mut bytes = Vec::new();
-    let mut oversized = false;
-    let result = {
-        let mut transfer = easy.transfer();
-        transfer
-            .write_function(|chunk| {
-                if bytes.len() + chunk.len() > 1024 * 1024 {
-                    oversized = true;
-                    return Ok(0);
-                }
-                bytes.extend_from_slice(chunk);
-                Ok(chunk.len())
-            })
-            .map_err(|e| e.to_string())?;
-        transfer.perform()
+    let (result, body) = if crate::stop::scoped() {
+        perform_stoppable(easy)?
+    } else {
+        let result = easy.perform();
+        (result, std::mem::take(easy.get_mut()))
     };
     if let Err(e) = result {
-        return Err(if oversized {
+        return Err(if body.oversized {
             "schema exceeds 1 MiB".into()
         } else {
             e.to_string()
         });
     }
-    let schema: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    let schema: Value = serde_json::from_slice(&body.bytes).map_err(|e| e.to_string())?;
     if schema.get("$id").and_then(Value::as_str) != Some(uri) {
         return Err("fetched schema $id does not equal requested URI".into());
     }
     Ok(schema)
+}
+/// Run `easy` to completion on a multi handle this thread drives, or return
+/// [`STOPPED`] once the operation's stop signal fires. A stopped transfer is
+/// removed and dropped, with its multi handle, which closes its connection.
+fn perform_stoppable(
+    easy: curl::easy::Easy2<Body>,
+) -> Result<(Result<(), curl::Error>, Body), String> {
+    let multi = curl::multi::Multi::new();
+    let handle = multi.add2(easy).map_err(|e| e.to_string())?;
+    loop {
+        if crate::stop::requested() {
+            drop(multi.remove2(handle));
+            return Err(STOPPED.into());
+        }
+        if multi.perform().map_err(|e| e.to_string())? == 0 {
+            break;
+        }
+        multi.wait(&mut [], STOP_CHECK).map_err(|e| e.to_string())?;
+    }
+    let mut result = Ok(());
+    multi.messages(|message| {
+        if let Some(outcome) = message.result_for2(&handle) {
+            result = outcome;
+        }
+    });
+    let mut easy = multi.remove2(handle).map_err(|e| e.to_string())?;
+    Ok((result, std::mem::take(easy.get_mut())))
 }
