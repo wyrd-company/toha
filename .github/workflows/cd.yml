@@ -73,7 +73,7 @@ jobs:
             system: windows
             arch: x86_64
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Verify release identity
         shell: bash
         run: |
@@ -89,12 +89,12 @@ jobs:
           targets: ${{ matrix.target }}
       - name: Set up Go for Linux package builder
         if: matrix.system == 'linux'
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.26'
+          go-version: '1.27'
       - name: Install cargo-zigbuild
         if: matrix.system == 'linux'
-        uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2
+        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2
         with:
           tool: cargo-zigbuild@0.23.4
       - name: Install Zig
@@ -172,7 +172,7 @@ jobs:
             docker run --rm -v "$PWD/compatibility:/release:ro" "$image" \
               /release/toha --version
           done
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: toha-${{ matrix.system }}-${{ matrix.arch }}
           path: dist/*
@@ -186,8 +186,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: toha-*
           path: dist
@@ -200,7 +200,7 @@ jobs:
           python3 scripts/release/create-manifest.py dist "$GITHUB_REF_NAME" \
             "$(git rev-parse HEAD)" release-manifest.json
       - name: Retain package handoff
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: package-release-manifest
           path: release-manifest.json
@@ -229,7 +229,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@1.88.0
       - name: Package the crate before authentication
         shell: bash
@@ -256,7 +256,7 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Download and verify release assets
         shell: bash
         env:
@@ -267,7 +267,7 @@ jobs:
           gh release download "$GITHUB_REF_NAME" --dir dist
           (cd dist && sha256sum -c SHA256SUMS)
       - name: Check out Homebrew tap
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: wyrd-company/homebrew-tools
           path: homebrew-tools
@@ -307,9 +307,9 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Download retained package handoff
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: package-release-manifest
           path: handoff
