@@ -818,6 +818,7 @@ fn commit_transaction(
         &index_path,
         gix::lock::acquire::Fail::Immediately,
         None,
+        0,
     )
     .map_err(|err| MergeError::Io(err.to_string()))?;
 
@@ -1036,9 +1037,11 @@ mod inject_fail {
                     (r.repo_rel.clone(), {
                         let full = workdir.join(&r.repo_rel);
                         if full.symlink_metadata().is_ok_and(|md| md.is_symlink()) {
-                            std::fs::read_link(&full)
-                                .ok()
-                                .map(|target| gix::path::into_bstr(target).to_vec())
+                            std::fs::read_link(&full).ok().map(|target| {
+                                gix::path::into_bstr(target)
+                                    .expect("fixture link target")
+                                    .to_vec()
+                            })
                         } else {
                             std::fs::read(full).ok()
                         }
@@ -1124,7 +1127,8 @@ fn write_atomically(
             .tempdir_in(full.parent().expect("a worktree path has a parent"))
             .map_err(|e| MergeError::Io(e.to_string()))?;
         let link = temporary.path().join("link");
-        let target = gix::path::from_bstr(gix::bstr::BStr::new(bytes));
+        let target = gix::path::from_bstr(gix::bstr::BStr::new(bytes))
+            .map_err(|e| MergeError::Io(e.to_string()))?;
         #[cfg(not(windows))]
         gix::fs::symlink::create(target.as_ref(), &link)
             .map_err(|e| MergeError::Io(e.to_string()))?;

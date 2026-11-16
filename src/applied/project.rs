@@ -50,7 +50,11 @@ impl Project {
         let discover_from = nearest_existing_ancestor(target.as_path());
         let repo = match gix::discover(&discover_from) {
             Ok(repo) => repo,
-            Err(gix::discover::Error::Discover(err)) if is_not_a_repository(&err) => {
+            Err(err)
+                if err
+                    .downcast_any_ref::<gix::discover::upwards::Error>()
+                    .is_some_and(is_not_a_repository) =>
+            {
                 return Ok(None);
             }
             Err(err) => return Err(ProjectError::Open(err.to_string())),
@@ -300,7 +304,7 @@ pub(crate) fn worktree_filter_pipeline(
         gix::filter::Pipeline<'_>,
         gix::worktree::IndexPersistedOrInMemory,
     ),
-    gix::repository::filter::pipeline::Error,
+    gix::Error,
 > {
     let index = repo.index_or_empty()?;
     let attributes = repo.attributes_only(

@@ -170,7 +170,7 @@ impl Supplied {
         &self,
         resolver: Arc<dyn CredentialResolver>,
         mut fallback: gix::remote::AuthenticateFn<'static>,
-    ) -> impl FnMut(helper::Action) -> protocol::Result + use<> {
+    ) -> impl FnMut(helper::Action) -> gix::Result<Option<protocol::Outcome>> + use<> {
         let supplied = self.clone();
         // Whether the resolver answered the latest `Get`; its `Store` and
         // `Erase` follow-ups then concern no helper.
@@ -184,7 +184,10 @@ impl Supplied {
                     .url
                     .clone()
                     .or_else(|| context.to_url())
-                    .ok_or(protocol::Error::UrlMissing)?;
+                    .ok_or_else(|| {
+                        gix::error::message("The URL was not present in the credential context")
+                            .validation_error()
+                    })?;
                 let request = gix::url::parse(url.as_bstr())
                     .ok()
                     .filter(|url| url.scheme == gix::url::Scheme::Https)
@@ -206,7 +209,10 @@ impl Supplied {
                         Ok(None) => {}
                         Err(reason) => {
                             supplied.lock().refusal = Some(reason);
-                            return Err(protocol::Error::Quit);
+                            return Err(gix::error::message(
+                                "The handler asked to stop trying to obtain credentials",
+                            )
+                            .cancelled_error());
                         }
                     }
                 }
@@ -337,7 +343,7 @@ mod tests {
     }
 
     #[allow(clippy::result_large_err)]
-    fn harness() -> Harness<impl FnMut(helper::Action) -> protocol::Result> {
+    fn harness() -> Harness<impl FnMut(helper::Action) -> gix::Result<Option<protocol::Outcome>>> {
         let resolver = Arc::new(Sample::default());
         let forwarded = Arc::new(Mutex::new(Vec::new()));
         let seen = forwarded.clone();
@@ -373,7 +379,7 @@ mod tests {
         }
     }
 
-    fn password(outcome: protocol::Result) -> String {
+    fn password(outcome: gix::Result<Option<protocol::Outcome>>) -> String {
         outcome.unwrap().unwrap().identity.password
     }
 
@@ -435,7 +441,7 @@ mod tests {
     fn a_refusal_fails_with_its_reason() {
         let mut h = harness();
         let get = helper::Action::get_for_url(REFUSED);
-        assert!(matches!((h.callback)(get), Err(protocol::Error::Quit)));
+        assert!((h.callback)(get).unwrap_err().is_cancelled());
         assert!(h.forwarded().is_empty());
         let message = h.supplied.message("The handler asked to stop".into());
         assert_eq!(message, "the sample resolver refuses");

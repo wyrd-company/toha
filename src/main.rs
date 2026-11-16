@@ -1,7 +1,7 @@
-fn runtime_now() -> Result<jiff::Zoned, String> {
+fn runtime_now() -> Result<jiff::ZonedDateTime, String> {
     match std::env::var("TOHA_NOW") {
         Ok(value) => value.parse().map_err(|e: jiff::Error| e.to_string()),
-        Err(std::env::VarError::NotPresent) => Ok(jiff::Zoned::now()),
+        Err(std::env::VarError::NotPresent) => Ok(jiff::ZonedDateTime::now()),
         Err(e) => Err(e.to_string()),
     }
 }
@@ -686,7 +686,7 @@ fn resolution(
     formal_name: &str,
     template: &Template,
     config: &toha::config::Config,
-) -> Result<jiff::Zoned, String> {
+) -> Result<jiff::ZonedDateTime, String> {
     let now = runtime_now()?;
     report_config_warnings(
         &toha::operations::configuration_warnings(formal_name, template, config)
@@ -2964,7 +2964,7 @@ mod report_tests {
         let mut out = Vec::new();
         let mut err = Vec::new();
         // ExitCode is not comparable; a successful render returning Ok is the check.
-        outcome.render(&mut out, &mut err).unwrap();
+        let _ = outcome.render(&mut out, &mut err).unwrap();
         let text = String::from_utf8(out).unwrap();
         assert!(
             text.contains("\"status\": \"applied\""),

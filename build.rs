@@ -3,11 +3,14 @@
 //   implements: architecture
 // ---
 //! Sets `TOHA_VERSION` from the git tags of the toha repository.
+#[cfg(feature = "cli")]
 #[path = "build/version.rs"]
 mod version;
 
+#[cfg(feature = "cli")]
 use std::{env, path::PathBuf};
 
+#[cfg(feature = "cli")]
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=build/version.rs");
@@ -21,4 +24,9 @@ fn main() {
         println!("cargo:warning={warning}");
     }
     println!("cargo:rustc-env=TOHA_VERSION={}", resolution.version);
+}
+
+#[cfg(not(feature = "cli"))]
+fn main() {
+    println!("cargo:rustc-env=TOHA_VERSION={}", env!("CARGO_PKG_VERSION"));
 }

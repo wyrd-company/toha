@@ -201,7 +201,9 @@ fn probe_location(url: &str, target: &Path) -> String {
     if parsed.scheme != gix::url::Scheme::File {
         return url.to_owned();
     }
-    let path = gix::path::from_bstr(&parsed.path);
+    let Ok(path) = gix::path::from_bstr(&parsed.path) else {
+        return url.to_owned();
+    };
     if !path.is_relative() || path.has_root() {
         // Git cannot parse a verbatim `\\?\` drive path; probe its plain form.
         return match without_verbatim(&path) {
@@ -252,11 +254,18 @@ fn inside_repository(path: &Path) -> Result<bool, GitTargetError> {
         .to_path_buf();
     match gix::discover(&start) {
         Ok(_) => Ok(true),
-        Err(gix::discover::Error::Discover(
-            gix::discover::upwards::Error::NoGitRepository { .. }
-            | gix::discover::upwards::Error::NoGitRepositoryWithinCeiling { .. }
-            | gix::discover::upwards::Error::NoGitRepositoryWithinFs { .. },
-        )) => Ok(false),
+        Err(err)
+            if matches!(
+                err.downcast_any_ref::<gix::discover::upwards::Error>(),
+                Some(
+                    gix::discover::upwards::Error::NoGitRepository { .. }
+                        | gix::discover::upwards::Error::NoGitRepositoryWithinCeiling { .. }
+                        | gix::discover::upwards::Error::NoGitRepositoryWithinFs { .. },
+                )
+            ) =>
+        {
+            Ok(false)
+        }
         Err(err) => Err(GitTargetError::Discover {
             path: path.display().to_string(),
             message: err.to_string(),

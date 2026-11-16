@@ -471,7 +471,9 @@ fn document_answer_reaches_completed_raw_and_rendering_without_losing_members() 
         &Default::default(),
     )
     .unwrap();
-    let interview = resolution.start(&template, jiff::Zoned::now()).unwrap();
+    let interview = resolution
+        .start(&template, jiff::ZonedDateTime::now())
+        .unwrap();
     let toha::Interview::Complete(done) = interview else {
         panic!()
     };
@@ -581,7 +583,9 @@ fn external_answers_still_validate_document_schema_in_the_pure_engine() {
         &Default::default(),
     )
     .unwrap();
-    let toha::Interview::Asking(pending) = resolution.start(&template, jiff::Zoned::now()).unwrap()
+    let toha::Interview::Asking(pending) = resolution
+        .start(&template, jiff::ZonedDateTime::now())
+        .unwrap()
     else {
         panic!()
     };
@@ -614,7 +618,7 @@ fn document_does_not_replay_a_seeded_default_when_its_file_is_missing() {
     let interview = toha::Interview::start(
         &template,
         toha::Seed {
-            now: jiff::Zoned::now(),
+            now: jiff::ZonedDateTime::now(),
             defaults: RawAnswers::from([(id, RawAnswer(json!({"$schema":URI,"title":"Seed"})))]),
             context: toha::context::InvocationContext::for_target(
                 toha::staging::canonical_target(&f.target).unwrap(),

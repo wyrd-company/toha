@@ -100,7 +100,7 @@ pub struct Environment<'a, S: crate::context::FixedEnvironmentSource> {
     pub config: &'a crate::config::Config,
     pub registry: &'a crate::registry::Registry,
     pub cwd: &'a Path,
-    pub now: jiff::Zoned,
+    pub now: jiff::ZonedDateTime,
     pub host: crate::context::HostFacts,
     pub is_admin: bool,
     pub source: &'a mut S,
@@ -114,7 +114,7 @@ pub struct Prepared {
     pub base_application: Option<Application>,
     pub resolved: ResolvedTemplate,
     pub template: Template,
-    pub now: jiff::Zoned,
+    pub now: jiff::ZonedDateTime,
     pub context: InvocationContext,
     pub configured_defaults: RawAnswers,
     pub recorded: Vec<IndexMap<Id, RawAnswer>>,
@@ -425,7 +425,7 @@ pub fn resume_admitted(
     )
     .map_err(|e| UpdateError::Error(e.to_string()))?;
     let (configured_defaults, warnings) = resolution.into_flat_defaults();
-    let now = match saved.now.parse::<jiff::Zoned>() {
+    let now = match saved.now.parse::<jiff::ZonedDateTime>() {
         Ok(value) => value,
         Err(error) => return Err(UpdateError::Error(error.to_string())),
     };

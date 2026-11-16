@@ -223,7 +223,7 @@ impl Store {
     }
     pub fn path_for(&self, target: &CanonicalTarget) -> PathBuf {
         let digest = Sha256::digest(target.as_path().to_string_lossy().as_bytes());
-        self.dir.join(format!("{digest:x}.json"))
+        self.dir.join(format!("{}.json", hex::encode(digest)))
     }
     fn legacy_path_for(&self, target: &CanonicalTarget) -> Option<PathBuf> {
         let path = target.as_path();
@@ -231,7 +231,7 @@ impl Store {
         let mut legacy = path.as_os_str().to_os_string();
         legacy.push(std::path::MAIN_SEPARATOR_STR);
         let digest = Sha256::digest(Path::new(&legacy).to_string_lossy().as_bytes());
-        Some(self.dir.join(format!("{digest:x}.json")))
+        Some(self.dir.join(format!("{}.json", hex::encode(digest))))
     }
     pub fn load(&self, target: &CanonicalTarget) -> Result<Option<StagedRecord>, StagingError> {
         let read = |path: PathBuf| -> Result<Option<StagedRecord>, StagingError> {

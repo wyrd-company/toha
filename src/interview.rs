@@ -37,13 +37,13 @@ pub struct RawAnswer(pub Value);
 pub type RawAnswers = IndexMap<Id, RawAnswer>;
 #[derive(Debug, Clone)]
 pub struct Seed {
-    pub now: jiff::Zoned,
+    pub now: jiff::ZonedDateTime,
     pub defaults: IndexMap<Id, RawAnswer>,
     pub context: InvocationContext,
 }
 #[derive(Debug, Clone)]
 struct InterviewSeed {
-    now: jiff::Zoned,
+    now: jiff::ZonedDateTime,
     defaults: IndexMap<Id, DefaultBankEntry>,
     part_selection: crate::parts::Selection,
     /// The invocation context, or `None` for the pre-context legacy projection
@@ -154,7 +154,7 @@ pub struct Completed {
     /// The messages reached by the step that completed the interview.
     pub last_messages: Vec<String>,
     pub hooks: Vec<RenderedHook>,
-    pub now: jiff::Zoned,
+    pub now: jiff::ZonedDateTime,
     /// Whether a flow `dry-run` fired; re-derived each walk, never persisted.
     pub disposition: Disposition,
     /// The immutable invocation context carried from the seed, or `None` for a
@@ -1144,7 +1144,7 @@ impl Resolution {
     pub fn start<'a>(
         self,
         template: &'a Template,
-        now: jiff::Zoned,
+        now: jiff::ZonedDateTime,
     ) -> Result<Interview<'a>, EvalError> {
         Interview::start_with_bank(
             template,
@@ -1168,7 +1168,7 @@ impl Resolution {
     pub fn start_with_context<'a>(
         self,
         template: &'a Template,
-        now: jiff::Zoned,
+        now: jiff::ZonedDateTime,
         context: InvocationContext,
     ) -> Result<Interview<'a>, EvalError> {
         Interview::start_with_bank(
@@ -1206,7 +1206,7 @@ impl Resolution {
     pub fn start_with_seed<'a>(
         self,
         template: &'a Template,
-        now: jiff::Zoned,
+        now: jiff::ZonedDateTime,
         context: InvocationContext,
         seed: Option<ApplicationSeed>,
     ) -> Result<(Interview<'a>, Vec<String>), EvalError> {
@@ -1222,7 +1222,7 @@ impl Resolution {
     pub(crate) fn start_with_selection<'a>(
         self,
         template: &'a Template,
-        now: jiff::Zoned,
+        now: jiff::ZonedDateTime,
         context: InvocationContext,
         seed: Option<ApplicationSeed>,
         part_selection: crate::parts::Selection,

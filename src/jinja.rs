@@ -17,7 +17,12 @@ pub type RenderError = Error;
 
 pub fn environment() -> Environment<'static> {
     let mut env = Environment::new();
-    env.set_keep_trailing_newline(true);
+    env.set_syntax(
+        minijinja::syntax::SyntaxConfig::builder()
+            .keep_trailing_newline(true)
+            .build()
+            .expect("default syntax with trailing newlines"),
+    );
     // File bodies register under their real root-relative names, so the default
     // extension-based auto-escape would JSON-quote a `.yml`/`.yaml`/`.json` body
     // and HTML-escape an `.html` one. Toha renders every body as raw text (the
@@ -42,13 +47,14 @@ pub fn environment() -> Environment<'static> {
     env.add_filter("constant", |s: String| s.to_shouty_snake_case());
     env.add_filter("title", |s: String| s.to_title_case());
     env.add_filter("toyaml", toyaml);
+    env.add_filter("tojson", tojson);
     env.add_function("now", |state: &State| {
         state.lookup("__toha_now").unwrap_or(Value::UNDEFINED)
     });
     env.add_filter(
         "dateformat",
         |value: String, pattern: Option<String>| -> Result<String, Error> {
-            let zoned: jiff::Zoned = value.parse().map_err(|err: jiff::Error| {
+            let zoned: jiff::ZonedDateTime = value.parse().map_err(|err: jiff::Error| {
                 Error::new(ErrorKind::InvalidOperation, err.to_string())
             })?;
             Ok(zoned
@@ -57,6 +63,35 @@ pub fn environment() -> Environment<'static> {
         },
     );
     env
+}
+
+// MiniJinja 3 adds spaces to unindented JSON; Toha's format contract keeps
+// compact output. Keep the built-in validation and rendering for indentation.
+fn tojson(
+    value: &Value,
+    indent: Option<Value>,
+    args: minijinja::value::Kwargs,
+) -> Result<Value, Error> {
+    let indent = match indent {
+        Some(indent) => Some(indent),
+        None => args.get("indent")?,
+    };
+    if indent
+        .as_ref()
+        .is_some_and(|value| bool::try_from(value.clone()).ok() != Some(false))
+    {
+        return minijinja::filters::tojson(value, indent, args);
+    }
+    args.assert_all_used()?;
+    let json = serde_json::to_string(value).map_err(|err| {
+        Error::new(ErrorKind::InvalidOperation, "cannot serialize to JSON").with_source(err)
+    })?;
+    Ok(Value::from_safe_string(
+        json.replace('<', "\\u003c")
+            .replace('>', "\\u003e")
+            .replace('&', "\\u0026")
+            .replace('\'', "\\u0027"),
+    ))
 }
 
 /// Serializes a value as a YAML document body with no leading `---`. The
@@ -134,7 +169,9 @@ impl Tmpl {
         &self.source
     }
     pub fn render<S: Serialize>(&self, ctx: S) -> Result<String, RenderError> {
-        self.env.get_template("value")?.render(ctx)
+        self.env
+            .get_template("value")?
+            .render(minijinja::value::Serde(ctx))
     }
 }
 
@@ -173,7 +210,9 @@ impl Expr {
         &self.source
     }
     pub fn eval<S: Serialize>(&self, ctx: S) -> Result<Value, Error> {
-        environment().compile_expression(&self.source)?.eval(ctx)
+        environment()
+            .compile_expression(&self.source)?
+            .eval(minijinja::value::Serde(ctx))
     }
 }
 #[derive(Debug)]
@@ -231,8 +270,7 @@ pub(crate) fn is_reserved(name: &str) -> bool {
 
 /// Whether a template-mode source can observe any fixed environment value.
 pub(crate) fn template_needs_environment(source: &str) -> bool {
-    match minijinja::machinery::parse(source, "<analysis>", Default::default(), Default::default())
-    {
+    match minijinja::machinery::parse(source, "<analysis>", Default::default()) {
         Ok(stmt) => {
             let mut walk = NeedWalk::new();
             walk.stmt(&stmt);
@@ -320,6 +358,11 @@ impl NeedWalk {
             Expr::Var(var) => self.bind(var.id),
             Expr::List(list) => {
                 for item in &list.items {
+                    self.bind_target(item);
+                }
+            }
+            Expr::Tuple(tuple) => {
+                for item in &tuple.items {
                     self.bind_target(item);
                 }
             }
@@ -522,6 +565,11 @@ impl NeedWalk {
                     self.expr(item);
                 }
             }
+            Expr::Tuple(t) => {
+                for item in &t.items {
+                    self.expr(item);
+                }
+            }
             Expr::Map(m) => {
                 for key in &m.keys {
                     self.expr(key);
@@ -586,8 +634,7 @@ impl StmtWalk {
     /// Parses `source` and analyzes it for `surface`. Syntax errors surface as
     /// the parse `Error`.
     fn analyze(source: &str, surface: Surface) -> Result<Analysis, Error> {
-        let stmt =
-            minijinja::machinery::parse(source, "value", Default::default(), Default::default())?;
+        let stmt = minijinja::machinery::parse(source, "value", Default::default())?;
         let mut walk = StmtWalk {
             surface,
             includes: Vec::new(),
@@ -677,6 +724,8 @@ fn literal_candidates(expr: &minijinja::machinery::ast::Expr) -> Option<Vec<Stri
     match expr {
         Expr::Const(_) => constant(expr).map(|s| vec![s]),
         Expr::List(list) => list.items.iter().map(constant).collect(),
+        // MiniJinja 2 used List for tuple syntax as well.
+        Expr::Tuple(tuple) => tuple.items.iter().map(constant).collect(),
         _ => None,
     }
 }
@@ -1062,7 +1111,9 @@ impl FileTmpl {
         &self.referenced_ids
     }
     pub fn render<S: Serialize>(&self, ctx: S) -> Result<String, RenderError> {
-        self.env.get_template(&self.label)?.render(ctx)
+        self.env
+            .get_template(&self.label)?
+            .render(minijinja::value::Serde(ctx))
     }
     pub(crate) fn needs_environment(&self) -> bool {
         self.needs_env
@@ -1072,7 +1123,7 @@ impl FileTmpl {
 pub fn context_from_answers(
     answers: &crate::interview::Answers,
     data: &indexmap::IndexMap<crate::template::Id, serde_json::Value>,
-    now: &jiff::Zoned,
+    now: &jiff::ZonedDateTime,
 ) -> BTreeMap<String, serde_json::Value> {
     let mut values: BTreeMap<String, serde_json::Value> = data
         .iter()
@@ -1112,7 +1163,32 @@ mod tests {
             render("{{ text | tojson }}", ctx.clone()),
             r#""say \"hi\"""#
         );
-        assert_eq!(render("{{ item | tojson }}", ctx), r#"{"a":"x","b":[1,2]}"#);
+        assert_eq!(
+            render("{{ item | tojson }}", ctx.clone()),
+            r#"{"a":"x","b":[1,2]}"#
+        );
+        assert_eq!(
+            render("{{ item | tojson(false) }}", ctx.clone()),
+            r#"{"a":"x","b":[1,2]}"#
+        );
+        assert_eq!(
+            render("{{ item | tojson(indent=false) }}", ctx.clone()),
+            r#"{"a":"x","b":[1,2]}"#
+        );
+        assert_eq!(
+            render("{{ item | tojson(indent=2) }}", ctx.clone()),
+            "{\n  \"a\": \"x\",\n  \"b\": [\n    1,\n    2\n  ]\n}"
+        );
+        assert_eq!(
+            render("{{ text | tojson }}", json!({"text":"<>&'"})),
+            r#""\u003c\u003e\u0026\u0027""#
+        );
+        assert!(
+            Tmpl::compile("{{ item | tojson(unused=true) }}".into())
+                .unwrap()
+                .render(ctx)
+                .is_err()
+        );
     }
 
     #[test]
@@ -1209,6 +1285,12 @@ mod tests {
         assert!(!tmpl(
             "{% macro m(toha_env_editor) %}{{ toha_env_editor }}{% endmacro %}"
         ));
+        // MiniJinja 3 represents tuples separately from lists, both when
+        // reading values and when binding destructured assignment targets.
+        assert!(expr("(answer, toha_env_user)"));
+        assert!(!tmpl(
+            "{% set toha_env_user, other = ('local', 1) %}{{ toha_env_user }}"
+        ));
         // Expression mode.
         assert!(expr("toha_env_user"));
         assert!(!expr("answer + 1"));
@@ -1261,13 +1343,19 @@ mod tests {
         std::fs::write(dir.path().join("frag.txt"), "fragment").unwrap();
         let root = dir.path().canonicalize().unwrap();
         let partials = super::Partials::rooted(&root);
-        let body = partials
-            .compile("before {% include \"frag.txt\" %} after".into(), "body.txt")
-            .unwrap();
-        assert_eq!(
-            body.render(serde_json::json!({})).unwrap(),
-            "before fragment after"
-        );
+        for target in [
+            "\"frag.txt\"",
+            "['missing.txt', 'frag.txt']",
+            "('missing.txt', 'frag.txt')",
+        ] {
+            let body = partials
+                .compile(format!("before {{% include {target} %}} after"), "body.txt")
+                .unwrap();
+            assert_eq!(
+                body.render(serde_json::json!({})).unwrap(),
+                "before fragment after"
+            );
+        }
     }
 
     #[test]

@@ -186,11 +186,18 @@ fn prepare_session(
             .ok_or("target repository is bare")?
             .canonicalize()
             .map_err(|e| e.to_string())?,
-        Err(gix::discover::Error::Discover(
-            gix::discover::upwards::Error::NoGitRepository { .. }
-            | gix::discover::upwards::Error::NoGitRepositoryWithinFs { .. }
-            | gix::discover::upwards::Error::NoGitRepositoryWithinCeiling { .. },
-        )) => target.as_path().to_owned(),
+        Err(err)
+            if matches!(
+                err.downcast_any_ref::<gix::discover::upwards::Error>(),
+                Some(
+                    gix::discover::upwards::Error::NoGitRepository { .. }
+                        | gix::discover::upwards::Error::NoGitRepositoryWithinFs { .. }
+                        | gix::discover::upwards::Error::NoGitRepositoryWithinCeiling { .. },
+                )
+            ) =>
+        {
+            target.as_path().to_owned()
+        }
         Err(e) => return Err(e.to_string().into()),
     };
     prepare_nodes(

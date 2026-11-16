@@ -322,9 +322,9 @@ pub(crate) fn prepare_connection(
     connection: &mut Connection<'_, '_, '_>,
     native_roots: &mut NativeRoots,
     supplied: &Supplied,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> gix::Result<()> {
     let resolving = supplied.attach(connection);
-    configure_http(connection, native_roots, resolving)
+    configure_http(connection, native_roots, resolving).map_err(gix::Error::from_boxed)
 }
 /// Point an HTTPS connection at the platform's trusted roots. System curl
 /// backends already use platform trust. Bundled rustls needs a CA bundle when

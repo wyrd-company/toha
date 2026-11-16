@@ -466,7 +466,7 @@ fn read_blob(
     if md.is_symlink() {
         let link = std::fs::read_link(&full).map_err(|e| RecordError::Git(e.to_string()))?;
         let oid = repo
-            .write_blob(gix::path::into_bstr(link).as_ref())
+            .write_blob(gix::path::into_bstr(link).map_err(git_error)?.as_ref())
             .map_err(|e| RecordError::Git(e.to_string()))?
             .detach();
         return Ok(Some((oid, EntryKind::Link)));
@@ -759,6 +759,7 @@ fn fingerprint(path: &Path) -> Result<Option<Vec<u8>>, RecordError> {
             gix::path::into_bstr(
                 std::fs::read_link(path).map_err(|e| RecordError::Git(e.to_string()))?,
             )
+            .map_err(git_error)?
             .as_ref(),
         );
     } else if metadata.is_file() {
@@ -768,7 +769,18 @@ fn fingerprint(path: &Path) -> Result<Option<Vec<u8>>, RecordError> {
             b"file"
         });
         let mut file = std::fs::File::open(path).map_err(|e| RecordError::Git(e.to_string()))?;
-        std::io::copy(&mut file, &mut hash).map_err(|e| RecordError::Git(e.to_string()))?;
+        let mut buffer = [0; 8192];
+        loop {
+            let count = match std::io::Read::read(&mut file, &mut buffer) {
+                Ok(count) => count,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(git_error(error)),
+            };
+            if count == 0 {
+                break;
+            }
+            hash.update(&buffer[..count]);
+        }
     } else {
         return Ok(None);
     }
