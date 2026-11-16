@@ -78,8 +78,18 @@ pub enum CatalogError {
         name: String,
         matches: Vec<String>,
     },
-    /// The operation's [stop signal](crate::stop) fired during a fetch.
+    /// The operation's [stop signal](crate::stop) fired during a fetch, or
+    /// while a template load fetched a document schema.
     Stopped,
+}
+impl From<crate::LoadError> for CatalogError {
+    fn from(error: crate::LoadError) -> Self {
+        if error.stopped {
+            Self::Stopped
+        } else {
+            Self::text(error)
+        }
+    }
 }
 impl From<source::SourceError> for CatalogError {
     fn from(error: source::SourceError) -> Self {
@@ -362,7 +372,7 @@ pub fn add(
     let mut additions = Vec::new();
     let mut names = Vec::new();
     for folder in folders {
-        let loaded = Template::load(&folder).map_err(CatalogError::text)?;
+        let loaded = Template::load(&folder).map_err(CatalogError::from)?;
         let name = loaded.name.clone();
         // `--trust` approves the template's current executable surface; the
         // digest authorizes its hooks only while the installed content matches.
@@ -666,7 +676,7 @@ pub fn remove(ctx: &Catalog, template: &str) -> Result<Vec<Event>, CatalogError>
 /// commit — and writes the approval to the user registry alone.
 pub fn trust(ctx: &Catalog, name: &str) -> Result<Vec<Event>, CatalogError> {
     let (formal, entry) = ctx.resolve_user(name)?;
-    let template = Template::load(&entry.path).map_err(CatalogError::text)?;
+    let template = Template::load(&entry.path).map_err(CatalogError::from)?;
     let surface = crate::HookSurface::of(&template).map_err(|error| CatalogError::Surface {
         formal: formal.clone(),
         error,
@@ -811,5 +821,29 @@ impl std::error::Error for CatalogError {
             Self::Surface { error, .. } => Some(error),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_stopped_template_load_is_a_stopped_catalog_operation() {
+        let load = |stopped| crate::LoadError {
+            problems: vec![crate::Problem {
+                path: "template.yml".into(),
+                message: "sample".into(),
+            }],
+            stopped,
+        };
+        assert!(matches!(
+            CatalogError::from(load(true)),
+            CatalogError::Stopped
+        ));
+        assert!(matches!(
+            CatalogError::from(load(false)),
+            CatalogError::Error(message) if message == "template.yml: sample"
+        ));
     }
 }
