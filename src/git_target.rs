@@ -285,7 +285,9 @@ fn inside_repository(path: &Path) -> Result<bool, GitTargetError> {
 ///
 /// Inside [`with_stop_signal`](crate::stop::with_stop_signal) the listing runs
 /// on a thread Toha starts, and a stopped probe returns
-/// [`RemoteState::Stopped`] at once, even while the remote sends nothing.
+/// [`RemoteState::Stopped`] at once, even while the remote sends nothing. The
+/// abandoned listing keeps its thread and connection until the remote acts;
+/// see the limit in [`with_stop_signal`](crate::stop::with_stop_signal).
 pub fn probe(url: &str) -> RemoteState {
     let url = url.to_owned();
     crate::stop::run(move |_| {

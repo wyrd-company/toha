@@ -254,12 +254,24 @@ A fetch returns as soon as the signal fires, even while the remote holds the
 connection without sending anything. Inside the signal's scope, Toha runs the
 fetch on a thread of its own, under the operation's credential resolver, into
 a temporary folder that thread owns. The calling thread returns at once and the
-fetch's destination stays absent. Git's transport cannot be interrupted while
-it waits for a remote, so that thread, and its connection, remain until the
-remote sends something or closes the connection, or Git's `http.lowSpeedLimit`
-and `http.lowSpeedTime` end the transfer. The thread then stops, writes nothing
-more and removes its folder. The `git` question's remote probe runs the same
-way.
+fetch's destination stays absent. The `git` question's remote probe runs the
+same way.
+
+### Limit: the abandoned transfer runs until the remote acts
+
+Toha's Git library, gix, cannot interrupt a transfer that waits for a remote.
+The transfer a stop abandons therefore keeps running, without blocking the
+caller, until the remote acts:
+
+- Over HTTP(S) it keeps its Toha thread, gix's curl thread and the connection
+  until the remote answers or closes the connection, or Git's
+  `http.lowSpeedLimit` and `http.lowSpeedTime` end the transfer.
+- Over SSH and `file://` it keeps its Toha thread and the `ssh` or
+  `git-upload-pack` process until that process answers or exits.
+
+The transfer then ends: it writes nothing more and removes its temporary
+folder. Releasing the transfer at the stop is tracked in
+[wyrd-company/toha#78](https://github.com/wyrd-company/toha/issues/78).
 
 ## Choose a hook runner and account for process inputs
 

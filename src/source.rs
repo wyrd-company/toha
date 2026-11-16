@@ -413,8 +413,9 @@ fn configure_http(
 /// on a thread Toha starts, into a temporary folder beside `dest` that the
 /// thread owns, and is moved to `dest` once complete. A stopped fetch returns
 /// [`SourceError::Stopped`] at once, even while the remote sends nothing, and
-/// leaves `dest` absent. The thread ends, and removes its folder, when the
-/// remote next sends or closes the connection.
+/// leaves `dest` absent. The abandoned clone keeps its thread, and its
+/// connection or process, until the remote acts, then removes its folder; see
+/// the limit in [`with_stop_signal`](crate::stop::with_stop_signal).
 pub fn fetch(address: &Address, dest: &Path) -> Result<Fetched, SourceError> {
     if !crate::stop::scoped() {
         return clone_into(address, dest, &AtomicBool::new(false));

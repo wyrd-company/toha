@@ -355,7 +355,10 @@ proposed-design:
     run on a Toha thread that carries the calling thread's resolver and signal,
     because gix's blocking transports cannot be interrupted while they wait
     for a remote; the calling thread returns `Stopped` as soon as the signal
-    fires. Explicit Toha paths do not establish process isolation. `config::load(&Dirs, cwd) ->
+    fires. The abandoned transfer keeps that thread, and over HTTP(S) gix's
+    curl thread and the connection, or over SSH and `file://` the `ssh` or
+    `git-upload-pack` process, until the remote answers or closes, or Git's
+    low-speed limit ends an HTTP(S) transfer (wyrd-company/toha#78). Explicit Toha paths do not establish process isolation. `config::load(&Dirs, cwd) ->
     Result<Config, ConfigError>` validates each layer against the embedded
     configuration schema and merges them by the rules in the configuration
     specification. `ConfigEntry<T>` keeps each winning value and origin

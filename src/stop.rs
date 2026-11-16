@@ -85,6 +85,20 @@ thread_local! {
 /// While a signal is in scope, a fetch and a probe run on a thread Toha
 /// starts, so that the calling thread can return while a remote holds the
 /// connection without answering.
+///
+/// # Limit
+///
+/// gix cannot interrupt a transfer that waits for a remote, so the transfer a
+/// stop abandons keeps running, without blocking the caller, until the remote
+/// acts (wyrd-company/toha#78 tracks releasing it at the stop):
+///
+/// - Over HTTP(S) it keeps its Toha thread, gix's curl thread and the
+///   connection until the remote answers or closes the connection, or Git's
+///   `http.lowSpeedLimit` and `http.lowSpeedTime` end the transfer.
+/// - Over SSH and `file://` it keeps its Toha thread and the `ssh` or
+///   `git-upload-pack` process until that process answers or exits.
+///
+/// The transfer then ends: it writes nothing more and removes its folder.
 pub fn with_stop_signal<T>(signal: StopSignal, operation: impl FnOnce() -> T) -> T {
     struct Restore(Option<StopSignal>);
     impl Drop for Restore {
@@ -142,9 +156,10 @@ pub(crate) fn with_interrupt<T>(operation: impl FnOnce(&AtomicBool) -> T) -> T {
 /// that never fires, as before the signal existed. With one, `work` runs on a
 /// new thread, under the calling thread's signal and credential resolver, with
 /// the signal as its interrupt flag. The caller returns `Err(Stopped)` as
-/// soon as the signal fires, even when the thread is blocked on a read; that
-/// thread ends at gix's next interrupt check, when the remote sends or closes,
-/// and drops what `work` returns. A panic in `work` resumes on the caller.
+/// soon as the signal fires, even when the thread is blocked on a read. That
+/// thread ends at gix's next interrupt check, or when its transfer fails, and
+/// drops what `work` returns; [`with_stop_signal`] states when that happens
+/// for each transport. A panic in `work` resumes on the caller.
 pub(crate) fn run<T: Send + 'static>(
     work: impl FnOnce(&AtomicBool) -> T + Send + 'static,
 ) -> Result<T, Stopped> {
