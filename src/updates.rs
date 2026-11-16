@@ -54,6 +54,18 @@ pub enum UpdateError {
         revision: crate::applied::Revision,
         reason: String,
     },
+    /// The operation's [stop signal](crate::stop) fired while the update was
+    /// prepared: while its template or merge base was fetched, or its merge
+    /// base rendered.
+    Stopped,
+}
+impl From<crate::resolve::ResolveError> for UpdateError {
+    fn from(error: crate::resolve::ResolveError) -> Self {
+        match error {
+            crate::resolve::ResolveError::Stopped => Self::Stopped,
+            error => Self::Resolve(error),
+        }
+    }
 }
 impl std::fmt::Display for UpdateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -80,6 +92,7 @@ impl std::fmt::Display for UpdateError {
                 f,
                 "cannot render merge base for {template} at {revision}: {reason}"
             ),
+            Self::Stopped => f.write_str("the update was stopped"),
         }
     }
 }
@@ -184,7 +197,7 @@ impl Preparation {
     ) -> Result<Self, UpdateError> {
         let project = open_project(target)?;
         let resolved = crate::resolve::resolve_template(template, config, registry, dirs, cwd)
-            .map_err(UpdateError::Resolve)?;
+            .map_err(UpdateError::from)?;
         let base_application = match base {
             UpdateBase::Update => Some(
                 project
@@ -398,7 +411,7 @@ pub fn resume_admitted(
         cwd,
     )?;
 
-    let resolved = match crate::resolve::resume_template(
+    let resolved = crate::resolve::resume_template(
         &saved.template,
         &saved.commit,
         saved.named,
@@ -406,10 +419,7 @@ pub fn resume_admitted(
         registry,
         dirs,
         cwd,
-    ) {
-        Ok(value) => value,
-        Err(error) => return Err(UpdateError::Resolve(error)),
-    };
+    )?;
     let mut template = match Template::load(&resolved.folder).map_err(|e| e.to_string()) {
         Ok(value) => value,
         Err(error) => return Err(UpdateError::Error(error)),
@@ -562,7 +572,10 @@ fn restore_merge_base(
         dirs,
         cwd,
     )
-    .map_err(|e| failure(e.to_string()))?;
+    .map_err(|e| match e {
+        crate::resolve::ResolveError::Stopped => UpdateError::Stopped,
+        e => failure(e.to_string()),
+    })?;
     let template = Template::load(&resolved.folder).map_err(|e| failure(e.to_string()))?;
     let context = InvocationContext::new(
         target.clone(),
@@ -628,9 +641,15 @@ fn restore_merge_base(
     };
     let plan =
         crate::Plan::build(&template, &completed, target).map_err(|e| failure(e.to_string()))?;
-    project
-        .restore_base(&mut application, plan)
-        .map_err(|e| failure(e.to_string()))?;
+    // The base renders in a throwaway checkout, so once the signal fired any
+    // failure there is the stop.
+    project.restore_base(&mut application, plan).map_err(|e| {
+        if crate::stop::requested() {
+            UpdateError::Stopped
+        } else {
+            failure(e.to_string())
+        }
+    })?;
     Ok((
         Base::Application(application.clone()),
         Some(application),
@@ -1151,5 +1170,23 @@ impl std::fmt::Debug for ResumeAdmission {
         f.debug_struct("ResumeAdmission")
             .field("base_application", &self.base_application)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_stopped_template_fetch_is_a_stopped_update() {
+        use crate::resolve::ResolveError;
+        assert!(matches!(
+            UpdateError::from(ResolveError::Stopped),
+            UpdateError::Stopped
+        ));
+        assert!(matches!(
+            UpdateError::from(ResolveError::NotFound("sample".into())),
+            UpdateError::Resolve(ResolveError::NotFound(_))
+        ));
     }
 }

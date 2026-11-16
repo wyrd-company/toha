@@ -77,6 +77,7 @@ thread_local! {
 /// error: [`SourceError`](crate::source::SourceError),
 /// [`ResolveError`](crate::resolve::ResolveError),
 /// [`CatalogError`](crate::catalog::CatalogError),
+/// [`UpdateError`](crate::updates::UpdateError),
 /// [`ApplyError`](crate::ApplyError) or
 /// [`MergeError`](crate::applied::MergeError), carried by the errors that wrap
 /// them. A probe reports [`RemoteState::Stopped`](crate::git_target::RemoteState).

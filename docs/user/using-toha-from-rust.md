@@ -232,8 +232,11 @@ Once the signal fires, the operation returns the `Stopped` variant of its
 error, inside the errors that wrap it as any other failure is:
 
 - A fetch returns `source::SourceError::Stopped`, `resolve::ResolveError::Stopped`
-  or `catalog::CatalogError::Stopped`. `Session::resume` and `updates::prepare`
-  carry the `ResolveError` in `OperationError::Resolve` and `UpdateError::Resolve`.
+  or `catalog::CatalogError::Stopped`. `Session::resume` carries the
+  `ResolveError` in `OperationError::Resolve`.
+- Preparing an update returns `updates::UpdateError::Stopped` when the signal
+  fires while its template or merge base is fetched, or its merge base
+  rendered. `UpdateSession::resume` carries it in `updates::SessionError::Update`.
 - A probe reports `git_target::RemoteState::Stopped`.
 - An apply returns `ApplyError::Stopped`; `Session::apply` carries it in
   `OperationError::Apply`.
