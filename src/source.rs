@@ -203,14 +203,22 @@ fn git_error(error: impl std::fmt::Display, repo: &str, supplied: &Supplied) -> 
 /// `message` with the credentials of `repo` removed wherever it names them.
 pub(crate) fn redacted(message: &str, repo: &str) -> String {
     let safe = without_userinfo(repo);
-    let mut message = message.replace(repo, &safe);
+    let mut message = message.to_owned();
+    for (form, replacement) in credentials::written_forms(repo)
+        .into_iter()
+        .zip(credentials::written_forms(&safe))
+    {
+        message = message.replace(&form, &replacement);
+    }
     if let Some(scheme) = repo.find("://") {
         let start = scheme + 3;
         let end = repo[start..]
             .find('/')
             .map_or(repo.len(), |slash| start + slash);
         if let Some(at) = repo[start..end].rfind('@') {
-            message = message.replace(&repo[start..start + at + 1], "");
+            for form in credentials::written_forms(&repo[start..start + at + 1]) {
+                message = message.replace(&form, "");
+            }
         }
     }
     message

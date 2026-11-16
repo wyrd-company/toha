@@ -297,12 +297,15 @@ fn without(message: &str, forms: &[String]) -> String {
 }
 
 /// The ways a gix message can write `secret`: as text, as Rust escapes it in
-/// a quoted string, and as the byte list gix shows for bytes a remote sent.
-fn written_forms(secret: &str) -> [String; 3] {
+/// a quoted string or escaped URL, and as a remote's byte list.
+/// gix-url uses byte `escape_ascii`, which also escapes apostrophes and UTF-8.
+pub(super) fn written_forms(secret: &str) -> [String; 5] {
     let quoted = format!("{secret:?}");
     let listed = format!("{:?}", secret.as_bytes());
     [
         secret.to_owned(),
+        secret.escape_debug().to_string(),
+        secret.as_bytes().escape_ascii().to_string(),
         quoted[1..quoted.len() - 1].to_owned(),
         listed[1..listed.len() - 1].to_owned(),
     ]
@@ -507,6 +510,20 @@ mod tests {
             message,
             "raw <redacted>, quoted \"<redacted>\", listed [<redacted>]"
         );
+    }
+
+    #[test]
+    fn messages_hold_no_ascii_or_debug_escaped_password() {
+        for password in ["it's-secret", "a\"secret", r"a\secret", "café-secret"] {
+            let supplied = Supplied::default();
+            supplied.keep_out("sample-user", password);
+            for form in [
+                password.escape_debug().to_string(),
+                password.as_bytes().escape_ascii().to_string(),
+            ] {
+                assert_eq!(supplied.message(format!("echo {form}")), "echo <redacted>");
+            }
+        }
     }
 
     #[test]
