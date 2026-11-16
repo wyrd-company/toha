@@ -204,6 +204,60 @@ does not fetch a remote branch named `HEAD`, so an explicit
 `@refs/heads/HEAD` selection fails inside the scope. Outside a resolver scope,
 that selection works.
 
+## Stop a fetch or an apply
+
+A stop signal lets a caller end an operation it no longer needs, such as one
+whose request has gone away. Run the operation inside `with_stop_signal` and
+call `stop` on the signal, or on any clone of it, from another thread:
+
+```rust
+use toha::stop::{StopSignal, with_stop_signal};
+
+let signal = StopSignal::new();
+let stopper = signal.clone();
+// When the request ends, from any thread:
+// stopper.stop();
+let resolved = with_stop_signal(signal, || {
+    toha::resolve::resolve_template(&address, &config, &registry, &paths, &cwd)
+});
+```
+
+The signal applies to the operation on the calling thread until it returns or
+unwinds: template fetches and commit lookups, the `git` question's remote
+probe, an apply and an update. Operations on other threads, and code after the
+call, run without it. A signal stays stopped once fired, so give each operation
+a new one. Without a signal, every operation behaves as before.
+
+Once the signal fires, the operation returns the `Stopped` variant of its
+error, inside the errors that wrap it as any other failure is:
+
+- A fetch returns `source::SourceError::Stopped`, `resolve::ResolveError::Stopped`
+  or `catalog::CatalogError::Stopped`. `Session::resume` and `updates::prepare`
+  carry the `ResolveError` in `OperationError::Resolve` and `UpdateError::Resolve`.
+- A probe reports `git_target::RemoteState::Stopped`.
+- An apply returns `ApplyError::Stopped`; `Session::apply` carries it in
+  `OperationError::Apply`.
+- An update returns `applied::MergeError::Stopped`; `UpdateSession::apply`
+  carries it in `updates::SessionError::Merge`.
+
+A stopped apply writes no further directory, file, injected edit, repository,
+hook run or applied record. The files it wrote before the signal stay, as after
+any failed apply. A stopped update writes nothing to the working tree, or
+restores the files it already wrote, and leaves the index and applied record
+unchanged. Toha checks the signal before each write, so a hook that is already
+running finishes first.
+
+A fetch returns as soon as the signal fires, even while the remote holds the
+connection without sending anything. Inside the signal's scope, Toha runs the
+fetch on a thread of its own, under the operation's credential resolver, into
+a temporary folder that thread owns. The calling thread returns at once and the
+fetch's destination stays absent. Git's transport cannot be interrupted while
+it waits for a remote, so that thread, and its connection, remain until the
+remote sends something or closes the connection, or Git's `http.lowSpeedLimit`
+and `http.lowSpeedTime` end the transfer. The thread then stops, writes nothing
+more and removes its folder. The `git` question's remote probe runs the same
+way.
+
 ## Choose a hook runner and account for process inputs
 
 `HookRunner::run` receives `PlannedHook` and the absolute target. The hook has

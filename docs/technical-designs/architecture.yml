@@ -349,8 +349,13 @@ proposed-design:
     orchestration library receives those paths and the caller's working
     directory explicitly. Existing TOHA_RECORD overrides, PATH executable lookup
     and Git global configuration (including HOME/XDG), along with the calling
-    thread's HTTPS credential resolver (`source::with_credential_resolver`), remain
-    part of lower-level contracts. Explicit Toha paths do not establish process isolation. `config::load(&Dirs, cwd) ->
+    thread's HTTPS credential resolver (`source::with_credential_resolver`) and
+    stop signal (`stop::with_stop_signal`), remain part of lower-level contracts.
+    With a stop signal in scope, a fetch and the `git` question's remote probe
+    run on a Toha thread that carries the calling thread's resolver and signal,
+    because gix's blocking transports cannot be interrupted while they wait
+    for a remote; the calling thread returns `Stopped` as soon as the signal
+    fires. Explicit Toha paths do not establish process isolation. `config::load(&Dirs, cwd) ->
     Result<Config, ConfigError>` validates each layer against the embedded
     configuration schema and merges them by the rules in the configuration
     specification. `ConfigEntry<T>` keeps each winning value and origin
