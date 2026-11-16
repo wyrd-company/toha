@@ -136,18 +136,28 @@ fn names(text: &str) -> Vec<&str> {
 #[test]
 fn top_level_help_points_to_documentation_without_listing_variables() {
     let documentation = include_str!("../docs/user/configuration.md");
-    let section = documentation
-        .split_once("## Environment variables\n")
-        .expect("configuration guide has an environment variables section")
-        .1;
-    let table = section
-        .lines()
-        .skip_while(|line| !line.starts_with('|'))
-        .take_while(|line| line.starts_with('|'))
-        .filter_map(|line| line.split('|').nth(1))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let documented = names(&table);
+    let normalized = documentation.replace("\r\n", "\n");
+    let windows = normalized.replace('\n', "\r\n");
+    for guide in [&normalized, &windows] {
+        let mut lines = guide.lines();
+        assert!(
+            lines.any(|line| line == "## Environment variables"),
+            "configuration guide has no environment variables section"
+        );
+        let table = lines
+            .skip_while(|line| !line.starts_with('|'))
+            .take_while(|line| line.starts_with('|'))
+            .filter_map(|line| line.split('|').nth(1))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let documented = names(&table);
+        for variable in support::ENVIRONMENT {
+            assert!(
+                documented.contains(variable),
+                "{variable} missing from configuration guide table"
+            );
+        }
+    }
     for flag in ["-h", "--help"] {
         let text = help(&[], flag);
         assert!(
@@ -157,10 +167,6 @@ fn top_level_help_points_to_documentation_without_listing_variables() {
         let named = names(&text);
         for variable in support::ENVIRONMENT {
             assert!(!named.contains(variable), "{variable}:\n{text}");
-            assert!(
-                documented.contains(variable),
-                "{variable} missing from configuration guide"
-            );
         }
     }
 }
