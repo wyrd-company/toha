@@ -66,7 +66,8 @@ thread_local! {
 }
 
 /// Run `operation` so that `signal` can stop it: template fetches and commit
-/// lookups, the `git` question's remote probe, an apply and an update.
+/// lookups, document schema fetches while a template loads, the `git`
+/// question's remote probe, an apply and an update.
 ///
 /// The signal applies on the calling thread until `operation` returns or
 /// unwinds. Operations on other threads, and code after this call, keep the
@@ -81,6 +82,8 @@ thread_local! {
 /// [`ApplyError`](crate::ApplyError) or
 /// [`MergeError`](crate::applied::MergeError), carried by the errors that wrap
 /// them. A probe reports [`RemoteState::Stopped`](crate::git_target::RemoteState).
+/// A template load that the signal ended, such as while it fetched a document
+/// schema, fails with [`LoadError::stopped`](crate::LoadError::stopped) set.
 ///
 /// While a signal is in scope, a fetch and a probe run on a thread Toha
 /// starts, so that the calling thread can return while a remote holds the
@@ -99,6 +102,11 @@ thread_local! {
 ///   `git-upload-pack` process until that process answers or exits.
 ///
 /// The transfer then ends: it writes nothing more and removes its folder.
+///
+/// A document schema fetch has no such limit. It runs on the calling thread
+/// with its own HTTPS connection, which the stop aborts and closes within a
+/// fraction of a second (Toha checks the signal at least every 100 ms), also
+/// while the schema endpoint sends nothing.
 pub fn with_stop_signal<T>(signal: StopSignal, operation: impl FnOnce() -> T) -> T {
     struct Restore(Option<StopSignal>);
     impl Drop for Restore {

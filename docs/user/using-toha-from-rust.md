@@ -223,8 +223,8 @@ let resolved = with_stop_signal(signal, || {
 ```
 
 The signal applies to the operation on the calling thread until it returns or
-unwinds: template fetches and commit lookups, the `git` question's remote
-probe, an apply and an update. Operations on other threads, and code after the
+unwinds: template fetches and commit lookups, document schema fetches while a
+template loads, the `git` question's remote probe, an apply and an update. Operations on other threads, and code after the
 call, run without it. A signal stays stopped once fired, so give each operation
 a new one. Without a signal, every operation behaves as before.
 
@@ -234,9 +234,13 @@ error, inside the errors that wrap it as any other failure is:
 - A fetch returns `source::SourceError::Stopped`, `resolve::ResolveError::Stopped`
   or `catalog::CatalogError::Stopped`. `Session::resume` carries the
   `ResolveError` in `OperationError::Resolve`.
+- A template load that the signal ended fails with `LoadError::stopped` set,
+  such as while it fetched a document schema. `Session::resume` carries the
+  `LoadError` in `OperationError::Load`; catalog operations return
+  `catalog::CatalogError::Stopped`.
 - Preparing an update returns `updates::UpdateError::Stopped` when the signal
-  fires while its template or merge base is fetched, or its merge base
-  rendered. `UpdateSession::resume` carries it in `updates::SessionError::Update`.
+  fires while its template or merge base is fetched or loaded, or its merge
+  base rendered. `UpdateSession::resume` carries it in `updates::SessionError::Update`.
 - A probe reports `git_target::RemoteState::Stopped`.
 - An apply returns `ApplyError::Stopped`; `Session::apply` carries it in
   `OperationError::Apply`.
@@ -272,6 +276,11 @@ caller, until the remote acts:
 The transfer then ends: it writes nothing more and removes its temporary
 folder. Releasing the transfer at the stop is tracked in
 [wyrd-company/toha#78](https://github.com/wyrd-company/toha/issues/78).
+
+A document schema fetch has no such limit. Toha makes it on the calling thread,
+with its own HTTPS connection, and checks the signal at least every 100 ms. The
+stop aborts the fetch and closes that connection within a fraction of a second,
+even while the schema endpoint sends nothing.
 
 ## Choose a hook runner and account for process inputs
 
