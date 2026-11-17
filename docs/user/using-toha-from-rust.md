@@ -236,8 +236,11 @@ error, inside the errors that wrap it as any other failure is:
   `ResolveError` in `OperationError::Resolve`.
 - A template load that the signal ended fails with `LoadError::stopped` set,
   such as while it fetched a document schema. `Session::resume` carries the
-  `LoadError` in `OperationError::Load`; catalog operations return
-  `catalog::CatalogError::Stopped`.
+  `LoadError` in `OperationError::Load`. `catalog::add` and `catalog::trust`
+  return `catalog::CatalogError::Stopped`. `catalog::list` and the trust check
+  at the end of `catalog::update` don't fail when a template can't be loaded:
+  they report a stopped load as they report any load failure, as not trusted
+  (`list`) or `ApprovalLapsed` (`update`), without returning the stop.
 - Preparing an update returns `updates::UpdateError::Stopped` when the signal
   fires while its template or merge base is fetched or loaded, or its merge
   base rendered. `UpdateSession::resume` carries it in `updates::SessionError::Update`.

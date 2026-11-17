@@ -78,8 +78,10 @@ pub enum CatalogError {
         name: String,
         matches: Vec<String>,
     },
-    /// The operation's [stop signal](crate::stop) fired during a fetch, or
-    /// while a template load fetched a document schema.
+    /// The operation's [stop signal](crate::stop) fired during a fetch, or,
+    /// in `add` and `trust`, while a template load fetched a document schema.
+    /// `list` and `update`'s trust check report a stopped load as not trusted,
+    /// as they report any load failure.
     Stopped,
 }
 impl From<crate::LoadError> for CatalogError {
