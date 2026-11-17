@@ -258,14 +258,20 @@ fn is_name(text: &str, extra: &[u8]) -> bool {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || extra.contains(&byte))
 }
-/// Save every remote URL of the clone at `repository` without its user
-/// information. A clone saves the address it was given, as `git clone` does,
-/// and Toha keeps its clones in its cache and data folders, where a password
-/// in the address would stay on disk. Toha never fetches through a saved
-/// remote.
+/// Remove the address from what the clone at `repository` saved of it. A
+/// clone saves the address it was given as its remote and names it in the
+/// `clone: from <address>` message of its reflogs, as `git clone` does, and
+/// Toha keeps its clones in its cache and data folders, where a password in
+/// the address would stay on disk. Toha never fetches through a saved remote
+/// and never reads a clone's reflogs, so it saves every remote URL without
+/// its user information and removes the reflogs.
 fn forget_credentials(
     repository: &gix::Repository,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let logs = repository.git_dir().join("logs");
+    if logs.exists() {
+        std::fs::remove_dir_all(&logs)?;
+    }
     let path = repository.common_dir().join("config");
     let mut file =
         gix::config::File::from_path_no_includes(path.clone(), gix::config::Source::Local)?;

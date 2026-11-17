@@ -863,15 +863,27 @@ fn an_accepted_address_password_stays_out_of_the_installed_clone() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    // The registry, the clone's configuration and its other Git metadata,
+    // such as reflog messages, hold no form of the password: every form
+    // keeps its ASCII `-secret` end.
     let data = support::user_data_dir(root.path());
-    let mut written_files = vec![data.join("templates.yml")];
-    for install in fs::read_dir(data.join("repos")).unwrap() {
-        written_files.push(install.unwrap().path().join(".git/config"));
+    let mut files = vec![data.join("templates.yml")];
+    let mut folders = vec![data.join("repos")];
+    while let Some(folder) = folders.pop() {
+        for entry in fs::read_dir(folder).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                folders.push(path);
+            } else {
+                files.push(path);
+            }
+        }
     }
-    for file in written_files {
-        let text = fs::read_to_string(&file).unwrap();
+    assert!(files.iter().any(|file| file.ends_with(".git/config")));
+    for file in files {
+        let bytes = fs::read(&file).unwrap();
         assert!(
-            !text.contains("secret"),
+            !bytes.windows(6).any(|window| window == b"secret"),
             "{} keeps the password",
             file.display()
         );
