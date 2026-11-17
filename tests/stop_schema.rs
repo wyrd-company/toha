@@ -363,13 +363,14 @@ fn threads() -> Option<usize> {
     cfg!(target_os = "linux").then(|| fs::read_dir("/proc/self/task").unwrap().count())
 }
 
-/// The threads of this process named `toha-schema-release`. Counted on Linux.
+/// The threads of this process named `toha-schema-release`. Counted on Linux,
+/// which keeps the first 15 bytes of a thread's name.
 fn release_threads() -> Option<usize> {
     cfg!(target_os = "linux").then(|| {
         fs::read_dir("/proc/self/task")
             .unwrap()
             .filter_map(|entry| fs::read_to_string(entry.ok()?.path().join("comm")).ok())
-            .filter(|name| name.trim() == "toha-schema-release")
+            .filter(|name| name.trim() == &"toha-schema-release"[..15])
             .count()
     })
 }
@@ -533,6 +534,7 @@ fn schema_worker() {
             // The documented exception: the release thread and the lookup's
             // resolver threads run on until the lookup returns.
             let during = threads();
+            let releasing = release_threads();
             fs::write(root.join(LOOKUP_RELEASE), "").unwrap();
             let settled = || match (before, threads()) {
                 (Some(before), Some(now)) => now == before,
@@ -545,7 +547,7 @@ fn schema_worker() {
             );
             println!(
                 "observed: returned {returned:?} and proxy connection closed {closed:?} after the stop signal while the target lookup was held; \
-                 threads {before:?} before, {during:?} while held, back to the baseline after the lookup returned"
+                 threads {before:?} before, {during:?} while held ({releasing:?} of them releasing), back to the baseline after the lookup returned"
             );
         }
         "socks-silent" => {

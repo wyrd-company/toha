@@ -294,7 +294,8 @@ fetch is still pending: the schema host's, or the target's behind a
 returns within 2 s, but the threads that wait on that lookup run on:
 
 - curl's resolver threads, which are detached rather than joined;
-- behind such a proxy, one Toha thread named `toha-schema-release`, which
+- behind such a proxy, one Toha thread named `toha-schema-release`
+  (`toha-schema-rel` on Linux, which keeps 15 bytes of a thread name), which
   finishes releasing curl's handles. Toha waits for it at most 250 ms.
 
 These threads hold no connection, because the stop has already closed it.
