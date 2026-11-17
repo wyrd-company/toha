@@ -100,22 +100,32 @@ fn split_git(value: &str) -> Result<(&str, Option<String>, Option<String>), Sour
 }
 /// The `#` that starts the template path of the git address `value`.
 ///
-/// It is the first `#` when the text before it is a URL gix can parse, or
-/// when that text is not a URL with an authority. Otherwise the `#` sits in
-/// the user information, as in `https://user:pa#ss@host/repository`, and the
-/// template path starts at the first `#` after the authority's last `@`.
+/// It is the first `#`, unless that `#` sits in the user information of a
+/// URL, as in `https://user:pa#ss@host/repository`; the template path then
+/// starts at the first `#` after the authority's last `@`. gix ends an HTTP
+/// authority at a `#`, so there the `#` is in the user information only when
+/// gix rejects the text before it; for any other scheme a `#` is authority
+/// text, in the user information when a `@` follows it in the authority.
 fn template_path_start(value: &str) -> Option<usize> {
     let first = value.find('#')?;
     let Some(scheme) = value.find("://").filter(|&scheme| scheme < first) else {
         return Some(first);
     };
-    if gix::url::parse(gix::bstr::BStr::new(&value[..first])).is_ok() {
-        return Some(first);
-    }
     let authority = scheme + 3;
     let end = value[authority..]
         .find('/')
         .map_or(value.len(), |slash| authority + slash);
+    if first > end {
+        return Some(first);
+    }
+    let in_userinfo = if is_http(&value[..scheme]) {
+        gix::url::parse(gix::bstr::BStr::new(&value[..first])).is_err()
+    } else {
+        value[first..end].contains('@')
+    };
+    if !in_userinfo {
+        return Some(first);
+    }
     let after_userinfo = value[authority..end]
         .rfind('@')
         .map_or(authority, |at| authority + at + 1);
@@ -301,13 +311,26 @@ pub(crate) fn without_credentials(remote: &str) -> String {
 /// `/`, so that all the text before the host's `@` is treated as user
 /// information.
 fn authority_end(scheme: &str, url: &str, rest: &str) -> usize {
-    let http = scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https");
-    let delimiters: &[char] = if http && gix::url::parse(gix::bstr::BStr::new(url)).is_ok() {
-        &['/', '?', '#']
-    } else {
-        &['/']
+    let slash = rest.find('/').unwrap_or(rest.len());
+    // gix reads a `?` or `#` as the end of the authority only for these two
+    // schemes, spelled in lowercase; `HTTPS` is a helper scheme to it, whose
+    // authority runs to the first `/`.
+    if !is_http(scheme) {
+        return slash;
+    }
+    let Ok(parsed) = gix::url::parse(gix::bstr::BStr::new(url)) else {
+        return slash;
     };
-    rest.find(delimiters).unwrap_or(rest.len())
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    if (parsed.user().is_some() || parsed.password().is_some()) && !rest[..end].contains('@') {
+        // gix found user information this boundary would miss.
+        return slash;
+    }
+    end
+}
+/// Whether gix reads `scheme` as HTTP, where a `?` or `#` ends the authority.
+fn is_http(scheme: &str) -> bool {
+    scheme == "http" || scheme == "https"
 }
 /// The helper and address of a remote-helper address `helper::address`.
 fn helper_address(repo: &str) -> Option<(&str, &str)> {
@@ -947,6 +970,32 @@ mod tests {
         ] {
             assert_eq!(without_credentials(remote), remote);
         }
+    }
+    #[test]
+    fn a_scheme_in_another_case_loses_its_user_information_too() {
+        // gix reads `HTTPS` as a helper scheme, whose authority runs to the
+        // first `/`, and finds the password even with a `?` or `#` in it.
+        for scheme in ["HTTPS", "HtTpS", "HTTP"] {
+            for password in UNUSUAL_PASSWORDS {
+                let url = format!("{scheme}://user:{password}@host.invalid/o/r.git");
+                let kept = format!("{scheme}://host.invalid/o/r.git");
+                assert_eq!(without_userinfo(&url), kept, "{url:?}");
+                assert_eq!(without_credentials(&url), kept, "{url:?}");
+            }
+        }
+        let hosts = Hosts::new();
+        let cwd = Path::new("/");
+        let address = parse(
+            "HTTPS://user:pa#ss-secret@host.invalid/o/r@v1#sub",
+            &hosts,
+            cwd,
+            cwd,
+        )
+        .unwrap();
+        assert_eq!(
+            address.formal_name(&hosts),
+            "HTTPS://host.invalid/o/r@v1#sub"
+        );
     }
     #[test]
     fn a_scp_address_is_read_as_git_reads_it() {

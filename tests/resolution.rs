@@ -992,6 +992,12 @@ fn a_failed_fetch_names_the_address_without_its_password() {
             "https://user:fra#gment-secret@127.0.0.1:9/sample.git".to_owned(),
             "'https://127.0.0.1:9/sample.git' is not a valid Git URL".to_owned(),
         ),
+        // gix reads `HTTPS` as a helper scheme and finds the password even
+        // with a `?` in it.
+        (
+            "HTTPS://user:pa?ss-secret@127.0.0.1:9/sample.git".to_owned(),
+            "Toha cannot fetch from 'HTTPS://127.0.0.1:9/sample.git' over its protocol".to_owned(),
+        ),
         (
             "http://user:p%40ss-secret@127.0.0.1:9/sample.git".to_owned(),
             "authentication failed for 'http://127.0.0.1:9/sample.git': \

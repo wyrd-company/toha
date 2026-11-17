@@ -460,6 +460,10 @@ fn a_git_answer_keeps_no_credentials() {
             "git://user:p@ss-secret@127.0.0.1:9/sample.git",
             "git://127.0.0.1:9/sample.git",
         ),
+        (
+            "HTTPS://user:pa?ss-secret@127.0.0.1:9/sample.git",
+            "HTTPS://127.0.0.1:9/sample.git",
+        ),
         // No credential: a `@` in the query keeps the host.
         (
             "https://127.0.0.1:9?owner=alice@example.invalid/sample.git",
