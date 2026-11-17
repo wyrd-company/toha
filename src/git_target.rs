@@ -14,16 +14,31 @@ pub const DEFAULT_BRANCH: &str = "main";
 pub const REMOTE_NAME: &str = "origin";
 
 /// The repository a reached `git` question asks the apply to set up. `remote`
-/// is `None` for an empty answer.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// is `None` for an empty answer. Its `Debug` shows the remote without user
+/// information.
+#[derive(Clone, PartialEq, Eq)]
 pub struct PlannedGit {
     pub remote: Option<String>,
+}
+
+impl std::fmt::Debug for PlannedGit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PlannedGit")
+            .field("remote", &shown(self.remote.as_deref()))
+            .finish()
+    }
+}
+
+/// `remote` without user information.
+fn shown(remote: Option<&str>) -> Option<String> {
+    remote.map(crate::source::without_userinfo)
 }
 
 /// What the apply did for the `git` question.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GitSetup {
     /// The target was not inside a repository; the apply initialized one.
+    /// `remote` is the added remote without user information.
     Initialized {
         branch: String,
         remote: Option<String>,
@@ -105,8 +120,8 @@ pub enum RemoteState {
     Refused(String),
 }
 
-/// The decision taken before the apply writes anything.
-#[derive(Debug)]
+/// The decision taken before the apply writes anything. Its `Debug` shows
+/// the remote without user information.
 pub enum Preflight {
     /// The target is inside a repository; nothing will be initialized.
     Existing,
@@ -115,6 +130,19 @@ pub enum Preflight {
         remote: Option<String>,
         warning: Option<String>,
     },
+}
+
+impl std::fmt::Debug for Preflight {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Existing => f.write_str("Existing"),
+            Self::Initialize { remote, warning } => f
+                .debug_struct("Initialize")
+                .field("remote", &shown(remote.as_deref()))
+                .field("warning", warning)
+                .finish(),
+        }
+    }
 }
 
 /// The branch a new repository's `HEAD` names: the configured
@@ -183,7 +211,7 @@ pub fn set_up(preflight: Preflight, target: &CanonicalTarget) -> Result<GitRepor
         Preflight::Initialize { remote, warning } => GitReport {
             setup: GitSetup::Initialized {
                 branch: initialize(target.as_path(), remote.as_deref())?,
-                remote,
+                remote: shown(remote.as_deref()),
             },
             warning,
         },

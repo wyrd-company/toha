@@ -236,6 +236,32 @@ fn a_remote_that_cannot_be_saved_is_named_without_its_password() {
 }
 
 #[test]
+fn set_up_reports_the_remote_without_credentials_and_saves_it_whole() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = "https://user:p%40ss-secret@example.invalid/sample.git";
+    let preflight = Preflight::Initialize {
+        remote: Some(url.into()),
+        warning: None,
+    };
+    assert!(!format!("{preflight:?}").contains("secret"));
+    let planned = PlannedGit {
+        remote: Some(url.into()),
+    };
+    assert!(!format!("{planned:?}").contains("secret"));
+    let report = set_up(preflight, &target(dir.path())).unwrap();
+    let GitSetup::Initialized { remote, .. } = report.setup else {
+        panic!("expected an initialized repository, got {report:?}");
+    };
+    assert_eq!(
+        remote.as_deref(),
+        Some("https://example.invalid/sample.git")
+    );
+    // The repository keeps the remote as given, as `git remote add` does.
+    let config = gix::open(dir.path()).unwrap().config_snapshot().clone();
+    assert_eq!(config.string("remote.origin.url").unwrap().to_string(), url);
+}
+
+#[test]
 fn initialize_without_a_remote_adds_none() {
     let dir = tempfile::tempdir().unwrap();
     initialize(dir.path(), None).unwrap();
