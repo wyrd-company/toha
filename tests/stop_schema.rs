@@ -363,6 +363,17 @@ fn threads() -> Option<usize> {
     cfg!(target_os = "linux").then(|| fs::read_dir("/proc/self/task").unwrap().count())
 }
 
+/// The threads of this process named `toha-schema-release`. Counted on Linux.
+fn release_threads() -> Option<usize> {
+    cfg!(target_os = "linux").then(|| {
+        fs::read_dir("/proc/self/task")
+            .unwrap()
+            .filter_map(|entry| fs::read_to_string(entry.ok()?.path().join("comm")).ok())
+            .filter(|name| name.trim() == "toha-schema-release")
+            .count()
+    })
+}
+
 type Loaded = Result<(), toha::LoadError>;
 
 /// Start `Template::load(folder)` on a worker thread, under `signal` when
@@ -459,8 +470,14 @@ fn schema_worker() {
             let error = result.expect_err("a stopped load fails");
             assert!(error.stopped, "{error}");
             // The documented exception: the lookup's resolver threads are
-            // detached and run on until the system resolver returns.
+            // detached and run on until the system resolver returns. curl
+            // reports this lookup as pending, so no Toha thread is among them.
             let during = threads();
+            assert_eq!(
+                release_threads().unwrap_or(0),
+                0,
+                "a release thread outlived a stop whose lookup curl reported as pending"
+            );
             fs::write(root.join(LOOKUP_RELEASE), "").unwrap();
             let settled = || match (before, threads()) {
                 (Some(before), Some(now)) => now == before,
