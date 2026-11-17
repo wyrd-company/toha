@@ -107,12 +107,16 @@ thread_local! {
 /// connection. The stop aborts it and closes that connection within a
 /// fraction of a second (Toha checks the signal at least every 100 ms), also
 /// while the schema endpoint sends nothing. One part of it can't be
-/// interrupted: a name lookup still pending at the stop. curl's resolver
-/// threads for that lookup are detached instead of joined. They hold no
-/// connection to the schema host and end by themselves when the system
-/// resolver returns (wyrd-company/toha#81). With a libcurl that supports
-/// neither curl's transfer nor its multi-handle quick-exit option, the stop
-/// waits for the lookup instead.
+/// interrupted: a name lookup still pending at the stop, either the schema
+/// host's or the target's that curl looks up itself behind a `socks4://` or
+/// `socks5://` proxy. The fetch still returns within 2 s, but the threads
+/// that wait on the lookup run on. Those are curl's resolver threads,
+/// detached instead of joined, and, behind such a proxy, one
+/// `toha-schema-release` thread that finishes releasing curl's handles and
+/// is waited for at most 250 ms. They hold no connection and end by
+/// themselves when the system resolver returns (wyrd-company/toha#81). With
+/// a libcurl that supports neither curl's transfer nor its multi-handle
+/// quick-exit option, the stop waits for the lookup instead.
 pub fn with_stop_signal<T>(signal: StopSignal, operation: impl FnOnce() -> T) -> T {
     struct Restore(Option<StopSignal>);
     impl Drop for Restore {

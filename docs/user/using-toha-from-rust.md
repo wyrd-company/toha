@@ -288,13 +288,20 @@ sends nothing.
 
 ### Limit: a pending schema host lookup
 
-A name lookup can't be interrupted. When the stop arrives while the schema
-host's name is still being looked up, the fetch returns at once, but curl's
-resolver threads for that lookup are detached rather than joined. They hold no
-connection to the schema host and end by themselves when the system resolver
-returns. A stop after the lookup leaves no thread. With a libcurl that
-supports neither of curl's quick-exit options, the stop waits for the lookup
-instead. Making the lookup itself stoppable is tracked in
+A name lookup can't be interrupted. A stop can arrive while a lookup for the
+fetch is still pending: the schema host's, or the target's behind a
+`socks4://` or `socks5://` proxy, which curl looks up itself. The fetch then
+returns within 2 s, but the threads that wait on that lookup run on:
+
+- curl's resolver threads, which are detached rather than joined;
+- behind such a proxy, one Toha thread named `toha-schema-release`, which
+  finishes releasing curl's handles. Toha waits for it at most 250 ms.
+
+These threads hold no connection, because the stop has already closed it.
+They end by themselves when the system resolver returns. A stop with no
+pending lookup leaves no thread. With a libcurl that supports neither of
+curl's quick-exit options, the stop waits for the lookup instead. Making the
+lookup itself stoppable is tracked in
 [wyrd-company/toha#81](https://github.com/wyrd-company/toha/issues/81).
 
 ## Choose a hook runner and account for process inputs
