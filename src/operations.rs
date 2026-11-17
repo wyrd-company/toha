@@ -77,15 +77,15 @@ pub fn save_document_answers(template: &Template, saved: &mut StagedRecord) {
 /// of `template`: its submissions, its update overrides, the application a
 /// `--like` stage copied and the application an update pinned. A record
 /// staged before Toha removed a `git` answer's credentials can hold them, and
-/// a session that resumes it keeps and saves its record.
-pub(crate) fn clean_staged(template: &Template, saved: &mut StagedRecord) {
-    let git = |id: &str| {
-        crate::Id::parse(id).ok().is_some_and(|id| {
-            template
-                .question(&id)
-                .is_some_and(|question| matches!(question.kind, crate::QuestionKind::Git { .. }))
-        })
-    };
+/// a session that resumes it keeps and saves its record. `recorded_git` is
+/// the `git` question of the revision that recorded an update's application,
+/// whose answer the submissions replay whatever kind `template` asks it as.
+pub(crate) fn clean_staged(
+    template: &Template,
+    recorded_git: Option<&str>,
+    saved: &mut StagedRecord,
+) {
+    let git = |id: &str| recorded_git == Some(id) || is_git_question(template, id);
     let clean = |answers: &mut indexmap::IndexMap<String, serde_json::Value>| {
         for (id, value) in answers.iter_mut() {
             if git(id) {
@@ -95,23 +95,44 @@ pub(crate) fn clean_staged(template: &Template, saved: &mut StagedRecord) {
     };
     saved.submissions.iter_mut().for_each(clean);
     clean(&mut saved.update_overrides);
-    if let Some(serde_json::Value::Object(answers)) = saved
-        .seed_entry
-        .as_mut()
-        .and_then(|entry| entry.get_mut("answers"))
-    {
-        for (id, value) in answers.iter_mut() {
-            if git(id) {
-                crate::interview::git_value(value);
-            }
-        }
+    if let Some(entry) = &mut saved.seed_entry {
+        clean_seed_entry(template, entry);
     }
     if let Some(base) = &mut saved.base
         && let Ok(application) = serde_json::from_str::<serde_json::Value>(base)
         && application.is_object()
     {
-        *base = serde_json::to_string(&crate::updates::pin(template, application))
-            .expect("application serializes");
+        *base = serde_json::to_string(&crate::updates::pin(
+            application,
+            recorded_git.map(str::to_owned).as_slice(),
+        ))
+        .expect("application serializes");
+    }
+}
+/// Whether `id` names a `git` question of `template`.
+fn is_git_question(template: &Template, id: &str) -> bool {
+    crate::Id::parse(id).ok().is_some_and(|id| {
+        template
+            .question(&id)
+            .is_some_and(|question| matches!(question.kind, crate::QuestionKind::Git { .. }))
+    })
+}
+/// Remove the credentials from the answers of `entry`, an application a
+/// `--like` stage copies as the seed of `template`'s interview, that can hold
+/// a `git` answer's: the answer to `template`'s `git` question, and every
+/// answer to a question `template` does not ask, which the revision that
+/// recorded it may have asked as `git`. The interview uses no answer of the
+/// second kind, so its value changes nothing else.
+pub(crate) fn clean_seed_entry(template: &Template, entry: &mut serde_json::Value) {
+    if let Some(serde_json::Value::Object(answers)) = entry.get_mut("answers") {
+        for (id, value) in answers.iter_mut() {
+            let asked = crate::Id::parse(id)
+                .ok()
+                .is_some_and(|id| template.question(&id).is_some());
+            if !asked || is_git_question(template, id) {
+                crate::interview::git_value(value);
+            }
+        }
     }
 }
 pub fn recorded_answers(saved: &StagedRecord) -> crate::RawAnswers {
@@ -197,13 +218,7 @@ pub fn prepare_record(
         // The copied application's `git` answer is staged without credentials,
         // as every `git` answer is.
         let mut entry = seed.entry.clone();
-        if let Some(id) = template.git_question()
-            && let Some(answer) = entry
-                .get_mut("answers")
-                .and_then(|answers| answers.get_mut(id.as_str()))
-        {
-            crate::interview::git_value(answer);
-        }
+        clean_seed_entry(template, &mut entry);
         record.seed_entry = Some(entry);
     }
     save_document_answers(template, &mut record);
@@ -402,7 +417,7 @@ impl Session {
             .map_err(OperationError::Input)?;
         template.part_selection = record.part_selection.clone();
         let mut record = record;
-        clean_staged(&template, &mut record);
+        clean_staged(&template, None, &mut record);
         Ok(Self {
             template,
             resolved,
@@ -824,7 +839,7 @@ mod clean_staged_tests {
             .insert("remote".into(), json!({ url: [url] }));
         record.seed_entry = Some(json!({ "answers": { "remote": url, "label": url } }));
         record.base = Some(json!({ "answers": { "remote": url, "label": url } }).to_string());
-        clean_staged(&template, &mut record);
+        clean_staged(&template, Some("remote"), &mut record);
         let saved = serde_json::to_string(&record).unwrap();
         // A `text` answer keeps its value, in the pinned base too, so resume
         // tells a changed one apart; only `git` values lose credentials.

@@ -225,6 +225,11 @@ pub struct Application {
     pub(crate) files: BTreeMap<String, (gix::ObjectId, gix::objs::tree::EntryKind)>,
     /// Marker syntax reconstructed from the recorded revision; never serialized.
     pub(crate) region_markers: BTreeMap<(String, String), crate::inject::MarkerStyle>,
+    /// The `git` question of the recorded revision, learned when an update
+    /// restores that revision; never serialized. An answer recorded before
+    /// Toha removed a `git` answer's credentials can hold them, and the
+    /// incoming revision can ask that question as another kind or not at all.
+    pub(crate) recorded_git: Option<String>,
 }
 
 impl fmt::Debug for Application {
@@ -264,6 +269,7 @@ impl Application {
             paths,
             files: BTreeMap::new(),
             region_markers: BTreeMap::new(),
+            recorded_git: None,
         }
     }
     pub(crate) fn region_marker(&self, path: &TargetPath, key: &str) -> crate::inject::MarkerStyle {

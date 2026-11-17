@@ -495,7 +495,14 @@ fn candidate_submissions(
                     && (prior_part_question || template.part_question().is_none_or(|q| &q.id != id))
             });
             // An application recorded before Toha removed a `git` answer's
-            // credentials can hold them; the submissions it replays do not.
+            // credentials can hold them; the submissions it replays do not,
+            // whether the incoming revision asks that question as `git`, as
+            // another kind, or not at all.
+            if let Some(id) = &application.recorded_git
+                && let Some((_, raw)) = submission.iter_mut().find(|(key, _)| key.as_str() == id)
+            {
+                crate::interview::git_value(&mut raw.0);
+            }
             crate::interview::without_credentials(template, submission)
         })
         .filter(|submission| !submission.is_empty())
@@ -566,6 +573,7 @@ fn restore_merge_base(
     )
     .map_err(|e| failure(e.to_string()))?;
     let template = Template::load(&resolved.folder).map_err(|e| failure(e.to_string()))?;
+    application.recorded_git = template.git_question().map(Id::to_string);
     let context = InvocationContext::new(
         target.clone(),
         crate::context::SelectedTemplate::new(
@@ -703,46 +711,38 @@ pub fn is_staged_update(saved: &StagedRecord) -> bool {
 
 /// The stored base value for a staged record: the copied application, pinned
 /// as [`pin`] describes, or the baseline marker.
-pub fn stored_base(
-    base: &UpdateBase,
-    base_application: Option<&Application>,
-    template: &Template,
-) -> String {
+pub fn stored_base(base: &UpdateBase, base_application: Option<&Application>) -> String {
     match base {
-        UpdateBase::Update => serde_json::to_string(&pin(
-            template,
-            base_application
-                .expect("--update resolves an application")
-                .to_value(),
-        ))
-        .expect("application serializes"),
+        UpdateBase::Update => {
+            let application = base_application.expect("--update resolves an application");
+            serde_json::to_string(&pin(
+                application.to_value(),
+                application.recorded_git.as_slice(),
+            ))
+            .expect("application serializes")
+        }
         UpdateBase::Baseline => BASELINE_MARKER.to_owned(),
     }
 }
 /// The member of a pinned application that names its `git` answers.
 const PINNED_GIT_ANSWERS: &str = "git_answers";
 /// `application`, a serialized application or the pin of one, as a staged
-/// update pins it: its answers to the `template`'s `git` questions without
-/// the credentials of a URL, and a member that names those answers. An
-/// application recorded before Toha removed a `git` answer's credentials can
-/// hold them. Every other answer stays as recorded, so resume still tells a
-/// changed answer apart.
-pub(crate) fn pin(template: &Template, application: Value) -> Value {
-    let (application, mut git) = unpinned(application);
-    if let Some(Value::Object(answers)) = application.get("answers") {
-        for id in answers.keys() {
-            let is_git = Id::parse(id)
-                .ok()
-                .and_then(|id| template.question(&id))
-                .is_some_and(|question| matches!(question.kind, crate::QuestionKind::Git { .. }));
-            if is_git && !git.contains(id) {
-                git.push(id.clone());
-            }
+/// update pins it: its answers named in `git`, the answers to `git` questions
+/// of the revision that recorded it, without the credentials of a URL, and a
+/// member that names those answers. An application recorded before Toha
+/// removed a `git` answer's credentials can hold them. Every other answer
+/// stays as recorded, so resume still tells a changed answer apart. A pin
+/// that already names its answers keeps them.
+pub(crate) fn pin(application: Value, git: &[String]) -> Value {
+    let (application, mut named) = unpinned(application);
+    for id in git {
+        if !named.contains(id) {
+            named.push(id.clone());
         }
     }
-    let mut pinned = without_git_credentials(application, &git);
+    let mut pinned = without_git_credentials(application, &named);
     if let Value::Object(fields) = &mut pinned {
-        fields.insert(PINNED_GIT_ANSWERS.into(), json!(git));
+        fields.insert(PINNED_GIT_ANSWERS.into(), json!(named));
     }
     pinned
 }
@@ -879,11 +879,7 @@ impl UpdateSession {
             .map_err(crate::operations::OperationError::from)?;
         crate::operations::admit_parts(&mut prepared.template, parts, None, overrides)
             .map_err(crate::operations::OperationError::Parts)?;
-        let base = stored_base(
-            &base,
-            prepared.base_application.as_ref(),
-            &prepared.template,
-        );
+        let base = stored_base(&base, prepared.base_application.as_ref());
         let mut record = record(&prepared, &base, reanswer, vec![]);
         record.update_overrides = overrides
             .iter()
@@ -956,7 +952,14 @@ impl UpdateSession {
         )
         .map_err(UpdateError::Error)?;
         let mut record = record;
-        crate::operations::clean_staged(&prepared.template, &mut record);
+        crate::operations::clean_staged(
+            &prepared.template,
+            prepared
+                .base_application
+                .as_ref()
+                .and_then(|application| application.recorded_git.as_deref()),
+            &mut record,
+        );
         Ok(Self {
             prepared,
             record,

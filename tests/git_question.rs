@@ -1060,6 +1060,230 @@ interview:
     assert!(!config.contains("secret"), "{config}");
 }
 
+/// A project applied from a committed template `v1` with `answers`, then
+/// its recorded `remote` answer set to `recorded` and committed, as Toha
+/// 0.4.1 could record it. Returns the template address and the project.
+fn applied_from_revision(scene: &Scene, answers: Value, recorded: &str) -> (String, PathBuf) {
+    let source = scene.template.path();
+    git(source, &["init", "--quiet", "-b", "main"]);
+    git(source, &["add", "."]);
+    git(source, &["commit", "--quiet", "-m", "v1"]);
+    let address = support::file_url(source);
+    let file = scene.iso.path().join("answers.json");
+    std::fs::write(
+        &file,
+        serde_json::to_vec(&json!({ "template": address, "answers": answers })).unwrap(),
+    )
+    .unwrap();
+    // The project is a repository already, so `.toha.json` is written
+    // whether or not the template asks a `git` question.
+    let project = scene.target();
+    std::fs::create_dir_all(&project).unwrap();
+    git(&project, &["init", "--quiet", "-b", "main"]);
+    git(
+        &project,
+        &["commit", "--quiet", "--allow-empty", "-m", "project"],
+    );
+    let mut apply = scene.command();
+    apply
+        .arg("apply")
+        .arg(&address)
+        .arg(&project)
+        .arg("--answers")
+        .arg(&file);
+    let applied = apply.output().unwrap();
+    assert!(applied.status.success(), "{applied:?}");
+    std::fs::remove_file(&file).unwrap();
+    let record_path = project.join(".toha.json");
+    let mut record: Value = serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
+    record["applications"][0]["answers"]["remote"] = json!(recorded);
+    std::fs::write(&record_path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+    git(&project, &["add", "."]);
+    git(&project, &["commit", "--quiet", "-m", "applied"]);
+    (address, project)
+}
+
+/// Commit `yml` as the next revision of `scene`'s template.
+fn next_revision(scene: &Scene, yml: &str) {
+    let source = scene.template.path();
+    std::fs::write(source.join("template.yml"), yml).unwrap();
+    git(source, &["commit", "--quiet", "-am", "v2"]);
+}
+
+#[test]
+fn a_recorded_git_answer_keeps_no_credentials_when_the_template_drops_or_retypes_it() {
+    let v1 = "name: sample
+interview:
+  - id: remote
+    type: git
+    prompt: Remote
+";
+    let secret = "https://user:p%40ss-migration-secret@127.0.0.1:9/r.git";
+    for v2 in [
+        // The question is gone.
+        "name: sample
+interview:
+  - id: label
+    type: text
+    prompt: Label
+",
+        // The question is a text question.
+        "name: sample
+interview:
+  - id: remote
+    type: text
+    prompt: Remote
+",
+    ] {
+        let scene = Scene::new(v1, false);
+        let (address, project) = applied_from_revision(
+            &scene,
+            json!({ "remote": "https://127.0.0.1:9/r.git" }),
+            secret,
+        );
+        next_revision(&scene, v2);
+        let mut stage = scene.command();
+        stage
+            .arg("stage")
+            .arg(&address)
+            .arg(&project)
+            .args(["--update", "--async"]);
+        let output = stage.output().unwrap();
+        let shown = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.status.success(), "{v2}: {shown}");
+        assert!(!shown.contains("secret"), "{shown}");
+        assert_eq!(
+            files_with_secret(scene.iso.path()),
+            Vec::<PathBuf>::new(),
+            "{v2}"
+        );
+        // A staged update from Toha 0.4.1 pinned the application as recorded;
+        // resuming it keeps and saves no credentials either.
+        let path = staged_record(&scene);
+        let mut staged: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let mut base: Value = serde_json::from_str(staged["base"].as_str().unwrap()).unwrap();
+        base["answers"]["remote"] = json!(secret);
+        base.as_object_mut().unwrap().remove("git_answers");
+        staged["base"] = json!(base.to_string());
+        std::fs::write(&path, serde_json::to_vec(&staged).unwrap()).unwrap();
+        let mut resume = scene.command();
+        resume.arg("apply").arg(&project);
+        let resumed = resume.output().unwrap();
+        let shown = format!(
+            "{}{}",
+            String::from_utf8_lossy(&resumed.stdout),
+            String::from_utf8_lossy(&resumed.stderr)
+        );
+        assert!(resumed.status.success(), "{v2}: {shown}");
+        assert!(!shown.contains("secret"), "{shown}");
+        assert_eq!(
+            files_with_secret(scene.iso.path()),
+            Vec::<PathBuf>::new(),
+            "{v2}"
+        );
+    }
+}
+
+#[test]
+fn a_like_seed_keeps_no_credentials_of_a_dropped_git_question() {
+    let scene = Scene::new(
+        "name: sample
+interview:
+  - id: remote
+    type: git
+    prompt: Remote
+",
+        false,
+    );
+    let (address, project) = applied_from_revision(
+        &scene,
+        json!({ "remote": "https://127.0.0.1:9/r.git" }),
+        "https://user:p%40ss-like-migration-secret@127.0.0.1:9/r.git",
+    );
+    next_revision(
+        &scene,
+        "name: sample
+interview:
+  - id: label
+    type: text
+    prompt: Label
+",
+    );
+    let mut stage = scene.command();
+    stage
+        .current_dir(&project)
+        .arg("stage")
+        .arg(&address)
+        .arg(project.join("beta"))
+        .args(["--like", ".", "--async"]);
+    let output = stage.output().unwrap();
+    assert_eq!(output.status.code(), Some(4), "{output:?}");
+    let shown = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!shown.contains("secret"), "{shown}");
+    assert_eq!(files_with_secret(scene.iso.path()), Vec::<PathBuf>::new());
+}
+
+#[test]
+fn a_staged_update_refuses_a_changed_text_answer_the_template_now_asks_as_git() {
+    let scene = Scene::new(
+        "name: sample
+interview:
+  - id: remote
+    type: text
+    prompt: Remote
+",
+        false,
+    );
+    let (address, project) = applied_from_revision(
+        &scene,
+        json!({ "remote": "https://alice:old@host.invalid/r" }),
+        "https://alice:old@host.invalid/r",
+    );
+    next_revision(
+        &scene,
+        "name: sample
+interview:
+  - id: remote
+    type: git
+    prompt: Remote
+",
+    );
+    let mut stage = scene.command();
+    stage
+        .arg("stage")
+        .arg(&address)
+        .arg(&project)
+        .args(["--update", "--async"]);
+    let staged = stage.output().unwrap();
+    assert!(staged.status.success(), "{staged:?}");
+    // The recorded answer was text, so its user information is text, and a
+    // change to it changes the application the update was staged from.
+    let record_path = project.join(".toha.json");
+    let mut record: Value = serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
+    record["applications"][0]["answers"]["remote"] = json!("https://bob:new@host.invalid/r");
+    std::fs::write(&record_path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+    git(&project, &["commit", "--quiet", "-am", "changed remote"]);
+    let mut resume = scene.command();
+    resume.arg("apply").arg(&project);
+    let resumed = resume.output().unwrap();
+    let shown = String::from_utf8_lossy(&resumed.stderr);
+    assert!(!resumed.status.success(), "{resumed:?}");
+    assert!(shown.contains("changed"), "{shown}");
+    let record: Value = serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
+    assert_eq!(
+        record["applications"][0]["answers"]["remote"],
+        "https://bob:new@host.invalid/r"
+    );
+}
+
 /// The one staged record in the `staged` folder under the isolated root of
 /// `scene`, wherever the platform keeps state.
 fn staged_record(scene: &Scene) -> PathBuf {
