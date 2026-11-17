@@ -2972,7 +2972,7 @@ mod report_tests {
         let mut out = Vec::new();
         let mut err = Vec::new();
         // ExitCode is not comparable; a successful render returning Ok is the check.
-        outcome.render(&mut out, &mut err).unwrap();
+        let _ = outcome.render(&mut out, &mut err).unwrap();
         let text = String::from_utf8(out).unwrap();
         assert!(
             text.contains("\"status\": \"applied\""),

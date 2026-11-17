@@ -1355,12 +1355,19 @@ pub fn configured_defaults(
             }
         };
         let origin = ConfiguredDefaultOrigin { mapping, preset };
+        // A refused password names the mapping that sets it, never the value
+        // the description of a preset shows.
+        let refused = value.as_str().is_some_and(crate::source::has_password);
         parse_kind(id, prompt_kind(question), value.clone()).map_err(|error| EvalError {
             id: id.clone(),
             field: CONFIGURED_DEFAULT,
             message: error.message,
             expression: None,
-            config_key: Some(origin.description()),
+            config_key: Some(if refused {
+                mapping_key.clone()
+            } else {
+                origin.description()
+            }),
         })?;
         defaults.insert(
             id.clone(),
@@ -2228,6 +2235,14 @@ impl<'a> Pending<'a> {
                 rejections.push(rejection(&id, "is not a question in this template"));
                 continue;
             };
+            // Refused even for a question the step skips or has not reached,
+            // so it is never held, accepted, stored or repeated.
+            if prompt_kind(q) == PromptKind::Git
+                && raw.0.as_str().is_some_and(crate::source::has_password)
+            {
+                rejections.push(rejection(&id, crate::source::PASSWORD_REFUSED));
+                continue;
+            }
             if self.skipped.contains_key(&id) {
                 // Not used; the walk warns at the skipped question.
                 held.insert(id, raw);

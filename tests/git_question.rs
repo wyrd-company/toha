@@ -550,3 +550,95 @@ fn a_template_without_a_git_question_does_not_require_git() {
     let template = toha::Template::load(scene.template.path()).unwrap();
     assert!(template.requirements().is_empty());
 }
+
+const PASSWORD_URL: &str = "https://user:review-secret@example.invalid/sample.git";
+
+/// The files under `root` whose bytes hold `needle`.
+fn files_holding(root: &Path, needle: &str) -> Vec<PathBuf> {
+    let mut found = vec![];
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if std::fs::read(&path)
+                .is_ok_and(|bytes| bytes.windows(needle.len()).any(|w| w == needle.as_bytes()))
+            {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
+
+#[test]
+fn a_configured_preset_with_a_password_is_refused_without_showing_it() {
+    let scene = Scene::new(TEMPLATE, false);
+    let config = scene.iso.path().join("config/toha/config.yml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    let formal = support::formal_name(scene.template.path());
+    std::fs::write(
+        &config,
+        format!(
+            "presets:\n  remote_url: {PASSWORD_URL:?}\ntemplate-defaults:\n  {formal:?}:\n    remote: {{ preset: remote_url }}\n"
+        ),
+    )
+    .unwrap();
+    let (code, document) = scene.apply(json!({}), &[]);
+    assert_ne!(code, Some(0), "{document}");
+    let text = document.to_string();
+    assert!(text.contains("with a password is not accepted"), "{text}");
+    assert!(!text.contains("review-secret"), "{text}");
+    assert!(!scene.target().exists());
+}
+
+#[test]
+fn a_git_answer_with_a_password_is_refused_even_when_its_question_is_skipped() {
+    let scene = Scene::new(TEMPLATE, false);
+    let target = scene.target();
+    let staged = scene
+        .command()
+        .args([
+            "stage",
+            &scene.address(),
+            target.to_str().unwrap(),
+            "--async",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(staged.status.code(), Some(4), "{staged:?}");
+    let answers = scene.iso.path().join("answers.json");
+    std::fs::write(
+        &answers,
+        serde_json::to_vec(&json!({
+            "template": support::formal_name(scene.template.path()),
+            "answers": { "with_repo": false, "remote": PASSWORD_URL },
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let continued = scene
+        .command()
+        .arg("continue")
+        .arg(&target)
+        .arg(&answers)
+        .output()
+        .unwrap();
+    assert_ne!(continued.status.code(), Some(0), "{continued:?}");
+    let shown = format!(
+        "{}{}",
+        String::from_utf8_lossy(&continued.stdout),
+        String::from_utf8_lossy(&continued.stderr)
+    );
+    assert!(shown.contains("with a password is not accepted"), "{shown}");
+    assert!(!shown.contains("review-secret"), "{shown}");
+    std::fs::remove_file(&answers).unwrap();
+    for root in [scene.iso.path(), scene.work.path()] {
+        let held = files_holding(root, "review-secret");
+        assert!(held.is_empty(), "{held:?}");
+    }
+}
