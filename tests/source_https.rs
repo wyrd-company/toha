@@ -810,6 +810,11 @@ fn a_rejected_address_password_is_an_authentication_failure() {
         let address = remote.replacen("://", &format!("://fixture-user:{written}@"), 1);
         let mut command = support::isolated_command(root.path());
         configure_trust(&mut command, root.path(), Trust::Explicit);
+        // curl's verbose output writes the request headers, which carry the
+        // address's credentials, so Toha keeps it off.
+        for switch in DIAGNOSTICS {
+            command.env(switch, "1");
+        }
         let output = command
             .args(["templates", "add", &address])
             .current_dir(root.path())

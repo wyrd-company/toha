@@ -102,9 +102,10 @@ thread_local! {
 /// behaviour without a resolver. An inner call replaces the resolver for its
 /// own operation. SSH and local remotes never consult it.
 ///
-/// While the resolver is in scope, curl's verbose output is off for the
-/// operation's HTTP connections, and a clone does not fetch a remote branch
-/// named `HEAD`, so that every connection consults the resolver.
+/// While the resolver is in scope, a clone does not fetch a remote branch
+/// named `HEAD`, so that every connection consults the resolver. curl's
+/// verbose output is off for every HTTP connection Toha opens, as it writes
+/// the request headers that carry credentials.
 pub fn with_credential_resolver<T>(
     resolver: Arc<dyn CredentialResolver>,
     operation: impl FnOnce() -> T,
@@ -139,14 +140,12 @@ impl Supplied {
     /// Answer HTTPS challenges on `connection` from the resolver of the
     /// current operation. Other challenges keep the credentials of the Git
     /// configuration, and without a resolver the connection is unchanged.
-    /// Returns whether a resolver is in scope.
-    pub(crate) fn attach(&self, connection: &mut super::Connection<'_, '_, '_>) -> bool {
+    pub(crate) fn attach(&self, connection: &mut super::Connection<'_, '_, '_>) {
         let Some(resolver) = current_resolver() else {
-            return false;
+            return;
         };
         let fallback = connection.configured_credentials_for_current_url();
         connection.set_credentials(self.authenticate(resolver, fallback));
-        true
     }
 
     /// The resolver's refusal, when it refused.

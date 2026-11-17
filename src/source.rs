@@ -436,24 +436,22 @@ pub(crate) fn prepare_connection(
     native_roots: &mut NativeRoots,
     supplied: &Supplied,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let resolving = supplied.attach(connection);
-    configure_http(connection, native_roots, resolving)
+    supplied.attach(connection);
+    configure_http(connection, native_roots)
 }
-/// Point an HTTPS connection at the platform's trusted roots. System curl
-/// backends already use platform trust. Bundled rustls needs a CA bundle when
-/// Git has not supplied one. When `quiet`, curl's verbose output is off, as it
-/// writes request headers, a resolver's credential among them, to stderr.
+/// Set the HTTP options of a connection. curl's verbose output is off, as it
+/// writes the request headers to stderr, with the credentials of the address,
+/// the Git configuration or a resolver among them. An HTTPS connection is
+/// pointed at the platform's trusted roots: system curl backends already use
+/// platform trust, and bundled rustls needs a CA bundle when Git has not
+/// supplied one.
 fn configure_http(
     connection: &mut Connection<'_, '_, '_>,
     native_roots: &mut NativeRoots,
-    quiet: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let rustls = curl::Version::get()
         .ssl_version()
         .is_some_and(|backend| backend.starts_with("rustls"));
-    if !rustls && !quiet {
-        return Ok(());
-    }
     let url = connection.transport_mut().to_url().into_owned();
     let remote = connection.remote();
     let Some(mut options) = remote
@@ -465,9 +463,7 @@ fn configure_http(
     if let Some(http) =
         options.downcast_mut::<gix::protocol::transport::client::blocking_io::http::Options>()
     {
-        if quiet {
-            http.verbose = false;
-        }
+        http.verbose = false;
         if rustls && http.ssl_ca_info.is_none() && http.ssl_verify {
             if native_roots.is_none() {
                 let loaded = rustls_native_certs::load_native_certs();
