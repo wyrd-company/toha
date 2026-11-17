@@ -1670,3 +1670,59 @@ fn alias_guidance_for_an_authenticated_address_shows_no_credentials() {
     assert!(shown.contains(&format!("{remote}#two")), "{shown}");
     assert!(!shown.contains("secret"), "{shown}");
 }
+
+#[test]
+fn updating_a_registry_entry_with_credentials_names_no_folder_with_them() {
+    let (root, config) = https_fixture(Trust::Explicit);
+    let auth = Auth::new("fixture-user", "p@ss#update-secret");
+    let endpoint = Endpoint::start(root.path(), Some(config), Some(auth.clone()));
+    let remote = url(&endpoint, "https");
+    let address = remote.replacen("://", "://fixture-user:p%40ss%23update-secret@", 1);
+    let run = |args: &[&str]| {
+        let mut command = support::isolated_command(root.path());
+        configure_trust(&mut command, root.path(), Trust::Explicit);
+        command
+            .args(args)
+            .current_dir(root.path())
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    };
+    let added = run(&["templates", "add", &address]);
+    assert!(added.status.success(), "{added:?}");
+    // A registry written by hand keys the entry by the address with its
+    // credentials, and authenticates with them.
+    let registry = support::user_data_dir(root.path()).join("templates.yml");
+    let text = fs::read_to_string(&registry).unwrap();
+    assert!(text.contains(&remote), "{text}");
+    fs::write(&registry, text.replace(&remote, &address)).unwrap();
+    let updated = run(&["templates", "update", "sample"]);
+    endpoint.stop();
+    assert!(updated.status.success(), "{updated:?}");
+    let shown = format!(
+        "{}{}",
+        String::from_utf8_lossy(&updated.stdout),
+        String::from_utf8_lossy(&updated.stderr)
+    );
+    assert!(!shown.contains("secret"), "{shown}");
+    // No name of a folder or file Toha keeps holds the password, and no file
+    // but the registry written by hand does.
+    let mut folders = vec![support::user_data_dir(root.path())];
+    while let Some(folder) = folders.pop() {
+        for entry in fs::read_dir(folder).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.to_string_lossy().into_owned();
+            assert!(!name.contains("secret"), "{name}");
+            if path.is_dir() {
+                folders.push(path);
+            } else if path != registry {
+                let bytes = fs::read(&path).unwrap();
+                assert!(
+                    !bytes.windows(6).any(|window| window == b"secret"),
+                    "{name} keeps the password"
+                );
+            }
+        }
+    }
+}

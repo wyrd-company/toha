@@ -166,6 +166,7 @@ pub enum ResolveError {
     /// The name as given, without user information.
     #[error("template not found: {0}")]
     NotFound(String),
+    /// `name` and `matches` are names without user information.
     #[error("ambiguous template name: {name}")]
     Ambiguous { name: String, matches: Vec<String> },
 }
@@ -663,7 +664,10 @@ impl Registry {
         if shorts.len() > 1 {
             return Err(ResolveError::Ambiguous {
                 name: without_userinfo(name),
-                matches: shorts.iter().map(|v| v.formal_name.clone()).collect(),
+                matches: shorts
+                    .iter()
+                    .map(|v| without_userinfo(&v.formal_name))
+                    .collect(),
             });
         }
         if let Some(v) = shorts.first() {
@@ -712,6 +716,31 @@ mod tests {
         assert_eq!(entry.source, url);
         let (key, _) = registry.entry("https://host.invalid/r.git").unwrap();
         assert_eq!(key, url);
+    }
+    #[test]
+    fn an_ambiguous_name_names_its_matches_without_credentials() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("templates.yml");
+        let url = "https://user:p%40ss-ambiguous-secret@host.invalid/one.git";
+        fs::write(
+            &path,
+            format!(
+                "templates:\n  {url:?}:\n    name: same\n    source: {url:?}\n    \
+                 path: /installed/one\n  \"https://host.invalid/two.git\":\n    name: same\n    \
+                 source: \"https://host.invalid/two.git\"\n    path: /installed/two\n"
+            ),
+        )
+        .unwrap();
+        let file = RegistryFile::load(&path, Layer::User).unwrap();
+        let registry =
+            Registry::merge(&RegistryFile::default(), &file, &RegistryFile::default()).unwrap();
+        let error = registry.resolve("same").unwrap_err();
+        let shown = format!("{error} {error:?}");
+        assert!(!shown.contains("secret"), "{shown}");
+        let ResolveError::Ambiguous { matches, .. } = error else {
+            panic!("expected an ambiguous name, got {error:?}");
+        };
+        assert!(matches.contains(&"https://host.invalid/one.git".to_owned()));
     }
     const D1: &str = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
     const D2: &str = "sha256:2222222222222222222222222222222222222222222222222222222222222222";

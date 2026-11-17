@@ -432,11 +432,21 @@ pub fn cache_path(cache: &Path, address: &Address, hosts: &Hosts, commit: &str) 
         .join(install_key(&address.formal_name(hosts)))
         .join(commit)
 }
+/// The folder name Toha keeps a template's clone or cache under, from its
+/// formal name. It keeps no user information: a registry written by hand can
+/// name a template by an address with credentials, and a folder name is
+/// stored and shown like any other output. The user information is removed
+/// before the template path is split off, as a password can hold `#`.
 pub fn install_key(formal: &str) -> String {
+    let formal = if formal.contains("://") {
+        without_userinfo(formal)
+    } else {
+        formal.to_owned()
+    };
     formal
         .split('#')
         .next()
-        .unwrap_or(formal)
+        .unwrap_or(&formal)
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || "._-".contains(c) {
@@ -695,6 +705,16 @@ pub fn fetch(address: &Address, dest: &Path) -> Result<Fetched, SourceError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn an_install_key_keeps_no_user_information() {
+        let key = install_key("https://user:p#ss-secret@host.invalid/r.git#sub");
+        assert_eq!(key, install_key("https://host.invalid/r.git"));
+        assert!(!key.contains("secret"), "{key}");
+        assert_eq!(
+            install_key("/home/a@b/templates#one"),
+            "_home_a_b_templates"
+        );
+    }
     #[test]
     fn local_file_url_uses_platform_path() {
         assert_eq!(windows_local_git_path("/C:/sample/repo"), "C:/sample/repo");
