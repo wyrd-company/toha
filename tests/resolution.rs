@@ -1090,3 +1090,30 @@ fn ssh_never_receives_an_address_password() {
         assert!(!shown.contains("secret"), "{address}: {shown}");
     }
 }
+
+#[test]
+fn a_file_that_cannot_be_read_names_no_credentials() {
+    // A YAML error can quote the scalar it could not read and name its key.
+    let url = "https://user:p%40ss-parse-secret@127.0.0.1:9/r.git";
+    let config = format!("presets:\n  remote: !!int {url}\n");
+    let registry = format!("templates:\n  {url:?}:\n    source: !!int {url}\n");
+    for (file, text) in [("config", config), ("registry", registry)] {
+        let root = TempDir::new().unwrap();
+        if file == "config" {
+            write_config(&root, &text);
+        } else {
+            let path = support::user_data_dir(root.path()).join("templates.yml");
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, &text).unwrap();
+        }
+        let output = command(&root).args(["templates", "list"]).output().unwrap();
+        assert!(!output.status.success(), "{file}");
+        let shown = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(shown.contains("cannot be read as YAML"), "{file}: {shown}");
+        assert!(!shown.contains("secret"), "{file}: {shown}");
+    }
+}

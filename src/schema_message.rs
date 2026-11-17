@@ -2,14 +2,14 @@
 // relationships:
 //   implements: architecture
 // ---
-//! Messages for a template or configuration document that does not match its
-//! schema, written by Toha.
+//! Messages for a template, configuration or registry document that Toha
+//! cannot read or that does not match its schema, written by Toha.
 //!
-//! A message names the place by its path and says which rule the value
-//! breaks, in words that come from Toha and the schema. It never writes the
-//! value it rejects, nor the schema library's own message, which does: a
-//! template or configuration value can hold the credentials of a URL in any
-//! form and at any depth.
+//! A message names the place, by its path or its line and column, and says
+//! which rule the value breaks, in words that come from Toha and the schema.
+//! It never writes the value it rejects, nor a parser's or the schema
+//! library's own message, which can: a template or configuration value can
+//! hold the credentials of a URL in any form and at any depth.
 use jsonschema::{
     ValidationError, error::TypeKind, error::ValidationErrorKind, paths::LocationSegment,
 };
@@ -99,6 +99,42 @@ pub(crate) fn message(error: &ValidationError) -> String {
     }
 }
 
+/// Toha's message for a YAML document it cannot read, which names where and
+/// never what: a YAML error can quote a scalar and name a key.
+pub(crate) fn yaml(error: &serde_norway::Error) -> String {
+    unreadable("YAML", error.location().map(|at| (at.line(), at.column())))
+}
+
+/// Toha's message for a JSON document it cannot read, or for data whose
+/// values have the wrong form, without them: a serde error can quote a value.
+pub(crate) fn json(error: &serde_json::Error) -> String {
+    match error.line() {
+        0 => "has a value of the wrong form".into(),
+        line => unreadable("JSON", Some((line, error.column()))),
+    }
+}
+
+/// Toha's message for a TOML document it cannot read, without what it held:
+/// a TOML error quotes the line it failed on.
+pub(crate) fn toml(text: &str, error: &toml::de::Error) -> String {
+    let at = error.span().map(|span| {
+        let before = &text[..span.start.min(text.len())];
+        let line = before.matches('\n').count() + 1;
+        let column = before.len() - before.rfind('\n').map_or(0, |newline| newline + 1) + 1;
+        (line, column)
+    });
+    unreadable("TOML", at)
+}
+
+fn unreadable(format: &str, at: Option<(usize, usize)>) -> String {
+    match at {
+        Some((line, column)) => {
+            format!("cannot be read as {format} at line {line}, column {column}")
+        }
+        None => format!("cannot be read as {format}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,6 +181,39 @@ mod tests {
                 assert!(!line.contains("secret"), "{instance}: {line}");
             }
         }
+    }
+
+    #[test]
+    fn a_document_that_cannot_be_read_is_named_by_place_without_its_values() {
+        for text in [
+            format!("remote: !!int {URL}\n"),
+            format!("remote: !!float {URL}\n"),
+            format!("{URL}: !!int {URL}\n"),
+            format!("remote: [{URL}\n"),
+        ] {
+            let error = serde_norway::from_str::<serde_json::Value>(&text).unwrap_err();
+            let message = yaml(&error);
+            assert!(message.starts_with("cannot be read as YAML"), "{message}");
+            assert!(!message.contains("secret"), "{text}: {message}");
+        }
+        let error =
+            serde_json::from_str::<serde_json::Value>(&format!("{{\"{URL}\": }}")).unwrap_err();
+        assert!(!json(&error).contains("secret"));
+        #[derive(Debug, serde::Deserialize)]
+        struct Wanted {
+            #[allow(dead_code)]
+            remote: u32,
+        }
+        let error = serde_json::from_value::<Wanted>(json!({ "remote": URL })).unwrap_err();
+        assert_eq!(json(&error), "has a value of the wrong form");
+        let text = format!("remote = \"{URL}\" =\n");
+        let error = text.parse::<toml::Value>().unwrap_err();
+        let message = toml(&text, &error);
+        assert!(
+            message.starts_with("cannot be read as TOML at line 1"),
+            "{message}"
+        );
+        assert!(!message.contains("secret"), "{message}");
     }
 
     #[test]

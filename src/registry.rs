@@ -124,7 +124,7 @@ impl RegistryFile {
         };
         let value: Value = serde_norway::from_str(&text).map_err(|e| RegistryError::Parse {
             path: path.into(),
-            message: e.to_string(),
+            message: crate::schema_message::yaml(&e),
         })?;
         let mut schema = SCHEMA.clone();
         schema["$ref"] = Value::String(format!(
@@ -172,7 +172,7 @@ impl RegistryFile {
             let aliases: LocalRegistry =
                 serde_json::from_value(value).map_err(|e| RegistryError::Parse {
                     path: path.into(),
-                    message: e.to_string(),
+                    message: crate::schema_message::json(&e),
                 })?;
             Ok(Self {
                 templates: aliases
@@ -194,7 +194,7 @@ impl RegistryFile {
             let mut file: Self =
                 serde_json::from_value(value).map_err(|e| RegistryError::Parse {
                     path: path.into(),
-                    message: e.to_string(),
+                    message: crate::schema_message::json(&e),
                 })?;
             file.presence = presence;
             for (formal, entry) in file.templates.iter_mut() {
@@ -522,7 +522,7 @@ impl Registry {
                 let yaml: Value =
                     serde_norway::from_str(&text).map_err(|e| RegistryError::Parse {
                         path: path.join("template.yml"),
-                        message: e.to_string(),
+                        message: crate::schema_message::yaml(&e),
                     })?;
                 let name = yaml
                     .get("name")

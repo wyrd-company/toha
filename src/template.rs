@@ -662,23 +662,29 @@ fn resolve(
                 problem(ps, path, "include cannot be read");
                 return;
             };
-            let parsed: Result<serde_norway::Value, String> = match actual
-                .extension()
-                .and_then(|s| s.to_str())
-            {
-                Some("yml" | "yaml") => serde_norway::from_str(&text).map_err(|e| e.to_string()),
-                Some("json") => serde_json::from_str::<Value>(&text)
-                    .and_then(serde_json::to_value)
-                    .map_err(|e| e.to_string())
-                    .and_then(|v| serde_norway::to_value(v).map_err(|e| e.to_string())),
-                Some("toml") => toml::from_str::<toml::Value>(&text)
-                    .map_err(|e| e.to_string())
-                    .and_then(|v| serde_norway::to_value(v).map_err(|e| e.to_string())),
-                _ => {
-                    problem(ps, path, "unsupported include extension");
-                    return;
-                }
-            };
+            let parsed: Result<serde_norway::Value, String> =
+                match actual.extension().and_then(|s| s.to_str()) {
+                    // A parser's message can quote what the file holds, so the
+                    // problem names only where it failed.
+                    Some("yml" | "yaml") => {
+                        serde_norway::from_str(&text).map_err(|e| crate::schema_message::yaml(&e))
+                    }
+                    Some("json") => serde_json::from_str::<Value>(&text)
+                        .and_then(serde_json::to_value)
+                        .map_err(|e| crate::schema_message::json(&e))
+                        .and_then(|v| {
+                            serde_norway::to_value(v).map_err(|e| crate::schema_message::yaml(&e))
+                        }),
+                    Some("toml") => toml::from_str::<toml::Value>(&text)
+                        .map_err(|e| crate::schema_message::toml(&text, &e))
+                        .and_then(|v| {
+                            serde_norway::to_value(v).map_err(|e| crate::schema_message::yaml(&e))
+                        }),
+                    _ => {
+                        problem(ps, path, "unsupported include extension");
+                        return;
+                    }
+                };
             match parsed {
                 Ok(mut next) => {
                     stack.push(actual);
@@ -1540,8 +1546,8 @@ impl Template {
             .map_err(|e| error("template.yml", e.to_string()))?;
         let text = fs::read_to_string(root.join("template.yml"))
             .map_err(|e| error("template.yml", e.to_string()))?;
-        let mut yaml: serde_norway::Value =
-            serde_norway::from_str(&text).map_err(|e| error("template.yml", e.to_string()))?;
+        let mut yaml: serde_norway::Value = serde_norway::from_str(&text)
+            .map_err(|e| error("template.yml", crate::schema_message::yaml(&e)))?;
         let mut problems = Vec::new();
         resolve(
             &mut yaml,
@@ -1553,8 +1559,8 @@ impl Template {
         if !problems.is_empty() {
             return Err(LoadError { problems });
         }
-        let doc: Value =
-            serde_json::to_value(yaml).map_err(|e| error("template.yml", e.to_string()))?;
+        let doc: Value = serde_json::to_value(yaml)
+            .map_err(|e| error("template.yml", crate::schema_message::json(&e)))?;
         // Report flow load rules before the schema, so a bad flow node names
         // the corrective form rather than a generic schema `oneOf` failure.
         if let Some(interview) = doc.get("interview").and_then(Value::as_array) {
@@ -1576,8 +1582,8 @@ impl Template {
         if !problems.is_empty() {
             return Err(LoadError { problems });
         }
-        let raw: RawTemplate =
-            serde_json::from_value(doc).map_err(|e| error("template.yml", e.to_string()))?;
+        let raw: RawTemplate = serde_json::from_value(doc)
+            .map_err(|e| error("template.yml", crate::schema_message::json(&e)))?;
         let source = raw.source.as_deref().unwrap_or("template");
         let source_dir = root.join(source);
         if !source_dir.is_dir() {

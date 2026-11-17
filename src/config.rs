@@ -108,7 +108,7 @@ fn read(path: &Path, definition: &str) -> Result<Layer, ConfigError> {
     };
     let value: Value = serde_norway::from_str(&text).map_err(|e| ConfigError::Parse {
         path: path.into(),
-        message: e.to_string(),
+        message: crate::schema_message::yaml(&e),
     })?;
     if value.get("defaults").is_some() {
         return Err(ConfigError::Parse {
@@ -134,7 +134,7 @@ fn read(path: &Path, definition: &str) -> Result<Layer, ConfigError> {
     }
     serde_json::from_value(value).map_err(|e| ConfigError::Parse {
         path: path.into(),
-        message: e.to_string(),
+        message: crate::schema_message::json(&e),
     })
 }
 fn path(value: &str, file: &Path, home: &Path) -> PathBuf {
@@ -359,6 +359,9 @@ mod tests {
             format!("presets: [{url:?}]\n"),
             format!("presets: {{ {url:?}: x }}\n"),
             format!("{url:?}: 1\n"),
+            format!("presets: {{ remote: !!int {url} }}\n"),
+            format!("presets: {{ remote: !!float {url} }}\n"),
+            format!("template-defaults: {{ {url:?}: {{ remote: !!int {url} }} }}\n"),
         ] {
             fs::write(&local, &text).unwrap();
             let dirs = ConfigPaths {
@@ -372,7 +375,10 @@ mod tests {
             };
             let error = load(&dirs, root.path()).unwrap_err();
             assert!(
-                matches!(error, ConfigError::Schema { .. }),
+                matches!(
+                    error,
+                    ConfigError::Schema { .. } | ConfigError::Parse { .. }
+                ),
                 "{text}: {error}"
             );
             let shown = format!("{error} {error:?}");
