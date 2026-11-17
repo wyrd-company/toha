@@ -887,3 +887,92 @@ fn cli_warning_survives_environment_refusal() {
         "cli_warning_survives_refusal: {text}"
     );
 }
+
+#[test]
+fn update_preparation_keeps_no_credentials_of_a_recorded_git_answer() {
+    use toha::updates::{self, PrepareMode, UpdateBase, UpdateSession};
+    let f = Fixture::new(
+        "name: sample\ninterview:\n  - {id: remote, type: git, prompt: Remote}\n  - {id: label, type: text, prompt: Label}\n",
+    );
+    let address = support::versioned_template(&f.source);
+    let answers = f.root.path().join("answers.json");
+    std::fs::write(
+        &answers,
+        json!({"template": address, "answers": {"remote": "https://127.0.0.1:9/r.git", "label": "example"}})
+            .to_string(),
+    )
+    .unwrap();
+    let applied = f
+        .command()
+        .arg("apply")
+        .arg(&address)
+        .arg(&f.target)
+        .arg("--answers")
+        .arg(&answers)
+        .output()
+        .unwrap();
+    assert!(applied.status.success(), "{applied:?}");
+    // An application recorded before Toha removed a `git` answer's credentials.
+    let record_path = f.target.join(".toha.json");
+    let mut record: Value = serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
+    record["applications"][0]["answers"]["remote"] =
+        json!("https://user:p%40ss-prepared-secret@127.0.0.1:9/r.git");
+    std::fs::write(&record_path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+    git(&f.target, &["add", "."]);
+    git(&f.target, &["commit", "-qm", "applied"]);
+    let target = canonical_target(&f.target).unwrap();
+    let (config, registry, _) = toha::resolve::load_context(&f.paths, f.root.path()).unwrap();
+    let mut source = Environment;
+    let mut environment = updates::Environment {
+        config: &config,
+        registry: &registry,
+        cwd: f.root.path(),
+        now: "2026-01-02T03:04:05+00:00[UTC]".parse().unwrap(),
+        host: HostFacts::capture(),
+        is_admin: false,
+        source: &mut source,
+    };
+    let prepared = updates::prepare(
+        &UpdateBase::Update,
+        &address,
+        &target,
+        &f.paths,
+        false,
+        PrepareMode::Stage,
+        false,
+        &mut environment,
+    )
+    .unwrap();
+    let remote = Id::parse("remote").unwrap();
+    let kept = json!("https://127.0.0.1:9/r.git");
+    assert_eq!(prepared.recorded[0][&remote].0, kept);
+    let session = UpdateSession::start(
+        prepared,
+        target.clone(),
+        UpdateBase::Update,
+        false,
+        Default::default(),
+        &[],
+        &RawAnswers::new(),
+    )
+    .unwrap();
+    assert_eq!(session.prepared.recorded[0][&remote].0, kept);
+    let shown = format!(
+        "{:?} {:?} {}",
+        session.prepared.recorded,
+        session.state().unwrap(),
+        serde_json::to_string(&session.record).unwrap()
+    );
+    assert!(!shown.contains("secret"), "{shown}");
+    // Resuming the staged update prepares it again, from the same record.
+    let record = session.record.clone();
+    drop(session);
+    let resumed = UpdateSession::resume(record, target, &f.paths, false, &mut environment).unwrap();
+    assert_eq!(resumed.prepared.recorded[0][&remote].0, kept);
+    let shown = format!(
+        "{:?} {}",
+        resumed.prepared.recorded,
+        serde_json::to_string(&resumed.record).unwrap()
+    );
+    assert!(!shown.contains("secret"), "{shown}");
+}

@@ -494,7 +494,9 @@ fn candidate_submissions(
                 !documents.contains(id)
                     && (prior_part_question || template.part_question().is_none_or(|q| &q.id != id))
             });
-            submission
+            // An application recorded before Toha removed a `git` answer's
+            // credentials can hold them; the submissions it replays do not.
+            crate::interview::without_credentials(template, submission)
         })
         .filter(|submission| !submission.is_empty())
         .collect())
