@@ -804,6 +804,55 @@ fn a_template_include_or_tag_names_no_credentials() {
 }
 
 #[test]
+fn an_update_stages_a_recorded_git_answer_without_credentials() {
+    let scene = Scene::new(TEMPLATE, false);
+    let (code, document) = scene.apply(
+        json!({ "with_repo": true, "remote": "https://127.0.0.1:9/r.git" }),
+        &[],
+    );
+    assert_eq!(code, Some(0), "{document}");
+    // A record written before Toha removed a `git` answer's credentials.
+    let project = scene.target();
+    let record_path = project.join(".toha.json");
+    let mut record: Value = serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
+    record["applications"][0]["answers"]["remote"] =
+        json!("https://user:p%40ss-update-secret@127.0.0.1:9/r.git");
+    std::fs::write(&record_path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+    git(&project, &["add", "."]);
+    git(&project, &["commit", "--quiet", "-m", "applied"]);
+    std::fs::remove_file(scene.iso.path().join("answers.json")).unwrap();
+    let mut stage = scene.command();
+    stage
+        .arg("stage")
+        .arg(scene.address())
+        .arg(&project)
+        .args(["--update", "--async"]);
+    let output = stage.output().unwrap();
+    let shown = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.status.success(), "{shown}");
+    assert!(!shown.contains("secret"), "{shown}");
+    // The staged submissions and the pinned base hold no password.
+    assert_eq!(files_with_secret(scene.iso.path()), Vec::<PathBuf>::new());
+    // The staged update resumes against the record that still holds it.
+    let mut apply = scene.command();
+    apply.arg("apply").arg(&project);
+    let applied = apply.output().unwrap();
+    let shown = format!(
+        "{}{}",
+        String::from_utf8_lossy(&applied.stdout),
+        String::from_utf8_lossy(&applied.stderr)
+    );
+    assert!(
+        !shown.contains("stale") && !shown.contains("secret"),
+        "{shown}"
+    );
+}
+
+#[test]
 fn a_relative_remote_with_history_is_checked_from_the_target() {
     let scene = Scene::new(TEMPLATE, false);
     // `history.git` sits beside the target, so `../history.git` names it from

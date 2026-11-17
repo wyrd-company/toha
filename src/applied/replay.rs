@@ -140,6 +140,15 @@ fn replay_resume_with_overrides<'a>(
     overrides: &RawAnswers,
     reanswer: bool,
 ) -> Result<Replay<'a>, EvalError> {
+    // An application recorded, or an update staged, before Toha removed the
+    // credentials of a `git` answer can still hold them. The replay works,
+    // returns and stages its inputs without them, as the engine does.
+    let clean =
+        |answers: &RawAnswers| crate::interview::without_credentials(template, answers.clone());
+    let recorded: Vec<RawAnswers> = recorded.iter().map(clean).collect();
+    let staged: Vec<RawAnswers> = staged.iter().map(clean).collect();
+    let overrides = &clean(overrides);
+    let (recorded, staged) = (recorded.as_slice(), staged.as_slice());
     let mut queue = update_queue(recorded, overrides, &seed.defaults);
     // Keep the same precedence in prompt defaults as in the replay queue.
     for submission in recorded {

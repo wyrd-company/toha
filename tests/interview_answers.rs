@@ -1835,3 +1835,37 @@ fn the_engine_keeps_no_credentials_of_a_wrong_kind_git_default() {
         assert!(!shown.contains("secret"), "{value}: {shown}");
     }
 }
+
+#[test]
+fn an_update_replay_keeps_no_credentials_of_a_recorded_git_answer() {
+    // An application recorded before Toha removed a `git` answer's credentials.
+    let (_folder, template) =
+        inline("name: sample\ninterview:\n  - id: remote\n    type: git\n    prompt: Remote URL\n");
+    let id = toha::Id::parse("remote").unwrap();
+    let url = "https://user:p%40ss-update-secret@127.0.0.1:9/r.git";
+    let recorded = vec![toha::RawAnswers::from([(
+        id.clone(),
+        toha::RawAnswer(json!(url)),
+    )])];
+    let drives = [
+        toha::applied::drive_update(&template, seed(), &recorded, toha::RawAnswers::new(), false)
+            .unwrap(),
+        toha::applied::drive_update_resume(&template, seed(), &recorded, &recorded, false).unwrap(),
+    ];
+    for drive in drives {
+        let toha::applied::UpdateDrive::Completed {
+            completed,
+            submissions,
+        } = drive
+        else {
+            panic!("expected a completed replay");
+        };
+        assert_eq!(
+            submissions[0][&id].0,
+            json!("https://127.0.0.1:9/r.git"),
+            "the replay returns the recorded credentials"
+        );
+        let shown = format!("{completed:?}");
+        assert!(!shown.contains("secret"), "{shown}");
+    }
+}

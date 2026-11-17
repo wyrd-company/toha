@@ -360,7 +360,7 @@ pub fn admit_resume(
                 .map_err(|e| UpdateError::Error(e.to_string()))?;
             let pinned: Value = serde_json::from_str(saved.base.as_deref().unwrap_or(""))
                 .map_err(|_| UpdateError::InvalidApplication)?;
-            if application.to_value() != pinned {
+            if comparable(&application.to_value()) != comparable(&pinned) {
                 return Err(UpdateError::StaleApplication);
             }
             Some(application)
@@ -703,14 +703,26 @@ pub fn is_staged_update(saved: &StagedRecord) -> bool {
 /// marker.
 pub fn stored_base(base: &UpdateBase, base_application: Option<&Application>) -> String {
     match base {
-        UpdateBase::Update => serde_json::to_string(
+        UpdateBase::Update => serde_json::to_string(&comparable(
             &base_application
                 .expect("--update resolves an application")
                 .to_value(),
-        )
+        ))
         .expect("application serializes"),
         UpdateBase::Baseline => BASELINE_MARKER.to_owned(),
     }
+}
+/// `application`, a serialized application, as a staged update pins it: every
+/// string of its answers without the credentials of a URL. An application
+/// recorded before Toha removed a `git` answer's credentials can hold them,
+/// and the pin is only compared, so both sides of the comparison take this
+/// form.
+fn comparable(application: &Value) -> Value {
+    let mut application = application.clone();
+    if let Some(Value::Object(answers)) = application.get_mut("answers") {
+        answers.values_mut().for_each(crate::interview::git_value);
+    }
+    application
 }
 pub fn base_of(saved: &StagedRecord) -> Result<UpdateBase, String> {
     let value = saved.base.as_deref().ok_or("record is not an update")?;
