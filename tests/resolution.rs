@@ -1212,12 +1212,19 @@ fn files_with_secret(root: &Path) -> Vec<std::path::PathBuf> {
 
 /// Write the user registry of `root` with one entry for the template at
 /// `path`, keyed by `formal`, with `source`, `commit` and the alias `chosen`.
-fn user_registry(root: &TempDir, formal: &str, source: &str, path: &Path, commit: Option<&str>) {
-    let registry = root.path().join("data/toha/templates.yml");
+fn user_registry(
+    root: &TempDir,
+    formal: &str,
+    source: &str,
+    path: &Path,
+    commit: Option<&str>,
+) -> std::path::PathBuf {
+    // The user registry lives where the platform keeps user data.
+    let registry = support::user_data_dir(root.path()).join("templates.yml");
     fs::create_dir_all(registry.parent().unwrap()).unwrap();
     let commit = commit.map_or(String::new(), |commit| format!("    commit: {commit}\n"));
     fs::write(
-        registry,
+        &registry,
         format!(
             "templates:\n  {formal:?}:\n    name: sample\n    source: {source:?}\n    \
              path: {:?}\n{commit}    aliases: [chosen]\n",
@@ -1225,6 +1232,7 @@ fn user_registry(root: &TempDir, formal: &str, source: &str, path: &Path, commit
         ),
     )
     .unwrap();
+    registry
 }
 
 #[test]
@@ -1239,7 +1247,7 @@ fn an_installed_entry_with_credentials_is_staged_without_them() {
             "name: sample\ninterview:\n  - {id: label, type: text, prompt: 'Label for {{ toha_template_source }}'}\n",
         )
         .unwrap();
-        user_registry(&root, formal, secret, &installed, None);
+        let registry = user_registry(&root, formal, secret, &installed, None);
         let project = root.path().join("project");
         let output = command(&root)
             .args(["stage", "chosen", project.to_str().unwrap(), "--async"])
@@ -1257,11 +1265,9 @@ fn an_installed_entry_with_credentials_is_staged_without_them() {
             "{shown}"
         );
         assert!(!shown.contains("secret"), "{formal}: {shown}");
-        // The staged state, under the isolated state folder, holds none.
-        assert_eq!(
-            files_with_secret(&root.path().join("toha")),
-            Vec::<std::path::PathBuf>::new()
-        );
+        // Only the registry written by hand holds the password; the staged
+        // state, wherever the platform keeps it, holds none.
+        assert_eq!(files_with_secret(root.path()), vec![registry]);
     }
 }
 
@@ -1271,7 +1277,7 @@ fn an_installed_entry_with_credentials_resumes_without_them() {
     let root = TempDir::new().unwrap();
     let (_, commit) = repository(&root);
     let installed = root.path().join("owner/repo/one");
-    user_registry(&root, secret, secret, &installed, Some(&commit));
+    let registry = user_registry(&root, secret, secret, &installed, Some(&commit));
     let project = root.path().join("project");
     let staged = command(&root)
         .args(["stage", "chosen", project.to_str().unwrap(), "--async"])
@@ -1293,8 +1299,5 @@ fn an_installed_entry_with_credentials_resumes_without_them() {
         );
         assert!(!shown.contains("secret"), "{shown}");
     }
-    assert_eq!(
-        files_with_secret(&project),
-        Vec::<std::path::PathBuf>::new()
-    );
+    assert_eq!(files_with_secret(root.path()), vec![registry]);
 }
