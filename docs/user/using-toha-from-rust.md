@@ -188,7 +188,10 @@ never sent to another origin.
   `RemoteState::Refused`.
 
 No Toha error or report holds a credential, and the `Debug` output of
-`Credential` hides the password. A failed operation on a remote reports a
+`Credential` hides the password. The `Debug` output of a loaded `Config`
+shows host bases and template addresses without user information and hides
+configured values; the values themselves keep any credentials, as Toha
+authenticates with them. A failed operation on a remote reports a
 message Toha writes, as git does, such as
 `authentication failed for 'https://host/owner/repository.git'`. It names the
 remote without user information and holds no text from the Git transport or

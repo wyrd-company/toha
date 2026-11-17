@@ -24,10 +24,28 @@ impl fmt::Display for PresetName {
         self.0.fmt(f)
     }
 }
-#[derive(Debug, Clone, PartialEq)]
+/// A configured default: a preset's name or a literal value. Its `Debug`
+/// hides a literal, which can be a URL with credentials in any form.
+#[derive(Clone, PartialEq)]
 pub enum DefaultSource {
     Ref(PresetName),
     Literal(Value),
+}
+impl fmt::Debug for DefaultSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Ref(name) => f.debug_tuple("Ref").field(name).finish(),
+            Self::Literal(_) => f.debug_tuple("Literal").field(&HIDDEN).finish(),
+        }
+    }
+}
+/// What `Debug` shows in place of a configured value.
+const HIDDEN: Hidden = Hidden;
+struct Hidden;
+impl fmt::Debug for Hidden {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("<hidden>")
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigLayer {
@@ -40,10 +58,20 @@ pub struct ConfigOrigin {
     pub layer: ConfigLayer,
     pub path: PathBuf,
 }
-#[derive(Debug, Clone, PartialEq)]
+/// A configured value and where it came from. Its `Debug` shows the origin
+/// and hides the value, which can be a URL with credentials in any form.
+#[derive(Clone, PartialEq)]
 pub struct ConfigEntry<T> {
     pub value: T,
     pub origin: ConfigOrigin,
+}
+impl<T> fmt::Debug for ConfigEntry<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ConfigEntry")
+            .field("value", &HIDDEN)
+            .field("origin", &self.origin)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -56,7 +84,11 @@ pub struct ConfigPaths {
     pub cache: PathBuf,
     pub home: PathBuf,
 }
-#[derive(Debug, Clone)]
+/// The loaded configuration. Its `Debug` shows host bases and template
+/// addresses without user information and hides configured values, so no
+/// credential a URL in it carries is shown; the values keep them, as Toha
+/// authenticates with them.
+#[derive(Clone)]
 pub struct Config {
     pub templates_paths: Vec<PathBuf>,
     pub local_templates_paths: Vec<PathBuf>,
@@ -64,6 +96,33 @@ pub struct Config {
     pub template_defaults: IndexMap<String, IndexMap<Id, ConfigEntry<DefaultSource>>>,
     pub hosts: IndexMap<String, String>,
     pub local_config_name: String,
+}
+impl fmt::Debug for Config {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let shown = crate::source::without_userinfo;
+        f.debug_struct("Config")
+            .field("templates_paths", &self.templates_paths)
+            .field("local_templates_paths", &self.local_templates_paths)
+            .field("presets", &self.presets)
+            .field(
+                "template_defaults",
+                &self
+                    .template_defaults
+                    .iter()
+                    .map(|(template, defaults)| (shown(template), defaults))
+                    .collect::<IndexMap<_, _>>(),
+            )
+            .field(
+                "hosts",
+                &self
+                    .hosts
+                    .iter()
+                    .map(|(name, base)| (name, shown(base)))
+                    .collect::<IndexMap<_, _>>(),
+            )
+            .field("local_config_name", &self.local_config_name)
+            .finish()
+    }
 }
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -337,6 +396,51 @@ mod tests {
             ConfigLayer::System
         );
         assert_eq!(config.hosts["gh"], "https://user.invalid");
+    }
+    #[test]
+    fn a_loaded_configuration_shows_no_credentials() {
+        let root = tempfile::tempdir().unwrap();
+        let user = root.path().join("user.yml");
+        let host = "https://user:p%40ss-config-host-secret@host.invalid";
+        let preset = "https://user:p%40ss-config-preset-secret@host.invalid/r.git";
+        let default = "https://user:p%40ss-config-default-secret@host.invalid/r.git";
+        let keyed = "https://user:p%40ss-config-key-secret@host.invalid/t.git";
+        fs::write(
+            &user,
+            format!(
+                "hosts: {{ review: {host:?} }}\npresets: {{ review_remote: {preset:?} }}\n\
+                 template-defaults: {{ sample: {{ remote: {default:?} }}, {keyed:?}: {{ other: x }} }}\n"
+            ),
+        )
+        .unwrap();
+        let dirs = ConfigPaths {
+            system_config: root.path().join("absent-system.yml"),
+            user_config: user,
+            local_config_override: None,
+            system_data: root.path().join("system-data"),
+            user_data: root.path().join("user-data"),
+            cache: root.path().join("cache"),
+            home: root.path().join("home"),
+        };
+        let config = load(&dirs, root.path()).unwrap();
+        let shown = format!("{config:?}");
+        assert!(!shown.contains("secret"), "{shown}");
+        assert!(
+            shown.contains("\"review\": \"https://host.invalid\""),
+            "{shown}"
+        );
+        // The values keep their credentials, as Toha authenticates with them.
+        assert_eq!(config.hosts["review"], host);
+        assert_eq!(
+            config.presets[&PresetName::parse("review_remote").unwrap()].value,
+            preset
+        );
+        let entry = &config.template_defaults["sample"][&Id::parse("remote").unwrap()];
+        assert_eq!(
+            entry.value,
+            DefaultSource::Literal(Value::String(default.into()))
+        );
+        assert!(!format!("{entry:?} {:?}", entry.value).contains("secret"));
     }
     #[test]
     fn schema_errors_show_no_credentials_of_presets_defaults_or_hosts() {
