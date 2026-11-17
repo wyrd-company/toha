@@ -663,6 +663,45 @@ interview:
 }
 
 #[test]
+fn a_like_seed_is_staged_without_credentials() {
+    let scene = Scene::new(TEMPLATE, false);
+    let (code, document) = scene.apply(
+        json!({ "with_repo": true, "remote": "https://127.0.0.1:9/r.git" }),
+        &[],
+    );
+    assert_eq!(code, Some(0), "{document}");
+    // A record written before Toha removed a `git` answer's credentials.
+    let project = scene.target();
+    let record_path = project.join(".toha.json");
+    let mut record: Value = serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
+    assert_eq!(
+        record["applications"][0]["answers"]["remote"], "https://127.0.0.1:9/r.git",
+        "{record}"
+    );
+    record["applications"][0]["answers"]["remote"] =
+        json!("https://user:p%40ss-application-secret@127.0.0.1:9/r.git");
+    std::fs::write(&record_path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+    git(&project, &["add", "."]);
+    git(&project, &["commit", "--quiet", "-m", "applied"]);
+    std::fs::remove_file(scene.iso.path().join("answers.json")).unwrap();
+    let mut stage = scene.command();
+    stage
+        .arg("stage")
+        .arg(scene.address())
+        .arg(project.join("beta"))
+        .args(["--like", ".", "--async"]);
+    let output = stage.output().unwrap();
+    assert_eq!(output.status.code(), Some(4), "{output:?}");
+    let shown = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!shown.contains("secret"), "{shown}");
+    assert_eq!(files_with_secret(scene.iso.path()), Vec::<PathBuf>::new());
+}
+
+#[test]
 fn a_relative_remote_with_history_is_checked_from_the_target() {
     let scene = Scene::new(TEMPLATE, false);
     // `history.git` sits beside the target, so `../history.git` names it from

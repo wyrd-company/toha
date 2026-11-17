@@ -153,7 +153,17 @@ pub fn prepare_record(
     record.part_selection = template.part_selection.clone();
     if let Some(seed) = seed {
         record.seed = Some(seed.id.clone());
-        record.seed_entry = Some(seed.entry.clone());
+        // The copied application's `git` answer is staged without credentials,
+        // as every `git` answer is.
+        let mut entry = seed.entry.clone();
+        if let Some(id) = template.git_question()
+            && let Some(serde_json::Value::String(url)) = entry
+                .get_mut("answers")
+                .and_then(|answers| answers.get_mut(id.as_str()))
+        {
+            *url = crate::interview::git_answer(url);
+        }
+        record.seed_entry = Some(entry);
     }
     save_document_answers(template, &mut record);
     Ok(record)
