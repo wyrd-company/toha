@@ -202,9 +202,18 @@ pub enum Arg<'a> {
 impl Arg<'_> {
     fn operand(self) -> Operand {
         match self {
-            Self::Given(given) => value(given),
+            Self::Given(given) => value(&shown(given)),
             Self::Placeholder(name) => placeholder(name),
         }
+    }
+}
+/// A value the caller gave, as guidance shows it: a URL without its user
+/// information, so that no suggested command repeats a credential.
+fn shown(given: &str) -> std::borrow::Cow<'_, str> {
+    if given.contains("://") {
+        toha::source::without_userinfo(given).into()
+    } else {
+        given.into()
     }
 }
 fn option_value(flag: &str, value: Arg) -> String {
@@ -429,7 +438,8 @@ pub fn other_template(
     formal: &str,
     progress: Progress,
 ) -> String {
-    let arg = invocation.template().unwrap_or(formal);
+    let arg = invocation.template().map_or(formal.into(), shown);
+    let arg = arg.as_ref();
     let named = if arg == formal {
         arg.to_string()
     } else {
@@ -962,7 +972,39 @@ pub fn ambiguous(name: &str, matches: &[String], retry: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Shell, formal_for, path_value, plain_formal, surface_unreadable, word_for};
+    use super::{
+        Progress, Shell, formal_for, no_terminal, other_template, path_value, plain_formal,
+        surface_unreadable, word_for,
+    };
+
+    #[test]
+    fn suggested_commands_show_a_url_without_its_credentials() {
+        let url = "https://user:p@ss-secret@example.invalid/o/r.git";
+        let path = std::path::Path::new("project");
+        let invocation = super::Invocation::Apply {
+            template: Some(super::Arg::Given(url)),
+            path,
+            answers: None,
+            force: false,
+            dry_run: false,
+            trust: false,
+        };
+        let other = other_template(
+            &invocation,
+            path,
+            "staged",
+            "https://example.invalid/o/r",
+            Progress::Incomplete,
+        );
+        let terminal = no_terminal(url, path);
+        for message in [&other, &terminal] {
+            assert!(!message.contains("secret"), "{message}");
+            assert!(
+                message.contains("https://example.invalid/o/r.git"),
+                "{message}"
+            );
+        }
+    }
 
     #[test]
     fn surface_unreadable_names_the_template_and_the_error() {
