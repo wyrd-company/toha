@@ -238,7 +238,7 @@ pub fn without_userinfo(repo: &str) -> String {
     }
     if let Some((scheme, rest)) = repo.split_once("://") {
         if is_scheme(scheme) {
-            let authority = rest.find('/').map_or(rest, |slash| &rest[..slash]);
+            let authority = &rest[..authority_end(scheme, repo, rest)];
             return match authority.rfind('@') {
                 Some(at) => format!("{scheme}://{}", &rest[at + 1..]),
                 None => repo.to_owned(),
@@ -292,6 +292,22 @@ pub(crate) fn without_credentials(remote: &str) -> String {
         return without_userinfo(remote);
     }
     remote.to_owned()
+}
+/// Where the authority of `url`, whose part after `scheme://` is `rest`, ends.
+/// An HTTP authority ends at the first `/`, `?` or `#`, as gix and RFC 3986
+/// read it, when gix parses the URL, so a `@` in a query is not taken for
+/// user information. Any other authority, and that of an HTTP URL gix
+/// rejects, such as one whose password holds a `?` or `#`, ends at the first
+/// `/`, so that all the text before the host's `@` is treated as user
+/// information.
+fn authority_end(scheme: &str, url: &str, rest: &str) -> usize {
+    let http = scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https");
+    let delimiters: &[char] = if http && gix::url::parse(gix::bstr::BStr::new(url)).is_ok() {
+        &['/', '?', '#']
+    } else {
+        &['/']
+    };
+    rest.find(delimiters).unwrap_or(rest.len())
 }
 /// The helper and address of a remote-helper address `helper::address`.
 fn helper_address(repo: &str) -> Option<(&str, &str)> {
@@ -821,6 +837,14 @@ mod tests {
             ("https://GitHub.com/A/B%20C", "https://GitHub.com/A/B%20C"),
             ("https://user@github.com/a/b", "https://github.com/a/b"),
             ("https://host.invalid/a@b/c", "https://host.invalid/a@b/c"),
+            (
+                "https://host.invalid?owner=alice@example.invalid/r.git",
+                "https://host.invalid?owner=alice@example.invalid/r.git",
+            ),
+            (
+                "https://host.invalid#a@example.invalid/r.git",
+                "https://host.invalid#a@example.invalid/r.git",
+            ),
             ("git@github.com:a/b.git", "ssh://github.com/a/b.git"),
             ("git@github.com", "ssh://github.com"),
             ("bob@host.invalid:repo.git", "host.invalid:repo.git"),
@@ -880,10 +904,6 @@ mod tests {
                     "https://host.invalid/o/r.git".to_owned(),
                 ),
                 (
-                    format!("https://token-{password}@host.invalid/o/r.git"),
-                    "https://host.invalid/o/r.git".to_owned(),
-                ),
-                (
                     format!("git://user:{password}@host.invalid/r"),
                     "git://host.invalid/r".to_owned(),
                 ),
@@ -900,6 +920,23 @@ mod tests {
                 assert_eq!(without_credentials(&remote), kept, "{remote:?}");
             }
         }
+        // A token in the user position cannot hold an unencoded `?` or `#`:
+        // `https://token-a?b@host/r` is the host `token-a` with a query, for
+        // gix as for RFC 3986, so it keeps its spelling.
+        for token in UNUSUAL_PASSWORDS
+            .iter()
+            .filter(|token| !token.contains(['?', '#']))
+        {
+            assert_eq!(
+                without_credentials(&format!("https://{token}@host.invalid/o/r.git")),
+                "https://host.invalid/o/r.git",
+                "{token:?}"
+            );
+        }
+        assert_eq!(
+            without_credentials("https://token-a?b@host.invalid/o/r.git"),
+            "https://token-a?b@host.invalid/o/r.git"
+        );
         for remote in [
             "git@github.com:o/r.git",
             "git@github.com:o/r@draft.git",
