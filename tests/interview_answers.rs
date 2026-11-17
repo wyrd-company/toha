@@ -1761,3 +1761,36 @@ fn raw_seed_null_keeps_empty_answer_semantics_without_relaxing_configured_defaul
         assert!(configured.is_err(), "configured_null_still_rejected");
     }
 }
+
+#[test]
+fn the_engine_keeps_no_credentials_of_a_git_answer_or_default() {
+    let (_folder, template) =
+        inline("name: sample\ninterview:\n  - id: remote\n    type: git\n    prompt: Remote URL\n");
+    let id = toha::Id::parse("remote").unwrap();
+    let mut seeded = seed();
+    seeded.defaults.insert(
+        id.clone(),
+        toha::RawAnswer(json!("https://user:p%40ss-seed-secret@127.0.0.1:9/r.git")),
+    );
+    let started = Interview::start(&template, seeded).unwrap();
+    let shown = format!("{started:?}");
+    assert!(!shown.contains("secret"), "{shown}");
+    let Interview::Asking(pending) = started else {
+        panic!("expected the git question");
+    };
+    // A caller of the public engine gets no credential back either.
+    let answers = toha::RawAnswers::from([(
+        id.clone(),
+        toha::RawAnswer(json!("https://user:p%40ss-engine-secret@127.0.0.1:9/r.git")),
+    )]);
+    let answered = pending.answer(answers).unwrap();
+    let shown = format!("{answered:?}");
+    assert!(!shown.contains("secret"), "{shown}");
+    let Interview::Complete(completed) = answered else {
+        panic!("expected a complete interview");
+    };
+    assert_eq!(
+        completed.accepted_raw()[&id].0,
+        json!("https://127.0.0.1:9/r.git")
+    );
+}

@@ -2189,7 +2189,20 @@ impl<'a> Interview<'a> {
         )
     }
 
-    fn start_with_bank(template: &'a Template, seed: InterviewSeed) -> Result<Self, EvalError> {
+    fn start_with_bank(template: &'a Template, mut seed: InterviewSeed) -> Result<Self, EvalError> {
+        // The default banks keep no credentials of a `git` answer either.
+        for (id, entry) in seed.defaults.iter_mut() {
+            let git = template
+                .question(id)
+                .is_some_and(|question| matches!(question.kind, QuestionKind::Git { .. }));
+            let raw = match entry {
+                DefaultBankEntry::Seed(raw) | DefaultBankEntry::Application { raw, .. } => raw,
+                DefaultBankEntry::Configured(value) => &mut value.raw,
+            };
+            if let (true, Value::String(text)) = (git, &raw.0) {
+                raw.0 = Value::String(git_answer(text));
+            }
+        }
         advance(Advance {
             template,
             seed,
@@ -2264,6 +2277,7 @@ impl From<EvalError> for CheckError {
 impl<'a> Pending<'a> {
     #[allow(clippy::result_large_err)]
     pub fn answer(self, incoming: RawAnswers) -> Result<Interview<'a>, AnswerError<'a>> {
+        let incoming = without_credentials(self.template, incoming);
         let mut held = self.held.clone();
         let mut rejections = vec![];
         let mut unless_skipped = vec![];
