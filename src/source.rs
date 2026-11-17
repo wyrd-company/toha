@@ -67,22 +67,9 @@ pub enum SourceError {
     Git(String),
 }
 fn split_git(value: &str) -> Result<(&str, Option<String>, Option<String>), SourceError> {
-    // The template path follows the first `#` after the user information, so
-    // a `#` in a password stays in the URL and out of the path.
-    let after_userinfo = value.find("://").map_or(0, |scheme| {
-        let authority = scheme + 3;
-        let end = value[authority..]
-            .find('/')
-            .map_or(value.len(), |slash| authority + slash);
-        value[authority..end]
-            .rfind('@')
-            .map_or(authority, |at| authority + at + 1)
-    });
-    let (before_path, path) = match value[after_userinfo..].find('#') {
-        Some(hash) => (
-            &value[..after_userinfo + hash],
-            Some(value[after_userinfo + hash + 1..].to_string()),
-        ),
+    let hash = template_path_start(value);
+    let (before_path, path) = match hash {
+        Some(hash) => (&value[..hash], Some(value[hash + 1..].to_string())),
         None => (value, None),
     };
     if path.as_deref() == Some("") {
@@ -110,6 +97,54 @@ fn split_git(value: &str) -> Result<(&str, Option<String>, Option<String>), Sour
         return Err(SourceError::Address("invalid repository or ref".into()));
     }
     Ok((repo, reference, path))
+}
+/// The `#` that starts the template path of the git address `value`.
+///
+/// It is the first `#`, unless that `#` sits in the authority after text that
+/// cannot be a host and port, such as `user:pa` in
+/// `https://user:pa#ss@host/repository`. Such a `#` belongs to the user
+/// information, and the template path starts at the first `#` after the
+/// authority's last `@`. A `#` after a host, as in `https://host#path@x`,
+/// starts the template path.
+fn template_path_start(value: &str) -> Option<usize> {
+    let first = value.find('#')?;
+    let Some(scheme) = value.find("://").filter(|&scheme| scheme < first) else {
+        return Some(first);
+    };
+    let authority = scheme + 3;
+    let end = value[authority..]
+        .find('/')
+        .map_or(value.len(), |slash| authority + slash);
+    if first > end {
+        return Some(first);
+    }
+    let before = &value[authority..first];
+    let host = before.rfind('@').map_or(before, |at| &before[at + 1..]);
+    if is_host_and_port(host) {
+        return Some(first);
+    }
+    let after_userinfo = value[authority..end]
+        .rfind('@')
+        .map_or(authority, |at| authority + at + 1);
+    value[after_userinfo..]
+        .find('#')
+        .map(|hash| after_userinfo + hash)
+}
+/// Whether `text` is a host, a bracketed IPv6 address included, with an
+/// optional numeric port.
+fn is_host_and_port(text: &str) -> bool {
+    let (host, port) = match text.rfind(':') {
+        Some(colon) if !text[colon..].contains(']') => (&text[..colon], Some(&text[colon + 1..])),
+        _ => (text, None),
+    };
+    let host = match host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+    {
+        Some(address) => is_name(address, b":.%"),
+        None => is_name(host, b"-._~%"),
+    };
+    host && port.is_none_or(|port| is_name(port, b"") && port.bytes().all(|b| b.is_ascii_digit()))
 }
 pub fn parse(arg: &str, hosts: &Hosts, cwd: &Path, home: &Path) -> Result<Address, SourceError> {
     if arg.contains("://") || arg.starts_with("git@") {
@@ -783,6 +818,62 @@ mod tests {
                 );
             }
         }
+    }
+    #[test]
+    fn the_template_path_starts_at_the_first_hash_after_a_host() {
+        let hosts = Hosts::new();
+        let cwd = Path::new("/");
+        let table = [
+            (
+                "https://host.invalid#user@team/sub",
+                ("https://host.invalid", None, Some("user@team/sub")),
+            ),
+            (
+                "https://host.invalid:8443#sub",
+                ("https://host.invalid:8443", None, Some("sub")),
+            ),
+            (
+                "https://[::1]:8443#sub",
+                ("https://[::1]:8443", None, Some("sub")),
+            ),
+            (
+                "https://user@host.invalid#sub",
+                ("https://user@host.invalid", None, Some("sub")),
+            ),
+            (
+                "https://host.invalid/o/r@v1#a#b",
+                ("https://host.invalid/o/r", Some("v1"), Some("a#b")),
+            ),
+            (
+                "https://user:pa#ss-secret@host.invalid/o/r",
+                ("https://user:pa#ss-secret@host.invalid/o/r", None, None),
+            ),
+            (
+                "https://user:pa#ss-secret@host.invalid/o/r@v1#sub",
+                (
+                    "https://user:pa#ss-secret@host.invalid/o/r",
+                    Some("v1"),
+                    Some("sub"),
+                ),
+            ),
+        ];
+        for (input, (repo, reference, path)) in table {
+            let parsed = parse(input, &hosts, cwd, cwd).unwrap();
+            assert_eq!(
+                parsed,
+                Address::Git {
+                    repo: repo.into(),
+                    reference: reference.map(Into::into),
+                    path: path.map(Into::into),
+                },
+                "{input:?}"
+            );
+        }
+        let address = parse("https://host.invalid#user@team/sub", &hosts, cwd, cwd).unwrap();
+        assert_eq!(
+            address.formal_name(&hosts),
+            "https://host.invalid#user@team/sub"
+        );
     }
     #[test]
     fn formal_names_and_cache_paths_hold_no_unusual_password() {
