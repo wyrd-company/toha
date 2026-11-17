@@ -789,3 +789,56 @@ impl Preparation {
         )
     }
 }
+
+#[cfg(test)]
+mod clean_staged_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_resumed_record_keeps_no_git_credentials_in_any_field() {
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::create_dir(folder.path().join("template")).unwrap();
+        std::fs::write(
+            folder.path().join("template.yml"),
+            "name: sample\ninterview:\n  - id: remote\n    type: git\n    prompt: Remote\n  \
+             - id: label\n    type: text\n    prompt: Label\n",
+        )
+        .unwrap();
+        let template = Template::load(folder.path()).unwrap();
+        let target = crate::staging::canonical_target(folder.path()).unwrap();
+        let context = crate::context::InvocationContext::for_target(target);
+        let url = "https://user:p%40ss-staged-secret@127.0.0.1:9/r.git";
+        let mut record = StagedRecord::new_with_context(
+            context,
+            String::new(),
+            false,
+            "2026-01-02T03:04:05+00:00[UTC]".into(),
+            vec![indexmap::IndexMap::from([
+                ("remote".to_owned(), json!(url)),
+                ("label".to_owned(), json!(url)),
+            ])],
+        );
+        record
+            .update_overrides
+            .insert("remote".into(), json!({ url: [url] }));
+        record.seed_entry = Some(json!({ "answers": { "remote": url, "label": url } }));
+        record.base = Some(json!({ "answers": { "remote": url } }).to_string());
+        clean_staged(&template, &mut record);
+        let saved = serde_json::to_string(&record).unwrap();
+        // A `text` answer keeps its value; only `git` values lose credentials,
+        // and the pinned base is compared, so it is cleaned whole.
+        assert_eq!(saved.matches("secret").count(), 2, "{saved}");
+        assert_eq!(record.submissions[0]["label"], json!(url));
+        assert_eq!(
+            record.seed_entry.as_ref().unwrap()["answers"]["label"],
+            json!(url)
+        );
+        assert_eq!(
+            record.submissions[0]["remote"],
+            json!("https://127.0.0.1:9/r.git")
+        );
+        assert!(!format!("{:?}", record.update_overrides).contains("secret"));
+        assert!(!record.base.as_ref().unwrap().contains("secret"));
+    }
+}
