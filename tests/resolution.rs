@@ -1184,3 +1184,117 @@ fn a_registry_written_by_hand_shows_no_credentials() {
         assert!(!shown.contains("secret"), "{args:?}: {shown}");
     }
 }
+
+/// Every file under `root` that holds `secret`, the end of every password in
+/// these tests.
+fn files_with_secret(root: &Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    let mut folders = vec![root.to_path_buf()];
+    while let Some(folder) = folders.pop() {
+        let Ok(entries) = fs::read_dir(&folder) else {
+            continue;
+        };
+        for entry in entries {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                folders.push(path);
+            } else if fs::read(&path)
+                .unwrap()
+                .windows(6)
+                .any(|window| window == b"secret")
+            {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
+
+/// Write the user registry of `root` with one entry for the template at
+/// `path`, keyed by `formal`, with `source`, `commit` and the alias `chosen`.
+fn user_registry(root: &TempDir, formal: &str, source: &str, path: &Path, commit: Option<&str>) {
+    let registry = root.path().join("data/toha/templates.yml");
+    fs::create_dir_all(registry.parent().unwrap()).unwrap();
+    let commit = commit.map_or(String::new(), |commit| format!("    commit: {commit}\n"));
+    fs::write(
+        registry,
+        format!(
+            "templates:\n  {formal:?}:\n    name: sample\n    source: {source:?}\n    \
+             path: {:?}\n{commit}    aliases: [chosen]\n",
+            path.display().to_string()
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
+fn an_installed_entry_with_credentials_is_staged_without_them() {
+    let secret = "https://user:p%40ss-registry-secret@host.invalid/r.git";
+    for formal in [secret, "https://host.invalid/r.git"] {
+        let root = TempDir::new().unwrap();
+        let installed = root.path().join("installed");
+        fs::create_dir_all(installed.join("template")).unwrap();
+        fs::write(
+            installed.join("template.yml"),
+            "name: sample\ninterview:\n  - {id: label, type: text, prompt: 'Label for {{ toha_template_source }}'}\n",
+        )
+        .unwrap();
+        user_registry(&root, formal, secret, &installed, None);
+        let project = root.path().join("project");
+        let output = command(&root)
+            .args(["stage", "chosen", project.to_str().unwrap(), "--async"])
+            .output()
+            .unwrap();
+        let shown = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.status.code(), Some(4), "{formal}: {shown}");
+        assert!(shown.contains("https://host.invalid/r.git"), "{shown}");
+        assert!(
+            shown.contains("Label for https://host.invalid/r.git"),
+            "{shown}"
+        );
+        assert!(!shown.contains("secret"), "{formal}: {shown}");
+        // The staged state, under the isolated state folder, holds none.
+        assert_eq!(
+            files_with_secret(&root.path().join("toha")),
+            Vec::<std::path::PathBuf>::new()
+        );
+    }
+}
+
+#[test]
+fn an_installed_entry_with_credentials_resumes_without_them() {
+    let secret = "https://user:p%40ss-registry-secret@host.invalid/r.git";
+    let root = TempDir::new().unwrap();
+    let (_, commit) = repository(&root);
+    let installed = root.path().join("owner/repo/one");
+    user_registry(&root, secret, secret, &installed, Some(&commit));
+    let project = root.path().join("project");
+    let staged = command(&root)
+        .args(["stage", "chosen", project.to_str().unwrap(), "--async"])
+        .output()
+        .unwrap();
+    assert_eq!(staged.status.code(), Some(4), "{staged:?}");
+    let file = envelope(&root, "https://host.invalid/r.git", r#"{"label": "x"}"#);
+    let continued = run(&root, &["continue", project.to_str().unwrap(), &file], 0);
+    let applied = run(&root, &["apply", project.to_str().unwrap()], 0);
+    assert_eq!(
+        fs::read_to_string(project.join("result.txt")).unwrap(),
+        "old x"
+    );
+    for output in [&staged, &continued, &applied] {
+        let shown = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!shown.contains("secret"), "{shown}");
+    }
+    assert_eq!(
+        files_with_secret(&project),
+        Vec::<std::path::PathBuf>::new()
+    );
+}

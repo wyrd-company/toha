@@ -832,7 +832,7 @@ fn context(target: &staging::CanonicalTarget, record: &StagedRecord) -> Context 
 /// The formal name of a template resolved by name from the user or system
 /// registry, whose recorded trust would run its hooks.
 fn trustable(resolved: &ResolvedTemplate, registry: &toha::registry::Registry) -> Option<String> {
-    let listed = registry.entries.get(&resolved.formal_name)?;
+    let (_, listed) = registry.entry(&resolved.formal_name)?;
     (resolved.named && listed.layer != toha::registry::Layer::Local)
         .then(|| resolved.formal_name.clone())
 }

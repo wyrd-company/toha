@@ -17,7 +17,10 @@ pub enum Layer {
     Local,
     Discovered,
 }
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// An installed template's registry entry. Its `source` can be an address
+/// with credentials, which Toha authenticates with; its `Debug` shows the
+/// source without user information.
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry {
     pub name: String,
     pub source: String,
@@ -42,7 +45,9 @@ pub struct Entry {
     #[serde(skip)]
     pub denied: bool,
 }
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// A registry file. A file written by hand can key an entry by an address
+/// with credentials; its `Debug` shows every key without user information.
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct RegistryFile {
     #[serde(default)]
     pub templates: IndexMap<String, Entry>,
@@ -54,7 +59,8 @@ struct FieldPresence {
     aliases: bool,
     approval: bool,
 }
-#[derive(Debug, Clone)]
+/// A merged registry entry. Its `Debug` shows names without user information.
+#[derive(Clone)]
 pub struct Listed {
     pub formal_name: String,
     pub entry: Entry,
@@ -62,17 +68,75 @@ pub struct Listed {
     /// The effective approval digest for this entry, after layer merge.
     pub approval: Option<ReviewDigest>,
 }
-#[derive(Debug, Clone, Default)]
+/// The merged registry. Its `Debug` shows names without user information.
+#[derive(Clone, Default)]
 pub struct Registry {
     pub entries: IndexMap<String, Listed>,
 }
-#[derive(Debug, Clone)]
+/// A resolved registry entry. Its `Debug` shows names without user
+/// information.
+#[derive(Clone)]
 pub struct Resolved {
     pub formal_name: String,
     pub entry: Entry,
     pub layer: Layer,
     /// The effective approval digest for this entry, after layer merge.
     pub approval: Option<ReviewDigest>,
+}
+impl std::fmt::Debug for Entry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Entry")
+            .field("name", &self.name)
+            .field("source", &without_userinfo(&self.source))
+            .field("reference", &self.reference)
+            .field("commit", &self.commit)
+            .field("path", &self.path)
+            .field("aliases", &self.aliases)
+            .field("approval", &self.approval)
+            .field("denied", &self.denied)
+            .finish()
+    }
+}
+/// `map` keyed by names without user information, for `Debug`.
+fn shown_keys<V>(map: &IndexMap<String, V>) -> IndexMap<String, &V> {
+    map.iter()
+        .map(|(key, value)| (without_userinfo(key), value))
+        .collect()
+}
+impl std::fmt::Debug for RegistryFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegistryFile")
+            .field("templates", &shown_keys(&self.templates))
+            .field("presence", &shown_keys(&self.presence))
+            .finish()
+    }
+}
+impl std::fmt::Debug for Listed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Listed")
+            .field("formal_name", &without_userinfo(&self.formal_name))
+            .field("entry", &self.entry)
+            .field("layer", &self.layer)
+            .field("approval", &self.approval)
+            .finish()
+    }
+}
+impl std::fmt::Debug for Registry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Registry")
+            .field("entries", &shown_keys(&self.entries))
+            .finish()
+    }
+}
+impl std::fmt::Debug for Resolved {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Resolved")
+            .field("formal_name", &without_userinfo(&self.formal_name))
+            .field("entry", &self.entry)
+            .field("layer", &self.layer)
+            .field("approval", &self.approval)
+            .finish()
+    }
 }
 #[derive(Debug, thiserror::Error)]
 pub enum RegistryError {
@@ -105,10 +169,15 @@ pub enum ResolveError {
     #[error("ambiguous template name: {name}")]
     Ambiguous { name: String, matches: Vec<String> },
 }
-/// `name`, a template name or address as given, as an error names it: an
-/// address loses its user information, which can carry a credential.
-fn without_userinfo(name: &str) -> String {
-    crate::source::without_userinfo(name)
+/// `name`, a template name, address or folder, as Toha shows and records it:
+/// an address loses its user information, which can carry a credential. A
+/// registry written by hand can key an entry by such an address.
+pub(crate) fn without_userinfo(name: &str) -> String {
+    if name.contains("://") {
+        crate::source::without_userinfo(name)
+    } else {
+        name.to_owned()
+    }
 }
 static SCHEMA: LazyLock<Value> = LazyLock::new(|| {
     serde_norway::from_str(include_str!(
@@ -446,6 +515,22 @@ impl Registry {
         result.check_aliases()?;
         Ok(result)
     }
+    /// The entry named `formal`: the entry with that key, or else the one
+    /// entry whose key without user information is `formal`. Toha shows,
+    /// records and resumes a template by its name without user information,
+    /// and a registry written by hand can key an entry by an address with
+    /// credentials, which the entry keeps for authentication.
+    pub fn entry(&self, formal: &str) -> Option<(&str, &Listed)> {
+        if let Some((key, listed)) = self.entries.get_key_value(formal) {
+            return Some((key.as_str(), listed));
+        }
+        let mut found = self
+            .entries
+            .iter()
+            .filter(|(key, _)| key.contains("://") && without_userinfo(key) == formal);
+        let (key, listed) = found.next()?;
+        found.next().is_none().then_some((key.as_str(), listed))
+    }
     /// Apply the aliases of the local registry `local`. Returns each alias
     /// whose template is not installed, with that template's name without
     /// user information, for a warning.
@@ -584,9 +669,8 @@ impl Registry {
         if let Some(v) = shorts.first() {
             return Ok(v.resolved());
         }
-        self.entries
-            .get(name)
-            .map(Listed::resolved)
+        self.entry(name)
+            .map(|(_, listed)| listed.resolved())
             .ok_or_else(|| ResolveError::NotFound(without_userinfo(name)))
     }
 }
@@ -603,6 +687,32 @@ impl Listed {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_registry_with_credentials_shows_none_and_resolves_its_clean_name() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("templates.yml");
+        let url = "https://user:p%40ss-registry-debug-secret@host.invalid/r.git";
+        fs::write(
+            &path,
+            format!(
+                "templates:\n  {url:?}:\n    name: sample\n    source: {url:?}\n    \
+                 path: /installed\n    aliases: [chosen]\n"
+            ),
+        )
+        .unwrap();
+        let file = RegistryFile::load(&path, Layer::User).unwrap();
+        let registry =
+            Registry::merge(&RegistryFile::default(), &file, &RegistryFile::default()).unwrap();
+        let resolved = registry.resolve("chosen").unwrap();
+        let entry = file.templates.values().next().unwrap();
+        let shown = format!("{entry:?} {file:?} {registry:?} {resolved:?}");
+        assert!(!shown.contains("secret"), "{shown}");
+        // The entry keeps the source it authenticates with, and its name
+        // without user information finds it.
+        assert_eq!(entry.source, url);
+        let (key, _) = registry.entry("https://host.invalid/r.git").unwrap();
+        assert_eq!(key, url);
+    }
     const D1: &str = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
     const D2: &str = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
     fn digest(value: &str) -> ReviewDigest {

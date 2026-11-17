@@ -119,16 +119,20 @@ pub fn load_context(
     Ok((config, registry, warnings))
 }
 
+/// The installed template the registry names `formal`. Its formal name and
+/// source are those of the entry without user information, which is how Toha
+/// shows, records and resumes them; the registry entry keeps the source it
+/// authenticates with.
 fn entry(formal: String, registry: &Registry) -> Option<ResolvedTemplate> {
-    let listed = registry.entries.get(&formal)?;
+    let (key, listed) = registry.entry(&formal)?;
     Some(ResolvedTemplate {
-        formal_name: formal,
+        formal_name: registry::without_userinfo(key),
         commit: listed.entry.commit.clone().unwrap_or_default(),
         folder: listed.entry.path.clone(),
         approval: listed.approval.clone(),
         named: true,
         aliases: listed.entry.aliases.clone(),
-        source: Some(listed.entry.source.clone()),
+        source: Some(registry::without_userinfo(&listed.entry.source)),
     })
 }
 
