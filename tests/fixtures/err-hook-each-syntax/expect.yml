@@ -1,4 +1,4 @@
 exit: 1
 error_contains:
-- "template.yml/hooks/0/each: \"items\" does not match"
-- "template.yml/interview/0: {\"hook\":{\"each\":\"items as Item\""
+- "template.yml/hooks/0/each: does not match the pattern"
+- "template.yml/interview/0: matches none of the forms the schema allows"
