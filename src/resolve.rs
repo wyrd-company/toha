@@ -303,8 +303,10 @@ pub fn formal_name(
         Address::Git { .. } => address.formal_name(&config.hosts),
         // A reserved NotFound keeps the name, so `apply toha-demo` finds its own
         // staged run.
+        // The formal name Toha records for a registry entry, without the user
+        // information a registry written by hand can key it by.
         Address::Name(name) => match registry.resolve(name) {
-            Ok(resolved) => resolved.formal_name,
+            Ok(resolved) => registry::without_userinfo(&resolved.formal_name),
             Err(registry::ResolveError::NotFound(n)) if n == bundled::RESERVED => n,
             Err(e) => return Err(e.into()),
         },

@@ -443,6 +443,7 @@ pub fn other_template(
 ) -> String {
     let arg = invocation.template().map_or(formal.into(), shown);
     let arg = arg.as_ref();
+    let formal = shown(formal);
     let named = if arg == formal {
         arg.to_string()
     } else {

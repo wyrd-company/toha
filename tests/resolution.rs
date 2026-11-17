@@ -1286,7 +1286,9 @@ fn an_installed_entry_with_credentials_resumes_without_them() {
     assert_eq!(staged.status.code(), Some(4), "{staged:?}");
     let file = envelope(&root, "https://host.invalid/r.git", r#"{"label": "x"}"#);
     let continued = run(&root, &["continue", project.to_str().unwrap(), &file], 0);
-    let applied = run(&root, &["apply", project.to_str().unwrap()], 0);
+    // Naming the template by its alias finds the staged interview by the
+    // name Toha recorded for it.
+    let applied = run(&root, &["apply", "chosen", project.to_str().unwrap()], 0);
     assert_eq!(
         fs::read_to_string(project.join("result.txt")).unwrap(),
         "old x"
