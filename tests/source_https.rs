@@ -841,6 +841,50 @@ fn a_rejected_address_password_is_an_authentication_failure() {
 }
 
 #[test]
+fn an_accepted_address_password_stays_out_of_the_installed_clone() {
+    let (root, config) = https_fixture(Trust::Explicit);
+    let auth = Auth::new("fixture-user", "p@ss:w\u{f6}rd/\u{20ac}-secret");
+    let endpoint = Endpoint::start(root.path(), Some(config), Some(auth.clone()));
+    let remote = url(&endpoint, "https");
+    let written = "p%40ss%3Aw%C3%B6rd%2F%E2%82%AC-secret";
+    let address = remote.replacen("://", &format!("://fixture-user:{written}@"), 1);
+    let mut command = support::isolated_command(root.path());
+    configure_trust(&mut command, root.path(), Trust::Explicit);
+    let output = command
+        .args(["templates", "add", &address])
+        .current_dir(root.path())
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    endpoint.stop();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let data = support::user_data_dir(root.path());
+    let mut written_files = vec![data.join("templates.yml")];
+    for install in fs::read_dir(data.join("repos")).unwrap() {
+        written_files.push(install.unwrap().path().join(".git/config"));
+    }
+    for file in written_files {
+        let text = fs::read_to_string(&file).unwrap();
+        assert!(
+            !text.contains("secret"),
+            "{} keeps the password",
+            file.display()
+        );
+    }
+    let shown = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!shown.contains("secret"), "{shown}");
+}
+
+#[test]
 fn a_rejected_resolver_password_stays_out_of_errors() {
     run_credential_scenario("rejected", private());
 }

@@ -258,6 +258,41 @@ fn is_name(text: &str, extra: &[u8]) -> bool {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || extra.contains(&byte))
 }
+/// Save every remote URL of the clone at `repository` without its user
+/// information. A clone saves the address it was given, as `git clone` does,
+/// and Toha keeps its clones in its cache and data folders, where a password
+/// in the address would stay on disk. Toha never fetches through a saved
+/// remote.
+fn forget_credentials(
+    repository: &gix::Repository,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let path = repository.common_dir().join("config");
+    let mut file =
+        gix::config::File::from_path_no_includes(path.clone(), gix::config::Source::Local)?;
+    let saved: Vec<(gix::bstr::BString, String)> = file
+        .sections_by_name("remote")
+        .into_iter()
+        .flatten()
+        .filter_map(|section| {
+            let name = section.header().subsection_name()?.to_owned();
+            let url = section.value("url")?.to_str_lossy().into_owned();
+            Some((name, url))
+        })
+        .collect();
+    let mut changed = false;
+    for (name, url) in saved {
+        let safe = without_userinfo(&url);
+        if safe != url {
+            file.set_raw_value_by("remote", Some(name.as_ref()), "url", safe.as_str())?;
+            changed = true;
+        }
+    }
+    if changed {
+        let mut out = std::fs::File::create(&path)?;
+        file.write_to(&mut out)?;
+    }
+    Ok(())
+}
 /// The fetch failure for `error`: the resolver's refusal when it refused,
 /// otherwise Toha's own message, which never holds gix's text.
 fn git_error(
@@ -511,6 +546,8 @@ pub fn fetch(address: &Address, dest: &Path) -> Result<Fetched, SourceError> {
     let (checkout_repo, _) = checkout
         .main_worktree(gix::progress::Discard, &AtomicBool::new(false))
         .map_err(|e| git_error(&e, repo, Operation::Fetch, &supplied))?;
+    forget_credentials(&checkout_repo)
+        .map_err(|e| git_error(&*e, repo, Operation::Fetch, &supplied))?;
     if kind == RefKind::Branch
         && reference.as_ref().is_some_and(|r| {
             checkout_repo
