@@ -236,9 +236,12 @@ pub fn without_userinfo(repo: &str) -> String {
             None => repo.to_owned(),
         };
     }
+    // The host of a scp-like address ends at a `:`, and its path can hold
+    // `@`, so the user information ends at the last `@` that a `:` follows.
     let head = repo.find('/').map_or(repo, |slash| &repo[..slash]);
-    match head.rfind('@') {
-        Some(at) if head[at + 1..].contains(':') => {
+    let separator = head.rfind(':').and_then(|colon| head[..colon].rfind('@'));
+    match separator {
+        Some(at) => {
             let rest = &repo[at + 1..];
             if &repo[..at] != "git" {
                 return rest.to_owned();
@@ -247,8 +250,10 @@ pub fn without_userinfo(repo: &str) -> String {
             format!("ssh://{host}/{path}")
         }
         // A scp-like address without a path, as Toha wrote it before.
-        Some(3) if repo.starts_with("git@") => format!("ssh://{}", &repo[4..]),
-        _ => repo.to_owned(),
+        None if repo.starts_with("git@") && !head[4..].contains('@') => {
+            format!("ssh://{}", &repo[4..])
+        }
+        None => repo.to_owned(),
     }
 }
 /// Whether `text` is a non-empty run of ASCII letters, digits and `extra`.
@@ -748,6 +753,12 @@ mod tests {
             ("git@github.com:a/b.git", "ssh://github.com/a/b.git"),
             ("git@github.com", "ssh://github.com"),
             ("bob@host.invalid:repo.git", "host.invalid:repo.git"),
+            ("bob@host.invalid:repo@draft", "host.invalid:repo@draft"),
+            (
+                "git@github.com:a/b@draft.git",
+                "ssh://github.com/a/b@draft.git",
+            ),
+            ("host.invalid:repo@draft", "host.invalid:repo@draft"),
             ("file:///tmp/a@b.git", "file:///tmp/a@b.git"),
             ("/tmp/a@b:c", "/tmp/a@b:c"),
             ("../rel@x.git", "../rel@x.git"),
@@ -758,6 +769,19 @@ mod tests {
         for (url, expected) in table {
             assert_eq!(without_userinfo(url), expected, "{url:?}");
             assert_eq!(without_userinfo(expected), expected, "{expected:?}");
+        }
+    }
+    #[test]
+    fn a_scp_path_with_an_at_sign_keeps_its_userinfo_apart() {
+        for user in ["secret-token", "user:p@ss-secret", "u%40secret"] {
+            for path in ["repo@draft", "o/r@v1.git", "repo"] {
+                let address = format!("{user}@host.invalid:{path}");
+                assert_eq!(
+                    without_userinfo(&address),
+                    format!("host.invalid:{path}"),
+                    "{address:?}"
+                );
+            }
         }
     }
     #[test]
