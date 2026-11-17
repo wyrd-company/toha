@@ -142,6 +142,13 @@ repository after it writes the files and before any hook runs, so hooks can use
 git. The branch is your configured `init.defaultBranch`; if that is unset or
 `master`, Toha uses `main`. A URL answer becomes the `origin` remote.
 
+Toha keeps no credentials from a `git` answer or default. It drops the user
+information from a URL such as `https://user:token@host/repo.git` as soon as it
+takes the answer in, so the token is not staged, shown or saved with the
+remote. An SSH address such as `git@host:owner/repo.git` keeps its user, which
+names the account SSH logs in to. Supply credentials for the remote with a
+[git credential helper](https://git-scm.com/docs/gitcredentials).
+
 Toha checks the remote before it writes anything. If the remote already has
 history, Toha stops and tells the person to clone it first, then apply the
 template into the clone. If Toha cannot reach the remote, it adds the remote,
