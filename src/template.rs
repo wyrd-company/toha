@@ -271,7 +271,8 @@ pub struct Question {
     pub format: Option<Expr>,
     pub when: Option<Expr>,
 }
-#[derive(Debug)]
+/// A question's kind. Its `Debug` hides the source of a `git` question's
+/// default, which can hold the credentials of a URL in any form.
 pub enum QuestionKind {
     Document {
         contract: crate::document::DocumentQuestion,
@@ -304,6 +305,44 @@ pub enum QuestionKind {
         min: Option<Typed<u32>>,
         max: Option<Typed<u32>>,
     },
+}
+impl std::fmt::Debug for QuestionKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Document { contract } => f
+                .debug_struct("Document")
+                .field("contract", contract)
+                .finish(),
+            Self::Text { default } => f.debug_struct("Text").field("default", default).finish(),
+            Self::Multiline { default } => f
+                .debug_struct("Multiline")
+                .field("default", default)
+                .finish(),
+            Self::Git { default } => f
+                .debug_struct("Git")
+                .field("default", &default.as_ref().map(|_| "<hidden>"))
+                .finish(),
+            Self::Confirm { default } => {
+                f.debug_struct("Confirm").field("default", default).finish()
+            }
+            Self::Select { options, default } => f
+                .debug_struct("Select")
+                .field("options", options)
+                .field("default", default)
+                .finish(),
+            Self::MultiSelect { options, default } => f
+                .debug_struct("MultiSelect")
+                .field("options", options)
+                .field("default", default)
+                .finish(),
+            Self::TextLoop { default, min, max } => f
+                .debug_struct("TextLoop")
+                .field("default", default)
+                .field("min", min)
+                .field("max", max)
+                .finish(),
+        }
+    }
 }
 #[derive(Debug, Default)]
 pub struct Validate {

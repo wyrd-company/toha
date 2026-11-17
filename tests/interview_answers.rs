@@ -1794,3 +1794,21 @@ fn the_engine_keeps_no_credentials_of_a_git_answer_or_default() {
         json!("https://127.0.0.1:9/r.git")
     );
 }
+
+#[test]
+fn the_engine_shows_no_credentials_of_a_template_git_default() {
+    let (_folder, template) = inline(
+        "name: sample\ninterview:\n  - id: remote\n    type: git\n    prompt: Remote URL\n    \
+         default: https://user:p%40ss-template-debug-secret@127.0.0.1:9/r.git\n",
+    );
+    let started = Interview::start(&template, seed()).unwrap();
+    let shown = format!("{started:?}");
+    assert!(!shown.contains("secret"), "{shown}");
+    let Interview::Asking(pending) = started else {
+        panic!("expected the git question");
+    };
+    // Accepting the default takes it without its credentials.
+    let answered = pending.answer(toha::RawAnswers::new()).unwrap();
+    let shown = format!("{answered:?}");
+    assert!(!shown.contains("secret"), "{shown}");
+}
