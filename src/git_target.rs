@@ -270,39 +270,37 @@ pub fn probe(url: &str) -> RemoteState {
     match list_refs(url, &supplied) {
         Ok(0) => RemoteState::Empty,
         Ok(_) => RemoteState::HasHistory,
-        Err(message) => match supplied.refusal() {
+        Err(error) => match supplied.refusal() {
             Some(reason) => RemoteState::Refused(reason),
-            None => {
-                RemoteState::Unreachable(supplied.message(crate::source::redacted(&message, url)))
-            }
+            None => RemoteState::Unreachable(crate::source::failure_message(
+                url,
+                crate::source::Operation::List,
+                &*error,
+            )),
         },
     }
 }
 
-fn list_refs(url: &str, supplied: &crate::source::Supplied) -> Result<usize, String> {
+fn list_refs(
+    url: &str,
+    supplied: &crate::source::Supplied,
+) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
     // A remote needs a repository to belong to; a throwaway bare one holds it.
-    let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
-    let repo = gix::init_bare(scratch.path()).map_err(|e| e.to_string())?;
+    let scratch = tempfile::tempdir()?;
+    let repo = gix::init_bare(scratch.path())?;
     let remote = repo
-        .remote_at(url)
-        .map_err(|e| e.to_string())?
-        .with_refspecs(["+refs/*:refs/probe/*"], gix::remote::Direction::Fetch)
-        .map_err(|e| e.to_string())?;
-    let mut connection = remote
-        .connect(gix::remote::Direction::Fetch)
-        .map_err(|e| e.to_string())?;
+        .remote_at(url)?
+        .with_refspecs(["+refs/*:refs/probe/*"], gix::remote::Direction::Fetch)?;
+    let mut connection = remote.connect(gix::remote::Direction::Fetch)?;
     let mut roots = None;
-    crate::source::prepare_connection(&mut connection, &mut roots, supplied)
-        .map_err(|e| e.to_string())?;
-    let (map, _) = connection
-        .ref_map(
-            gix::progress::Discard,
-            gix::remote::ref_map::Options {
-                prefix_from_spec_as_filter_on_remote: false,
-                ..Default::default()
-            },
-        )
-        .map_err(|e| e.to_string())?;
+    crate::source::prepare_connection(&mut connection, &mut roots, supplied)?;
+    let (map, _) = connection.ref_map(
+        gix::progress::Discard,
+        gix::remote::ref_map::Options {
+            prefix_from_spec_as_filter_on_remote: false,
+            ..Default::default()
+        },
+    )?;
     // An empty repository still advertises its unborn `HEAD`; only a reference
     // that names an object is history.
     Ok(map
@@ -327,7 +325,13 @@ pub fn initialize(target: &Path, remote: Option<&str>) -> Result<String, GitTarg
     let branch = default_branch(configured.as_deref()).to_owned();
     set_head(&repo, &branch).map_err(fail)?;
     if let Some(url) = remote {
-        add_remote(&repo, url).map_err(|message| fail(crate::source::redacted(&message, url)))?;
+        add_remote(&repo, url).map_err(|error| {
+            fail(crate::source::failure_message(
+                url,
+                crate::source::Operation::Save,
+                &*error,
+            ))
+        })?;
     }
     Ok(branch)
 }
@@ -354,27 +358,23 @@ fn set_head(repo: &gix::Repository, branch: &str) -> Result<(), String> {
 }
 
 /// Write `remote "origin"` to the local config as `git remote add` does.
-fn add_remote(repo: &gix::Repository, url: &str) -> Result<(), String> {
+fn add_remote(repo: &gix::Repository, url: &str) -> Result<(), Box<dyn std::error::Error>> {
     // Parse first, so an invalid URL is named before the config changes.
-    repo.remote_at(url).map_err(|e| e.to_string())?;
+    repo.remote_at(url)?;
     let path = repo.common_dir().join("config");
     let mut file =
-        gix::config::File::from_path_no_includes(path.clone(), gix::config::Source::Local)
-            .map_err(|e| e.to_string())?;
+        gix::config::File::from_path_no_includes(path.clone(), gix::config::Source::Local)?;
     {
-        let mut section = file
-            .section_mut_or_create_new("remote", Some(REMOTE_NAME.into()))
-            .map_err(|e| e.to_string())?;
-        section.push("url", url).map_err(|e| e.to_string())?;
-        section
-            .push(
-                "fetch",
-                format!("+refs/heads/*:refs/remotes/{REMOTE_NAME}/*").as_str(),
-            )
-            .map_err(|e| e.to_string())?;
+        let mut section = file.section_mut_or_create_new("remote", Some(REMOTE_NAME.into()))?;
+        section.push("url", url)?;
+        section.push(
+            "fetch",
+            format!("+refs/heads/*:refs/remotes/{REMOTE_NAME}/*").as_str(),
+        )?;
     }
-    let mut out = std::fs::File::create(&path).map_err(|e| e.to_string())?;
-    file.write_to(&mut out).map_err(|e| e.to_string())
+    let mut out = std::fs::File::create(&path)?;
+    file.write_to(&mut out)?;
+    Ok(())
 }
 
 #[cfg(test)]

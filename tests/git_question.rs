@@ -414,6 +414,48 @@ fn the_applied_document_never_shows_remote_credentials() {
 }
 
 #[test]
+fn a_remote_gix_cannot_parse_is_named_without_its_password() {
+    let scene = Scene::new(TEMPLATE, false);
+    // gix quotes a URL it cannot parse with Rust escapes, which spell the
+    // control characters and keep the non-ASCII text.
+    let remote = "https://user:caf\u{e9}\u{1}\t-secret@127.0.0.1:9/sample.git";
+    let (code, document) = scene.apply(json!({ "remote": remote }), &[]);
+    assert_eq!(code, Some(1), "{document}");
+    assert_eq!(document["kind"], "git", "{document}");
+    let message = document["message"].as_str().unwrap();
+    assert!(
+        message.starts_with("could not initialize a git repository at ")
+            && message.ends_with(": 'https://127.0.0.1:9/sample.git' is not a valid Git URL"),
+        "{message}"
+    );
+    assert!(!document.to_string().contains("secret"), "{document}");
+}
+
+#[test]
+fn a_remote_whose_credentials_its_protocol_cannot_use_warns_without_them() {
+    let scene = Scene::new(TEMPLATE, false);
+    // gix writes this URL back with the `@` of the password encoded.
+    let remote = "git://user:p@ss-secret@127.0.0.1:9/sample.git";
+    let (code, document) = scene.apply(json!({ "remote": remote }), &[]);
+    assert_eq!(code, Some(0), "{document}");
+    assert_eq!(
+        document["messages"][0],
+        "warning: could not inspect the remote git://127.0.0.1:9/sample.git; added it \
+         without a history check: the git protocol cannot use the user, password, host \
+         or port in 'git://127.0.0.1:9/sample.git'",
+        "{document}"
+    );
+    assert_eq!(document["git"]["remote"], "git://127.0.0.1:9/sample.git");
+    assert!(!document.to_string().contains("secret"), "{document}");
+    // The repository keeps the remote as given, as `git remote add` does.
+    let target = scene.target();
+    assert_eq!(
+        git_stdout(&target, &["remote", "get-url", "origin"]),
+        remote
+    );
+}
+
+#[test]
 fn a_relative_remote_with_history_is_checked_from_the_target() {
     let scene = Scene::new(TEMPLATE, false);
     // `history.git` sits beside the target, so `../history.git` names it from

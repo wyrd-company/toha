@@ -637,16 +637,22 @@ fn run_https_fixture(trust: Trust) {
     assert!(!registry.contains(token));
     let installs = fs::read_dir(support::user_data_dir(root.path()).join("repos")).unwrap();
     for install in installs {
+        let install = install.unwrap();
+        assert!(!install.file_name().to_string_lossy().contains(token));
+        let config = fs::read_to_string(install.path().join(".git/config")).unwrap();
         assert!(
-            !install
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .contains(token)
+            !config.contains(token),
+            "the installed clone keeps the token"
         );
     }
     assert!(!failed.status.success());
-    assert!(!String::from_utf8_lossy(&failed.stderr).contains(token));
+    assert_eq!(
+        String::from_utf8_lossy(&failed.stderr).trim_end(),
+        format!(
+            "git fetch failed: the remote '{scheme}://localhost:{port}/remote.git' \
+             has no reference named 'absent'"
+        )
+    );
     assert!(root.path().join("fetched/template.yml").is_file());
 }
 
@@ -775,6 +781,63 @@ fn a_credential_resolver_refuses_another_host_or_repository() {
             .any(|given| given.contains("fixture-password")),
         "{received:?}"
     );
+}
+
+/// Passwords an address can carry, as the address writes them and as the
+/// endpoint receives them: reserved characters encoded and raw, encodings gix
+/// decodes and writes back in another case or not at all, non-ASCII text,
+/// and control characters next to non-ASCII text.
+const ADDRESS_PASSWORDS: [(&str, &str); 9] = [
+    ("plain-secret", "plain-secret"),
+    ("p%40ss-secret", "p@ss-secret"),
+    ("p@ss-secret", "p@ss-secret"),
+    ("p%2Ass-secret", "p*ss-secret"),
+    ("caf%c3%a9-secret", "caf\u{e9}-secret"),
+    ("caf%C3%A9%01%09-secret", "caf\u{e9}\u{1}\t-secret"),
+    ("sp%20ace-secret", "sp ace-secret"),
+    ("co:lon-secret", "co:lon-secret"),
+    ("%E2%82%AC-secret", "\u{20ac}-secret"),
+];
+
+#[test]
+fn a_rejected_address_password_is_an_authentication_failure() {
+    let (root, config) = https_fixture(Trust::Explicit);
+    let auth = private();
+    let endpoint = Endpoint::start(root.path(), Some(config), Some(auth.clone()));
+    let remote = url(&endpoint, "https");
+    let mut outputs = Vec::new();
+    for (written, _) in ADDRESS_PASSWORDS {
+        let address = remote.replacen("://", &format!("://fixture-user:{written}@"), 1);
+        let mut command = support::isolated_command(root.path());
+        configure_trust(&mut command, root.path(), Trust::Explicit);
+        let output = command
+            .args(["templates", "add", &address])
+            .current_dir(root.path())
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        outputs.push((written, output));
+    }
+    endpoint.stop();
+    for (written, output) in outputs {
+        assert!(!output.status.success(), "{written} was accepted");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            format!("git fetch failed: authentication failed for '{remote}'\n"),
+            "{written}"
+        );
+        assert!(output.stdout.is_empty(), "{written}");
+    }
+    // Each password reached the endpoint, so each failure is its rejection.
+    let received = auth.received();
+    for (_, sent) in ADDRESS_PASSWORDS {
+        let pair = format!("fixture-user:{sent}");
+        assert!(
+            received.contains(&pair),
+            "{sent:?} was not sent: {received:?}"
+        );
+    }
 }
 
 #[test]
@@ -1216,17 +1279,21 @@ fn credential_worker() {
                 };
                 (error, probed)
             });
-            // gix names an unexpected service announcement as a byte list.
-            let listed = format!("{:?}", rejected.as_bytes());
-            let listed = listed.trim_start_matches('[').trim_end_matches(']');
-            for message in [&error, &probed] {
-                assert!(!message.contains(rejected), "{message}");
-                assert!(!message.contains(listed), "{message}");
-                if scenario == "echoed" {
-                    // The endpoint did echo the credential; Toha removed it.
-                    assert!(message.contains("<redacted>"), "{message}");
-                }
-            }
+            // The endpoint rejects the credential, or answers with it as its
+            // service announcement, which gix would write back. Toha writes
+            // its own message instead, which names no value the remote sent.
+            let expected = if scenario == "echoed" {
+                [
+                    format!("git fetch failed: could not fetch '{main}'"),
+                    format!("could not list the references of '{main}'"),
+                ]
+            } else {
+                [
+                    format!("git fetch failed: authentication failed for '{main}'"),
+                    format!("authentication failed for '{main}'"),
+                ]
+            };
+            assert_eq!([error, probed], expected);
         }
         "encoded-echo" => {
             let expected_port = port(&main);
@@ -1294,11 +1361,12 @@ fn credential_worker() {
                             !text.contains("address-user"),
                             "the {name} echo leaves the address user in the {output}"
                         );
-                        // The announcement did reach the error; Toha removed
-                        // the credential from it.
+                        // Toha's message names the remote, and nothing the
+                        // remote sent.
+                        let remote = url.replace("address-user@", "");
                         assert!(
-                            text.contains("<redacted>"),
-                            "the {name} echo is missing from the {output}"
+                            text.contains(&format!("'{remote}'")) && !text.contains("service"),
+                            "the {name} echo is not Toha's message in the {output}: {text}"
                         );
                     }
                 }

@@ -967,3 +967,55 @@ fn ambiguous_name_names_the_same_command_with_each_formal_name() {
         }
     }
 }
+
+#[test]
+fn a_failed_fetch_names_the_address_without_its_password() {
+    let root = TempDir::new().unwrap();
+    let (local, _) = repository(&root);
+    let table = [
+        // gix writes this URL back with the `@` of the password encoded.
+        (
+            "git://user:p@ss-secret@127.0.0.1:9/sample.git".to_owned(),
+            "the git protocol cannot use the user, password, host or port in \
+             'git://127.0.0.1:9/sample.git'"
+                .to_owned(),
+        ),
+        // gix quotes a URL it cannot parse with Rust escapes, which spell the
+        // control characters and keep the non-ASCII text.
+        (
+            "https://user:caf\u{e9}\u{1}\t-secret@127.0.0.1:9/sample.git".to_owned(),
+            "'https://127.0.0.1:9/sample.git' is not a valid Git URL".to_owned(),
+        ),
+        // A `#` ends an HTTPS authority, so gix cannot parse the URL; the
+        // template path still starts after the user information.
+        (
+            "https://user:fra#gment-secret@127.0.0.1:9/sample.git".to_owned(),
+            "'https://127.0.0.1:9/sample.git' is not a valid Git URL".to_owned(),
+        ),
+        (
+            "http://user:p%40ss-secret@127.0.0.1:9/sample.git".to_owned(),
+            "authentication failed for 'http://127.0.0.1:9/sample.git': \
+             credentials are only sent over https"
+                .to_owned(),
+        ),
+        (
+            format!("{local}@absent"),
+            format!("the remote '{local}' has no reference named 'absent'"),
+        ),
+    ];
+    for (address, expected) in table {
+        let output = command(&root)
+            .args(["templates", "add", &address])
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{address:?} was added");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            format!("git fetch failed: {expected}\n"),
+            "{address:?}"
+        );
+        assert!(output.stdout.is_empty(), "{address:?}");
+    }
+    let registry = support::user_data_dir(root.path()).join("templates.yml");
+    assert!(!registry.exists() || !fs::read_to_string(registry).unwrap().contains("secret"));
+}

@@ -8,10 +8,12 @@ use std::{
     sync::atomic::AtomicBool,
 };
 mod credentials;
+mod failure;
 pub(crate) use credentials::Supplied;
 pub use credentials::{
     Credential, CredentialRequest, CredentialResolver, with_credential_resolver,
 };
+pub(crate) use failure::{Operation, message as failure_message};
 pub type Hosts = IndexMap<String, String>;
 /// A template's address. Its `Debug` shows a Git address without user
 /// information.
@@ -256,25 +258,19 @@ fn is_name(text: &str, extra: &[u8]) -> bool {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || extra.contains(&byte))
 }
-/// The fetch failure for `error`, without the credentials of `repo` or any
-/// password `supplied` saw.
-fn git_error(error: impl std::fmt::Display, repo: &str, supplied: &Supplied) -> SourceError {
-    SourceError::Git(supplied.message(redacted(&error.to_string(), repo)))
-}
-/// `message` with the credentials of `repo` removed wherever it names them.
-pub(crate) fn redacted(message: &str, repo: &str) -> String {
-    let safe = without_userinfo(repo);
-    let mut message = message.replace(repo, &safe);
-    if let Some(scheme) = repo.find("://") {
-        let start = scheme + 3;
-        let end = repo[start..]
-            .find('/')
-            .map_or(repo.len(), |slash| start + slash);
-        if let Some(at) = repo[start..end].rfind('@') {
-            message = message.replace(&repo[start..start + at + 1], "");
-        }
-    }
-    message
+/// The fetch failure for `error`: the resolver's refusal when it refused,
+/// otherwise Toha's own message, which never holds gix's text.
+fn git_error(
+    error: &(dyn std::error::Error + 'static),
+    repo: &str,
+    operation: Operation,
+    supplied: &Supplied,
+) -> SourceError {
+    SourceError::Git(
+        supplied
+            .refusal()
+            .unwrap_or_else(|| failure::message(repo, operation, error)),
+    )
 }
 pub fn cache_path(cache: &Path, address: &Address, hosts: &Hosts, commit: &str) -> PathBuf {
     cache
@@ -302,7 +298,7 @@ fn reference_kind(repo: &str, reference: Option<&str>) -> Result<RefKind, Source
         return Ok(RefKind::DefaultBranch);
     };
     if let Some(local) = local_git_path(repo) {
-        let remote = gix::open(local).map_err(|e| SourceError::Git(e.to_string()))?;
+        let remote = gix::open(local).map_err(|e| opening(&e, repo))?;
         if remote
             .find_reference(&format!("refs/tags/{reference}"))
             .is_ok()
@@ -343,11 +339,8 @@ fn expand_commit(repo: &str, short: &str, dest: &Path) -> Result<String, SourceE
     }
     let local = local_git_path(repo).unwrap_or(repo);
     if repo.starts_with("file://") {
-        return gix::open(local)
-            .map_err(|e| SourceError::Git(e.to_string()))?
-            .rev_parse_single(short)
-            .map(|id| id.to_string())
-            .map_err(|e| SourceError::Git(e.to_string()));
+        let remote = gix::open(local).map_err(|e| opening(&e, repo))?;
+        return resolve_commit(&remote, short, repo);
     }
     let parent = dest
         .parent()
@@ -362,11 +355,28 @@ fn expand_commit(repo: &str, short: &str, dest: &Path) -> Result<String, SourceE
         },
         &lookup,
     )?;
-    gix::open(&lookup)
-        .map_err(|e| SourceError::Git(e.to_string()))?
+    let fetched = gix::open(&lookup).map_err(|e| opening(&e, repo))?;
+    resolve_commit(&fetched, short, repo)
+}
+/// The failure to open the repository of `repo` or a clone of it.
+fn opening(error: &(dyn std::error::Error + 'static), repo: &str) -> SourceError {
+    SourceError::Git(failure::message(repo, Operation::Open, error))
+}
+/// The full id of the commit `short` names in `repository`, a clone of `repo`.
+fn resolve_commit(
+    repository: &gix::Repository,
+    short: &str,
+    repo: &str,
+) -> Result<String, SourceError> {
+    repository
         .rev_parse_single(short)
         .map(|id| id.to_string())
-        .map_err(|e| SourceError::Git(e.to_string()))
+        .map_err(|_| {
+            SourceError::Git(format!(
+                "could not resolve the commit '{short}' in '{}'",
+                without_userinfo(repo)
+            ))
+        })
 }
 /// The roots Toha hands a bundled rustls transport, written once per connection
 /// owner and kept alive for as long as the connection may read them.
@@ -468,7 +478,7 @@ pub fn fetch(address: &Address, dest: &Path) -> Result<Fetched, SourceError> {
     let supplied = Supplied::default();
     let attach = supplied.clone();
     let mut clone = gix::prepare_clone(repo.as_str(), dest)
-        .map_err(|e| git_error(e, repo, &supplied))?
+        .map_err(|e| git_error(&e, repo, Operation::Fetch, &supplied))?
         .configure_connection(move |connection| {
             prepare_connection(connection, &mut native_roots, &attach)
         });
@@ -488,19 +498,19 @@ pub fn fetch(address: &Address, dest: &Path) -> Result<Fetched, SourceError> {
         clone = if kind == RefKind::Commit {
             clone
                 .with_revision(Some(resolved_commit.as_deref().unwrap()))
-                .map_err(|e| git_error(e, repo, &supplied))?
+                .map_err(|e| git_error(&e, repo, Operation::Fetch, &supplied))?
         } else {
             clone
                 .with_ref_name(Some(reference.as_str()))
-                .map_err(|e| git_error(e, repo, &supplied))?
+                .map_err(|e| git_error(&e, repo, Operation::Fetch, &supplied))?
         };
     }
     let (mut checkout, _) = clone
         .fetch_then_checkout(gix::progress::Discard, &AtomicBool::new(false))
-        .map_err(|e| git_error(e, repo, &supplied))?;
+        .map_err(|e| git_error(&e, repo, Operation::Fetch, &supplied))?;
     let (checkout_repo, _) = checkout
         .main_worktree(gix::progress::Discard, &AtomicBool::new(false))
-        .map_err(|e| git_error(e, repo, &supplied))?;
+        .map_err(|e| git_error(&e, repo, Operation::Fetch, &supplied))?;
     if kind == RefKind::Branch
         && reference.as_ref().is_some_and(|r| {
             checkout_repo
@@ -512,7 +522,7 @@ pub fn fetch(address: &Address, dest: &Path) -> Result<Fetched, SourceError> {
     }
     let commit = checkout_repo
         .head_id()
-        .map_err(|e| git_error(e, repo, &supplied))?
+        .map_err(|e| git_error(&e, repo, Operation::Fetch, &supplied))?
         .to_string();
     Ok(Fetched {
         commit,
@@ -612,14 +622,12 @@ mod tests {
             cwd.join("sources/gh_a_b/abc")
         );
         let repo = "https://user:token@host.invalid/o/r";
-        let error = git_error(
-            format!("clone failed for {repo}"),
-            repo,
-            &Supplied::default(),
-        )
-        .to_string();
-        assert!(!error.contains("token"));
-        assert!(error.contains("https://host.invalid/o/r"));
+        let error = std::io::Error::other(format!("clone failed for {repo}"));
+        let error = git_error(&error, repo, Operation::Fetch, &Supplied::default());
+        assert_eq!(
+            error.to_string(),
+            "git fetch failed: could not fetch 'https://host.invalid/o/r'"
+        );
     }
     /// Passwords that are spelled differently in a URL, in gix's rewrite of
     /// it and in Rust's escaped form: reserved characters raw and encoded,

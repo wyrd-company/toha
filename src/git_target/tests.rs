@@ -80,12 +80,43 @@ fn probe_reports_an_unreachable_remote_without_credentials() {
     let dir = tempfile::tempdir().unwrap();
     let url = file_url(dir.path()).replace("file://", "https://user:secret@127.0.0.1:9/");
     match probe(&url) {
-        RemoteState::Unreachable(message) => {
-            assert!(!message.contains("secret"), "{message}");
-            assert!(!message.contains("user:"), "{message}");
-        }
+        RemoteState::Unreachable(message) => assert_eq!(
+            message,
+            format!(
+                "unable to access '{}': {}",
+                url.replace("user:secret@", ""),
+                curl::Error::new(7).description()
+            )
+        ),
         other => panic!("expected unreachable, got {other:?}"),
     }
+}
+
+#[test]
+fn probe_names_a_malformed_remote_without_its_password() {
+    // gix quotes a URL it cannot parse with Rust escapes, which spell the
+    // control character and keep the non-ASCII text.
+    let url = "https://user:caf\u{e9}\u{1}\t-secret@example.invalid/sample.git";
+    assert_eq!(
+        probe(url),
+        RemoteState::Unreachable(
+            "'https://example.invalid/sample.git' is not a valid Git URL".into()
+        )
+    );
+}
+
+#[test]
+fn probe_names_credentials_the_git_protocol_cannot_use() {
+    // gix writes the URL back with the `@` of the password encoded.
+    let url = "git://user:p@ss-secret@127.0.0.1:9/sample.git";
+    assert_eq!(
+        probe(url),
+        RemoteState::Unreachable(
+            "the git protocol cannot use the user, password, host or port in \
+             'git://127.0.0.1:9/sample.git'"
+                .into()
+        )
+    );
 }
 
 #[test]
@@ -186,6 +217,21 @@ fn initialize_names_a_branch_and_adds_origin() {
     assert_eq!(
         config.string("remote.origin.fetch").unwrap().to_string(),
         "+refs/heads/*:refs/remotes/origin/*"
+    );
+}
+
+#[test]
+fn a_remote_that_cannot_be_saved_is_named_without_its_password() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = "https://user:p\tss-secret@example.invalid/sample.git";
+    let message = initialize(dir.path(), Some(url)).unwrap_err().to_string();
+    assert_eq!(
+        message,
+        format!(
+            "could not initialize a git repository at {}: \
+             'https://example.invalid/sample.git' is not a valid Git URL",
+            dir.path().display()
+        )
     );
 }
 
