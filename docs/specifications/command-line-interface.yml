@@ -56,7 +56,8 @@ description: >-
   credentials, and a clone fetches a remote branch named `HEAD` only when the
   address selects it, so that every connection is one Toha prepares. Toha
   removes the user information by the URL's structure: in
-  `<scheme>://<authority>/<path>` the authority ends at the first `/` and the
+  `<scheme>://<authority>/<path>` the authority ends at the first `/`, or for
+  an HTTP URL the Git URL parser accepts at the first `/`, `?` or `#`, and the
   user information is everything before its last `@`; a scp-like
   `<user>@<host>:<path>` is read as git reads it: the host ends at the first
   `:` and the user is everything before the last `@` in front of it, so a `@`
