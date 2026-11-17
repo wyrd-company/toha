@@ -13,7 +13,9 @@ pub use credentials::{
     Credential, CredentialRequest, CredentialResolver, with_credential_resolver,
 };
 pub type Hosts = IndexMap<String, String>;
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A template's address. Its `Debug` shows a Git address without user
+/// information.
+#[derive(Clone, PartialEq, Eq)]
 pub enum Address {
     Git {
         repo: String,
@@ -22,6 +24,24 @@ pub enum Address {
     },
     Folder(PathBuf),
     Name(String),
+}
+impl std::fmt::Debug for Address {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Git {
+                repo,
+                reference,
+                path,
+            } => f
+                .debug_struct("Git")
+                .field("repo", &without_userinfo(repo))
+                .field("reference", reference)
+                .field("path", path)
+                .finish(),
+            Self::Folder(folder) => f.debug_tuple("Folder").field(folder).finish(),
+            Self::Name(name) => f.debug_tuple("Name").field(name).finish(),
+        }
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefKind {
@@ -45,9 +65,24 @@ pub enum SourceError {
     Git(String),
 }
 fn split_git(value: &str) -> Result<(&str, Option<String>, Option<String>), SourceError> {
-    let (before_path, path) = value
-        .split_once('#')
-        .map_or((value, None), |(a, b)| (a, Some(b.to_string())));
+    // The template path follows the first `#` after the user information, so
+    // a `#` in a password stays in the URL and out of the path.
+    let after_userinfo = value.find("://").map_or(0, |scheme| {
+        let authority = scheme + 3;
+        let end = value[authority..]
+            .find('/')
+            .map_or(value.len(), |slash| authority + slash);
+        value[authority..end]
+            .rfind('@')
+            .map_or(authority, |at| authority + at + 1)
+    });
+    let (before_path, path) = match value[after_userinfo..].find('#') {
+        Some(hash) => (
+            &value[..after_userinfo + hash],
+            Some(value[after_userinfo + hash + 1..].to_string()),
+        ),
+        None => (value, None),
+    };
     if path.as_deref() == Some("") {
         return Err(SourceError::Address("empty template path".into()));
     }
@@ -171,28 +206,55 @@ impl Address {
         }
     }
 }
-/// A source suitable for durable registry and cache identifiers.
+/// `repo` without its user information: the form Toha shows, records and keys
+/// registry and cache entries by.
+///
+/// It reads the address's structure and never looks for a password's text.
+/// In `scheme://authority/path` the authority ends at the first `/`, and the
+/// user information is everything before the authority's last `@`. In a
+/// scp-like `user@host:path` it is everything before the last `@` that comes
+/// before the first `/` and is followed by a `:`; `git@host:path` becomes
+/// `ssh://host/path`. A remote-helper address `helper::address` keeps its
+/// helper and loses the user information of its address. A `/` cannot appear
+/// unencoded in user information, so text after one is the host or path, as
+/// it is for gix and git.
 pub fn without_userinfo(repo: &str) -> String {
-    if let Some(scheme) = repo.find("://") {
-        let authority_start = scheme + 3;
-        let authority_end = repo[authority_start..]
-            .find('/')
-            .map_or(repo.len(), |slash| authority_start + slash);
-        if let Some(at) = repo[authority_start..authority_end].rfind('@') {
-            return format!(
-                "{}{}",
-                &repo[..authority_start],
-                &repo[authority_start + at + 1..]
-            );
-        }
+    if let Some((helper, address)) = repo.split_once("::")
+        && is_name(helper, b"+-._")
+    {
+        return format!("{helper}::{}", without_userinfo(address));
     }
-    if let Some(rest) = repo.strip_prefix("git@") {
-        if let Some((host, path)) = rest.split_once(':') {
-            return format!("ssh://{host}/{path}");
-        }
-        return format!("ssh://{rest}");
+    if let Some((scheme, rest)) = repo.split_once("://")
+        && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+        && is_name(scheme, b"+-.")
+    {
+        let authority = rest.find('/').map_or(rest, |slash| &rest[..slash]);
+        return match authority.rfind('@') {
+            Some(at) => format!("{scheme}://{}", &rest[at + 1..]),
+            None => repo.to_owned(),
+        };
     }
-    repo.to_string()
+    let head = repo.find('/').map_or(repo, |slash| &repo[..slash]);
+    match head.rfind('@') {
+        Some(at) if head[at + 1..].contains(':') => {
+            let rest = &repo[at + 1..];
+            if &repo[..at] != "git" {
+                return rest.to_owned();
+            }
+            let (host, path) = rest.split_once(':').expect("the host ends at a colon");
+            format!("ssh://{host}/{path}")
+        }
+        // A scp-like address without a path, as Toha wrote it before.
+        Some(3) if repo.starts_with("git@") => format!("ssh://{}", &repo[4..]),
+        _ => repo.to_owned(),
+    }
+}
+/// Whether `text` is a non-empty run of ASCII letters, digits and `extra`.
+fn is_name(text: &str, extra: &[u8]) -> bool {
+    !text.is_empty()
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || extra.contains(&byte))
 }
 /// The fetch failure for `error`, without the credentials of `repo` or any
 /// password `supplied` saw.
@@ -558,5 +620,119 @@ mod tests {
         .to_string();
         assert!(!error.contains("token"));
         assert!(error.contains("https://host.invalid/o/r"));
+    }
+    /// Passwords that are spelled differently in a URL, in gix's rewrite of
+    /// it and in Rust's escaped form: reserved characters raw and encoded,
+    /// encodings gix decodes and writes back in another case or not at all,
+    /// non-ASCII text, and control characters next to non-ASCII text.
+    const UNUSUAL_PASSWORDS: [&str; 14] = [
+        "plain-secret",
+        "p@ss-secret",
+        "p%40ss-secret",
+        "p%2Ass-secret",
+        "caf%c3%a9-secret",
+        "caf\u{e9}-secret",
+        "sp%20ace-secret",
+        "co:lon-secret",
+        "que?ry-secret",
+        "fra#gment-secret",
+        "p\tss-secret",
+        "caf\u{e9}\u{1}\t-secret",
+        "\u{7f}caf\u{e9}-secret",
+        "p%zz-secret",
+    ];
+    #[test]
+    fn userinfo_is_removed_from_every_address_form() {
+        for password in UNUSUAL_PASSWORDS {
+            let table = [
+                (
+                    format!("https://user:{password}@host.invalid/o/r.git"),
+                    "https://host.invalid/o/r.git",
+                ),
+                (
+                    format!("https://user:{password}@[::1]:8443/o/r"),
+                    "https://[::1]:8443/o/r",
+                ),
+                (
+                    format!("http://user:{password}@host.invalid"),
+                    "http://host.invalid",
+                ),
+                (
+                    format!("git://user:{password}@host.invalid/r"),
+                    "git://host.invalid/r",
+                ),
+                (
+                    format!("ssh://user:{password}@host.invalid/r"),
+                    "ssh://host.invalid/r",
+                ),
+                (
+                    format!("git+ssh://user:{password}@host.invalid/r"),
+                    "git+ssh://host.invalid/r",
+                ),
+                (
+                    format!("file://user:{password}@host.invalid/tmp/r"),
+                    "file://host.invalid/tmp/r",
+                ),
+                (
+                    format!("user:{password}@host.invalid:o/r"),
+                    "host.invalid:o/r",
+                ),
+                (
+                    format!("persistent-https::https://user:{password}@host.invalid/r"),
+                    "persistent-https::https://host.invalid/r",
+                ),
+                (
+                    format!("user:{password}@https://host.invalid/r"),
+                    "https://host.invalid/r",
+                ),
+            ];
+            for (url, expected) in table {
+                assert_eq!(without_userinfo(&url), expected, "{url:?}");
+            }
+        }
+    }
+    #[test]
+    fn addresses_without_userinfo_keep_their_spelling() {
+        let table = [
+            ("https://github.com/a/b.git", "https://github.com/a/b.git"),
+            ("https://GitHub.com/A/B%20C", "https://GitHub.com/A/B%20C"),
+            ("https://user@github.com/a/b", "https://github.com/a/b"),
+            ("https://host.invalid/a@b/c", "https://host.invalid/a@b/c"),
+            ("git@github.com:a/b.git", "ssh://github.com/a/b.git"),
+            ("git@github.com", "ssh://github.com"),
+            ("bob@host.invalid:repo.git", "host.invalid:repo.git"),
+            ("file:///tmp/a@b.git", "file:///tmp/a@b.git"),
+            ("/tmp/a@b:c", "/tmp/a@b:c"),
+            ("../rel@x.git", "../rel@x.git"),
+            ("rel@x.git", "rel@x.git"),
+            ("gh:a/b", "gh:a/b"),
+            ("ext::sh -c x", "ext::sh -c x"),
+        ];
+        for (url, expected) in table {
+            assert_eq!(without_userinfo(url), expected, "{url:?}");
+            assert_eq!(without_userinfo(expected), expected, "{expected:?}");
+        }
+    }
+    #[test]
+    fn formal_names_and_cache_paths_hold_no_unusual_password() {
+        let hosts = Hosts::from([("gh".into(), "https://github.com".into())]);
+        let cwd = Path::new("/");
+        for password in UNUSUAL_PASSWORDS {
+            for input in [
+                format!("https://user:{password}@github.com/a/b@v1#sub"),
+                format!("https://user:{password}@else.invalid/a/b.git"),
+            ] {
+                let address = parse(&input, &hosts, cwd, cwd).unwrap();
+                let formal = address.formal_name(&hosts);
+                let cache = cache_path(cwd, &address, &hosts, "abc");
+                for shown in [
+                    formal,
+                    cache.to_string_lossy().into_owned(),
+                    format!("{address:?}"),
+                ] {
+                    assert!(!shown.contains("secret"), "{input:?} shows {shown:?}");
+                }
+            }
+        }
     }
 }
