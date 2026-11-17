@@ -142,8 +142,8 @@ impl RegistryFile {
         if let Some(e) = validator.iter_errors(&value).next() {
             return Err(RegistryError::Schema {
                 path: path.into(),
-                instance_path: e.instance_path().to_string(),
-                message: e.to_string(),
+                instance_path: crate::schema_message::path(&e),
+                message: crate::schema_message::message(&e),
             });
         }
         let presence: IndexMap<String, FieldPresence> = value["templates"]
@@ -343,8 +343,8 @@ impl RegistryFile {
         if let Some(error) = validator.iter_errors(&value).next() {
             return Err(RegistryError::Schema {
                 path: path.into(),
-                instance_path: error.instance_path().to_string(),
-                message: error.to_string(),
+                instance_path: crate::schema_message::path(&error),
+                message: crate::schema_message::message(&error),
             });
         }
         let parent = path.parent().unwrap_or(Path::new("."));

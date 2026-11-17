@@ -20,6 +20,7 @@ pub mod protocol;
 pub mod registry;
 pub mod requirement;
 pub mod review;
+mod schema_message;
 pub mod source;
 pub mod staging;
 pub mod template;

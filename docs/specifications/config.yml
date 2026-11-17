@@ -57,10 +57,9 @@ description: >-
   configuration is resolved again when a staged interview resumes.
 
   A configuration file that does not match its schema is an error that names
-  the file and the failing path. Its message shows preset values and literal
-  template defaults without their text, and template addresses and host bases
-  without user information, as any of them can hold credentials. The value
-  of a preset or literal that a `git` question takes is never shown.
+  the file, the failing path, whose keys lose their user information, and the
+  rule the value breaks, never the value: a preset, a literal default or a host
+  base can hold credentials.
 
   The `defaults` property is refused with conversion guidance. Each value
   must be given a preset name or written as a literal under an explicit

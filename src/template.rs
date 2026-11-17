@@ -576,36 +576,6 @@ fn flow_action_of(value: Option<&Value>, in_group: bool) -> Result<FlowAction, S
 /// Checks the flow nodes of a raw interview before schema validation, so a flow
 /// load error names the corrective form instead of a generic schema `oneOf`
 /// failure. Recurses into group `nodes`.
-/// `doc` with the `default` of every object whose `type` is `git`, at any
-/// depth, replaced by a value of the same kind that holds no text, for the
-/// diagnostics that write the document. A `git` default can hold the
-/// credentials of a URL in any form, even in an expression or a value of the
-/// wrong kind. The schema puts no constraint on a default's content, so the
-/// masked copy validates as the document does.
-fn masked_git_defaults(doc: &Value) -> Value {
-    fn walk(value: &mut Value) {
-        match value {
-            Value::Object(fields) => {
-                if fields.get("type").and_then(Value::as_str) == Some("git")
-                    && let Some(default) = fields.get_mut("default")
-                {
-                    *default = match &*default {
-                        Value::String(_) => Value::String("<hidden>".into()),
-                        Value::Array(_) => Value::Array(Vec::new()),
-                        Value::Object(_) => Value::Object(Default::default()),
-                        other => other.clone(),
-                    };
-                }
-                fields.values_mut().for_each(walk);
-            }
-            Value::Array(items) => items.iter_mut().for_each(walk),
-            Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
-        }
-    }
-    let mut masked = doc.clone();
-    walk(&mut masked);
-    masked
-}
 fn check_flow(values: &[Value], in_group: bool, prefix: &str, problems: &mut Vec<Problem>) {
     for (i, value) in values.iter().enumerate() {
         let path = format!("{prefix}[{i}]");
@@ -1593,14 +1563,14 @@ impl Template {
         if !problems.is_empty() {
             return Err(LoadError { problems });
         }
-        // A schema error writes the instance it rejects, which can be a whole
-        // question, so the schema checks a copy whose `git` defaults are
-        // masked.
-        for e in SCHEMA.iter_errors(&masked_git_defaults(&doc)) {
+        // The schema library's message writes the instance it rejects, which
+        // can be a whole question with its `git` default, so Toha writes its
+        // own, without the instance.
+        for e in SCHEMA.iter_errors(&doc) {
             problem(
                 &mut problems,
-                format!("template.yml{}", e.instance_path()),
-                e.to_string(),
+                format!("template.yml{}", crate::schema_message::path(&e)),
+                crate::schema_message::message(&e),
             );
         }
         if !problems.is_empty() {

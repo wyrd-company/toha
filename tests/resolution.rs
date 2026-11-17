@@ -1025,3 +1025,26 @@ fn a_failed_fetch_names_the_address_without_its_password() {
     let registry = support::user_data_dir(root.path()).join("templates.yml");
     assert!(!registry.exists() || !fs::read_to_string(registry).unwrap().contains("secret"));
 }
+
+#[test]
+fn an_invalid_configuration_names_no_credentials() {
+    let url = "https://user:p%40ss-config-secret@127.0.0.1:9/r.git";
+    for text in [
+        format!("template-defaults: {{ sample: {{ remote: {{ preset: [{url:?}] }} }} }}\n"),
+        format!("template-defaults: {{ sample: [{url:?}] }}\n"),
+        format!("presets: [{url:?}]\n"),
+        format!("presets: {{ remote: {{ {url:?}: 1 }} }}\n"),
+    ] {
+        let root = TempDir::new().unwrap();
+        write_config(&root, &text);
+        let output = command(&root).args(["templates", "list"]).output().unwrap();
+        assert!(!output.status.success(), "{text}");
+        let shown = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(shown.contains("config.yml"), "{text}: {shown}");
+        assert!(!shown.contains("secret"), "{text}: {shown}");
+    }
+}

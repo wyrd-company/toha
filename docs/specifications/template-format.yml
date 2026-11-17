@@ -6,7 +6,10 @@ description: >-
   Defines the toha template: the folder layout, the `template.yml` file, the
   interview, data, file generation, requirements, hooks, messages, and how Jinja is evaluated.
   `docs/specifications/template-format.schema.yml` is the machine-readable
-  definition of `template.yml`. `docs/examples/` holds conforming examples.
+  definition of `template.yml`. `docs/examples/` holds conforming examples. A
+  `template.yml` that does not match the schema is a load error that names the
+  failing path, whose keys lose their user information, and the rule the value
+  breaks, never the value, which can hold credentials.
 
   Layout. A template is a folder with a `template.yml` at its root, the
   template root. The source subdirectory, `template/` unless `source` names

@@ -122,78 +122,20 @@ fn read(path: &Path, definition: &str) -> Result<Layer, ConfigError> {
         .with_draft(jsonschema::Draft::Draft202012)
         .build(&schema)
         .expect("embedded config definition");
-    if validator.iter_errors(&value).next().is_some() {
-        // A schema error writes the instance it rejects, so the message comes
-        // from a copy without the values that can hold credentials.
-        let masked = masked_for_diagnostics(&value);
-        let (instance_path, message) = validator
-            .iter_errors(&masked)
-            .next()
-            .map(|error| (error.instance_path().to_string(), error.to_string()))
-            .unwrap_or_else(|| {
-                (
-                    String::new(),
-                    "does not match the configuration schema".into(),
-                )
-            });
+    // The schema library's message writes the instance it rejects, which can
+    // hold the credentials of a URL in a preset, a default or a host base, so
+    // Toha writes its own, without the instance.
+    if let Some(error) = validator.iter_errors(&value).next() {
         return Err(ConfigError::Schema {
             path: path.into(),
-            instance_path,
-            message,
+            instance_path: crate::schema_message::path(&error),
+            message: crate::schema_message::message(&error),
         });
     }
     serde_json::from_value(value).map_err(|e| ConfigError::Parse {
         path: path.into(),
         message: e.to_string(),
     })
-}
-/// `value`, a configuration layer, without the values that can hold the
-/// credentials of a URL, for the diagnostics that write it: preset values and
-/// literal template defaults keep their kind but hold no text, a preset
-/// reference stays, and template addresses and host bases lose their user
-/// information. The copy is valid or invalid where `value` is, as the schema
-/// constrains only the kinds of those values.
-fn masked_for_diagnostics(value: &Value) -> Value {
-    fn literal(value: &Value) -> Value {
-        match value {
-            Value::String(_) => Value::String("<hidden>".into()),
-            Value::Array(items) => Value::Array(items.iter().map(literal).collect()),
-            Value::Object(_) => Value::Object(Default::default()),
-            other => other.clone(),
-        }
-    }
-    let mut masked = value.clone();
-    if let Some(Value::Object(presets)) = masked.get_mut("presets") {
-        presets
-            .values_mut()
-            .for_each(|value| *value = literal(value));
-    }
-    if let Some(Value::Object(templates)) = masked.get_mut("template-defaults") {
-        *templates = std::mem::take(templates)
-            .into_iter()
-            .map(|(address, mut mapping)| {
-                if let Value::Object(mapping) = &mut mapping {
-                    for source in mapping.values_mut() {
-                        let reference = source.as_object().is_some_and(|fields| {
-                            fields.len() == 1 && fields.contains_key("preset")
-                        });
-                        if !reference {
-                            *source = literal(source);
-                        }
-                    }
-                }
-                (crate::source::without_userinfo(&address), mapping)
-            })
-            .collect();
-    }
-    if let Some(Value::Object(hosts)) = masked.get_mut("hosts") {
-        for base in hosts.values_mut() {
-            if let Value::String(text) = base {
-                *text = crate::source::without_userinfo(text);
-            }
-        }
-    }
-    masked
 }
 fn path(value: &str, file: &Path, home: &Path) -> PathBuf {
     let expanded = if value == "~" {
@@ -408,6 +350,15 @@ mod tests {
             format!("template-defaults: {{ sample: {{ remote: [{url:?}, 1] }} }}\n"),
             format!("template-defaults: {{ {url:?}: 1 }}\n"),
             format!("hosts: {{ gh: {url:?} }}\n"),
+            format!("template-defaults: {{ sample: {{ remote: {{ preset: [{url:?}] }} }} }}\n"),
+            format!("template-defaults: {{ sample: {{ remote: {{ preset: {url:?} }} }} }}\n"),
+            format!(
+                "template-defaults: {{ sample: {{ remote: {{ preset: {{ {url:?}: 1 }} }} }} }}\n"
+            ),
+            format!("template-defaults: {{ sample: [{url:?}] }}\n"),
+            format!("presets: [{url:?}]\n"),
+            format!("presets: {{ {url:?}: x }}\n"),
+            format!("{url:?}: 1\n"),
         ] {
             fs::write(&local, &text).unwrap();
             let dirs = ConfigPaths {
