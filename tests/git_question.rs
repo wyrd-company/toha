@@ -723,6 +723,33 @@ fn like_seed_is_staged_without_credentials(recorded: Value) {
 }
 
 #[test]
+fn a_git_question_the_schema_rejects_names_no_credentials() {
+    // A schema error writes the question it rejects; a missing `prompt` and
+    // a wrong `validate` each reject the whole question.
+    for extra in ["", "    prompt: Remote\n    validate: false\n"] {
+        for default in [
+            "https://user:p%40ss-schema-secret@127.0.0.1:9/r.git",
+            r#"'{{ "https://user:p%40ss-schema-secret@127.0.0.1:9/r.git" }}'"#,
+            r#"["https://user:p%40ss-schema-secret@127.0.0.1:9/r.git"]"#,
+        ] {
+            let scene = Scene::new(
+                &format!(
+                    "name: sample\ninterview:\n  - id: remote\n    type: git\n{extra}    default: {default}\n"
+                ),
+                false,
+            );
+            let shown = staged_output(&scene);
+            assert!(shown.contains("template.yml/interview/0"), "{shown}");
+            assert!(!shown.contains("secret"), "{default}: {shown}");
+            // The public loader returns the same problems.
+            let error = toha::Template::load(scene.template.path()).unwrap_err();
+            let returned = format!("{error} {error:?}");
+            assert!(!returned.contains("secret"), "{default}: {returned}");
+        }
+    }
+}
+
+#[test]
 fn a_relative_remote_with_history_is_checked_from_the_target() {
     let scene = Scene::new(TEMPLATE, false);
     // `history.git` sits beside the target, so `../history.git` names it from
