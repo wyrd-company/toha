@@ -198,10 +198,9 @@ put it in the message. The same holds for credentials in the address itself
 not store or erase a resolver's credential. curl's verbose output
 (`GIT_CURL_VERBOSE` or `gitoxide.http.verbose`) is off for every HTTP
 connection Toha opens, as it writes the request headers that carry
-credentials. A clone inside a resolver's scope
-does not fetch a remote branch named `HEAD`, so an explicit
-`@refs/heads/HEAD` selection fails inside the scope. Outside a resolver scope,
-that selection works.
+credentials. A clone fetches a remote branch named `HEAD` only when the
+address selects it with `@refs/heads/HEAD`, inside a resolver's scope or not,
+so that every connection is one Toha prepares.
 
 ## Choose a hook runner and account for process inputs
 

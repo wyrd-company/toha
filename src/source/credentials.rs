@@ -102,10 +102,10 @@ thread_local! {
 /// behaviour without a resolver. An inner call replaces the resolver for its
 /// own operation. SSH and local remotes never consult it.
 ///
-/// While the resolver is in scope, a clone does not fetch a remote branch
-/// named `HEAD`, so that every connection consults the resolver. curl's
-/// verbose output is off for every HTTP connection Toha opens, as it writes
-/// the request headers that carry credentials.
+/// curl's verbose output is off for every HTTP connection Toha opens, as it
+/// writes the request headers that carry credentials. A clone fetches a remote
+/// branch named `HEAD` only when the address selects it, so that every
+/// connection is one Toha prepares.
 pub fn with_credential_resolver<T>(
     resolver: Arc<dyn CredentialResolver>,
     operation: impl FnOnce() -> T,
@@ -119,11 +119,6 @@ pub fn with_credential_resolver<T>(
     }
     let _restore = Restore(RESOLVER.with(|current| current.replace(Some(resolver))));
     operation()
-}
-
-/// Whether the calling thread's operation has a resolver.
-pub(crate) fn resolving() -> bool {
-    RESOLVER.with(|current| current.borrow().is_some())
 }
 
 fn current_resolver() -> Option<Arc<dyn CredentialResolver>> {

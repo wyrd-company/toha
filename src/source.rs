@@ -572,6 +572,8 @@ fn configure_http(
     connection.set_transport_options(options);
     Ok(())
 }
+/// A remote branch named `HEAD`, which a clone fetches only when selected.
+const HEAD_BRANCH: &str = "refs/heads/HEAD";
 pub fn fetch(address: &Address, dest: &Path) -> Result<Fetched, SourceError> {
     let Address::Git {
         repo, reference, ..
@@ -599,12 +601,17 @@ pub fn fetch(address: &Address, dest: &Path) -> Result<Fetched, SourceError> {
         .configure_connection(move |connection| {
             prepare_connection(connection, &mut native_roots, &attach)
         });
-    if credentials::resolving() {
-        // gix retries a clone whose remote has a `refs/heads/HEAD` branch on a
-        // second connection it does not let Toha prepare, so that connection
-        // would skip the resolver. Excluding the branch removes the retry. Setting
-        // the remote here also means gix leaves tags to it, so ask for all tags,
-        // as a clone does without this setting.
+    // gix retries a clone whose remote has a `refs/heads/HEAD` branch, which
+    // clashes with the clone's own `HEAD` tracking ref, on a second
+    // connection it does not let Toha prepare. That connection would skip the
+    // resolver and turn curl's verbose output back on, which writes the
+    // request headers with their credentials. Excluding the branch removes
+    // the retry. Setting the remote here also means gix leaves tags to it, so
+    // ask for all tags, as a clone does without this setting. An explicit
+    // selection of that branch fetches it as a revision: on one connection,
+    // without the clashing tracking ref.
+    let head_branch = reference.as_deref() == Some(HEAD_BRANCH);
+    if !head_branch {
         clone = clone.configure_remote(|remote| {
             Ok(remote
                 .with_refspecs(["^refs/heads/HEAD"], gix::remote::Direction::Fetch)?
@@ -615,6 +622,10 @@ pub fn fetch(address: &Address, dest: &Path) -> Result<Fetched, SourceError> {
         clone = if kind == RefKind::Commit {
             clone
                 .with_revision(Some(resolved_commit.as_deref().unwrap()))
+                .map_err(|e| git_error(&e, repo, Operation::Fetch, &supplied))?
+        } else if head_branch {
+            clone
+                .with_revision(Some(HEAD_BRANCH))
                 .map_err(|e| git_error(&e, repo, Operation::Fetch, &supplied))?
         } else {
             clone

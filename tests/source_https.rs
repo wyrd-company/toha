@@ -1086,6 +1086,68 @@ fn a_remote_head_branch_keeps_the_clone_on_the_resolver() {
 }
 
 #[test]
+fn a_remote_head_branch_keeps_curl_diagnostics_off_without_a_resolver() {
+    let (root, config) = https_fixture(Trust::Explicit);
+    let source = root.path().join("source");
+    let rev_parse = |dir: &Path, name: &str| {
+        let mut command = Command::new("git");
+        command.args(["rev-parse", name]).current_dir(dir);
+        String::from_utf8(checked(command))
+            .unwrap()
+            .trim()
+            .to_owned()
+    };
+    let first = rev_parse(&source, "HEAD");
+    git(&source, &["commit", "--allow-empty", "-m", "second"]);
+    git(&source, &["push", "../remote.git", "main"]);
+    let main_commit = rev_parse(&source, "HEAD");
+    // A branch named `HEAD` clashes with the clone's own `HEAD` tracking ref,
+    // which made gix retry on a connection Toha does not prepare.
+    let remote = root.path().join("remote.git");
+    git(&remote, &["update-ref", "refs/heads/HEAD", &first]);
+    let auth = Auth::new("fixture-user", "head-branch-secret");
+    let endpoint = Endpoint::start(root.path(), Some(config), Some(auth.clone()));
+    let address = url(&endpoint, "https").replacen("://", "://fixture-user:head-branch-secret@", 1);
+    let mut runs = Vec::new();
+    for selection in ["", "@refs/heads/HEAD"] {
+        let iso = TempDir::new().unwrap();
+        let mut command = support::isolated_command(iso.path());
+        configure_trust(&mut command, root.path(), Trust::Explicit);
+        for switch in DIAGNOSTICS {
+            command.env(switch, "1");
+        }
+        let output = command
+            .args(["templates", "add", &format!("{address}{selection}")])
+            .current_dir(iso.path())
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        runs.push((selection, iso, output));
+    }
+    endpoint.stop();
+    for ((selection, iso, output), commit) in runs.iter().zip([&main_commit, &first]) {
+        let shown = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.status.success(), "{selection:?}: {shown}");
+        assert!(!shown.contains("secret"), "{selection:?}: {shown}");
+        assert!(
+            !recovers(&shown, "fixture-user:head-branch-secret"),
+            "{selection:?}: {shown}"
+        );
+        let registry =
+            fs::read_to_string(support::user_data_dir(iso.path()).join("templates.yml")).unwrap();
+        assert!(
+            registry.contains(commit.as_str()),
+            "{selection:?}: {registry}"
+        );
+    }
+}
+
+#[test]
 fn an_apply_stops_unchanged_when_the_resolver_refuses_its_remote() {
     run_credential_scenario("apply-refused", private());
 }
@@ -1191,18 +1253,34 @@ fn credential_worker() {
                 command
             }))
             .unwrap();
+            let head_commit = String::from_utf8(checked({
+                let mut command = Command::new("git");
+                command
+                    .args(["--git-dir", remote.to_str().unwrap()])
+                    .args(["rev-parse", "refs/heads/HEAD"]);
+                command
+            }))
+            .unwrap();
             let resolver = grant(private(), port(&main));
-            let (fetched, tagged) = with_credential_resolver(resolver.clone(), || {
+            let (fetched, tagged, selected) = with_credential_resolver(resolver.clone(), || {
                 let tagged = Address::Git {
                     repo: with_user(&main),
                     reference: Some("sample-tag".into()),
                     path: None,
                 };
+                let selected = Address::Git {
+                    repo: with_user(&main),
+                    reference: Some("refs/heads/HEAD".into()),
+                    path: None,
+                };
                 (
                     fetch_from(&main).unwrap(),
                     fetch(&tagged, &root.join("tagged")).unwrap(),
+                    fetch(&selected, &root.join("selected")).unwrap(),
                 )
             });
+            // An explicit selection of the `HEAD` branch fetches it.
+            assert_eq!(selected.commit, head_commit.trim());
             assert_eq!(fetched.commit, main_commit.trim());
             let tags = String::from_utf8(checked({
                 let mut command = Command::new("git");
@@ -1216,7 +1294,7 @@ fn credential_worker() {
             assert_eq!(fetched.reference_kind, RefKind::DefaultBranch);
             assert_eq!(tagged.reference_kind, RefKind::Tag);
             // One challenge on each fetch's only connection.
-            assert_eq!(resolver.asked.lock().unwrap().len(), 2);
+            assert_eq!(resolver.asked.lock().unwrap().len(), 3);
         }
         "apply-refused" => {
             let template_root = root.join("git-template");
