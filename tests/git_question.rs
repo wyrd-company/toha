@@ -883,6 +883,107 @@ fn an_update_stages_a_recorded_git_answer_without_credentials() {
     assert_eq!(files_with_secret(scene.iso.path()), Vec::<PathBuf>::new());
 }
 
+#[test]
+fn a_formatted_git_answer_keeps_no_credentials() {
+    // `format` turns a scp-like answer, which holds no password, into an
+    // HTTPS URL whose user information would carry one.
+    let scene = Scene::new(
+        "name: sample
+interview:
+  - id: remote
+    type: git
+    prompt: Remote
+    format: \"'https://' ~ value\"
+  - id: label
+    type: text
+    prompt: 'Label for {{ remote }}'
+",
+        false,
+    );
+    let mut stage = scene.command();
+    stage
+        .arg("stage")
+        .arg(scene.address())
+        .arg(scene.target())
+        .arg("--async");
+    assert_eq!(stage.output().unwrap().status.code(), Some(4));
+    let answers = tempfile::tempdir().unwrap();
+    let file = answers.path().join("answers.json");
+    let submit = |values: Value| {
+        std::fs::write(
+            &file,
+            serde_json::to_vec(&json!({
+                "template": support::formal_name(scene.template.path()),
+                "answers": values,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut cont = scene.command();
+        cont.arg("continue").arg(scene.target()).arg(&file);
+        cont.output().unwrap()
+    };
+    let first = submit(json!({ "remote": "user:p%40ss-format-secret@127.0.0.1:9/r.git" }));
+    assert_eq!(first.status.code(), Some(4), "{first:?}");
+    let questions = support::first_document(&first.stdout);
+    assert!(!questions.to_string().contains("secret"), "{questions}");
+    assert!(
+        questions
+            .to_string()
+            .contains("Label for https://127.0.0.1:9/r.git"),
+        "{questions}"
+    );
+    let second = submit(json!({ "label": "sample" }));
+    assert!(second.status.success(), "{second:?}");
+    let mut apply = scene.command();
+    apply.arg("apply").arg(scene.target());
+    let applied = apply.output().unwrap();
+    assert!(applied.status.success(), "{applied:?}");
+    for output in [&first, &second, &applied] {
+        let shown = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!shown.contains("secret"), "{shown}");
+    }
+    // The answer as given stays in the record: as a scp-like address, its
+    // `@` is in the path and holds no password. Only `format` built a URL
+    // whose user information is one, and the remote saves it without.
+    assert_eq!(
+        git_stdout(&scene.target(), &["remote", "get-url", "origin"]),
+        "https://127.0.0.1:9/r.git"
+    );
+    let config = std::fs::read_to_string(scene.target().join(".git/config")).unwrap();
+    assert!(!config.contains("secret"), "{config}");
+}
+
+#[test]
+fn a_formatted_git_default_keeps_no_credentials() {
+    let scene = Scene::new(
+        "name: sample
+interview:
+  - id: remote
+    type: git
+    prompt: Remote
+    default: default-format-secret
+    format: \"'https://user:' ~ value ~ '@127.0.0.1:9/r.git'\"
+",
+        false,
+    );
+    let (code, document) = scene.apply(json!({}), &[]);
+    assert_eq!(code, Some(0), "{document}");
+    assert!(!document.to_string().contains("secret"), "{document}");
+    // The record keeps the default as the template gives it; the remote
+    // keeps no credentials the format built from it.
+    assert_eq!(
+        git_stdout(&scene.target(), &["remote", "get-url", "origin"]),
+        "https://127.0.0.1:9/r.git"
+    );
+    let config = std::fs::read_to_string(scene.target().join(".git/config")).unwrap();
+    assert!(!config.contains("secret"), "{config}");
+}
+
 /// The one staged record in the `staged` folder under the isolated root of
 /// `scene`, wherever the platform keeps state.
 fn staged_record(scene: &Scene) -> PathBuf {

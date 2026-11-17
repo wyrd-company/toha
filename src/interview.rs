@@ -1558,7 +1558,7 @@ fn format_answer(
             })
             .map_err(|e| fail(&e))
     };
-    Ok(match answer {
+    let formatted = match answer {
         Answer::Text(v) => {
             Answer::Text(serde_json::from_value(apply(Value::String(v))?).map_err(|e| fail(&e))?)
         }
@@ -1573,6 +1573,12 @@ fn format_answer(
                 .map(|s| serde_json::from_value(apply(Value::String(s))?).map_err(|e| fail(&e)))
                 .collect::<Result<Vec<_>, EvalError>>()?,
         ),
+        a => a,
+    };
+    // `format` can build a URL with credentials from a `git` answer that had
+    // none, so its result loses them as the answer did.
+    Ok(match formatted {
+        Answer::Text(v) if kind == PromptKind::Git => Answer::Text(git_answer(&v)),
         a => a,
     })
 }

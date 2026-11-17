@@ -170,8 +170,9 @@ description: >-
   Git question. A `git` question asks for the remote URL of the target's
   repository; its answer is a one-line string, like `text`. Toha removes the
   credentials from the answer and from the rendered default as it takes them
-  in, so none reaches staged state, documents, prompts, reports or the remote;
-  a git credential helper supplies them. An SSH address keeps its user, which
+  in, and again from the result of the question's `format`, so none reaches
+  staged state, documents, prompts, reports or the remote; a git credential
+  helper supplies them. An SSH address keeps its user, which
   names the account to log in to, and loses any password; any other address
   loses all of its user information, as an HTTPS user can be a token. The
   diagnostics of a `git` default name the question and field, and the

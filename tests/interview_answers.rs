@@ -1796,6 +1796,64 @@ fn the_engine_keeps_no_credentials_of_a_git_answer_or_default() {
 }
 
 #[test]
+fn the_engine_keeps_no_credentials_a_git_format_builds() {
+    // `format` turns a scp-like answer, which holds no password, into an
+    // HTTPS URL whose user information would carry one.
+    let (_folder, template) = inline(
+        "name: sample\ninterview:\n  - id: remote\n    type: git\n    prompt: Remote\n    \
+         format: \"'https://' ~ value\"\n  - id: label\n    type: text\n    \
+         prompt: 'Label for {{ remote }}'\n",
+    );
+    let remote = toha::Id::parse("remote").unwrap();
+    let Interview::Asking(pending) = Interview::start(&template, seed()).unwrap() else {
+        panic!("expected the git question");
+    };
+    let answers = toha::RawAnswers::from([(
+        remote.clone(),
+        toha::RawAnswer(json!("user:p%40ss-format-secret@127.0.0.1:9/r.git")),
+    )]);
+    let Interview::Asking(pending) = pending.answer(answers).unwrap() else {
+        panic!("expected the label question");
+    };
+    let batch = format!("{:?}", pending.batch());
+    assert!(
+        batch.contains("Label for https://127.0.0.1:9/r.git"),
+        "{batch}"
+    );
+    assert!(!batch.contains("secret"), "{batch}");
+    let label = toha::RawAnswers::from([(
+        toha::Id::parse("label").unwrap(),
+        toha::RawAnswer(json!("sample")),
+    )]);
+    let Interview::Complete(completed) = pending.answer(label).unwrap() else {
+        panic!("expected a complete interview");
+    };
+    assert_eq!(
+        completed.answers[&remote],
+        toha::Answer::Text("https://127.0.0.1:9/r.git".into())
+    );
+    let shown = format!("{:?}", completed.answers);
+    assert!(!shown.contains("secret"), "{shown}");
+
+    // A default the format builds a URL with credentials from.
+    let (_folder, template) = inline(
+        "name: sample\ninterview:\n  - id: remote\n    type: git\n    prompt: Remote\n    \
+         default: default-format-secret\n    \
+         format: \"'https://user:' ~ value ~ '@127.0.0.1:9/r.git'\"\n",
+    );
+    let Interview::Asking(pending) = Interview::start(&template, seed()).unwrap() else {
+        panic!("expected the git question");
+    };
+    let Interview::Complete(completed) = pending.answer(toha::RawAnswers::new()).unwrap() else {
+        panic!("expected a complete interview");
+    };
+    assert_eq!(
+        completed.answers[&remote],
+        toha::Answer::Text("https://127.0.0.1:9/r.git".into())
+    );
+}
+
+#[test]
 fn the_engine_shows_no_credentials_of_a_template_git_default() {
     let (_folder, template) = inline(
         "name: sample\ninterview:\n  - id: remote\n    type: git\n    prompt: Remote URL\n    \
