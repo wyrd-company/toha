@@ -103,10 +103,16 @@ thread_local! {
 ///
 /// The transfer then ends: it writes nothing more and removes its folder.
 ///
-/// A document schema fetch has no such limit. It runs on the calling thread
-/// with its own HTTPS connection, which the stop aborts and closes within a
+/// A document schema fetch runs on the calling thread with its own HTTPS
+/// connection. The stop aborts it and closes that connection within a
 /// fraction of a second (Toha checks the signal at least every 100 ms), also
-/// while the schema endpoint sends nothing.
+/// while the schema endpoint sends nothing. One part of it can't be
+/// interrupted: a name lookup still pending at the stop. curl's resolver
+/// threads for that lookup are detached instead of joined. They hold no
+/// connection to the schema host and end by themselves when the system
+/// resolver returns (wyrd-company/toha#81). With a libcurl that supports
+/// neither curl's transfer nor its multi-handle quick-exit option, the stop
+/// waits for the lookup instead.
 pub fn with_stop_signal<T>(signal: StopSignal, operation: impl FnOnce() -> T) -> T {
     struct Restore(Option<StopSignal>);
     impl Drop for Restore {

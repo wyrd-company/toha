@@ -277,10 +277,22 @@ The transfer then ends: it writes nothing more and removes its temporary
 folder. Releasing the transfer at the stop is tracked in
 [wyrd-company/toha#78](https://github.com/wyrd-company/toha/issues/78).
 
-A document schema fetch has no such limit. Toha makes it on the calling thread,
-with its own HTTPS connection, and checks the signal at least every 100 ms. The
-stop aborts the fetch and closes that connection within a fraction of a second,
-even while the schema endpoint sends nothing.
+A document schema fetch has no such limit, apart from its name lookup. Toha
+makes the fetch on the calling thread, with its own HTTPS connection, and
+checks the signal at least every 100 ms. The stop aborts the fetch and closes
+that connection within a fraction of a second, even while the schema endpoint
+sends nothing.
+
+### Limit: a pending schema host lookup
+
+A name lookup can't be interrupted. When the stop arrives while the schema
+host's name is still being looked up, the fetch returns at once, but curl's
+resolver threads for that lookup are detached rather than joined. They hold no
+connection to the schema host and end by themselves when the system resolver
+returns. A stop after the lookup leaves no thread. With a libcurl that
+supports neither of curl's quick-exit options, the stop waits for the lookup
+instead. Making the lookup itself stoppable is tracked in
+[wyrd-company/toha#81](https://github.com/wyrd-company/toha/issues/81).
 
 ## Choose a hook runner and account for process inputs
 
