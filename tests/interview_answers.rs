@@ -1887,6 +1887,18 @@ fn the_engine_shows_no_source_of_a_git_format_or_default() {
     assert!(!shown.contains("secret"), "{shown}");
     assert!(!format!("{:?}", template.interview).contains("secret"));
 
+    // A renderer message that quotes the expression's input stays out too.
+    let (_folder, template) = inline(
+        "name: sample\ninterview:\n  - id: remote\n    type: git\n    prompt: Remote\n    \
+         default: '{{ \"2026-11-17T00:00:00Z[UTC]https://user:p%40ss-dateformat-secret@host.invalid/r.git\" | dateformat }}'\n",
+    );
+    let error = match Interview::start(&template, seed()) {
+        Err(error) => format!("{error} {error:?}"),
+        Ok(started) => format!("{started:?}"),
+    };
+    assert!(error.contains("remote.default"), "{error}");
+    assert!(!error.contains("secret"), "{error}");
+
     // An unresolved dependency of a git default names the field, not its
     // source.
     let (_folder, mut template) = inline(

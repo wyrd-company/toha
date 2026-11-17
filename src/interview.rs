@@ -637,7 +637,10 @@ fn render_default(
                             expression: expression.map(str::to_owned),
                         },
                     })
-                    .map_err(|e| fault(id, "default", expression, e))
+                    .map_err(|e| match kind {
+                        PromptKind::Git => fault(id, "default", None, GIT_EXPRESSION_FAILED),
+                        _ => fault(id, "default", expression, e),
+                    })
             })
             .transpose(),
         QuestionKind::Confirm { default } => default
@@ -1547,9 +1550,12 @@ fn format_answer(
     };
     let ctx = context(template, answers, seed);
     // A `git` question's `format` can hold the credentials of a URL in any
-    // form, so its diagnostics name the field without it.
-    let source = (kind != PromptKind::Git).then(|| expr.source());
-    let fail = |e: &dyn fmt::Display| fault(id, "format", source, e);
+    // form, so its diagnostics name the field without it or the renderer's
+    // message.
+    let fail = |e: &dyn fmt::Display| match kind {
+        PromptKind::Git => fault(id, "format", None, GIT_EXPRESSION_FAILED),
+        _ => fault(id, "format", Some(expr.source()), e),
+    };
     let apply = |value: Value| -> Result<Value, EvalError> {
         let mut c = ctx.clone();
         c.insert("value".into(), value);
@@ -1712,6 +1718,11 @@ fn expressions(node: &Node) -> (Id, Vec<Expression<'_>>) {
     };
     (id, out)
 }
+/// The message of a failed `default` or `format` expression of a `git`
+/// question. The renderer's own message can quote the expression's input, such
+/// as text a parser could not read, so Toha writes its own.
+const GIT_EXPRESSION_FAILED: &str =
+    "the expression failed; its message is not shown, as it can quote a credential";
 /// `source`, the expression of `node`'s `field`, as diagnostics show it: not
 /// at all for the expressions that compute a `git` question's value, its
 /// `default` and `format`, which can hold the credentials of a URL in any

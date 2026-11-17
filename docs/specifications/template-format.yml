@@ -177,7 +177,7 @@ description: >-
   loses all of its user information, as an HTTPS user can be a token. The
   diagnostics of a `git` default or `format` name the question and field,
   and the configuration file and preset a default came from, without its
-  expression or value. A template holds at most one `git` question; a second one is a load
+  expression, its value or the renderer's message, which can quote them. A template holds at most one `git` question; a second one is a load
   error. When the interview
   reaches the question, the apply initializes the target as a git repository
   after the files are written and before any hook runs. `HEAD` names the
