@@ -538,6 +538,74 @@ interview:
     }
 }
 
+/// Stage `scene` and return what the command wrote.
+fn staged_output(scene: &Scene) -> String {
+    let mut stage = scene.command();
+    stage
+        .arg("stage")
+        .arg(scene.address())
+        .arg(scene.target())
+        .arg("--async");
+    let output = stage.output().unwrap();
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+}
+
+#[test]
+fn a_rejected_git_default_names_no_credentials() {
+    let scene = Scene::new(
+        "name: sample
+interview:
+  - id: remote
+    type: git
+    prompt: Remote URL
+    default: https://user:p%40ss-default-secret@127.0.0.1:9/r.git
+    validate:
+      regex: '^allowed$'
+",
+        false,
+    );
+    let shown = staged_output(&scene);
+    assert!(shown.contains("remote.default"), "{shown}");
+    assert!(!shown.contains("secret"), "{shown}");
+}
+
+#[test]
+fn a_rejected_preset_default_names_no_credentials() {
+    let scene = Scene::new(
+        "name: sample
+interview:
+  - id: remote
+    type: git
+    prompt: Remote URL
+    validate:
+      regex: '^allowed$'
+",
+        false,
+    );
+    let config = scene.iso.path().join("config/local.yml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(
+        &config,
+        format!(
+            "presets:\n  remote_url: https://user:p%40ss-preset-secret@127.0.0.1:9/r.git\n\
+             template-defaults:\n  {:?}:\n    remote: {{ preset: remote_url }}\n",
+            support::formal_name(scene.template.path())
+        ),
+    )
+    .unwrap();
+    let shown = staged_output(&scene);
+    // The provenance still names the preset, without its credentials.
+    assert!(
+        shown.contains(r#"presets.\"remote_url\""#) || shown.contains(r#"presets."remote_url""#),
+        "{shown}"
+    );
+    assert!(!shown.contains("secret"), "{shown}");
+}
+
 #[test]
 fn a_relative_remote_with_history_is_checked_from_the_target() {
     let scene = Scene::new(TEMPLATE, false);

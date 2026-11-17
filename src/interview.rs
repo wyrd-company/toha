@@ -623,18 +623,20 @@ fn render_default(
         | QuestionKind::Select { default, .. } => default
             .as_ref()
             .map(|v| {
+                // A `git` default and its expression, which diagnostics show,
+                // keep no credentials.
+                let (expression, shown) = match kind {
+                    PromptKind::Git => (git_answer(v.source()), git_answer as fn(&str) -> String),
+                    _ => (v.source().to_owned(), str::to_owned as fn(&str) -> String),
+                };
                 v.render(&ctx)
-                    .map(|answer| match kind {
-                        PromptKind::Git => git_answer(&answer),
-                        _ => answer,
-                    })
                     .map(|answer| PreparedDefault {
-                        answer: Answer::Text(answer),
+                        answer: Answer::Text(shown(&answer)),
                         source: PreparedDefaultSource::Template {
-                            expression: Some(v.source().into()),
+                            expression: Some(expression.clone()),
                         },
                     })
-                    .map_err(|e| fault(id, "default", Some(v.source()), e))
+                    .map_err(|e| fault(id, "default", Some(&expression), e))
             })
             .transpose(),
         QuestionKind::Confirm { default } => default
@@ -1366,6 +1368,13 @@ pub fn configured_defaults(
             ));
             continue;
         };
+        // A `git` default keeps no credentials, in the default or in the
+        // provenance that diagnostics show.
+        let git = matches!(question.kind, QuestionKind::Git { .. });
+        let kept = |value: &Value| match value {
+            Value::String(text) if git => Value::String(git_answer(text)),
+            other => other.clone(),
+        };
         let (value, preset) = match &entry.value {
             DefaultSource::Literal(value) => (value, None),
             DefaultSource::Ref(name) => {
@@ -1383,11 +1392,12 @@ pub fn configured_defaults(
                     Some(PresetSite {
                         origin: preset.origin.clone(),
                         name: name.clone(),
-                        value: preset.value.clone(),
+                        value: kept(&preset.value),
                     }),
                 )
             }
         };
+        let value = &kept(value);
         let origin = ConfiguredDefaultOrigin { mapping, preset };
         parse_kind(id, prompt_kind(question), value.clone()).map_err(|error| EvalError {
             id: id.clone(),
