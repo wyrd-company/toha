@@ -59,7 +59,8 @@ description: >-
   A configuration file that does not match its schema is an error that names
   the file, the failing path, whose keys lose their user information, and the
   rule the value breaks, never the value: a preset, a literal default or a host
-  base can hold credentials.
+  base can hold credentials. A file that cannot be read as YAML names its line
+  and column, never what it holds.
 
   The `defaults` property is refused with conversion guidance. Each value
   must be given a preset name or written as a literal under an explicit

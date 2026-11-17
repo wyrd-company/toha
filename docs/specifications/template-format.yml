@@ -9,7 +9,9 @@ description: >-
   definition of `template.yml`. `docs/examples/` holds conforming examples. A
   `template.yml` that does not match the schema is a load error that names the
   failing path, whose keys lose their user information, and the rule the value
-  breaks, never the value, which can hold credentials.
+  breaks, never the value, which can hold credentials. A `template.yml` or an
+  included file that cannot be read names its line and column, never what it
+  holds.
 
   Layout. A template is a folder with a `template.yml` at its root, the
   template root. The source subdirectory, `template/` unless `source` names
