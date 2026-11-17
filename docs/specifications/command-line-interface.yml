@@ -34,11 +34,12 @@ description: >-
   A git address has the form
   `<repository>[@<ref>][#<path>]`, where `<ref>` is a tag, branch, or commit and
   `<path>` is the template folder inside the repository. The template path
-  starts at the first `#`, unless the text before it is a URL with an
-  authority that the Git URL parser rejects, such as `https://user:pa` in
-  `https://user:pa#ss@host/repository`; that `#` then belongs to the password,
-  and the template path starts at the first `#` after the authority's last
-  `@`.
+  starts at the first `#`, unless that `#` sits in a URL's user information:
+  in a lowercase `http` or `https` URL when the Git URL parser rejects the
+  text before it, such as `https://user:pa` in
+  `https://user:pa#ss@host/repository`, and in any other URL when a `@`
+  follows it in the authority. The template path then starts at the first `#`
+  after the authority's last `@`.
 
   Formal names. The formal name of a git template is its address in shorthand
   form when a host prefix matches, including `@<ref>` when a ref was given and
@@ -57,8 +58,9 @@ description: >-
   address selects it, so that every connection is one Toha prepares. Toha
   removes the user information by the URL's structure: in
   `<scheme>://<authority>/<path>` the authority ends at the first `/`, or for
-  an HTTP URL the Git URL parser accepts at the first `/`, `?` or `#`, and the
-  user information is everything before its last `@`; a scp-like
+  an `http` or `https` URL, in lowercase, that the Git URL parser accepts
+  without finding user information past them, at the first `/`, `?` or `#`, and
+  the user information is everything before its last `@`; a scp-like
   `<user>@<host>:<path>` is read as git reads it: the host ends at the first
   `:` and the user is everything before the last `@` in front of it, so a `@`
   or `:` in the path stays and the address holds no password; a remote-helper
