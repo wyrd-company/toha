@@ -865,8 +865,10 @@ fn an_update_stages_a_recorded_git_answer_without_credentials() {
     if let Some(submission) = staged["submissions"].get_mut(0) {
         submission["remote"] = json!("https://user:p%40ss-update-secret@127.0.0.1:9/r.git");
     }
+    // Toha 0.4.1 pinned the application as recorded, naming no `git` answer.
     let mut base: Value = serde_json::from_str(staged["base"].as_str().unwrap()).unwrap();
     base["answers"]["remote"] = json!("https://user:p%40ss-update-secret@127.0.0.1:9/r.git");
+    base.as_object_mut().unwrap().remove("git_answers");
     staged["base"] = json!(base.to_string());
     std::fs::write(&path, serde_json::to_vec(&staged).unwrap()).unwrap();
     // The staged update resumes against the record that still holds it.
@@ -881,6 +883,80 @@ fn an_update_stages_a_recorded_git_answer_without_credentials() {
     assert!(resumed.status.success(), "{shown}");
     assert!(!shown.contains("secret"), "{shown}");
     assert_eq!(files_with_secret(scene.iso.path()), Vec::<PathBuf>::new());
+}
+
+#[test]
+fn a_staged_update_refuses_a_changed_answer_that_differs_only_in_credentials() {
+    let scene = Scene::new(
+        "name: sample
+interview:
+  - id: remote
+    type: git
+    prompt: Remote
+  - id: label
+    type: text
+    prompt: Label
+",
+        false,
+    );
+    let source = scene.template.path();
+    std::fs::write(source.join("template/value.txt"), "{{ label }}\n").unwrap();
+    git(source, &["init", "--quiet", "-b", "main"]);
+    git(source, &["add", "."]);
+    git(source, &["commit", "--quiet", "-m", "template"]);
+    let address = support::file_url(source);
+    let answers = tempfile::tempdir().unwrap();
+    let file = answers.path().join("answers.json");
+    std::fs::write(
+        &file,
+        serde_json::to_vec(&json!({
+            "template": address,
+            "answers": {
+                "remote": "https://127.0.0.1:9/r.git",
+                "label": "https://alice:old@host.invalid/r",
+            },
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let project = scene.target();
+    let mut apply = scene.command();
+    apply
+        .arg("apply")
+        .arg(&address)
+        .arg(&project)
+        .arg("--answers")
+        .arg(&file);
+    let applied = apply.output().unwrap();
+    assert!(applied.status.success(), "{applied:?}");
+    git(&project, &["add", "."]);
+    git(&project, &["commit", "--quiet", "-m", "applied"]);
+    let mut stage = scene.command();
+    stage
+        .arg("stage")
+        .arg(&address)
+        .arg(&project)
+        .args(["--update", "--async"]);
+    let staged = stage.output().unwrap();
+    assert!(staged.status.success(), "{staged:?}");
+    // A `text` answer's user information is text, not a credential: changing
+    // only it changes the application the update was staged from.
+    let record_path = project.join(".toha.json");
+    let mut record: Value = serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
+    record["applications"][0]["answers"]["label"] = json!("https://bob:new@host.invalid/r");
+    std::fs::write(&record_path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+    git(&project, &["commit", "--quiet", "-am", "changed label"]);
+    let mut resume = scene.command();
+    resume.arg("apply").arg(&project);
+    let resumed = resume.output().unwrap();
+    let shown = String::from_utf8_lossy(&resumed.stderr);
+    assert!(!resumed.status.success(), "{resumed:?}");
+    assert!(shown.contains("changed"), "{shown}");
+    let record: Value = serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
+    assert_eq!(
+        record["applications"][0]["answers"]["label"],
+        "https://bob:new@host.invalid/r"
+    );
 }
 
 #[test]

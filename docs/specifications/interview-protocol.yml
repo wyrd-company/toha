@@ -231,7 +231,10 @@ description: >-
   Staged updates. A staged update carries two more members: `base`, the id of
   the application entry the update merges from, serialized as JSON, or
   @baseline for an empty merge base. reanswer controls replay. Apply refuses a
-  changed entry and names stage TEMPLATE PATH --update. A staged --like run
+  changed entry and names stage TEMPLATE PATH --update. The serialized entry
+  keeps its answers to `git` questions without credentials and names them in
+  `git_answers`; those answers are compared without credentials, and every
+  other answer exactly. A staged --like run
   stores its selected target in seed and copies the entry in seed_entry;
   resume uses that copy.
 

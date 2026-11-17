@@ -110,7 +110,7 @@ pub(crate) fn clean_staged(template: &Template, saved: &mut StagedRecord) {
         && let Ok(application) = serde_json::from_str::<serde_json::Value>(base)
         && application.is_object()
     {
-        *base = serde_json::to_string(&crate::updates::comparable(&application))
+        *base = serde_json::to_string(&crate::updates::pin(template, application))
             .expect("application serializes");
     }
 }
@@ -823,12 +823,12 @@ mod clean_staged_tests {
             .update_overrides
             .insert("remote".into(), json!({ url: [url] }));
         record.seed_entry = Some(json!({ "answers": { "remote": url, "label": url } }));
-        record.base = Some(json!({ "answers": { "remote": url } }).to_string());
+        record.base = Some(json!({ "answers": { "remote": url, "label": url } }).to_string());
         clean_staged(&template, &mut record);
         let saved = serde_json::to_string(&record).unwrap();
-        // A `text` answer keeps its value; only `git` values lose credentials,
-        // and the pinned base is compared, so it is cleaned whole.
-        assert_eq!(saved.matches("secret").count(), 2, "{saved}");
+        // A `text` answer keeps its value, in the pinned base too, so resume
+        // tells a changed one apart; only `git` values lose credentials.
+        assert_eq!(saved.matches("secret").count(), 3, "{saved}");
         assert_eq!(record.submissions[0]["label"], json!(url));
         assert_eq!(
             record.seed_entry.as_ref().unwrap()["answers"]["label"],
@@ -839,6 +839,13 @@ mod clean_staged_tests {
             json!("https://127.0.0.1:9/r.git")
         );
         assert!(!format!("{:?}", record.update_overrides).contains("secret"));
-        assert!(!record.base.as_ref().unwrap().contains("secret"));
+        let base: serde_json::Value = serde_json::from_str(record.base.as_ref().unwrap()).unwrap();
+        assert_eq!(
+            base,
+            json!({
+                "answers": { "remote": "https://127.0.0.1:9/r.git", "label": url },
+                "git_answers": ["remote"],
+            })
+        );
     }
 }

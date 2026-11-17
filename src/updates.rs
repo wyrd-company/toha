@@ -360,7 +360,7 @@ pub fn admit_resume(
                 .map_err(|e| UpdateError::Error(e.to_string()))?;
             let pinned: Value = serde_json::from_str(saved.base.as_deref().unwrap_or(""))
                 .map_err(|_| UpdateError::InvalidApplication)?;
-            if comparable(&application.to_value()) != comparable(&pinned) {
+            if !is_pinned(application.to_value(), pinned) {
                 return Err(UpdateError::StaleApplication);
             }
             Some(application)
@@ -701,12 +701,17 @@ pub fn is_staged_update(saved: &StagedRecord) -> bool {
     saved.base.is_some()
 }
 
-/// The stored base value for a staged record: the copied application, or the baseline
-/// marker.
-pub fn stored_base(base: &UpdateBase, base_application: Option<&Application>) -> String {
+/// The stored base value for a staged record: the copied application, pinned
+/// as [`pin`] describes, or the baseline marker.
+pub fn stored_base(
+    base: &UpdateBase,
+    base_application: Option<&Application>,
+    template: &Template,
+) -> String {
     match base {
-        UpdateBase::Update => serde_json::to_string(&comparable(
-            &base_application
+        UpdateBase::Update => serde_json::to_string(&pin(
+            template,
+            base_application
                 .expect("--update resolves an application")
                 .to_value(),
         ))
@@ -714,17 +719,61 @@ pub fn stored_base(base: &UpdateBase, base_application: Option<&Application>) ->
         UpdateBase::Baseline => BASELINE_MARKER.to_owned(),
     }
 }
-/// `application`, a serialized application, as a staged update pins it: every
-/// string of its answers without the credentials of a URL. An application
-/// recorded before Toha removed a `git` answer's credentials can hold them,
-/// and the pin is only compared, so both sides of the comparison take this
-/// form.
-pub(crate) fn comparable(application: &Value) -> Value {
-    let mut application = application.clone();
+/// The member of a pinned application that names its `git` answers.
+const PINNED_GIT_ANSWERS: &str = "git_answers";
+/// `application`, a serialized application or the pin of one, as a staged
+/// update pins it: its answers to the `template`'s `git` questions without
+/// the credentials of a URL, and a member that names those answers. An
+/// application recorded before Toha removed a `git` answer's credentials can
+/// hold them. Every other answer stays as recorded, so resume still tells a
+/// changed answer apart.
+pub(crate) fn pin(template: &Template, application: Value) -> Value {
+    let (application, mut git) = unpinned(application);
+    if let Some(Value::Object(answers)) = application.get("answers") {
+        for id in answers.keys() {
+            let is_git = Id::parse(id)
+                .ok()
+                .and_then(|id| template.question(&id))
+                .is_some_and(|question| matches!(question.kind, crate::QuestionKind::Git { .. }));
+            if is_git && !git.contains(id) {
+                git.push(id.clone());
+            }
+        }
+    }
+    let mut pinned = without_git_credentials(application, &git);
+    if let Value::Object(fields) = &mut pinned {
+        fields.insert(PINNED_GIT_ANSWERS.into(), json!(git));
+    }
+    pinned
+}
+/// A pin's application and the answers it names as `git` answers. A pin
+/// written before Toha removed a `git` answer's credentials holds the
+/// application as recorded and names none, so it is compared exactly.
+fn unpinned(mut pinned: Value) -> (Value, Vec<String>) {
+    let git = pinned
+        .as_object_mut()
+        .and_then(|fields| fields.remove(PINNED_GIT_ANSWERS))
+        .and_then(|ids| serde_json::from_value(ids).ok())
+        .unwrap_or_default();
+    (pinned, git)
+}
+/// `application` with its answers named in `git` without credentials.
+fn without_git_credentials(mut application: Value, git: &[String]) -> Value {
     if let Some(Value::Object(answers)) = application.get_mut("answers") {
-        answers.values_mut().for_each(crate::interview::git_value);
+        for id in git {
+            if let Some(value) = answers.get_mut(id) {
+                crate::interview::git_value(value);
+            }
+        }
     }
     application
+}
+/// Whether `application`, as the project records it now, is the application
+/// `pinned` pins: equal but for the credentials of the `git` answers the pin
+/// names.
+fn is_pinned(application: Value, pinned: Value) -> bool {
+    let (pinned, git) = unpinned(pinned);
+    without_git_credentials(application, &git) == without_git_credentials(pinned, &git)
 }
 pub fn base_of(saved: &StagedRecord) -> Result<UpdateBase, String> {
     let value = saved.base.as_deref().ok_or("record is not an update")?;
@@ -830,7 +879,11 @@ impl UpdateSession {
             .map_err(crate::operations::OperationError::from)?;
         crate::operations::admit_parts(&mut prepared.template, parts, None, overrides)
             .map_err(crate::operations::OperationError::Parts)?;
-        let base = stored_base(&base, prepared.base_application.as_ref());
+        let base = stored_base(
+            &base,
+            prepared.base_application.as_ref(),
+            &prepared.template,
+        );
         let mut record = record(&prepared, &base, reanswer, vec![]);
         record.update_overrides = overrides
             .iter()
