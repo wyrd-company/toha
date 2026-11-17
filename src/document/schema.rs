@@ -214,10 +214,11 @@ fn release_stopped(multi: curl::multi::Multi, handle: curl::multi::Easy2Handle<B
     unsafe {
         curl_sys::curl_easy_setopt(handle.raw(), CURLOPT_QUICK_EXIT, 1 as std::ffi::c_long);
     }
-    let Ok(easy) = multi.remove2(handle) else {
-        return;
-    };
-    let lookup_pending = easy.namelookup_time().is_ok_and(|time| time.is_zero());
+    // Removing a transfer before it finished closes its connection at once.
+    let removed = multi.remove2(handle);
+    let lookup_pending = removed
+        .as_ref()
+        .is_ok_and(|easy| easy.namelookup_time().is_ok_and(|time| time.is_zero()));
     if lookup_pending {
         // SAFETY: `multi` is the live multi handle that ran the transfer, and
         // CURLMOPT_QUICK_EXIT takes a long. A libcurl without the option
@@ -226,8 +227,54 @@ fn release_stopped(multi: curl::multi::Multi, handle: curl::multi::Easy2Handle<B
             curl_sys::curl_multi_setopt(multi.raw(), CURLMOPT_QUICK_EXIT, 1 as std::ffi::c_long);
         }
     }
-    drop(easy);
-    drop(multi);
+    drop(removed);
+    release_bounded(multi);
+}
+/// How long a stop waits for curl to release its handles before it leaves
+/// the rest to the release thread.
+const RELEASE_WAIT: Duration = Duration::from_millis(250);
+/// The name of the thread that releases a stopped transfer's multi handle.
+const RELEASE_THREAD: &str = "toha-schema-release";
+/// A multi handle with no transfer attached, on its way to the thread that
+/// releases it.
+struct Unattached(
+    #[expect(dead_code, reason = "only dropped: dropping it releases the handle")]
+    curl::multi::Multi,
+);
+// SAFETY: the curl crate's `Multi` is `!Send` only because it wraps the raw
+// `CURLM` pointer. This one has no easy handle attached, and Toha sets no
+// socket or timer callback on it. libcurl allows a handle to move between
+// threads that never use it at the same time: the calling thread hands it
+// over here and doesn't touch it again.
+unsafe impl Send for Unattached {}
+/// Release `multi` on a [`RELEASE_THREAD`] thread, and wait for it at most
+/// [`RELEASE_WAIT`].
+///
+/// curl's cleanup waits for resolver threads whose lookup it doesn't report
+/// as pending, such as the target lookup behind a SOCKS4 or SOCKS5 proxy, and
+/// a lookup can't be interrupted. A release that finishes in time is joined,
+/// which is every stop with no pending lookup, so no thread is left. A slower
+/// one is left to finish when the lookup returns (wyrd-company/toha#81). It
+/// holds no connection: removing the transfer closed it. If the thread can't
+/// be started, the handle is released here.
+fn release_bounded(multi: curl::multi::Multi) {
+    let unattached = Unattached(multi);
+    let (released, done) = std::sync::mpsc::channel::<()>();
+    let spawned = std::thread::Builder::new()
+        .name(RELEASE_THREAD.into())
+        .spawn(move || {
+            drop(unattached);
+            let _ = released.send(());
+        });
+    // A failed spawn drops the closure, which releases the handle here.
+    if let Ok(thread) = spawned
+        && !matches!(
+            done.recv_timeout(RELEASE_WAIT),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        )
+    {
+        let _ = thread.join();
+    }
 }
 /// Run `easy` to completion on a multi handle this thread drives, or return
 /// [`STOPPED`] once the operation's stop signal fires. A stopped transfer is

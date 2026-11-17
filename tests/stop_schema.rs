@@ -10,7 +10,9 @@
 //! On Linux, a `getaddrinfo` interposer the test builds holds the schema
 //! host's name lookup: the stopped load returns within 2 s without
 //! connecting, and its detached resolver threads end once the lookup is
-//! released (wyrd-company/toha#81).
+//! released (wyrd-company/toha#81). The same holds for the target lookup
+//! curl runs itself behind a `socks4://` or `socks5://` proxy, whose proxy
+//! connection closes at the stop.
 #[allow(dead_code)]
 mod support;
 use std::{
@@ -46,6 +48,10 @@ const LOOKUP_RELEASE: &str = "lookup-release";
 const HELD_HOST: &str = "schema-held.invalid";
 /// A host name the interposer resolves to 127.0.0.1 at once.
 const RESOLVED_HOST: &str = "schema-resolved.invalid";
+/// Written by the SOCKS proxy listener when it accepts the connection.
+const PROXY_ACCEPTED: &str = "proxy-accepted";
+/// Written by the SOCKS proxy listener when Toha closes that connection.
+const PROXY_CLOSED: &str = "proxy-closed";
 /// The `getaddrinfo` interposer, preloaded into the worker on Linux.
 const INTERPOSER: &str = r#"#define _GNU_SOURCE
 #include <dlfcn.h>
@@ -159,6 +165,68 @@ fn run_scenario(scenario: &str) {
 /// [`run_scenario`], addressing the endpoint by `host` through the
 /// [`INTERPOSER`] when given.
 fn run_scenario_at(scenario: &str, host: Option<&str>) {
+    run_scenario_with(scenario, host, None);
+}
+
+/// A SOCKS proxy on a local port that never relays. It writes
+/// [`PROXY_ACCEPTED`] when it accepts, [`HELD`] once the client sends
+/// anything, and [`PROXY_CLOSED`] when the client closes the connection. To a
+/// SOCKS5 greeting it answers "no authentication", so that a libcurl that
+/// resolves the target after the greeting gets that far; it never answers a
+/// connect request.
+fn silent_socks_proxy(root: &Path) -> (u16, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let root = root.to_owned();
+    let proxy = thread::spawn(move || {
+        listener.set_nonblocking(true).unwrap();
+        let started = Instant::now();
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    fs::write(root.join(PROXY_ACCEPTED), "").unwrap();
+                    break stream;
+                }
+                Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                    if root.join(RELEASE).exists() || started.elapsed() > Duration::from_secs(60) {
+                        return;
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => panic!("{e}"),
+            }
+        };
+        stream.set_nonblocking(true).unwrap();
+        let mut greeted = false;
+        while !root.join(RELEASE).exists() && started.elapsed() < Duration::from_secs(60) {
+            let mut buffer = [0; 1024];
+            match stream.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(_) => {
+                    if buffer[0] == 5 && !greeted {
+                        greeted = true;
+                        stream.set_nonblocking(false).unwrap();
+                        std::io::Write::write_all(&mut stream, &[5, 0]).unwrap();
+                        stream.set_nonblocking(true).unwrap();
+                    } else {
+                        fs::write(root.join(HELD), "").unwrap();
+                    }
+                }
+                Err(e) if e.kind() == ErrorKind::WouldBlock => {}
+                Err(_) => break,
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        if !root.join(RELEASE).exists() {
+            fs::write(root.join(PROXY_CLOSED), "").unwrap();
+        }
+    });
+    (port, proxy)
+}
+
+/// [`run_scenario_at`], with the worker's HTTPS traffic sent through a
+/// [`silent_socks_proxy`] of `proxy` scheme when given.
+fn run_scenario_with(scenario: &str, host: Option<&str>, proxy: Option<&str>) {
     let root = tempfile::tempdir().unwrap();
     let (mut uri, server) = stalled_endpoint(root.path());
     let mut worker = Command::new(std::env::current_exe().unwrap());
@@ -182,14 +250,25 @@ fn run_scenario_at(scenario: &str, host: Option<&str>) {
         );
         worker.env("LD_PRELOAD", &library);
     }
-    let output = worker
-        .args(["--ignored", "--exact", "schema_worker", "--nocapture"])
+    worker
         .env("NO_PROXY", "*")
         .env("no_proxy", "*")
         .env_remove("https_proxy")
         .env_remove("HTTPS_PROXY")
         .env_remove("all_proxy")
-        .env_remove("ALL_PROXY")
+        .env_remove("ALL_PROXY");
+    let socks = proxy.map(|scheme| {
+        let (port, thread) = silent_socks_proxy(root.path());
+        let address = format!("{scheme}://127.0.0.1:{port}");
+        worker
+            .env("NO_PROXY", "")
+            .env("no_proxy", "")
+            .env("HTTPS_PROXY", &address)
+            .env("https_proxy", &address);
+        thread
+    });
+    let output = worker
+        .args(["--ignored", "--exact", "schema_worker", "--nocapture"])
         .env_remove("GIT_SSL_CAINFO")
         .env("TOHA_SCHEMA_SCENARIO", scenario)
         .env("TOHA_SCHEMA_ROOT", root.path())
@@ -201,6 +280,9 @@ fn run_scenario_at(scenario: &str, host: Option<&str>) {
     let _ = fs::write(root.path().join(RELEASE), "");
     let _ = fs::write(root.path().join(LOOKUP_RELEASE), "");
     server.join().unwrap();
+    if let Some(socks) = socks {
+        socks.join().unwrap();
+    }
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -242,6 +324,24 @@ fn a_stop_ends_a_template_load_whose_schema_lookup_is_held() {
 #[test]
 fn a_stop_after_the_schema_lookup_leaves_no_thread() {
     run_scenario_at("stopped", Some(RESOLVED_HOST));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_stop_ends_a_load_whose_socks4_target_lookup_is_held() {
+    run_scenario_with("socks-held", Some(HELD_HOST), Some("socks4"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_stop_ends_a_load_whose_socks5_target_lookup_is_held() {
+    run_scenario_with("socks-held", Some(HELD_HOST), Some("socks5"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_stop_behind_a_silent_socks_proxy_leaves_no_thread() {
+    run_scenario_with("socks-silent", Some(RESOLVED_HOST), Some("socks4"));
 }
 
 /// A template whose document question names the schema at `uri`.
@@ -377,6 +477,93 @@ fn schema_worker() {
             println!(
                 "observed: returned {returned:?} after the stop signal while the lookup was held, \
                  never connected; threads {before:?} before, {during:?} while held, back to the baseline after the lookup returned"
+            );
+        }
+        "socks-held" => {
+            let before = threads();
+            let signal = StopSignal::new();
+            let (receiver, worker) = start_load(folder, Some(signal.clone()));
+            assert!(
+                wait_for(Duration::from_secs(30), || root.join(LOOKUP_HELD).exists()
+                    && root.join(PROXY_ACCEPTED).exists()),
+                "the proxy connection and the target lookup never started"
+            );
+            // The target lookup holds the fetch: without the stop, it waits.
+            thread::sleep(Duration::from_millis(300));
+            assert!(matches!(
+                receiver.try_recv(),
+                Err(mpsc::TryRecvError::Empty)
+            ));
+            let stopped = Instant::now();
+            signal.stop();
+            let result = receiver
+                .recv_timeout(BOUND)
+                .expect("the load did not return within 2 s of the stop");
+            let returned = stopped.elapsed();
+            worker.join().expect("the calling thread returns");
+            let error = result.expect_err("a stopped load fails");
+            assert!(error.stopped, "{error}");
+            // Before the lookup is released, the proxy connection is closed.
+            assert!(
+                wait_for(BOUND.saturating_sub(stopped.elapsed()), || root
+                    .join(PROXY_CLOSED)
+                    .exists()),
+                "the proxy connection is still open {:?} after the stop",
+                stopped.elapsed()
+            );
+            let closed = stopped.elapsed();
+            assert!(!root.join(LOOKUP_RELEASE).exists());
+            // The documented exception: the release thread and the lookup's
+            // resolver threads run on until the lookup returns.
+            let during = threads();
+            fs::write(root.join(LOOKUP_RELEASE), "").unwrap();
+            let settled = || match (before, threads()) {
+                (Some(before), Some(now)) => now == before,
+                _ => true,
+            };
+            assert!(
+                wait_for(Duration::from_secs(10), settled),
+                "threads {:?} did not return to the baseline {before:?} after the lookup",
+                threads()
+            );
+            println!(
+                "observed: returned {returned:?} and proxy connection closed {closed:?} after the stop signal while the target lookup was held; \
+                 threads {before:?} before, {during:?} while held, back to the baseline after the lookup returned"
+            );
+        }
+        "socks-silent" => {
+            let before = threads();
+            let signal = StopSignal::new();
+            let (receiver, worker) = start_load(folder, Some(signal.clone()));
+            // The proxy has the connect request: the target lookup is done.
+            assert!(
+                wait_for(Duration::from_secs(30), held),
+                "never reached the proxy"
+            );
+            thread::sleep(Duration::from_millis(300));
+            assert!(matches!(
+                receiver.try_recv(),
+                Err(mpsc::TryRecvError::Empty)
+            ));
+            let stopped = Instant::now();
+            signal.stop();
+            let result = receiver
+                .recv_timeout(BOUND)
+                .expect("the load did not return within 2 s of the stop");
+            let returned = stopped.elapsed();
+            worker.join().expect("the calling thread returns");
+            assert!(result.expect_err("a stopped load fails").stopped);
+            assert!(
+                wait_for(BOUND.saturating_sub(stopped.elapsed()), || root
+                    .join(PROXY_CLOSED)
+                    .exists()),
+                "the proxy connection is still open after the stop"
+            );
+            if let (Some(before), Some(after)) = (before, threads()) {
+                assert_eq!(after, before, "a thread outlived the stopped load");
+            }
+            println!(
+                "observed: returned {returned:?} after the stop signal behind a silent proxy; proxy connection closed; no thread left"
             );
         }
         "stopped-before" => {
