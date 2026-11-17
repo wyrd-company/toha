@@ -810,6 +810,8 @@ impl UpdateSession {
             )
             .into());
         }
+        let overrides =
+            &crate::interview::without_credentials(&prepared.template, overrides.clone());
         crate::document::prepare(&mut prepared.template, target.as_path(), inputs, overrides)
             .map_err(crate::operations::OperationError::from)?;
         crate::operations::admit_parts(&mut prepared.template, parts, None, overrides)
@@ -1010,6 +1012,7 @@ impl UpdateSession {
         &mut self,
         answers: RawAnswers,
     ) -> Result<crate::operations::SessionState, SessionError> {
+        let answers = crate::interview::without_credentials(&self.prepared.template, answers);
         let submitted;
         let rejected = match self.replay()? {
             crate::applied::UpdateDrive::Ask {

@@ -604,7 +604,7 @@ pub fn answer_headless<'a>(
     // The whole document is one submission, as through `continue`: answers
     // for later questions are validated and held, then applied when their
     // questions are reached. Later batches take their defaults.
-    let mut remaining = document;
+    let mut remaining = crate::interview::without_credentials(template, document);
     loop {
         let pending = match interview {
             Interview::Asking(pending) => pending,

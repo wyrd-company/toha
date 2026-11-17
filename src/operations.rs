@@ -426,6 +426,7 @@ impl Session {
     /// Accept one batch. A rejected batch returns typed per-question errors and changes no record.
     #[allow(clippy::result_large_err)]
     pub fn answer(&mut self, answers: RawAnswers) -> Result<SessionState, OperationError> {
+        let answers = crate::interview::without_credentials(&self.template, answers);
         let (state, accepted) = match self.replay()? {
             Interview::Asking(pending) => match pending.answer(answers.clone()) {
                 Ok(next) => (self.response(next, vec![]), true),

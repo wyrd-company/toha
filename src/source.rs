@@ -291,6 +291,46 @@ pub fn without_userinfo(repo: &str) -> String {
         None => repo.to_owned(),
     }
 }
+/// `remote` without the user information that could carry a credential, for
+/// a remote Toha saves. An SSH address keeps its user, which names the
+/// account SSH logs in to and is not a secret, and loses any password after
+/// it; every other address loses all of its user information, as the user of
+/// an HTTPS address can be a token. The user information is found as
+/// [`without_userinfo`] finds it, and nothing else of the address changes.
+pub(crate) fn without_credentials(remote: &str) -> String {
+    let ssh = |user_information: &str| {
+        let user = user_information.split(':').next().unwrap_or_default();
+        if user.is_empty() {
+            String::new()
+        } else {
+            format!("{user}@")
+        }
+    };
+    if let Some((scheme, rest)) = remote.split_once("://")
+        && matches!(
+            scheme.to_ascii_lowercase().as_str(),
+            "ssh" | "git+ssh" | "ssh+git"
+        )
+    {
+        let authority = rest.find('/').map_or(rest, |slash| &rest[..slash]);
+        return match authority.rfind('@') {
+            Some(at) => format!("{scheme}://{}{}", ssh(&rest[..at]), &rest[at + 1..]),
+            None => remote.to_owned(),
+        };
+    }
+    let helper = remote
+        .split_once("::")
+        .is_some_and(|(helper, _)| is_name(helper, b"+-._"));
+    if !remote.contains("://") && !helper {
+        let head = remote.find('/').map_or(remote, |slash| &remote[..slash]);
+        let separator = head.rfind(':').and_then(|colon| head[..colon].rfind('@'));
+        return match separator {
+            Some(at) => format!("{}{}", ssh(&remote[..at]), &remote[at + 1..]),
+            None => remote.to_owned(),
+        };
+    }
+    without_userinfo(remote)
+}
 /// Whether `text` is a non-empty run of ASCII letters, digits and `extra`.
 fn is_name(text: &str, extra: &[u8]) -> bool {
     !text.is_empty()
@@ -833,6 +873,54 @@ mod tests {
                 "git fetch failed: could not fetch 'https://example.invalid/o/r.git': {}",
                 std::io::Error::from_raw_os_error(13)
             )
+        );
+    }
+    #[test]
+    fn a_saved_remote_keeps_an_ssh_user_and_no_credential() {
+        for password in UNUSUAL_PASSWORDS {
+            let table = [
+                (
+                    format!("https://user:{password}@host.invalid/o/r.git"),
+                    "https://host.invalid/o/r.git".to_owned(),
+                ),
+                (
+                    format!("https://token-{password}@host.invalid/o/r.git"),
+                    "https://host.invalid/o/r.git".to_owned(),
+                ),
+                (
+                    format!("git://user:{password}@host.invalid/r"),
+                    "git://host.invalid/r".to_owned(),
+                ),
+                (
+                    format!("ssh://git:{password}@host.invalid:2222/o/r.git"),
+                    "ssh://git@host.invalid:2222/o/r.git".to_owned(),
+                ),
+                (
+                    format!("git:{password}@host.invalid:o/r.git"),
+                    "git@host.invalid:o/r.git".to_owned(),
+                ),
+                (
+                    format!("persistent-https::https://user:{password}@host.invalid/r"),
+                    "persistent-https::https://host.invalid/r".to_owned(),
+                ),
+            ];
+            for (remote, kept) in table {
+                assert_eq!(without_credentials(&remote), kept, "{remote:?}");
+            }
+        }
+        for remote in [
+            "git@github.com:o/r.git",
+            "git@github.com:o/r@draft.git",
+            "ssh://git@github.com/o/r.git",
+            "https://github.com/o/r.git",
+            "../relative@r.git",
+            "/tmp/a@b:c",
+        ] {
+            assert_eq!(without_credentials(remote), remote);
+        }
+        assert_eq!(
+            without_credentials(":p@ss-secret@host.invalid:r.git"),
+            "host.invalid:r.git"
         );
     }
     #[test]

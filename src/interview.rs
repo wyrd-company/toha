@@ -624,6 +624,10 @@ fn render_default(
             .as_ref()
             .map(|v| {
                 v.render(&ctx)
+                    .map(|answer| match kind {
+                        PromptKind::Git => git_answer(&answer),
+                        _ => answer,
+                    })
                     .map(|answer| PreparedDefault {
                         answer: Answer::Text(answer),
                         source: PreparedDefaultSource::Template {
@@ -802,9 +806,42 @@ fn make_prompt(
         configured_rejection,
     })
 }
+/// `text`, a `git` answer, without the credentials the URL it holds can
+/// carry. Toha keeps no credential from a `git` answer or default: not in
+/// staged state, documents, prompts, reports or the new repository's remote.
+/// A credential helper supplies them. An SSH address keeps its user, which
+/// SSH logs in as. Whitespace around the URL stays, as the answer is trimmed
+/// later.
+pub(crate) fn git_answer(text: &str) -> String {
+    let start = text.len() - text.trim_start().len();
+    let end = text.trim_end().len().max(start);
+    format!(
+        "{}{}{}",
+        &text[..start],
+        crate::source::without_credentials(&text[start..end]),
+        &text[end..]
+    )
+}
+/// `answers` with the user information removed from the answer to the
+/// template's `git` question, as Toha takes answers in, before it validates,
+/// records or stages them. See [`git_answer`].
+pub(crate) fn without_credentials(template: &Template, mut answers: RawAnswers) -> RawAnswers {
+    for (id, raw) in answers.iter_mut() {
+        if let (Some(question), Value::String(text)) = (template.question(id), &raw.0)
+            && matches!(question.kind, QuestionKind::Git { .. })
+        {
+            raw.0 = Value::String(git_answer(text));
+        }
+    }
+    answers
+}
 fn parse_kind(id: &Id, kind: PromptKind, value: Value) -> Result<Answer, Rejection> {
     let fail = |msg: &str| rejection(id, msg);
     match kind {
+        PromptKind::Git => value
+            .as_str()
+            .map(|v| Answer::Text(git_answer(v)))
+            .ok_or_else(|| fail("must be a string")),
         PromptKind::Document => {
             if value.is_object() {
                 Ok(Answer::Value(value))
@@ -812,7 +849,7 @@ fn parse_kind(id: &Id, kind: PromptKind, value: Value) -> Result<Answer, Rejecti
                 Err(fail("must be a JSON object"))
             }
         }
-        PromptKind::Text | PromptKind::Multiline | PromptKind::Git | PromptKind::Select => value
+        PromptKind::Text | PromptKind::Multiline | PromptKind::Select => value
             .as_str()
             .map(|v| Answer::Text(v.into()))
             .ok_or_else(|| fail("must be a string")),
@@ -2414,5 +2451,43 @@ impl<'a> Pending<'a> {
             skip_rest: false,
         })
         .map_err(AnswerError::Eval)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::git_answer;
+
+    #[test]
+    fn a_git_answer_keeps_its_whitespace_and_loses_its_credentials() {
+        for (answer, kept) in [
+            (
+                "https://user:p@ss-secret@host.invalid/r.git",
+                "https://host.invalid/r.git",
+            ),
+            (
+                "  https://user:p%40ss-secret@host.invalid/r.git\n",
+                "  https://host.invalid/r.git\n",
+            ),
+            (
+                "https://user:caf\u{e9}\u{1}\t-secret@host.invalid/r.git",
+                "https://host.invalid/r.git",
+            ),
+            (
+                "bob:p@ss-secret@host.invalid:r.git",
+                "bob@host.invalid:r.git",
+            ),
+            ("git@host.invalid:o/r.git", "git@host.invalid:o/r.git"),
+            (
+                "ssh://git:p%40ss-secret@host.invalid/o/r.git",
+                "ssh://git@host.invalid/o/r.git",
+            ),
+            ("https://host.invalid/r.git", "https://host.invalid/r.git"),
+            ("../relative/r.git", "../relative/r.git"),
+            ("   ", "   "),
+            ("", ""),
+        ] {
+            assert_eq!(git_answer(answer), kept, "{answer:?}");
+        }
     }
 }

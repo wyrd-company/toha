@@ -413,46 +413,129 @@ fn the_applied_document_never_shows_remote_credentials() {
     assert!(!text.contains("user:"), "{text}");
 }
 
-#[test]
-fn a_remote_gix_cannot_parse_is_named_without_its_password() {
-    let scene = Scene::new(TEMPLATE, false);
-    // gix quotes a URL it cannot parse with Rust escapes, which spell the
-    // control characters and keep the non-ASCII text.
-    let remote = "https://user:caf\u{e9}\u{1}\t-secret@127.0.0.1:9/sample.git";
-    let (code, document) = scene.apply(json!({ "remote": remote }), &[]);
-    assert_eq!(code, Some(1), "{document}");
-    assert_eq!(document["kind"], "git", "{document}");
-    let message = document["message"].as_str().unwrap();
-    assert!(
-        message.starts_with("could not initialize a git repository at ")
-            && message.ends_with(": 'https://127.0.0.1:9/sample.git' is not a valid Git URL"),
-        "{message}"
-    );
-    assert!(!document.to_string().contains("secret"), "{document}");
+/// The files under `root` that hold `secret`, the end of every password in
+/// these tests, in any encoding.
+fn files_with_secret(root: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut folders = vec![root.to_path_buf()];
+    while let Some(folder) = folders.pop() {
+        for entry in std::fs::read_dir(folder).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                folders.push(path);
+            } else if std::fs::read(&path)
+                .unwrap()
+                .windows(6)
+                .any(|window| window == b"secret")
+            {
+                found.push(path);
+            }
+        }
+    }
+    found
 }
 
 #[test]
-fn a_remote_whose_credentials_its_protocol_cannot_use_warns_without_them() {
-    let scene = Scene::new(TEMPLATE, false);
-    // gix writes this URL back with the `@` of the password encoded.
-    let remote = "git://user:p@ss-secret@127.0.0.1:9/sample.git";
-    let (code, document) = scene.apply(json!({ "remote": remote }), &[]);
-    assert_eq!(code, Some(0), "{document}");
-    assert_eq!(
-        document["messages"][0],
-        "warning: could not inspect the remote git://127.0.0.1:9/sample.git; added it \
-         without a history check: the git protocol cannot use the user, password, host \
-         or port in 'git://127.0.0.1:9/sample.git'",
-        "{document}"
+fn a_git_answer_keeps_no_credentials() {
+    // Passwords that gix writes back percent-encoded, decoded or with Rust
+    // escapes, and one for a protocol that takes no credentials.
+    for (remote, kept) in [
+        (
+            "https://user:plain-secret@127.0.0.1:9/sample.git",
+            "https://127.0.0.1:9/sample.git",
+        ),
+        (
+            "https://user:p@ss-secret@127.0.0.1:9/sample.git",
+            "https://127.0.0.1:9/sample.git",
+        ),
+        (
+            "https://user:p%40ss-secret@127.0.0.1:9/sample.git",
+            "https://127.0.0.1:9/sample.git",
+        ),
+        (
+            " https://user:caf\u{e9}\u{1}\t-secret@127.0.0.1:9/sample.git ",
+            "https://127.0.0.1:9/sample.git",
+        ),
+        (
+            "git://user:p@ss-secret@127.0.0.1:9/sample.git",
+            "git://127.0.0.1:9/sample.git",
+        ),
+    ] {
+        let scene = Scene::new(TEMPLATE, false);
+        let (code, document) = scene.apply(json!({ "remote": remote }), &[]);
+        assert_eq!(code, Some(0), "{remote:?}: {document}");
+        assert!(!document.to_string().contains("secret"), "{document}");
+        assert_eq!(document["git"]["remote"], kept, "{document}");
+        let target = scene.target();
+        assert_eq!(git_stdout(&target, &["remote", "get-url", "origin"]), kept);
+        std::fs::remove_file(scene.iso.path().join("answers.json")).unwrap();
+        for root in [scene.iso.path(), scene.work.path()] {
+            assert_eq!(files_with_secret(root), Vec::<PathBuf>::new(), "{remote:?}");
+        }
+    }
+}
+
+#[test]
+fn a_staged_git_answer_and_default_keep_no_credentials() {
+    let scene = Scene::new(
+        "name: sample
+interview:
+  - id: remote
+    type: git
+    prompt: Remote URL
+    default: https://user:default-secret@127.0.0.1:9/sample.git
+",
+        false,
     );
-    assert_eq!(document["git"]["remote"], "git://127.0.0.1:9/sample.git");
-    assert!(!document.to_string().contains("secret"), "{document}");
-    // The repository keeps the remote as given, as `git remote add` does.
-    let target = scene.target();
+    let mut stage = scene.command();
+    stage
+        .arg("stage")
+        .arg(scene.address())
+        .arg(scene.target())
+        .arg("--async");
+    let staged = stage.output().unwrap();
+    assert_eq!(staged.status.code(), Some(4), "{staged:?}");
+    let questions = support::first_document(&staged.stdout);
     assert_eq!(
-        git_stdout(&target, &["remote", "get-url", "origin"]),
-        remote
+        questions["schema"]["properties"]["remote"]["default"], "https://127.0.0.1:9/sample.git",
+        "{questions}"
     );
+    let answers = tempfile::tempdir().unwrap();
+    let file = answers.path().join("answers.json");
+    std::fs::write(
+        &file,
+        serde_json::to_vec(&json!({
+            "template": support::formal_name(scene.template.path()),
+            "answers": { "remote": "https://user:p%40ss-secret@127.0.0.1:9/sample.git" },
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let mut cont = scene.command();
+    cont.arg("continue").arg(scene.target()).arg(&file);
+    let continued = cont.output().unwrap();
+    assert!(continued.status.success(), "{continued:?}");
+    // The staged state under the isolated state folder holds no password.
+    assert_eq!(files_with_secret(scene.iso.path()), Vec::<PathBuf>::new());
+    let mut apply = scene.command();
+    apply.arg("apply").arg(scene.target());
+    let applied = apply.output().unwrap();
+    assert!(applied.status.success(), "{applied:?}");
+    for output in [&staged, &continued, &applied] {
+        let shown = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!shown.contains("secret"), "{shown}");
+    }
+    assert_eq!(
+        git_stdout(&scene.target(), &["remote", "get-url", "origin"]),
+        "https://127.0.0.1:9/sample.git"
+    );
+    for root in [scene.iso.path(), scene.work.path()] {
+        assert_eq!(files_with_secret(root), Vec::<PathBuf>::new());
+    }
 }
 
 #[test]
