@@ -671,9 +671,12 @@ interview:
 fn a_like_seed_is_staged_without_credentials() {
     // A record written before Toha removed a `git` answer's credentials, with
     // the answer as a string, or of the wrong kind after the question changed.
+    let url = "https://user:p%40ss-application-secret@127.0.0.1:9/r.git";
     for recorded in [
-        json!("https://user:p%40ss-application-secret@127.0.0.1:9/r.git"),
-        json!(["https://user:p%40ss-application-secret@127.0.0.1:9/r.git"]),
+        json!(url),
+        json!([url]),
+        json!({ url: null }),
+        json!({ "nested": { url: [url] } }),
     ] {
         like_seed_is_staged_without_credentials(recorded);
     }

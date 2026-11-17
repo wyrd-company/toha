@@ -846,7 +846,16 @@ pub(crate) fn git_value(value: &mut Value) {
     match value {
         Value::String(text) => *text = git_answer(text),
         Value::Array(items) => items.iter_mut().for_each(git_value),
-        Value::Object(fields) => fields.values_mut().for_each(git_value),
+        // An object's keys are strings too.
+        Value::Object(fields) => {
+            *fields = std::mem::take(fields)
+                .into_iter()
+                .map(|(key, mut field)| {
+                    git_value(&mut field);
+                    (git_answer(&key), field)
+                })
+                .collect();
+        }
         Value::Null | Value::Bool(_) | Value::Number(_) => {}
     }
 }
@@ -2505,7 +2514,28 @@ impl<'a> Pending<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::git_answer;
+    use super::{git_answer, git_value};
+    use serde_json::json;
+
+    #[test]
+    fn a_git_value_of_any_kind_keeps_no_credentials() {
+        let url = "https://user:p%40ss-secret@host.invalid/r.git";
+        for (mut value, kept) in [
+            (json!(url), json!("https://host.invalid/r.git")),
+            (json!([url]), json!(["https://host.invalid/r.git"])),
+            (
+                json!({ url: null }),
+                json!({ "https://host.invalid/r.git": null }),
+            ),
+            (
+                json!({ "a": { url: [url, 1, true] } }),
+                json!({ "a": { "https://host.invalid/r.git": ["https://host.invalid/r.git", 1, true] } }),
+            ),
+        ] {
+            git_value(&mut value);
+            assert_eq!(value, kept);
+        }
+    }
 
     #[test]
     fn a_git_answer_keeps_its_whitespace_and_loses_its_credentials() {

@@ -1819,14 +1819,19 @@ fn the_engine_keeps_no_credentials_of_a_wrong_kind_git_default() {
         "name: sample\ninterview:\n  - id: first\n    type: text\n    prompt: First\n  \
          - id: remote\n    type: git\n    prompt: 'Remote {{ first }}'\n",
     );
-    let mut seeded = seed();
-    seeded.defaults.insert(
-        toha::Id::parse("remote").unwrap(),
-        toha::RawAnswer(json!([
-            "https://user:p%40ss-wrong-kind-seed-secret@127.0.0.1:9/r.git"
-        ])),
-    );
-    let started = Interview::start(&template, seeded).unwrap();
-    let shown = format!("{started:?}");
-    assert!(!shown.contains("secret"), "{shown}");
+    let url = "https://user:p%40ss-wrong-kind-seed-secret@127.0.0.1:9/r.git";
+    for value in [
+        json!([url]),
+        json!({ url: null }),
+        json!({ "a": { url: [url] } }),
+    ] {
+        let mut seeded = seed();
+        seeded.defaults.insert(
+            toha::Id::parse("remote").unwrap(),
+            toha::RawAnswer(value.clone()),
+        );
+        let started = Interview::start(&template, seeded).unwrap();
+        let shown = format!("{started:?}");
+        assert!(!shown.contains("secret"), "{value}: {shown}");
+    }
 }
