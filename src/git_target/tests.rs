@@ -221,7 +221,7 @@ fn initialize_names_a_branch_and_adds_origin() {
 #[test]
 fn a_remote_that_cannot_be_saved_is_named_without_its_password() {
     let dir = tempfile::tempdir().unwrap();
-    let url = "https://user:p\tss-secret@example.invalid/sample.git";
+    let url = "https://user:p\tss-secret@exa\tmple.invalid/sample.git";
     let message = initialize(dir.path(), Some(url)).unwrap_err().to_string();
     assert_eq!(
         message,
@@ -234,29 +234,81 @@ fn a_remote_that_cannot_be_saved_is_named_without_its_password() {
 }
 
 #[test]
-fn set_up_reports_the_remote_without_credentials_and_saves_it_whole() {
-    let dir = tempfile::tempdir().unwrap();
-    let url = "https://user:p%40ss-secret@example.invalid/sample.git";
-    let preflight = Preflight::Initialize {
-        remote: Some(url.into()),
-        warning: None,
-    };
-    assert!(!format!("{preflight:?}").contains("secret"));
-    let planned = PlannedGit {
-        remote: Some(url.into()),
-    };
-    assert!(!format!("{planned:?}").contains("secret"));
-    let report = set_up(preflight, &target(dir.path())).unwrap();
-    let GitSetup::Initialized { remote, .. } = report.setup else {
-        panic!("expected an initialized repository, got {report:?}");
-    };
-    assert_eq!(
-        remote.as_deref(),
-        Some("https://example.invalid/sample.git")
-    );
-    // The repository keeps the remote as given, as `git remote add` does.
-    let config = gix::open(dir.path()).unwrap().config_snapshot().clone();
-    assert_eq!(config.string("remote.origin.url").unwrap().to_string(), url);
+fn set_up_reports_and_saves_the_remote_without_credentials() {
+    for (url, kept) in [
+        (
+            "https://user:p%40ss-secret@example.invalid/sample.git",
+            "https://example.invalid/sample.git",
+        ),
+        (
+            "https://user:caf\u{e9}\u{1}-secret@example.invalid/sample.git",
+            "https://example.invalid/sample.git",
+        ),
+        // SSH logs in as the user, so it stays; its password does not.
+        (
+            "ssh://git:p%40ss-secret@example.invalid/sample.git",
+            "ssh://git@example.invalid/sample.git",
+        ),
+        (
+            "git@example.invalid:sample.git",
+            "git@example.invalid:sample.git",
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let preflight = Preflight::Initialize {
+            remote: Some(url.into()),
+            warning: None,
+        };
+        assert!(!format!("{preflight:?}").contains("secret"));
+        let planned = PlannedGit {
+            remote: Some(url.into()),
+        };
+        assert!(!format!("{planned:?}").contains("secret"));
+        let report = set_up(preflight, &target(dir.path())).unwrap();
+        let GitSetup::Initialized { remote, .. } = report.setup else {
+            panic!("expected an initialized repository, got {report:?}");
+        };
+        assert_eq!(remote.as_deref().map(|r| r.contains("secret")), Some(false));
+        // The repository keeps the remote without its credentials; a
+        // credential helper supplies them.
+        let config = gix::open(dir.path()).unwrap().config_snapshot().clone();
+        assert_eq!(
+            config.string("remote.origin.url").unwrap().to_string(),
+            kept
+        );
+        let saved = std::fs::read_to_string(dir.path().join(".git/config")).unwrap();
+        assert!(!saved.contains("secret"), "{saved}");
+    }
+}
+
+#[test]
+fn preflight_decides_on_the_remote_without_credentials() {
+    for state in [
+        RemoteState::Empty,
+        RemoteState::Unreachable("refused".into()),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let url = "https://user:p%40ss-preflight-secret@127.0.0.1:9/r.git";
+        let planned = PlannedGit {
+            remote: Some(url.into()),
+        };
+        // The probe authenticates with the remote as planned.
+        let probed = std::cell::RefCell::new(Vec::new());
+        let decision = preflight_with(&planned, &target(dir.path()), &|remote: &str| {
+            probed.borrow_mut().push(remote.to_owned());
+            state.clone()
+        })
+        .unwrap();
+        assert_eq!(probed.into_inner(), vec![url.to_owned()]);
+        let Preflight::Initialize { remote, .. } = &decision else {
+            panic!("expected an initialization, got {decision:?}");
+        };
+        assert_eq!(remote.as_deref(), Some("https://127.0.0.1:9/r.git"));
+        set_up(decision, &target(dir.path())).unwrap();
+        let saved = std::fs::read_to_string(dir.path().join(".git/config")).unwrap();
+        assert!(!saved.contains("secret"), "{saved}");
+        assert!(saved.contains("url = https://127.0.0.1:9/r.git"), "{saved}");
+    }
 }
 
 #[test]

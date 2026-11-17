@@ -120,8 +120,9 @@ pub enum RemoteState {
     Refused(String),
 }
 
-/// The decision taken before the apply writes anything. Its `Debug` shows
-/// the remote without user information.
+/// The decision taken before the apply writes anything. Its remote is the one
+/// the apply saves, without the credentials the planned remote can carry; its
+/// `Debug` shows the remote without user information.
 pub enum Preflight {
     /// The target is inside a repository; nothing will be initialized.
     Existing,
@@ -194,8 +195,13 @@ pub(crate) fn preflight_with(
             )),
         },
     };
+    // The probe authenticates with the planned remote as given; the decision
+    // keeps the remote Toha saves, without its credentials.
     Ok(Preflight::Initialize {
-        remote: planned.remote.clone(),
+        remote: planned
+            .remote
+            .as_deref()
+            .map(crate::source::without_credentials),
         warning,
     })
 }
@@ -339,7 +345,8 @@ fn list_refs(
 }
 
 /// Initialize `target` as a repository whose `HEAD` names [`default_branch`],
-/// and add `remote` as `origin` when given. Returns the branch.
+/// and add `remote` as `origin`, without its credentials, when given. Returns
+/// the branch.
 pub fn initialize(target: &Path, remote: Option<&str>) -> Result<String, GitTargetError> {
     let fail = |message: String| GitTargetError::Init {
         path: target.display().to_string(),
@@ -385,8 +392,11 @@ fn set_head(repo: &gix::Repository, branch: &str) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
-/// Write `remote "origin"` to the local config as `git remote add` does.
+/// Write `remote "origin"` to the local config as `git remote add` does,
+/// without the credentials `url` can carry. A credential helper supplies them.
 fn add_remote(repo: &gix::Repository, url: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let url = crate::source::without_credentials(url);
+    let url = url.as_str();
     // Parse first, so an invalid URL is named before the config changes.
     repo.remote_at(url)?;
     let path = repo.common_dir().join("config");
