@@ -581,6 +581,60 @@ fn a_continue_naming_another_template_shows_no_credentials() {
     assert!(!shown.contains("secret"), "{shown}");
 }
 
+/// `bytes` as text without terminal escape sequences.
+#[cfg(unix)]
+fn plain(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let mut out = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                for next in chars.by_ref() {
+                    if next.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+#[cfg(unix)]
+#[test]
+fn a_git_answer_typed_at_the_terminal_is_shown_without_credentials() {
+    use expectrl::{Expect, Session};
+    let scene = Scene::new(
+        "name: sample
+interview:
+  - {id: remote, type: git, prompt: Remote}
+",
+        false,
+    );
+    let mut command = scene.command();
+    command
+        .arg("stage")
+        .arg(scene.address())
+        .arg(scene.target());
+    let mut session = Session::spawn(command).unwrap();
+    session.expect("Remote").unwrap();
+    session
+        .send_line("https://user:p%40ss-terminal-secret@127.0.0.1:9/r.git")
+        .unwrap();
+    // The submitted line, before the plan that follows it, shows the remote
+    // as Toha keeps it.
+    let shown = session.expect("git init").unwrap();
+    let shown = plain(shown.before());
+    assert!(
+        shown.contains("Remote https://127.0.0.1:9/r.git"),
+        "{shown:?}"
+    );
+}
+
 /// Stage `scene` and return what the command wrote.
 fn staged_output(scene: &Scene) -> String {
     let mut stage = scene.command();

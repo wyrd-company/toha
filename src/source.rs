@@ -281,7 +281,7 @@ pub fn without_userinfo(repo: &str) -> String {
 /// other address loses all of its user information, as the user of an HTTPS
 /// address can be a token. The user information is found as
 /// [`without_userinfo`] finds it, and nothing else of the address changes.
-pub(crate) fn without_credentials(remote: &str) -> String {
+pub fn without_credentials(remote: &str) -> String {
     if let Some((helper, address)) = helper_address(remote) {
         return format!("{helper}::{}", without_credentials(address));
     }

@@ -46,6 +46,12 @@ impl Ask for InquireAsk {
         if let Some(description) = &prompt.description {
             input = input.with_help_message(description);
         }
+        // The submitted line of a `git` question shows the remote without
+        // the credentials its URL can carry, as Toha keeps it.
+        let git_answer = |answer: &str| toha::source::without_credentials(answer.trim());
+        if prompt.kind == PromptKind::Git {
+            input = input.with_formatter(&git_answer);
+        }
         input.prompt().map_err(|e| e.to_string())
     }
 
