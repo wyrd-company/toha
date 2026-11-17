@@ -33,7 +33,11 @@ description: >-
   extended (`\\?\...`) and UNC (`\\server\share`) values are read as names.
   A git address has the form
   `<repository>[@<ref>][#<path>]`, where `<ref>` is a tag, branch, or commit and
-  `<path>` is the template folder inside the repository.
+  `<path>` is the template folder inside the repository. The template path
+  starts at the first `#`, unless that `#` follows text in the URL's authority
+  that cannot be a host and port, such as `user:pa` in
+  `https://user:pa#ss@host/repository`; it then belongs to the password, and
+  the template path starts at the first `#` after the authority's last `@`.
 
   Formal names. The formal name of a git template is its address in shorthand
   form when a host prefix matches, including `@<ref>` when a ref was given and
@@ -45,23 +49,25 @@ description: >-
   of `<TEMPLATE>` argument classification.
 
   Remote URLs in output. Toha shows, records and returns a remote URL without
-  its user information, and saves a template clone's remote without it too. It
-  removes the user information by the URL's structure: in
+  its user information. A template clone Toha keeps saves its remote without it
+  and keeps no reflog, whose messages name the address. curl's verbose output
+  is off for every HTTP connection, as it writes the request headers that carry
+  credentials. Toha removes the user information by the URL's structure: in
   `<scheme>://<authority>/<path>` the authority ends at the first `/` and the
   user information is everything before its last `@`; in a scp-like
-  `<user>@<host>:<path>` it is everything before the `@`; a remote-helper
-  address `<helper>::<address>` keeps its helper. Suggested commands show a
+  `<user>@<host>:<path>` it is everything before the last `@` that comes before
+  the host's `:`, so a `@` in the path stays; a remote-helper address
+  `<helper>::<address>` keeps its helper. Suggested commands show a
   `<TEMPLATE>` URL the same way. A failed operation on a remote reports a
   message Toha writes, as git does, and never the Git transport's text, which
   can write the URL with its credentials or what the remote sent:
   `authentication failed for '<url>'` when the remote rejects the credentials
-  or none can be obtained, `'<url>' is not a valid Git URL`,
-  `unable to access '<url>': <reason>` with curl's description of its error
-  code, `the remote '<url>' has no reference named '<ref>'`, and otherwise
-  `could not fetch '<url>'`, with the operating system's description of its
-  error when it gave one. A fetch prefixes the message with
-  `git fetch failed: `. A credential resolver's refusal reports the
-  resolver's reason.
+  or none can be obtained, `'<url>' is not a valid Git URL`, `unable to access
+  '<url>': <reason>` with curl's description of its error code, `the remote
+  '<url>' has no reference named '<ref>'`, and otherwise `could not fetch
+  '<url>'`, with the operating system's description of its error when it gave
+  one. A fetch prefixes the message with `git fetch failed: `. A credential
+  resolver's refusal reports the resolver's reason.
 
   Bundled demo. `toha-demo` is a reserved fallback name. A fresh install can
   preview, apply, stage, continue, and resume it by name from any directory,

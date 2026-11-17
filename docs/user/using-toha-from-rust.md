@@ -195,10 +195,10 @@ remote without user information and holds no text from the Git transport or
 the remote, so a remote that sends a credential back, in any encoding, cannot
 put it in the message. The same holds for credentials in the address itself
 (`https://user:password@host/...`) and from the Git configuration. Toha does
-not store or erase a resolver's credential. While a resolver is in scope,
-curl's verbose output (`GIT_CURL_VERBOSE` or `gitoxide.http.verbose`) is off
-for the operation's HTTP connections, as it writes the request headers that
-carry the credential. A clone inside the scope
+not store or erase a resolver's credential. curl's verbose output
+(`GIT_CURL_VERBOSE` or `gitoxide.http.verbose`) is off for every HTTP
+connection Toha opens, as it writes the request headers that carry
+credentials. A clone inside a resolver's scope
 does not fetch a remote branch named `HEAD`, so an explicit
 `@refs/heads/HEAD` selection fails inside the scope. Outside a resolver scope,
 that selection works.
