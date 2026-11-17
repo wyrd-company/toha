@@ -34,10 +34,11 @@ description: >-
   A git address has the form
   `<repository>[@<ref>][#<path>]`, where `<ref>` is a tag, branch, or commit and
   `<path>` is the template folder inside the repository. The template path
-  starts at the first `#`, unless that `#` follows text in the URL's authority
-  that cannot be a host and port, such as `user:pa` in
-  `https://user:pa#ss@host/repository`; it then belongs to the password, and
-  the template path starts at the first `#` after the authority's last `@`.
+  starts at the first `#`, unless the text before it is a URL with an
+  authority that the Git URL parser rejects, such as `https://user:pa` in
+  `https://user:pa#ss@host/repository`; that `#` then belongs to the password,
+  and the template path starts at the first `#` after the authority's last
+  `@`.
 
   Formal names. The formal name of a git template is its address in shorthand
   form when a host prefix matches, including `@<ref>` when a ref was given and
