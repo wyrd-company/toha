@@ -637,8 +637,18 @@ fn resolve(
 ) {
     match value {
         serde_norway::Value::Tagged(tagged) => {
+            // A tag, an include operand and a mapping key are unchecked text
+            // that can hold a URL with credentials, so a problem shows them
+            // without user information.
             if tagged.tag != "include" {
-                problem(ps, path, format!("unknown tag: {}", tagged.tag));
+                problem(
+                    ps,
+                    path,
+                    format!(
+                        "unknown tag: {}",
+                        crate::source::without_userinfo(&tagged.tag.to_string())
+                    ),
+                );
                 return;
             }
             let Some(name) = tagged.value.as_str() else {
@@ -647,7 +657,14 @@ fn resolve(
             };
             let candidate = root.join(name);
             let Ok(actual) = candidate.canonicalize() else {
-                problem(ps, path, format!("include file not found: {name}"));
+                problem(
+                    ps,
+                    path,
+                    format!(
+                        "include file not found: {}",
+                        crate::source::without_userinfo(name)
+                    ),
+                );
                 return;
             };
             if !actual.starts_with(root) {
@@ -706,7 +723,10 @@ fn resolve(
                     item,
                     root,
                     stack,
-                    &format!("{path}.{}", key.as_str().unwrap_or("?")),
+                    &format!(
+                        "{path}.{}",
+                        crate::source::without_userinfo(key.as_str().unwrap_or("?"))
+                    ),
                     ps,
                 );
             }

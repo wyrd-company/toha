@@ -770,6 +770,40 @@ fn a_template_that_cannot_be_read_names_no_credentials() {
 }
 
 #[test]
+fn a_template_include_or_tag_names_no_credentials() {
+    // Resolution names a problem by the keys above it and repeats a tag or an
+    // include operand; any of them can hold a URL with credentials.
+    let url = "https://user:p%40ss-resolve-secret@127.0.0.1:9/r.git";
+    // A verbatim tag loads as its value; the other three are load errors.
+    for (default, fails) in [
+        (format!("\n      {url:?}: !unknown value"), true),
+        (
+            format!("\n      outer:\n        {url:?}: !unknown value"),
+            true,
+        ),
+        (format!("!include {url}"), true),
+        (format!("!<{url}> value"), false),
+    ] {
+        let scene = Scene::new(
+            &format!(
+                "name: sample\ninterview:\n  - id: remote\n    type: git\n    prompt: Remote\n    \
+                 default: {default}\n"
+            ),
+            false,
+        );
+        let shown = staged_output(&scene);
+        assert!(!shown.contains("secret"), "{default}: {shown}");
+        let loaded = toha::Template::load(scene.template.path());
+        assert_eq!(loaded.is_err(), fails, "{default}");
+        if let Err(error) = loaded {
+            assert!(shown.contains("template.yml"), "{default}: {shown}");
+            let returned = format!("{error} {error:?}");
+            assert!(!returned.contains("secret"), "{default}: {returned}");
+        }
+    }
+}
+
+#[test]
 fn a_relative_remote_with_history_is_checked_from_the_target() {
     let scene = Scene::new(TEMPLATE, false);
     // `history.git` sits beside the target, so `../history.git` names it from
