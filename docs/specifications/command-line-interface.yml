@@ -44,6 +44,25 @@ description: >-
   template from its recorded formal name as a filesystem path, independently
   of `<TEMPLATE>` argument classification.
 
+  Remote URLs in output. Toha shows, records and returns a remote URL without
+  its user information, and saves a template clone's remote without it too. It
+  removes the user information by the URL's structure: in
+  `<scheme>://<authority>/<path>` the authority ends at the first `/` and the
+  user information is everything before its last `@`; in a scp-like
+  `<user>@<host>:<path>` it is everything before the `@`; a remote-helper
+  address `<helper>::<address>` keeps its helper. Suggested commands show a
+  `<TEMPLATE>` URL the same way. A failed operation on a remote reports a
+  message Toha writes, as git does, and never the Git transport's text, which
+  can write the URL with its credentials or what the remote sent:
+  `authentication failed for '<url>'` when the remote rejects the credentials
+  or none can be obtained, `'<url>' is not a valid Git URL`,
+  `unable to access '<url>': <reason>` with curl's description of its error
+  code, `the remote '<url>' has no reference named '<ref>'`, and otherwise
+  `could not fetch '<url>'`, with the operating system's description of its
+  error when it gave one. A fetch prefixes the message with
+  `git fetch failed: `. A credential resolver's refusal reports the
+  resolver's reason.
+
   Bundled demo. `toha-demo` is a reserved fallback name. A fresh install can
   preview, apply, stage, continue, and resume it by name from any directory,
   offline, with no registry entry, cache, network, or git. Registry resolution

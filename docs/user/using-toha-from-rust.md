@@ -187,19 +187,18 @@ never sent to another origin.
   `GitTargetError::CredentialRefused`, and `git_target::probe` reports
   `RemoteState::Refused`.
 
-The password stays out of every Toha error and report, and the `Debug` output
-of `Credential` hides it. So does the Basic encoding of `username:password`
-that an HTTPS request carries, in standard and URL-safe base64, with or without
-padding, when a remote sends it back. Toha removes these as plain text, as Rust
-escapes them in a quoted string, and as the decimal byte list that a Git
-transport error shows for what a remote sent. The same applies to a credential
-from the Git configuration that answers a challenge while a resolver is in
-scope. A remote that sends a credential back in another form, such as another
-encoding, is outside this protection. Toha does not store or erase the
-credential. While a
-resolver is in scope, curl's verbose output (`GIT_CURL_VERBOSE` or
-`gitoxide.http.verbose`) is off for the operation's HTTP connections, as it
-writes the request headers that carry the credential. A clone inside the scope
+No Toha error or report holds a credential, and the `Debug` output of
+`Credential` hides the password. A failed operation on a remote reports a
+message Toha writes, as git does, such as
+`authentication failed for 'https://host/owner/repository.git'`. It names the
+remote without user information and holds no text from the Git transport or
+the remote, so a remote that sends a credential back, in any encoding, cannot
+put it in the message. The same holds for credentials in the address itself
+(`https://user:password@host/...`) and from the Git configuration. Toha does
+not store or erase a resolver's credential. While a resolver is in scope,
+curl's verbose output (`GIT_CURL_VERBOSE` or `gitoxide.http.verbose`) is off
+for the operation's HTTP connections, as it writes the request headers that
+carry the credential. A clone inside the scope
 does not fetch a remote branch named `HEAD`, so an explicit
 `@refs/heads/HEAD` selection fails inside the scope. Outside a resolver scope,
 that selection works.
