@@ -52,12 +52,15 @@ description: >-
   its user information. A template clone Toha keeps saves its remote without it
   and keeps no reflog, whose messages name the address. curl's verbose output
   is off for every HTTP connection, as it writes the request headers that carry
-  credentials. Toha removes the user information by the URL's structure: in
+  credentials, and a clone fetches a remote branch named `HEAD` only when the
+  address selects it, so that every connection is one Toha prepares. Toha
+  removes the user information by the URL's structure: in
   `<scheme>://<authority>/<path>` the authority ends at the first `/` and the
-  user information is everything before its last `@`; in a scp-like
-  `<user>@<host>:<path>` it is everything before the last `@` that comes before
-  the host's `:`, so a `@` in the path stays; a remote-helper address
-  `<helper>::<address>` keeps its helper. Suggested commands show a
+  user information is everything before its last `@`; a scp-like
+  `<user>@<host>:<path>` is read as git reads it: the host ends at the first
+  `:` and the user is everything before the last `@` in front of it, so a `@`
+  or `:` in the path stays and the address holds no password; a remote-helper
+  address `<helper>::<address>` keeps its helper. Suggested commands show a
   `<TEMPLATE>` URL the same way. A failed operation on a remote reports a
   message Toha writes, as git does, and never the Git transport's text, which
   can write the URL with its credentials or what the remote sent:
