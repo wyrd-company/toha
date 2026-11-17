@@ -623,20 +623,21 @@ fn render_default(
         | QuestionKind::Select { default, .. } => default
             .as_ref()
             .map(|v| {
-                // A `git` default and its expression, which diagnostics show,
-                // keep no credentials.
+                // A `git` default keeps no credentials. Its expression can
+                // hold them in any form, so diagnostics name the field
+                // without it.
                 let (expression, shown) = match kind {
-                    PromptKind::Git => (git_answer(v.source()), git_answer as fn(&str) -> String),
-                    _ => (v.source().to_owned(), str::to_owned as fn(&str) -> String),
+                    PromptKind::Git => (None, git_answer as fn(&str) -> String),
+                    _ => (Some(v.source()), str::to_owned as fn(&str) -> String),
                 };
                 v.render(&ctx)
                     .map(|answer| PreparedDefault {
                         answer: Answer::Text(shown(&answer)),
                         source: PreparedDefaultSource::Template {
-                            expression: Some(expression.clone()),
+                            expression: expression.map(str::to_owned),
                         },
                     })
-                    .map_err(|e| fault(id, "default", Some(&expression), e))
+                    .map_err(|e| fault(id, "default", expression, e))
             })
             .transpose(),
         QuestionKind::Confirm { default } => default
@@ -1146,7 +1147,9 @@ struct MappingSite {
 struct PresetSite {
     origin: crate::config::ConfigOrigin,
     name: PresetName,
-    value: Value,
+    /// The preset's value, for diagnostics; `None` for a `git` question,
+    /// whose default can hold credentials in any form.
+    value: Option<Value>,
 }
 
 impl ConfiguredDefaultOrigin {
@@ -1160,12 +1163,19 @@ impl ConfiguredDefaultOrigin {
             id = self.mapping.id
         );
         match &self.preset {
-            Some(preset) => format!(
-                "{mapping} → {}: presets.\"{}\" ({})",
-                preset.origin.path.display(),
-                preset.name,
-                preset.value
+            Some(PresetSite {
+                origin,
+                name,
+                value: Some(value),
+            }) => format!(
+                "{mapping} → {}: presets.\"{name}\" ({value})",
+                origin.path.display()
             ),
+            Some(PresetSite {
+                origin,
+                name,
+                value: None,
+            }) => format!("{mapping} → {}: presets.\"{name}\"", origin.path.display()),
             None => mapping,
         }
     }
@@ -1392,7 +1402,7 @@ pub fn configured_defaults(
                     Some(PresetSite {
                         origin: preset.origin.clone(),
                         name: name.clone(),
-                        value: kept(&preset.value),
+                        value: (!git).then(|| preset.value.clone()),
                     }),
                 )
             }

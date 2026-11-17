@@ -607,6 +607,62 @@ interview:
 }
 
 #[test]
+fn a_git_default_expression_is_never_shown() {
+    // An expression can hold a URL in any form, so diagnostics name the field
+    // without the expression: when the default is rejected, and when it fails
+    // to render.
+    for default in [
+        r#"'{{ "https://user:p%40ss-jinja-secret@127.0.0.1:9/r.git" }}'"#,
+        r#"'{{ "https://user:p%40ss-jinja-secret@127.0.0.1:9/r.git" | dateformat }}'"#,
+    ] {
+        let scene = Scene::new(
+            &format!(
+                "name: sample
+interview:
+  - id: remote
+    type: git
+    prompt: Remote URL
+    default: {default}
+    validate:
+      regex: '^allowed$'
+"
+            ),
+            false,
+        );
+        let shown = staged_output(&scene);
+        assert!(shown.contains("remote.default"), "{default}: {shown}");
+        assert!(!shown.contains("secret"), "{default}: {shown}");
+    }
+}
+
+#[test]
+fn a_wrong_kind_preset_for_a_git_question_is_never_shown() {
+    let scene = Scene::new(
+        "name: sample
+interview:
+  - id: remote
+    type: git
+    prompt: Remote URL
+",
+        false,
+    );
+    let config = scene.iso.path().join("config/local.yml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(
+        &config,
+        format!(
+            "presets:\n  remote_url: [\"https://user:p%40ss-wrong-kind-secret@127.0.0.1:9/r.git\"]\n\
+             template-defaults:\n  {:?}:\n    remote: {{ preset: remote_url }}\n",
+            support::formal_name(scene.template.path())
+        ),
+    )
+    .unwrap();
+    let shown = staged_output(&scene);
+    assert!(shown.contains("must be a string"), "{shown}");
+    assert!(!shown.contains("secret"), "{shown}");
+}
+
+#[test]
 fn a_relative_remote_with_history_is_checked_from_the_target() {
     let scene = Scene::new(TEMPLATE, false);
     // `history.git` sits beside the target, so `../history.git` names it from
