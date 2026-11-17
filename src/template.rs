@@ -481,8 +481,8 @@ pub struct Problem {
 pub struct LoadError {
     pub problems: Vec<Problem>,
     /// The operation's [stop signal](crate::stop) fired before the load
-    /// failed, such as while it fetched a document schema. The interrupted
-    /// fetch is among `problems`.
+    /// failed, such as while it fetched a document schema. When a fetch was
+    /// interrupted, it is among `problems`.
     pub stopped: bool,
 }
 impl fmt::Display for LoadError {
