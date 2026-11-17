@@ -148,6 +148,7 @@ fn replay_resume_with_overrides<'a>(
     let recorded: Vec<RawAnswers> = recorded.iter().map(clean).collect();
     let staged: Vec<RawAnswers> = staged.iter().map(clean).collect();
     let overrides = &clean(overrides);
+    seed.defaults = clean(&seed.defaults);
     let (recorded, staged) = (recorded.as_slice(), staged.as_slice());
     let mut queue = update_queue(recorded, overrides, &seed.defaults);
     // Keep the same precedence in prompt defaults as in the replay queue.

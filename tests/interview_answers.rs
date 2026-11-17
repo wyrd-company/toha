@@ -1847,10 +1847,24 @@ fn an_update_replay_keeps_no_credentials_of_a_recorded_git_answer() {
         id.clone(),
         toha::RawAnswer(json!(url)),
     )])];
+    // A seed default alone, with nothing recorded, staged or overridden.
+    let mut seeded = seed();
+    seeded
+        .defaults
+        .insert(id.clone(), toha::RawAnswer(json!(url)));
     let drives = [
         toha::applied::drive_update(&template, seed(), &recorded, toha::RawAnswers::new(), false)
             .unwrap(),
         toha::applied::drive_update_resume(&template, seed(), &recorded, &recorded, false).unwrap(),
+        toha::applied::drive_update(
+            &template,
+            seeded.clone(),
+            &[],
+            toha::RawAnswers::new(),
+            false,
+        )
+        .unwrap(),
+        toha::applied::drive_update_resume(&template, seeded, &[], &[], false).unwrap(),
     ];
     for drive in drives {
         let toha::applied::UpdateDrive::Completed {
