@@ -1812,3 +1812,21 @@ fn the_engine_shows_no_credentials_of_a_template_git_default() {
     let shown = format!("{answered:?}");
     assert!(!shown.contains("secret"), "{shown}");
 }
+
+#[test]
+fn the_engine_keeps_no_credentials_of_a_wrong_kind_git_default() {
+    let (_folder, template) = inline(
+        "name: sample\ninterview:\n  - id: first\n    type: text\n    prompt: First\n  \
+         - id: remote\n    type: git\n    prompt: 'Remote {{ first }}'\n",
+    );
+    let mut seeded = seed();
+    seeded.defaults.insert(
+        toha::Id::parse("remote").unwrap(),
+        toha::RawAnswer(json!([
+            "https://user:p%40ss-wrong-kind-seed-secret@127.0.0.1:9/r.git"
+        ])),
+    );
+    let started = Interview::start(&template, seeded).unwrap();
+    let shown = format!("{started:?}");
+    assert!(!shown.contains("secret"), "{shown}");
+}

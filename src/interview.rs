@@ -830,13 +830,25 @@ pub(crate) fn git_answer(text: &str) -> String {
 /// records or stages them. See [`git_answer`].
 pub(crate) fn without_credentials(template: &Template, mut answers: RawAnswers) -> RawAnswers {
     for (id, raw) in answers.iter_mut() {
-        if let (Some(question), Value::String(text)) = (template.question(id), &raw.0)
-            && matches!(question.kind, QuestionKind::Git { .. })
+        if template
+            .question(id)
+            .is_some_and(|question| matches!(question.kind, QuestionKind::Git { .. }))
         {
-            raw.0 = Value::String(git_answer(text));
+            git_value(&mut raw.0);
         }
     }
     answers
+}
+/// Remove the credentials from every string in `value`, a `git` answer or
+/// default as given. A value of the wrong kind keeps its kind, so validation
+/// rejects it or falls back as before, but no credential stays in it.
+pub(crate) fn git_value(value: &mut Value) {
+    match value {
+        Value::String(text) => *text = git_answer(text),
+        Value::Array(items) => items.iter_mut().for_each(git_value),
+        Value::Object(fields) => fields.values_mut().for_each(git_value),
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
 }
 fn parse_kind(id: &Id, kind: PromptKind, value: Value) -> Result<Answer, Rejection> {
     let fail = |msg: &str| rejection(id, msg);
@@ -1381,9 +1393,12 @@ pub fn configured_defaults(
         // A `git` default keeps no credentials, in the default or in the
         // provenance that diagnostics show.
         let git = matches!(question.kind, QuestionKind::Git { .. });
-        let kept = |value: &Value| match value {
-            Value::String(text) if git => Value::String(git_answer(text)),
-            other => other.clone(),
+        let kept = |value: &Value| {
+            let mut value = value.clone();
+            if git {
+                git_value(&mut value);
+            }
+            value
         };
         let (value, preset) = match &entry.value {
             DefaultSource::Literal(value) => (value, None),
@@ -2209,8 +2224,8 @@ impl<'a> Interview<'a> {
                 DefaultBankEntry::Seed(raw) | DefaultBankEntry::Application { raw, .. } => raw,
                 DefaultBankEntry::Configured(value) => &mut value.raw,
             };
-            if let (true, Value::String(text)) = (git, &raw.0) {
-                raw.0 = Value::String(git_answer(text));
+            if git {
+                git_value(&mut raw.0);
             }
         }
         advance(Advance {

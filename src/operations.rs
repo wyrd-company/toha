@@ -157,11 +157,11 @@ pub fn prepare_record(
         // as every `git` answer is.
         let mut entry = seed.entry.clone();
         if let Some(id) = template.git_question()
-            && let Some(serde_json::Value::String(url)) = entry
+            && let Some(answer) = entry
                 .get_mut("answers")
                 .and_then(|answers| answers.get_mut(id.as_str()))
         {
-            *url = crate::interview::git_answer(url);
+            crate::interview::git_value(answer);
         }
         record.seed_entry = Some(entry);
     }

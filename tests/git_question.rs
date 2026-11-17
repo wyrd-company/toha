@@ -664,13 +664,23 @@ interview:
 
 #[test]
 fn a_like_seed_is_staged_without_credentials() {
+    // A record written before Toha removed a `git` answer's credentials, with
+    // the answer as a string, or of the wrong kind after the question changed.
+    for recorded in [
+        json!("https://user:p%40ss-application-secret@127.0.0.1:9/r.git"),
+        json!(["https://user:p%40ss-application-secret@127.0.0.1:9/r.git"]),
+    ] {
+        like_seed_is_staged_without_credentials(recorded);
+    }
+}
+
+fn like_seed_is_staged_without_credentials(recorded: Value) {
     let scene = Scene::new(TEMPLATE, false);
     let (code, document) = scene.apply(
         json!({ "with_repo": true, "remote": "https://127.0.0.1:9/r.git" }),
         &[],
     );
     assert_eq!(code, Some(0), "{document}");
-    // A record written before Toha removed a `git` answer's credentials.
     let project = scene.target();
     let record_path = project.join(".toha.json");
     let mut record: Value = serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
@@ -678,8 +688,7 @@ fn a_like_seed_is_staged_without_credentials() {
         record["applications"][0]["answers"]["remote"], "https://127.0.0.1:9/r.git",
         "{record}"
     );
-    record["applications"][0]["answers"]["remote"] =
-        json!("https://user:p%40ss-application-secret@127.0.0.1:9/r.git");
+    record["applications"][0]["answers"]["remote"] = recorded.clone();
     std::fs::write(&record_path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
     git(&project, &["add", "."]);
     git(&project, &["commit", "--quiet", "-m", "applied"]);
@@ -691,7 +700,7 @@ fn a_like_seed_is_staged_without_credentials() {
         .arg(project.join("beta"))
         .args(["--like", ".", "--async"]);
     let output = stage.output().unwrap();
-    assert_eq!(output.status.code(), Some(4), "{output:?}");
+    assert_eq!(output.status.code(), Some(4), "{recorded}: {output:?}");
     let shown = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
