@@ -258,7 +258,9 @@ pub enum SkipScope {
     /// top level, which names `{ skip: rest }`.
     Group,
 }
-#[derive(Debug)]
+/// A question. Its `Debug` hides the source of a `git` question's `format`,
+/// which, like its default (see [`QuestionKind`]), can hold the credentials
+/// of a URL in any form.
 pub struct Question {
     pub id: Id,
     pub prompt: Tmpl,
@@ -270,6 +272,26 @@ pub struct Question {
     pub validate: Validate,
     pub format: Option<Expr>,
     pub when: Option<Expr>,
+}
+impl std::fmt::Debug for Question {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = f.debug_struct("Question");
+        debug
+            .field("id", &self.id)
+            .field("prompt", &self.prompt)
+            .field("description", &self.description)
+            .field("placeholder", &self.placeholder)
+            .field("required", &self.required)
+            .field("kind", &self.kind)
+            .field("parts", &self.parts)
+            .field("validate", &self.validate);
+        if matches!(self.kind, QuestionKind::Git { .. }) {
+            debug.field("format", &self.format.as_ref().map(|_| "<hidden>"));
+        } else {
+            debug.field("format", &self.format);
+        }
+        debug.field("when", &self.when).finish()
+    }
 }
 /// A question's kind. Its `Debug` hides the source of a `git` question's
 /// default, which can hold the credentials of a URL in any form.

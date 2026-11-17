@@ -1854,6 +1854,55 @@ fn the_engine_keeps_no_credentials_a_git_format_builds() {
 }
 
 #[test]
+fn the_engine_shows_no_source_of_a_git_format_or_default() {
+    // A format that fails at run time is named without its source.
+    let (_folder, template) = inline(
+        "name: sample\ninterview:\n  - id: remote\n    type: git\n    prompt: Remote\n    \
+         format: \"'https://user:p%40ss-format-error-secret@127.0.0.1:9/r.git' + 3\"\n",
+    );
+    let started = Interview::start(&template, seed()).unwrap();
+    let shown = format!("{started:?}");
+    assert!(!shown.contains("secret"), "{shown}");
+    let Interview::Asking(pending) = started else {
+        panic!("expected the git question");
+    };
+    let answers = toha::RawAnswers::from([(
+        toha::Id::parse("remote").unwrap(),
+        toha::RawAnswer(json!("safe-input")),
+    )]);
+    let error = match pending.answer(answers) {
+        Err(toha::AnswerError::Eval(error)) => format!("{error} {error:?}"),
+        Err(other) => panic!("expected a format error, got {other:?}"),
+        Ok(_) => panic!("expected a format error"),
+    };
+    assert!(error.contains("remote.format"), "{error}");
+    assert!(!error.contains("secret"), "{error}");
+
+    // A valid format stays out of the retained template's Debug.
+    let (_folder, template) = inline(
+        "name: sample\ninterview:\n  - id: remote\n    type: git\n    prompt: Remote\n    \
+         format: \"'https://user:p%40ss-format-debug-secret@127.0.0.1:9/r.git'\"\n",
+    );
+    let shown = format!("{:?}", Interview::start(&template, seed()).unwrap());
+    assert!(!shown.contains("secret"), "{shown}");
+    assert!(!format!("{:?}", template.interview).contains("secret"));
+
+    // An unresolved dependency of a git default names the field, not its
+    // source.
+    let (_folder, mut template) = inline(
+        "name: sample\ninterview:\n  - { id: first, type: text, prompt: First }\n  \
+         - id: remote\n    type: git\n    prompt: Remote\n    \
+         default: \"{{ 'https://user:p%40ss-unresolved-secret@host.invalid/' ~ first }}\"\n",
+    );
+    template.interview.swap(0, 1);
+    let error = Interview::start(&template, seed()).unwrap_err().to_string();
+    assert_eq!(
+        error,
+        "template error in remote.default: first has no answer when this node is reached"
+    );
+}
+
+#[test]
 fn the_engine_shows_no_credentials_of_a_template_git_default() {
     let (_folder, template) = inline(
         "name: sample\ninterview:\n  - id: remote\n    type: git\n    prompt: Remote URL\n    \

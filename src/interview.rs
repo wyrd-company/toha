@@ -1546,7 +1546,10 @@ fn format_answer(
         return Ok(answer);
     };
     let ctx = context(template, answers, seed);
-    let fail = |e: &dyn fmt::Display| fault(id, "format", Some(expr.source()), e);
+    // A `git` question's `format` can hold the credentials of a URL in any
+    // form, so its diagnostics name the field without it.
+    let source = (kind != PromptKind::Git).then(|| expr.source());
+    let fail = |e: &dyn fmt::Display| fault(id, "format", source, e);
     let apply = |value: Value| -> Result<Value, EvalError> {
         let mut c = ctx.clone();
         c.insert("value".into(), value);
@@ -1709,6 +1712,20 @@ fn expressions(node: &Node) -> (Id, Vec<Expression<'_>>) {
     };
     (id, out)
 }
+/// `source`, the expression of `node`'s `field`, as diagnostics show it: not
+/// at all for the expressions that compute a `git` question's value, its
+/// `default` and `format`, which can hold the credentials of a URL in any
+/// form.
+fn shown_source<'s>(node: &Node, field: &str, source: &'s str) -> Option<&'s str> {
+    let git = matches!(
+        node,
+        Node::Question(Question {
+            kind: QuestionKind::Git { .. },
+            ..
+        })
+    );
+    (!(git && matches!(field, "default" | "format"))).then_some(source)
+}
 /// The fault behind unresolved question dependencies: the first expression,
 /// in `nodes` and their descendants, that references an id with no answer.
 fn unresolved(nodes: &[Node], available: &mut HashSet<String>, t: &Template) -> Option<EvalError> {
@@ -1729,7 +1746,7 @@ fn unresolved(nodes: &[Node], available: &mut HashSet<String>, t: &Template) -> 
                 return Some(fault(
                     &id,
                     field,
-                    Some(source),
+                    shown_source(node, field, source),
                     format!("{name} has no answer when this node is reached"),
                 ));
             }
