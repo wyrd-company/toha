@@ -33,7 +33,9 @@ pub(crate) fn message(url: &str, operation: Operation, error: &(dyn Error + 'sta
         Reason::CleartextCredentials => {
             format!("authentication failed for '{url}': credentials are only sent over https")
         }
-        Reason::InvalidUrl => format!("'{url}' is not a valid Git URL"),
+        // A URL gix cannot parse has no structure to remove its user
+        // information by, so the message does not quote it.
+        Reason::InvalidUrl => "the address is not a valid Git URL".to_owned(),
         Reason::UnusedParts(scheme) => {
             format!("the {scheme} protocol cannot use the user, password, host or port in '{url}'")
         }
@@ -383,7 +385,7 @@ mod tests {
         assert_message(
             &leaky(error),
             Operation::Save,
-            &format!("'{SAFE}' is not a valid Git URL"),
+            "the address is not a valid Git URL",
         );
     }
 

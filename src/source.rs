@@ -254,9 +254,14 @@ pub fn without_userinfo(repo: &str) -> String {
                 None => repo.to_owned(),
             };
         }
-        return match scheme.rfind('@') {
-            Some(at) => without_userinfo(&repo[at + 1..]),
-            None => repo.to_owned(),
+        // No URL gix reads, such as one with a space before its scheme: text
+        // with a `@` in front of the `://` can only be user information, and
+        // so can the authority's text before its last `@`.
+        let prefix = scheme.rfind('@').map_or(scheme, |at| &scheme[at + 1..]);
+        let authority = rest.find('/').map_or(rest, |slash| &rest[..slash]);
+        return match authority.rfind('@') {
+            Some(at) => format!("{prefix}://{}", &rest[at + 1..]),
+            None => format!("{prefix}://{rest}"),
         };
     }
     match scp(repo) {
@@ -969,6 +974,23 @@ mod tests {
             "/tmp/a@b:c",
         ] {
             assert_eq!(without_credentials(remote), remote);
+        }
+    }
+    #[test]
+    fn a_url_with_a_malformed_scheme_loses_its_user_information_too() {
+        for password in UNUSUAL_PASSWORDS {
+            for (prefix, kept) in [
+                (" https", " https"),
+                ("\thttps", "\thttps"),
+                ("ht_tps", "ht_tps"),
+                ("1https", "1https"),
+                ("user:x@https", "https"),
+            ] {
+                let url = format!("{prefix}://user:{password}@host.invalid/o/r.git");
+                let expected = format!("{kept}://host.invalid/o/r.git");
+                assert_eq!(without_userinfo(&url), expected, "{url:?}");
+                assert_eq!(without_credentials(&url), expected, "{url:?}");
+            }
         }
     }
     #[test]

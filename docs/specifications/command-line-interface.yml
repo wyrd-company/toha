@@ -69,12 +69,13 @@ description: >-
   message Toha writes, as git does, and never the Git transport's text, which
   can write the URL with its credentials or what the remote sent:
   `authentication failed for '<url>'` when the remote rejects the credentials
-  or none can be obtained, `'<url>' is not a valid Git URL`, `unable to access
-  '<url>': <reason>` with curl's description of its error code, `the remote
-  '<url>' has no reference named '<ref>'`, and otherwise `could not fetch
-  '<url>'`, with the operating system's description of its error when it gave
-  one. A fetch prefixes the message with `git fetch failed: `. A credential
-  resolver's refusal reports the resolver's reason.
+  or none can be obtained, `the address is not a valid Git URL` (without the
+  URL, which has no structure to remove its user information by), `unable to
+  access '<url>': <reason>` with curl's description of its error code, `the
+  remote '<url>' has no reference named '<ref>'`, and otherwise `could not
+  fetch '<url>'`, with the operating system's description of its error when it
+  gave one. A fetch prefixes the message with `git fetch failed: `. A
+  credential resolver's refusal reports the resolver's reason.
 
   Bundled demo. `toha-demo` is a reserved fallback name. A fresh install can
   preview, apply, stage, continue, and resume it by name from any directory,

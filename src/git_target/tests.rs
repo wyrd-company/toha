@@ -99,9 +99,7 @@ fn probe_names_a_malformed_remote_without_its_password() {
     let url = "https://user:caf\u{e9}\u{1}\t-secret@example.invalid/sample.git";
     assert_eq!(
         probe(url),
-        RemoteState::Unreachable(
-            "'https://example.invalid/sample.git' is not a valid Git URL".into()
-        )
+        RemoteState::Unreachable("the address is not a valid Git URL".into())
     );
 }
 
@@ -229,7 +227,7 @@ fn a_remote_that_cannot_be_saved_is_named_without_its_password() {
         message,
         format!(
             "could not initialize a git repository at {}: \
-             'https://example.invalid/sample.git' is not a valid Git URL",
+             the address is not a valid Git URL",
             dir.path().display()
         )
     );

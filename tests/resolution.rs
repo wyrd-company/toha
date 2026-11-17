@@ -984,13 +984,13 @@ fn a_failed_fetch_names_the_address_without_its_password() {
         // control characters and keep the non-ASCII text.
         (
             "https://user:caf\u{e9}\u{1}\t-secret@127.0.0.1:9/sample.git".to_owned(),
-            "'https://127.0.0.1:9/sample.git' is not a valid Git URL".to_owned(),
+            "the address is not a valid Git URL".to_owned(),
         ),
         // A `#` ends an HTTPS authority, so gix cannot parse the URL; the
         // template path still starts after the user information.
         (
             "https://user:fra#gment-secret@127.0.0.1:9/sample.git".to_owned(),
-            "'https://127.0.0.1:9/sample.git' is not a valid Git URL".to_owned(),
+            "the address is not a valid Git URL".to_owned(),
         ),
         // gix reads `HTTPS` as a helper scheme and finds the password even
         // with a `?` in it.
@@ -1003,6 +1003,16 @@ fn a_failed_fetch_names_the_address_without_its_password() {
             "authentication failed for 'http://127.0.0.1:9/sample.git': \
              credentials are only sent over https"
                 .to_owned(),
+        ),
+        // A space before the scheme, or a malformed scheme, is no URL gix
+        // reads.
+        (
+            " https://user:plain-space-secret@127.0.0.1:9/sample.git".to_owned(),
+            "the address is not a valid Git URL".to_owned(),
+        ),
+        (
+            "ht_tps://user:p%40ss-scheme-secret@127.0.0.1:9/sample.git".to_owned(),
+            "the address is not a valid Git URL".to_owned(),
         ),
         (
             format!("{local}@absent"),
