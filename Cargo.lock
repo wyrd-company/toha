@@ -3608,6 +3608,7 @@ dependencies = [
  "base64 0.23.1",
  "clap",
  "curl",
+ "curl-sys",
  "expectrl",
  "getrandom 0.4.3",
  "gix 0.90.0",

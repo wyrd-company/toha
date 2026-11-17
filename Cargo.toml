@@ -50,6 +50,9 @@ gix = { version = "0.90.0", default-features = false, features = ["blocking-netw
 include_dir = "0.7.4"
 rustix = { version = "1", features = ["process", "system"] }
 curl = { version = "0.4.50", default-features = false }
+# The quick-exit options a stopped schema lookup needs; no features, so that
+# curl's own TLS selection is unchanged.
+curl-sys = { version = "0.4.91", default-features = false }
 rustls-native-certs = "0.8.4"
 base64 = "0.23"
 which = "8"

@@ -2674,6 +2674,7 @@ version = "0.4.1"
 dependencies = [
  "base64 0.23.1",
  "curl",
+ "curl-sys",
  "getrandom 0.4.3",
  "gix",
  "globset",

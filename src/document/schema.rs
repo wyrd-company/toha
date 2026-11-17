@@ -189,9 +189,49 @@ fn fetch(uri: &str) -> Result<Value, String> {
     }
     Ok(schema)
 }
+/// `CURLOPT_QUICK_EXIT`, which curl-sys 0.4.91 does not define: a transfer's
+/// cleanup detaches its resolver threads instead of joining them.
+const CURLOPT_QUICK_EXIT: curl_sys::CURLoption = curl_sys::CURLOPTTYPE_LONG + 322;
+/// `CURLMOPT_QUICK_EXIT`, which curl-sys 0.4.91 does not define: the multi
+/// handle's cleanup detaches its resolver pool instead of joining it.
+const CURLMOPT_QUICK_EXIT: curl_sys::CURLMoption = curl_sys::CURLOPTTYPE_LONG + 21;
+/// End a transfer the stop signal stopped, and close its connection.
+///
+/// A name lookup can't be interrupted: `getaddrinfo` runs on curl's resolver
+/// threads until the system resolver returns. Joining them would hold the
+/// caller until then. So when the lookup is still pending, the cleanup
+/// detaches them instead (wyrd-company/toha#81). They hold no connection to
+/// the schema host and end by themselves. A libcurl that resolves on a thread
+/// per transfer, such as 8.18, takes the transfer's option; one with a pool
+/// owned by the multi handle, such as 8.22, takes the multi handle's option.
+/// After the lookup the pool is joined, as without a stop, so no idle thread
+/// is left. A libcurl that knows neither option joins, and the stop waits for
+/// the lookup.
+fn release_stopped(multi: curl::multi::Multi, handle: curl::multi::Easy2Handle<Body>) {
+    // SAFETY: `handle` owns a live easy handle until `remove2` below, and
+    // CURLOPT_QUICK_EXIT takes a long. A libcurl without the option returns
+    // CURLE_UNKNOWN_OPTION and changes nothing.
+    unsafe {
+        curl_sys::curl_easy_setopt(handle.raw(), CURLOPT_QUICK_EXIT, 1 as std::ffi::c_long);
+    }
+    let Ok(easy) = multi.remove2(handle) else {
+        return;
+    };
+    let lookup_pending = easy.namelookup_time().is_ok_and(|time| time.is_zero());
+    if lookup_pending {
+        // SAFETY: `multi` is the live multi handle that ran the transfer, and
+        // CURLMOPT_QUICK_EXIT takes a long. A libcurl without the option
+        // returns CURLM_UNKNOWN_OPTION and changes nothing.
+        unsafe {
+            curl_sys::curl_multi_setopt(multi.raw(), CURLMOPT_QUICK_EXIT, 1 as std::ffi::c_long);
+        }
+    }
+    drop(easy);
+    drop(multi);
+}
 /// Run `easy` to completion on a multi handle this thread drives, or return
 /// [`STOPPED`] once the operation's stop signal fires. A stopped transfer is
-/// removed and dropped, with its multi handle, which closes its connection.
+/// ended with [`release_stopped`], which closes its connection.
 fn perform_stoppable(
     easy: curl::easy::Easy2<Body>,
 ) -> Result<(Result<(), curl::Error>, Body), String> {
@@ -199,7 +239,7 @@ fn perform_stoppable(
     let handle = multi.add2(easy).map_err(|e| e.to_string())?;
     loop {
         if crate::stop::requested() {
-            drop(multi.remove2(handle));
+            release_stopped(multi, handle);
             return Err(STOPPED.into());
         }
         if multi.perform().map_err(|e| e.to_string())? == 0 {
