@@ -1616,3 +1616,57 @@ fn credential_worker() {
         other => panic!("unknown scenario {other}"),
     }
 }
+
+#[test]
+fn alias_guidance_for_an_authenticated_address_shows_no_credentials() {
+    let (root, config) = https_fixture(Trust::Explicit);
+    // Serve a repository that holds two templates.
+    let multi = root.path().join("multi");
+    fs::create_dir(&multi).unwrap();
+    git(&multi, &["init", "-b", "main"]);
+    git(&multi, &["config", "user.email", "test@example.invalid"]);
+    git(&multi, &["config", "user.name", "Test"]);
+    for name in ["one", "two"] {
+        fs::create_dir_all(multi.join(name).join("template")).unwrap();
+        fs::write(
+            multi.join(name).join("template.yml"),
+            format!("name: {name}\ninterview: []\n"),
+        )
+        .unwrap();
+        fs::write(multi.join(name).join("template/.gitkeep"), "").unwrap();
+    }
+    git(&multi, &["add", "."]);
+    git(&multi, &["commit", "-m", "two templates"]);
+    fs::remove_dir_all(root.path().join("remote.git")).unwrap();
+    git(
+        root.path(),
+        &["clone", "--bare", multi.to_str().unwrap(), "remote.git"],
+    );
+    let auth = Auth::new("fixture-user", "p@ss#alias-secret");
+    let endpoint = Endpoint::start(root.path(), Some(config), Some(auth.clone()));
+    let remote = url(&endpoint, "https");
+    let address = remote.replacen("://", "://fixture-user:p%40ss%23alias-secret@", 1);
+    let mut command = support::isolated_command(root.path());
+    configure_trust(&mut command, root.path(), Trust::Explicit);
+    let output = command
+        .args(["templates", "add", &address, "--alias", "sample"])
+        .current_dir(root.path())
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    endpoint.stop();
+    let shown = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.status.code(), Some(1), "{shown}");
+    assert!(
+        shown.contains("--alias requires exactly one template"),
+        "{shown}"
+    );
+    assert!(shown.contains(&format!("{remote}#one")), "{shown}");
+    assert!(shown.contains(&format!("{remote}#two")), "{shown}");
+    assert!(!shown.contains("secret"), "{shown}");
+}

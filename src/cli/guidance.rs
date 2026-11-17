@@ -156,10 +156,13 @@ pub struct Operand {
     value: String,
     written: String,
 }
+/// A value in a suggested command. A URL loses its user information, so no
+/// suggested command repeats a credential, whatever gave the value.
 pub fn value(value: &str) -> Operand {
+    let value = shown(value);
     Operand {
-        value: value.into(),
-        written: word(value),
+        value: value.as_ref().into(),
+        written: word(&value),
     }
 }
 fn path_operand(path: &Path) -> Operand {
@@ -209,7 +212,7 @@ impl Arg<'_> {
 }
 /// A value the caller gave, as guidance shows it: a URL without its user
 /// information, so that no suggested command repeats a credential.
-fn shown(given: &str) -> std::borrow::Cow<'_, str> {
+pub fn shown(given: &str) -> std::borrow::Cow<'_, str> {
     if given.contains("://") {
         toha::source::without_userinfo(given).into()
     } else {
@@ -782,7 +785,8 @@ fn trust_lines(
     lines.push(format!("{lead}{}", trusted.command()));
     if let Some(formal) = installed {
         lines.push(format!(
-            "to trust {formal} for every run: {}",
+            "to trust {} for every run: {}",
+            shown(formal),
             toha(
                 "templates trust",
                 &[],
@@ -796,7 +800,10 @@ fn trust_lines(
 /// `templates trust` could not read the installed executable surface of
 /// `formal`, so it cannot be approved.
 pub fn surface_unreadable(formal: &str, error: &toha::ReviewError) -> String {
-    format!("cannot read the installed hooks of {formal}: {error}")
+    format!(
+        "cannot read the installed hooks of {}: {error}",
+        shown(formal)
+    )
 }
 
 /// The installed hooks a `templates trust` grant approved, echoed on standard
@@ -915,7 +922,8 @@ pub fn alias_in_use(template: &str, alias: &str, removable: bool) -> String {
     let mut lines = vec!["alias is in use".to_string()];
     if removable {
         lines.push(format!(
-            "to move it to {template}: {}, then {}",
+            "to move it to {}: {}, then {}",
+            shown(template),
             toha(
                 "templates alias",
                 &[format!("--remove {}", word(alias))],
@@ -953,10 +961,11 @@ pub fn ambiguous(name: &str, matches: &[String], retry: &[String]) -> String {
     let mut lines = vec![format!("ambiguous template name: {}", shown(name))];
     for (index, formal) in matches.iter().enumerate() {
         if let Some(command) = retry.get(index) {
-            lines.push(format!("to use {formal}: {command}"));
+            lines.push(format!("to use {}: {command}", shown(formal)));
         }
         lines.push(format!(
-            "to give {formal} an alias: {}",
+            "to give {} an alias: {}",
+            shown(formal),
             toha(
                 "templates alias",
                 &[],

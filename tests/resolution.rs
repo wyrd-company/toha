@@ -1153,3 +1153,34 @@ fn a_template_that_is_not_installed_is_named_without_credentials() {
         assert!(!shown.contains("secret"), "{args:?}: {shown}");
     }
 }
+
+#[test]
+fn a_registry_written_by_hand_shows_no_credentials() {
+    let root = TempDir::new().unwrap();
+    let url = "https://user:p%40ss-local-alias-secret@host.invalid/r.git";
+    fs::create_dir_all(root.path().join(".templates")).unwrap();
+    fs::write(
+        root.path().join(".templates/templates.yml"),
+        format!("templates:\n  {url:?}:\n    aliases: [sample]\n"),
+    )
+    .unwrap();
+    let project = root.path().join("project");
+    for args in [
+        vec!["templates", "list"],
+        vec!["templates", "list", "--json"],
+        vec!["stage", "toha-demo", project.to_str().unwrap(), "--async"],
+    ] {
+        let output = command(&root).args(&args).output().unwrap();
+        let shown = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        // The warning names the template without its user information.
+        assert!(
+            shown.contains("local alias sample names https://host.invalid/r.git"),
+            "{args:?}: {shown}"
+        );
+        assert!(!shown.contains("secret"), "{args:?}: {shown}");
+    }
+}

@@ -343,7 +343,12 @@ pub fn add(
             .iter()
             .map(|folder| match &parsed {
                 Address::Git { .. } => {
-                    let base = address.split_once('#').map_or(address, |(base, _)| base);
+                    // The address loses its user information before its
+                    // template path is split off, as a password can hold `#`.
+                    let shown = source::without_userinfo(address);
+                    let base = shown
+                        .split_once('#')
+                        .map_or(shown.as_str(), |(base, _)| base);
                     let path = folder.strip_prefix(&root).unwrap_or(folder);
                     format!("{base}#{}", path.to_string_lossy().replace('\\', "/"))
                 }
@@ -791,12 +796,21 @@ impl std::fmt::Display for CatalogError {
                 addresses.join(", ")
             ),
             Self::AliasInUse { alias, .. } => write!(f, "alias {alias} is already in use"),
-            Self::Surface { formal, error } => {
-                write!(f, "cannot inspect executable surface of {formal}: {error}")
-            }
-            Self::Ambiguous { name, matches } => {
-                write!(f, "template {name} is ambiguous: {}", matches.join(", "))
-            }
+            Self::Surface { formal, error } => write!(
+                f,
+                "cannot inspect executable surface of {}: {error}",
+                source::without_userinfo(formal)
+            ),
+            Self::Ambiguous { name, matches } => write!(
+                f,
+                "template {} is ambiguous: {}",
+                source::without_userinfo(name),
+                matches
+                    .iter()
+                    .map(|formal| source::without_userinfo(formal))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
         }
     }
 }

@@ -90,6 +90,7 @@ pub enum RegistryError {
         instance_path: String,
         message: String,
     },
+    /// `formal` is the template's name without user information.
     #[error("alias {alias} conflicts with {formal}")]
     AliasConflict { alias: String, formal: String },
     /// The name as given, without user information.
@@ -445,6 +446,9 @@ impl Registry {
         result.check_aliases()?;
         Ok(result)
     }
+    /// Apply the aliases of the local registry `local`. Returns each alias
+    /// whose template is not installed, with that template's name without
+    /// user information, for a warning.
     pub fn apply_local_aliases(
         &mut self,
         local: &RegistryFile,
@@ -456,7 +460,7 @@ impl Registry {
                     entry
                         .aliases
                         .iter()
-                        .map(|alias| (alias.clone(), formal.clone())),
+                        .map(|alias| (alias.clone(), without_userinfo(formal))),
                 );
                 continue;
             };
@@ -480,7 +484,7 @@ impl Registry {
                 {
                     return Err(RegistryError::AliasConflict {
                         alias: alias.clone(),
-                        formal: formal.clone(),
+                        formal: without_userinfo(formal),
                     });
                 }
             }

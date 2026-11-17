@@ -107,20 +107,33 @@ impl From<CatalogError> for CommandError {
         }
     }
 }
+/// A template name or source from a registry, as the `templates` commands
+/// show it: an address without user information. A registry Toha writes holds
+/// none, but a registry file written by hand can.
+fn shown(name: &str) -> std::borrow::Cow<'_, str> {
+    guidance::shown(name)
+}
 fn events(events: Vec<Event>) -> Vec<String> {
     events
         .into_iter()
         .map(|event| match event {
-            Event::Added(formal) => format!("added {formal}"),
+            Event::Added(formal) => format!("added {}", shown(&formal)),
             Event::SharedShortName { name, formal } => {
-                format!("shared short name {name}: toha templates alias {formal} <alias>")
+                format!(
+                    "shared short name {name}: toha templates alias {} <alias>",
+                    shown(&formal)
+                )
             }
-            Event::Pinned(formal) => format!("pinned {formal}"),
-            Event::Updated(formal) => format!("updated {formal}"),
-            Event::ApprovalLapsed(formal) => format!("{formal} (hooks changed; approval lapsed)"),
-            Event::Removed(formal) => format!("removed {formal}"),
+            Event::Pinned(formal) => format!("pinned {}", shown(&formal)),
+            Event::Updated(formal) => format!("updated {}", shown(&formal)),
+            Event::ApprovalLapsed(formal) => {
+                format!("{} (hooks changed; approval lapsed)", shown(&formal))
+            }
+            Event::Removed(formal) => format!("removed {}", shown(&formal)),
             Event::AliasRemoved(alias) => format!("removed alias {alias}"),
-            Event::AliasAdded { alias, formal } => format!("added alias {alias} for {formal}"),
+            Event::AliasAdded { alias, formal } => {
+                format!("added alias {alias} for {}", shown(&formal))
+            }
             Event::AliasShadowsShortName(alias) => {
                 format!("warning: alias {alias} is another template's short name")
             }
@@ -132,11 +145,16 @@ fn events(events: Vec<Event>) -> Vec<String> {
                 if let Some(surface) = surface {
                     eprintln!("{}", guidance::approved_surface(&surface));
                 }
-                format!("{}trusted {formal}", if already { "already " } else { "" })
+                format!(
+                    "{}trusted {}",
+                    if already { "already " } else { "" },
+                    shown(&formal)
+                )
             }
             Event::Untrusted { formal, already } => format!(
-                "{}untrusted {formal}",
-                if already { "already " } else { "" }
+                "{}untrusted {}",
+                if already { "already " } else { "" },
+                shown(&formal)
             ),
             _ => "template registry changed".to_owned(),
         })
@@ -145,7 +163,7 @@ fn events(events: Vec<Event>) -> Vec<String> {
 fn list(ctx: &Catalog, filter: Option<Layer>, json: bool) -> Result<Vec<String>, CommandError> {
     let listing = catalog::list(ctx, filter)?;
     if json {
-        let mut values: Vec<_> = listing.entries.iter().map(|row| { let e=&row.listed; serde_json::json!({"formal_name":e.formal_name,"name":e.entry.name,"aliases":e.entry.aliases,"trusted":row.trusted,"layer":e.layer,"source":e.entry.source,"ref":e.entry.reference,"commit":e.entry.commit,"path":e.entry.path}) }).collect();
+        let mut values: Vec<_> = listing.entries.iter().map(|row| { let e=&row.listed; serde_json::json!({"formal_name":shown(&e.formal_name),"name":e.entry.name,"aliases":e.entry.aliases,"trusted":row.trusted,"layer":e.layer,"source":shown(&e.entry.source),"ref":e.entry.reference,"commit":e.entry.commit,"path":e.entry.path}) }).collect();
         if let Some(row) = listing.bundled {
             values.push(serde_json::json!({"formal_name":row.formal,"name":row.short,"aliases":[],"trusted":row.trusted,"commit":toha::bundled::commit(),"bundled":true}));
         }
@@ -158,7 +176,7 @@ fn list(ctx: &Catalog, filter: Option<Layer>, json: bool) -> Result<Vec<String>,
             let e = &row.listed;
             format!(
                 "{}\t{}\t{}\t{}",
-                e.formal_name,
+                shown(&e.formal_name),
                 e.entry.name,
                 e.entry.aliases.join(","),
                 row.trusted
