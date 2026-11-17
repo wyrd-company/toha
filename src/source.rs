@@ -806,6 +806,35 @@ mod tests {
             assert_eq!(without_userinfo(expected), expected, "{expected:?}");
         }
     }
+    #[cfg(unix)]
+    #[test]
+    fn a_destination_toha_cannot_write_is_not_an_authentication_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let locked = root.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).unwrap();
+        if std::fs::create_dir(locked.join("probe")).is_ok() {
+            // A superuser writes anyway; the case cannot arise.
+            return;
+        }
+        let address = Address::Git {
+            repo: "https://user:p%40ss-secret@example.invalid/o/r.git".into(),
+            reference: None,
+            path: None,
+        };
+        let error = fetch(&address, &locked.join("clone"))
+            .unwrap_err()
+            .to_string();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            error,
+            format!(
+                "git fetch failed: could not fetch 'https://example.invalid/o/r.git': {}",
+                std::io::Error::from_raw_os_error(13)
+            )
+        );
+    }
     #[test]
     fn a_scp_path_with_an_at_sign_keeps_its_userinfo_apart() {
         for user in ["secret-token", "user:p@ss-secret", "u%40secret"] {

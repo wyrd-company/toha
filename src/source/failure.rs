@@ -95,12 +95,12 @@ fn reason(url: &str, error: &(dyn Error + 'static)) -> Reason {
             return Reason::Transport(curl.description().to_owned());
         }
         if let Some(io) = error.downcast_ref::<std::io::Error>() {
-            // The HTTP transport turns a 401 status into this kind.
-            if http && io.kind() == ErrorKind::PermissionDenied {
-                return Reason::Authentication;
-            }
             if let Some(code) = io.raw_os_error() {
+                // A local failure, such as a folder Toha cannot write.
                 system.get_or_insert(std::io::Error::from_raw_os_error(code).to_string());
+            } else if http && io.kind() == ErrorKind::PermissionDenied {
+                // The HTTP transport turns a 401 status into this kind.
+                return Reason::Authentication;
             } else if http && io.kind() == ErrorKind::ConnectionAborted {
                 // The HTTP transport turns a 5xx status into this kind.
                 return Reason::Transport("the server reported an error".into());
@@ -325,6 +325,20 @@ mod tests {
         let denied = leaky(std::io::Error::from(ErrorKind::PermissionDenied));
         let message = message("file:///sample/repo.git", Operation::Fetch, &denied);
         assert_eq!(message, "could not fetch 'file:///sample/repo.git'");
+    }
+
+    #[test]
+    fn a_local_permission_failure_keeps_the_systems_description() {
+        // EACCES from the operating system, as when a folder is not writable.
+        let error = std::io::Error::from(ErrorKind::PermissionDenied);
+        let denied = std::io::Error::from_raw_os_error(if cfg!(windows) { 5 } else { 13 });
+        assert_eq!(denied.kind(), error.kind());
+        let system = std::io::Error::from_raw_os_error(denied.raw_os_error().unwrap()).to_string();
+        assert_message(
+            &leaky(denied),
+            Operation::Fetch,
+            &format!("could not fetch '{SAFE}': {system}"),
+        );
     }
 
     #[test]
