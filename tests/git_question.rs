@@ -883,13 +883,21 @@ fn an_update_stages_a_recorded_git_answer_without_credentials() {
     assert_eq!(files_with_secret(scene.iso.path()), Vec::<PathBuf>::new());
 }
 
-/// The one staged record under the isolated state folder of `scene`.
+/// The one staged record in the `staged` folder under the isolated root of
+/// `scene`, wherever the platform keeps state.
 fn staged_record(scene: &Scene) -> PathBuf {
-    let folder = scene.iso.path().join("toha/staged");
-    let mut records: Vec<PathBuf> = std::fs::read_dir(&folder)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .collect();
+    let mut records = Vec::new();
+    let mut folders = vec![scene.iso.path().to_path_buf()];
+    while let Some(folder) = folders.pop() {
+        for entry in std::fs::read_dir(&folder).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                folders.push(path);
+            } else if folder.file_name().is_some_and(|name| name == "staged") {
+                records.push(path);
+            }
+        }
+    }
     assert_eq!(records.len(), 1, "{records:?}");
     records.remove(0)
 }
