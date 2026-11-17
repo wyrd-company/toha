@@ -983,6 +983,29 @@ fn scripted_stdout_stays_one_document_with_an_uncaptured_stdout_hook() {
 }
 
 #[test]
+fn the_one_document_route_stores_no_git_credentials() {
+    let folder = tempfile::tempdir().unwrap();
+    std::fs::create_dir(folder.path().join("template")).unwrap();
+    std::fs::write(
+        folder.path().join("template.yml"),
+        "name: sample\ninterview:\n  - {id: remote, type: git, prompt: Remote}\n  \
+         - {id: label, type: text, prompt: Label}\n",
+    )
+    .unwrap();
+    let template = Template::load(folder.path()).unwrap();
+    let url = "https://user:p%40ss-once-secret@127.0.0.1:9/r.git";
+    let text = envelope(EXPECTED, json!({ "remote": url, "label": url }));
+    match protocol::answer_document_once(EXPECTED, pending(start(&template)), &text).unwrap() {
+        DocumentStep::Accepted { submission, .. } => {
+            assert_eq!(submission["remote"], "https://127.0.0.1:9/r.git");
+            // A text answer is kept as given.
+            assert_eq!(submission["label"], url);
+        }
+        DocumentStep::Rejected { rejections, .. } => panic!("rejected: {rejections:?}"),
+    }
+}
+
+#[test]
 fn a_mismatched_identity_names_neither_address_with_credentials() {
     let template = template();
     let declared = "https://user:p%40ss-declared-secret@host.invalid/r.git";

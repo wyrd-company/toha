@@ -2286,9 +2286,12 @@ fn rejection(id: &Id, message: impl Into<String>) -> Rejection {
         kind: RejectionKind::Invalid,
     }
 }
-impl Pending<'_> {
+impl<'a> Pending<'a> {
     pub fn batch(&self) -> &Batch {
         &self.batch
+    }
+    pub(crate) fn template(&self) -> &'a Template {
+        self.template
     }
     pub fn messages_reached(&self) -> usize {
         self.messages.len()

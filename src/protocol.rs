@@ -537,10 +537,19 @@ pub fn answer_document_once<'a>(
     text: &str,
 ) -> Result<DocumentStep<'a>, SubmitDocumentError> {
     let verified = parse_and_verify(expected_template, text)?;
+    let template = pending.template();
+    // The map to store keeps no credentials of a `git` answer, as the
+    // engine's accepted answers do not.
+    let mut submission = verified.stored;
+    for (id, value) in submission.iter_mut() {
+        if crate::operations::is_git_question(template, id) {
+            crate::interview::git_value(value);
+        }
+    }
     match pending.answer(verified.raw) {
         Ok(interview) => Ok(DocumentStep::Accepted {
             interview,
-            submission: verified.stored,
+            submission,
         }),
         Err(AnswerError::Rejected {
             pending,

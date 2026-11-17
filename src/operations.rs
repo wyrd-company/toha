@@ -110,7 +110,7 @@ pub(crate) fn clean_staged(
     }
 }
 /// Whether `id` names a `git` question of `template`.
-fn is_git_question(template: &Template, id: &str) -> bool {
+pub(crate) fn is_git_question(template: &Template, id: &str) -> bool {
     crate::Id::parse(id).ok().is_some_and(|id| {
         template
             .question(&id)
