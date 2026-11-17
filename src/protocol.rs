@@ -492,6 +492,11 @@ fn parse_and_verify(
             });
         }
     };
+    if crate::source::has_password(&template) {
+        return Err(AnswersDocumentError::Shape {
+            message: format!("\"template\": {}", crate::source::PASSWORD_REFUSED),
+        });
+    }
     let wire = WireAnswersDocument { template, answers };
     // Exact string equality: a mismatch wins over every nested question or value
     // fault, and reaches no answer evaluation.

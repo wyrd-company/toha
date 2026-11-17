@@ -204,6 +204,13 @@ does not fetch a remote branch named `HEAD`, so an explicit
 `@refs/heads/HEAD` selection fails inside the scope. Outside a resolver scope,
 that selection works.
 
+A resolver or a credential helper is the only way to give Toha a password. Toha
+refuses a git URL that holds one, as in `https://user:password@host/repo.git`:
+`source::parse` and `source::fetch` return `SourceError::Address`, a `git`
+answer is rejected, and `git_target::preflight` and `git_target::initialize`
+return `GitTargetError::RemotePassword`, before anything connects or writes.
+`source::has_password` tells whether a URL holds one.
+
 ## Choose a hook runner and account for process inputs
 
 `HookRunner::run` receives `PlannedHook` and the absolute target. The hook has

@@ -134,6 +134,7 @@ hosts:
 ```
 
 With this setting, `custom:example/collection#notes` addresses that host.
+A base URL cannot hold a password; Toha refuses an address that would use one.
 Toha includes `gh` for GitHub, `gl` for GitLab, `bb` for Bitbucket, `cb` for
 Codeberg, and `ge` for Gitee. A configured value can replace a built-in
 prefix. Local configuration cannot set `hosts`, so a formal Git name resolves

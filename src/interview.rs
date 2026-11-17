@@ -812,6 +812,9 @@ fn parse_kind(id: &Id, kind: PromptKind, value: Value) -> Result<Answer, Rejecti
                 Err(fail("must be a JSON object"))
             }
         }
+        PromptKind::Git if value.as_str().is_some_and(crate::source::has_password) => {
+            Err(fail(crate::source::PASSWORD_REFUSED))
+        }
         PromptKind::Text | PromptKind::Multiline | PromptKind::Git | PromptKind::Select => value
             .as_str()
             .map(|v| Answer::Text(v.into()))

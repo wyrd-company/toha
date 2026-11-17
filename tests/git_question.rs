@@ -284,7 +284,7 @@ fn a_target_inside_a_repository_is_left_unchanged() {
 fn a_dry_run_plans_the_repository_and_writes_nothing() {
     let scene = Scene::new(TEMPLATE, false);
     let (code, document) = scene.apply(
-        json!({ "remote": "https://user:secret@example.invalid/sample.git" }),
+        json!({ "remote": "https://token@example.invalid/sample.git" }),
         &["--dry-run"],
     );
     assert_eq!(code, Some(0), "{document}");
@@ -293,6 +293,20 @@ fn a_dry_run_plans_the_repository_and_writes_nothing() {
         document["git"],
         json!({ "remote": "https://example.invalid/sample.git" })
     );
+    assert!(!scene.target().exists());
+}
+
+#[test]
+fn a_remote_with_a_password_is_refused_and_nothing_is_written() {
+    let scene = Scene::new(TEMPLATE, false);
+    let (code, document) = scene.apply(
+        json!({ "remote": "https://user:secret@example.invalid/sample.git" }),
+        &[],
+    );
+    assert_ne!(code, Some(0), "{document}");
+    let text = document.to_string();
+    assert!(text.contains("with a password is not accepted"), "{text}");
+    assert!(!text.contains("secret"), "{text}");
     assert!(!scene.target().exists());
 }
 
@@ -401,7 +415,7 @@ fn an_update_never_sets_up_a_repository() {
 fn the_applied_document_never_shows_remote_credentials() {
     let scene = Scene::new(TEMPLATE, false);
     // Nothing listens on the discard port, so the remote is unreachable.
-    let remote = "https://user:secret@127.0.0.1:9/sample.git";
+    let remote = "https://token@127.0.0.1:9/sample.git";
     let (code, document) = scene.apply(json!({ "remote": remote }), &[]);
     assert_eq!(code, Some(0), "{document}");
     assert_eq!(

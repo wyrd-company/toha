@@ -90,6 +90,9 @@ pub enum GitTargetError {
     Init { path: String, message: String },
     #[error("the credential resolver refused the remote {url}: {reason}")]
     CredentialRefused { url: String, reason: String },
+    /// The remote holds a password, which Toha does not accept.
+    #[error("{}", crate::source::PASSWORD_REFUSED)]
+    RemotePassword,
 }
 
 /// What listing a remote's references found.
@@ -142,6 +145,7 @@ pub(crate) fn preflight_with(
     target: &CanonicalTarget,
     probe: &dyn Fn(&str) -> RemoteState,
 ) -> Result<Preflight, GitTargetError> {
+    refuse_password(planned.remote.as_deref())?;
     if inside_repository(target.as_path())? {
         return Ok(Preflight::Existing);
     }
@@ -280,6 +284,9 @@ pub fn probe(url: &str) -> RemoteState {
 }
 
 fn list_refs(url: &str, supplied: &crate::source::Supplied) -> Result<usize, String> {
+    if crate::source::has_password(url) {
+        return Err(crate::source::PASSWORD_REFUSED.to_owned());
+    }
     // A remote needs a repository to belong to; a throwaway bare one holds it.
     let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
     let repo = gix::init_bare(scratch.path()).map_err(|e| e.to_string())?;
@@ -315,6 +322,7 @@ fn list_refs(url: &str, supplied: &crate::source::Supplied) -> Result<usize, Str
 /// Initialize `target` as a repository whose `HEAD` names [`default_branch`],
 /// and add `remote` as `origin` when given. Returns the branch.
 pub fn initialize(target: &Path, remote: Option<&str>) -> Result<String, GitTargetError> {
+    refuse_password(remote)?;
     let fail = |message: String| GitTargetError::Init {
         path: target.display().to_string(),
         message,
@@ -330,6 +338,14 @@ pub fn initialize(target: &Path, remote: Option<&str>) -> Result<String, GitTarg
         add_remote(&repo, url).map_err(|message| fail(crate::source::redacted(&message, url)))?;
     }
     Ok(branch)
+}
+
+/// Refuse a `remote` that holds a password before anything reads or writes it.
+fn refuse_password(remote: Option<&str>) -> Result<(), GitTargetError> {
+    match remote {
+        Some(url) if crate::source::has_password(url) => Err(GitTargetError::RemotePassword),
+        _ => Ok(()),
+    }
 }
 
 fn set_head(repo: &gix::Repository, branch: &str) -> Result<(), String> {

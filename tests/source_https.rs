@@ -595,7 +595,7 @@ fn run_https_fixture(trust: Trust) {
     let url = if matches!(trust, Trust::Http) {
         format!("http://localhost:{port}/remote.git")
     } else {
-        format!("https://user:{token}@localhost:{port}/remote.git")
+        format!("https://{token}@localhost:{port}/remote.git")
     };
     let mut command = support::isolated_command(root.path());
     configure_trust(&mut command, root.path(), trust);
