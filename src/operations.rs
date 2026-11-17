@@ -73,6 +73,47 @@ pub fn save_document_answers(template: &Template, saved: &mut StagedRecord) {
         saved.submissions.push(values);
     }
 }
+/// Remove the credentials of every `git` value in `saved`, a staged record
+/// of `template`: its submissions, its update overrides, the application a
+/// `--like` stage copied and the application an update pinned. A record
+/// staged before Toha removed a `git` answer's credentials can hold them, and
+/// a session that resumes it keeps and saves its record.
+pub(crate) fn clean_staged(template: &Template, saved: &mut StagedRecord) {
+    let git = |id: &str| {
+        crate::Id::parse(id).ok().is_some_and(|id| {
+            template
+                .question(&id)
+                .is_some_and(|question| matches!(question.kind, crate::QuestionKind::Git { .. }))
+        })
+    };
+    let clean = |answers: &mut indexmap::IndexMap<String, serde_json::Value>| {
+        for (id, value) in answers.iter_mut() {
+            if git(id) {
+                crate::interview::git_value(value);
+            }
+        }
+    };
+    saved.submissions.iter_mut().for_each(clean);
+    clean(&mut saved.update_overrides);
+    if let Some(serde_json::Value::Object(answers)) = saved
+        .seed_entry
+        .as_mut()
+        .and_then(|entry| entry.get_mut("answers"))
+    {
+        for (id, value) in answers.iter_mut() {
+            if git(id) {
+                crate::interview::git_value(value);
+            }
+        }
+    }
+    if let Some(base) = &mut saved.base
+        && let Ok(application) = serde_json::from_str::<serde_json::Value>(base)
+        && application.is_object()
+    {
+        *base = serde_json::to_string(&crate::updates::comparable(&application))
+            .expect("application serializes");
+    }
+}
 pub fn recorded_answers(saved: &StagedRecord) -> crate::RawAnswers {
     saved
         .submissions
@@ -360,6 +401,8 @@ impl Session {
         crate::document::restore_missing(&mut template, &recorded_answers(&record))
             .map_err(OperationError::Input)?;
         template.part_selection = record.part_selection.clone();
+        let mut record = record;
+        clean_staged(&template, &mut record);
         Ok(Self {
             template,
             resolved,

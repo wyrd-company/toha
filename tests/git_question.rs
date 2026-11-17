@@ -858,6 +858,17 @@ fn an_update_stages_a_recorded_git_answer_without_credentials() {
     assert!(!shown.contains("secret"), "{shown}");
     // The staged submissions and the pinned base hold no password.
     assert_eq!(files_with_secret(scene.iso.path()), Vec::<PathBuf>::new());
+    // An update staged before the fix held the password in its submissions
+    // and its pinned base; resuming it keeps and saves neither.
+    let path = staged_record(&scene);
+    let mut staged: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    if let Some(submission) = staged["submissions"].get_mut(0) {
+        submission["remote"] = json!("https://user:p%40ss-update-secret@127.0.0.1:9/r.git");
+    }
+    let mut base: Value = serde_json::from_str(staged["base"].as_str().unwrap()).unwrap();
+    base["answers"]["remote"] = json!("https://user:p%40ss-update-secret@127.0.0.1:9/r.git");
+    staged["base"] = json!(base.to_string());
+    std::fs::write(&path, serde_json::to_vec(&staged).unwrap()).unwrap();
     // The staged update resumes against the record that still holds it.
     let mut resume = scene.command();
     resume.arg("apply").arg(&project);
@@ -869,6 +880,74 @@ fn an_update_stages_a_recorded_git_answer_without_credentials() {
     );
     assert!(resumed.status.success(), "{shown}");
     assert!(!shown.contains("secret"), "{shown}");
+    assert_eq!(files_with_secret(scene.iso.path()), Vec::<PathBuf>::new());
+}
+
+/// The one staged record under the isolated state folder of `scene`.
+fn staged_record(scene: &Scene) -> PathBuf {
+    let folder = scene.iso.path().join("toha/staged");
+    let mut records: Vec<PathBuf> = std::fs::read_dir(&folder)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(records.len(), 1, "{records:?}");
+    records.remove(0)
+}
+
+#[test]
+fn a_stage_from_before_the_fix_resumes_without_credentials() {
+    let scene = Scene::new(
+        "name: sample
+interview:
+  - id: remote
+    type: git
+    prompt: Remote
+  - id: name
+    type: text
+    prompt: 'Name for {{ remote }}'
+",
+        false,
+    );
+    let mut stage = scene.command();
+    stage
+        .arg("stage")
+        .arg(scene.address())
+        .arg(scene.target())
+        .arg("--async");
+    assert_eq!(stage.output().unwrap().status.code(), Some(4));
+    let answers = tempfile::tempdir().unwrap();
+    let submit = |values: Value| {
+        let file = answers.path().join("answers.json");
+        std::fs::write(
+            &file,
+            serde_json::to_vec(&json!({
+                "template": support::formal_name(scene.template.path()),
+                "answers": values,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut cont = scene.command();
+        cont.arg("continue").arg(scene.target()).arg(&file);
+        cont.output().unwrap()
+    };
+    let first = submit(json!({ "remote": "https://127.0.0.1:9/r.git" }));
+    assert_eq!(first.status.code(), Some(4), "{first:?}");
+    // The record as Toha 0.4.1 saved it, with the answer's credentials.
+    let path = staged_record(&scene);
+    let mut record: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    record["submissions"][0]["remote"] =
+        json!("https://user:p%40ss-legacy-stage-secret@127.0.0.1:9/r.git");
+    std::fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+    let second = submit(json!({ "name": "sample" }));
+    let shown = format!(
+        "{}{}",
+        String::from_utf8_lossy(&second.stdout),
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert!(second.status.success(), "{shown}");
+    assert!(!shown.contains("secret"), "{shown}");
+    assert_eq!(files_with_secret(scene.iso.path()), Vec::<PathBuf>::new());
 }
 
 #[test]

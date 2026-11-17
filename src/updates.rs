@@ -717,7 +717,7 @@ pub fn stored_base(base: &UpdateBase, base_application: Option<&Application>) ->
 /// recorded before Toha removed a `git` answer's credentials can hold them,
 /// and the pin is only compared, so both sides of the comparison take this
 /// form.
-fn comparable(application: &Value) -> Value {
+pub(crate) fn comparable(application: &Value) -> Value {
     let mut application = application.clone();
     if let Some(Value::Object(answers)) = application.get_mut("answers") {
         answers.values_mut().for_each(crate::interview::git_value);
@@ -900,6 +900,8 @@ impl UpdateSession {
             &crate::operations::recorded_answers(&record),
         )
         .map_err(UpdateError::Error)?;
+        let mut record = record;
+        crate::operations::clean_staged(&prepared.template, &mut record);
         Ok(Self {
             prepared,
             record,
