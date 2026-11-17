@@ -806,13 +806,35 @@ fn a_template_include_or_tag_names_no_credentials() {
 #[test]
 fn an_update_stages_a_recorded_git_answer_without_credentials() {
     let scene = Scene::new(TEMPLATE, false);
-    let (code, document) = scene.apply(
-        json!({ "with_repo": true, "remote": "https://127.0.0.1:9/r.git" }),
-        &[],
-    );
-    assert_eq!(code, Some(0), "{document}");
-    // A record written before Toha removed a `git` answer's credentials.
+    // An update replays the template's recorded revision, so the template is
+    // a committed repository.
+    let source = scene.template.path();
+    git(source, &["init", "--quiet", "-b", "main"]);
+    git(source, &["add", "."]);
+    git(source, &["commit", "--quiet", "-m", "template"]);
+    let address = support::file_url(source);
+    let answers = tempfile::tempdir().unwrap();
+    let file = answers.path().join("answers.json");
+    std::fs::write(
+        &file,
+        serde_json::to_vec(&json!({
+            "template": address,
+            "answers": { "with_repo": true, "remote": "https://127.0.0.1:9/r.git" },
+        }))
+        .unwrap(),
+    )
+    .unwrap();
     let project = scene.target();
+    let mut apply = scene.command();
+    apply
+        .arg("apply")
+        .arg(&address)
+        .arg(&project)
+        .arg("--answers")
+        .arg(&file);
+    let applied = apply.output().unwrap();
+    assert!(applied.status.success(), "{applied:?}");
+    // A record written before Toha removed a `git` answer's credentials.
     let record_path = project.join(".toha.json");
     let mut record: Value = serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
     record["applications"][0]["answers"]["remote"] =
@@ -820,11 +842,10 @@ fn an_update_stages_a_recorded_git_answer_without_credentials() {
     std::fs::write(&record_path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
     git(&project, &["add", "."]);
     git(&project, &["commit", "--quiet", "-m", "applied"]);
-    std::fs::remove_file(scene.iso.path().join("answers.json")).unwrap();
     let mut stage = scene.command();
     stage
         .arg("stage")
-        .arg(scene.address())
+        .arg(&address)
         .arg(&project)
         .args(["--update", "--async"]);
     let output = stage.output().unwrap();
@@ -838,18 +859,16 @@ fn an_update_stages_a_recorded_git_answer_without_credentials() {
     // The staged submissions and the pinned base hold no password.
     assert_eq!(files_with_secret(scene.iso.path()), Vec::<PathBuf>::new());
     // The staged update resumes against the record that still holds it.
-    let mut apply = scene.command();
-    apply.arg("apply").arg(&project);
-    let applied = apply.output().unwrap();
+    let mut resume = scene.command();
+    resume.arg("apply").arg(&project);
+    let resumed = resume.output().unwrap();
     let shown = format!(
         "{}{}",
-        String::from_utf8_lossy(&applied.stdout),
-        String::from_utf8_lossy(&applied.stderr)
+        String::from_utf8_lossy(&resumed.stdout),
+        String::from_utf8_lossy(&resumed.stderr)
     );
-    assert!(
-        !shown.contains("stale") && !shown.contains("secret"),
-        "{shown}"
-    );
+    assert!(resumed.status.success(), "{shown}");
+    assert!(!shown.contains("secret"), "{shown}");
 }
 
 #[test]
