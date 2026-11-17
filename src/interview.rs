@@ -2498,8 +2498,8 @@ mod tests {
                 "https://host.invalid/r.git",
             ),
             (
-                "bob:p@ss-secret@host.invalid:r.git",
-                "bob@host.invalid:r.git",
+                "git@host.invalid:repo@draft:branch",
+                "git@host.invalid:repo@draft:branch",
             ),
             ("git@host.invalid:o/r.git", "git@host.invalid:o/r.git"),
             (

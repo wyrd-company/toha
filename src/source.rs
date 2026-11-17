@@ -248,64 +248,51 @@ impl Address {
 ///
 /// It reads the address's structure and never looks for a password's text.
 /// In `scheme://authority/path` the authority ends at the first `/`, and the
-/// user information is everything before the authority's last `@`. In a
-/// scp-like `user@host:path` it is everything before the last `@` that comes
-/// before the first `/` and is followed by a `:`; `git@host:path` becomes
-/// `ssh://host/path`. A remote-helper address `helper::address` keeps its
-/// helper and loses the user information of its address. A `/` cannot appear
-/// unencoded in user information, so text after one is the host or path, as
-/// it is for gix and git.
+/// user information is everything before the authority's last `@`; text with
+/// a `@` in front of a `://` that is not a scheme can only be user
+/// information. A scp-like `user@host:path` is read as git reads it (see
+/// [`scp`]); `git@host:path` becomes `ssh://host/path`. A remote-helper
+/// address `helper::address` keeps its helper and loses the user information
+/// of its address. A `/` cannot appear unencoded in user information, so text
+/// after one is the host or path, as it is for gix and git.
 pub fn without_userinfo(repo: &str) -> String {
-    if let Some((helper, address)) = repo.split_once("::")
-        && is_name(helper, b"+-._")
-    {
+    if let Some((helper, address)) = helper_address(repo) {
         return format!("{helper}::{}", without_userinfo(address));
     }
-    if let Some((scheme, rest)) = repo.split_once("://")
-        && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
-        && is_name(scheme, b"+-.")
-    {
-        let authority = rest.find('/').map_or(rest, |slash| &rest[..slash]);
-        return match authority.rfind('@') {
-            Some(at) => format!("{scheme}://{}", &rest[at + 1..]),
+    if let Some((scheme, rest)) = repo.split_once("://") {
+        if is_scheme(scheme) {
+            let authority = rest.find('/').map_or(rest, |slash| &rest[..slash]);
+            return match authority.rfind('@') {
+                Some(at) => format!("{scheme}://{}", &rest[at + 1..]),
+                None => repo.to_owned(),
+            };
+        }
+        return match scheme.rfind('@') {
+            Some(at) => without_userinfo(&repo[at + 1..]),
             None => repo.to_owned(),
         };
     }
-    // The host of a scp-like address ends at a `:`, and its path can hold
-    // `@`, so the user information ends at the last `@` that a `:` follows.
-    let head = repo.find('/').map_or(repo, |slash| &repo[..slash]);
-    let separator = head.rfind(':').and_then(|colon| head[..colon].rfind('@'));
-    match separator {
-        Some(at) => {
-            let rest = &repo[at + 1..];
-            if &repo[..at] != "git" {
-                return rest.to_owned();
-            }
-            let (host, path) = rest.split_once(':').expect("the host ends at a colon");
-            format!("ssh://{host}/{path}")
-        }
+    match scp(repo) {
+        Some((Some("git"), host, path)) => format!("ssh://{host}/{path}"),
+        Some((Some(_), host, path)) => format!("{host}:{path}"),
         // A scp-like address without a path, as Toha wrote it before.
-        None if repo.starts_with("git@") && !head[4..].contains('@') => {
+        None if repo.starts_with("git@") && !repo[4..].contains('@') => {
             format!("ssh://{}", &repo[4..])
         }
-        None => repo.to_owned(),
+        _ => repo.to_owned(),
     }
 }
 /// `remote` without the user information that could carry a credential, for
 /// a remote Toha saves. An SSH address keeps its user, which names the
 /// account SSH logs in to and is not a secret, and loses any password after
-/// it; every other address loses all of its user information, as the user of
-/// an HTTPS address can be a token. The user information is found as
+/// it; a scp-like address cannot hold a password, so it stays as it is; every
+/// other address loses all of its user information, as the user of an HTTPS
+/// address can be a token. The user information is found as
 /// [`without_userinfo`] finds it, and nothing else of the address changes.
 pub(crate) fn without_credentials(remote: &str) -> String {
-    let ssh = |user_information: &str| {
-        let user = user_information.split(':').next().unwrap_or_default();
-        if user.is_empty() {
-            String::new()
-        } else {
-            format!("{user}@")
-        }
-    };
+    if let Some((helper, address)) = helper_address(remote) {
+        return format!("{helper}::{}", without_credentials(address));
+    }
     if let Some((scheme, rest)) = remote.split_once("://")
         && matches!(
             scheme.to_ascii_lowercase().as_str(),
@@ -313,23 +300,48 @@ pub(crate) fn without_credentials(remote: &str) -> String {
         )
     {
         let authority = rest.find('/').map_or(rest, |slash| &rest[..slash]);
-        return match authority.rfind('@') {
-            Some(at) => format!("{scheme}://{}{}", ssh(&rest[..at]), &rest[at + 1..]),
-            None => remote.to_owned(),
+        let Some(at) = authority.rfind('@') else {
+            return remote.to_owned();
         };
-    }
-    let helper = remote
-        .split_once("::")
-        .is_some_and(|(helper, _)| is_name(helper, b"+-._"));
-    if !remote.contains("://") && !helper {
-        let head = remote.find('/').map_or(remote, |slash| &remote[..slash]);
-        let separator = head.rfind(':').and_then(|colon| head[..colon].rfind('@'));
-        return match separator {
-            Some(at) => format!("{}{}", ssh(&remote[..at]), &remote[at + 1..]),
-            None => remote.to_owned(),
+        let user = rest[..at].split(':').next().unwrap_or_default();
+        let user = if user.is_empty() {
+            String::new()
+        } else {
+            format!("{user}@")
         };
+        return format!("{scheme}://{user}{}", &rest[at + 1..]);
     }
-    without_userinfo(remote)
+    if remote.contains("://") {
+        return without_userinfo(remote);
+    }
+    remote.to_owned()
+}
+/// The helper and address of a remote-helper address `helper::address`.
+fn helper_address(repo: &str) -> Option<(&str, &str)> {
+    repo.split_once("::")
+        .filter(|(helper, _)| is_name(helper, b"+-._"))
+}
+/// Whether `text` is a URL scheme: a letter, then letters, digits, `+`, `-`
+/// and `.`.
+fn is_scheme(text: &str) -> bool {
+    text.starts_with(|c: char| c.is_ascii_alphabetic()) && is_name(text, b"+-.")
+}
+/// The user, host and path of a scp-like address `[user@]host:path`, read as
+/// git reads it: the host ends at the first `:`, when no `/` comes before it,
+/// and the user is everything before the last `@` in front of the host. A
+/// `:` or `@` after that first `:` belongs to the path, and the user cannot
+/// hold a `:`, so a scp-like address has no password.
+fn scp(address: &str) -> Option<(Option<&str>, &str, &str)> {
+    let colon = address.find(':')?;
+    let authority = &address[..colon];
+    if authority.contains('/') {
+        return None;
+    }
+    let (user, host) = match authority.rfind('@') {
+        Some(at) => (Some(&authority[..at]), &authority[at + 1..]),
+        None => (None, authority),
+    };
+    Some((user, host, &address[colon + 1..]))
 }
 /// Whether `text` is a non-empty run of ASCII letters, digits and `extra`.
 fn is_name(text: &str, extra: &[u8]) -> bool {
@@ -812,10 +824,6 @@ mod tests {
                     "file://host.invalid/tmp/r",
                 ),
                 (
-                    format!("user:{password}@host.invalid:o/r"),
-                    "host.invalid:o/r",
-                ),
-                (
                     format!("persistent-https::https://user:{password}@host.invalid/r"),
                     "persistent-https::https://host.invalid/r",
                 ),
@@ -907,10 +915,6 @@ mod tests {
                     "ssh://git@host.invalid:2222/o/r.git".to_owned(),
                 ),
                 (
-                    format!("git:{password}@host.invalid:o/r.git"),
-                    "git@host.invalid:o/r.git".to_owned(),
-                ),
-                (
                     format!("persistent-https::https://user:{password}@host.invalid/r"),
                     "persistent-https::https://host.invalid/r".to_owned(),
                 ),
@@ -929,15 +933,37 @@ mod tests {
         ] {
             assert_eq!(without_credentials(remote), remote);
         }
-        assert_eq!(
-            without_credentials(":p@ss-secret@host.invalid:r.git"),
-            "host.invalid:r.git"
-        );
+    }
+    #[test]
+    fn a_scp_address_is_read_as_git_reads_it() {
+        // The host ends at the first `:`; a `:` or `@` after it is the path's.
+        let table = [
+            (
+                "git@host.invalid:repo@draft:branch",
+                "ssh://host.invalid/repo@draft:branch",
+                "git@host.invalid:repo@draft:branch",
+            ),
+            (
+                "secret-token@host.invalid:a@b:c@d",
+                "host.invalid:a@b:c@d",
+                "secret-token@host.invalid:a@b:c@d",
+            ),
+            (
+                "host.invalid:repo@draft:branch",
+                "host.invalid:repo@draft:branch",
+                "host.invalid:repo@draft:branch",
+            ),
+        ];
+        for (address, shown, kept) in table {
+            assert_eq!(without_userinfo(address), shown, "{address:?}");
+            assert_eq!(without_credentials(address), kept, "{address:?}");
+            assert_eq!(scp(address).map(|(_, host, _)| host), Some("host.invalid"));
+        }
     }
     #[test]
     fn a_scp_path_with_an_at_sign_keeps_its_userinfo_apart() {
-        for user in ["secret-token", "user:p@ss-secret", "u%40secret"] {
-            for path in ["repo@draft", "o/r@v1.git", "repo"] {
+        for user in ["secret-token", "u%40secret", "p@ss-secret"] {
+            for path in ["repo@draft", "o/r@v1.git", "repo", "repo@draft:branch"] {
                 let address = format!("{user}@host.invalid:{path}");
                 assert_eq!(
                     without_userinfo(&address),
