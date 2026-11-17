@@ -1127,3 +1127,29 @@ fn a_file_that_cannot_be_read_names_no_credentials() {
         assert!(!shown.contains("secret"), "{file}: {shown}");
     }
 }
+
+#[test]
+fn a_template_that_is_not_installed_is_named_without_credentials() {
+    let root = TempDir::new().unwrap();
+    let url = "https://user:p%40ss-catalog-secret@host.invalid/r.git";
+    for args in [
+        vec!["templates", "remove", url],
+        vec!["templates", "update", url],
+        vec!["templates", "trust", url],
+        vec!["templates", "untrust", url],
+        vec!["templates", "alias", url, "sample"],
+    ] {
+        let output = command(&root).args(&args).output().unwrap();
+        assert!(!output.status.success(), "{args:?}");
+        let shown = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            shown.contains("https://host.invalid/r.git"),
+            "{args:?}: {shown}"
+        );
+        assert!(!shown.contains("secret"), "{args:?}: {shown}");
+    }
+}

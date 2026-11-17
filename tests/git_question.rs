@@ -547,6 +547,40 @@ interview:
     }
 }
 
+#[test]
+fn a_continue_naming_another_template_shows_no_credentials() {
+    let scene = Scene::new(TEMPLATE, false);
+    let mut stage = scene.command();
+    stage
+        .arg("stage")
+        .arg(scene.address())
+        .arg(scene.target())
+        .arg("--async");
+    assert_eq!(stage.output().unwrap().status.code(), Some(4));
+    let answers = tempfile::tempdir().unwrap();
+    let file = answers.path().join("answers.json");
+    std::fs::write(
+        &file,
+        serde_json::to_vec(&json!({
+            "template": "https://user:p%40ss-identity-secret@host.invalid/r.git",
+            "answers": { "with_repo": false },
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let mut cont = scene.command();
+    cont.arg("continue").arg(scene.target()).arg(&file);
+    let output = cont.output().unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let shown = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(shown.contains("https://host.invalid/r.git"), "{shown}");
+    assert!(!shown.contains("secret"), "{shown}");
+}
+
 /// Stage `scene` and return what the command wrote.
 fn staged_output(scene: &Scene) -> String {
     let mut stage = scene.command();

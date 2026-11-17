@@ -92,15 +92,22 @@ pub enum RegistryError {
     },
     #[error("alias {alias} conflicts with {formal}")]
     AliasConflict { alias: String, formal: String },
+    /// The name as given, without user information.
     #[error("template not found: {0}")]
     NotFound(String),
 }
 #[derive(Debug, thiserror::Error)]
 pub enum ResolveError {
+    /// The name as given, without user information.
     #[error("template not found: {0}")]
     NotFound(String),
     #[error("ambiguous template name: {name}")]
     Ambiguous { name: String, matches: Vec<String> },
+}
+/// `name`, a template name or address as given, as an error names it: an
+/// address loses its user information, which can carry a credential.
+fn without_userinfo(name: &str) -> String {
+    crate::source::without_userinfo(name)
 }
 static SCHEMA: LazyLock<Value> = LazyLock::new(|| {
     serde_norway::from_str(include_str!(
@@ -229,7 +236,7 @@ impl RegistryFile {
         let mut next = self.clone();
         next.templates
             .get_mut(formal)
-            .ok_or_else(|| RegistryError::NotFound(formal.into()))?
+            .ok_or_else(|| RegistryError::NotFound(without_userinfo(formal)))?
             .commit = Some(commit);
         Ok(next)
     }
@@ -252,7 +259,7 @@ impl RegistryFile {
         let entry = next
             .templates
             .get_mut(formal)
-            .ok_or_else(|| RegistryError::NotFound(formal.into()))?;
+            .ok_or_else(|| RegistryError::NotFound(without_userinfo(formal)))?;
         entry.approval = approval;
         // A grant clears the denial; a revoke records one so a lower layer's
         // approval for the same formal name cannot reappear through the merge.
@@ -270,7 +277,7 @@ impl RegistryFile {
         let mut next = self.clone();
         next.templates
             .shift_remove(formal)
-            .ok_or_else(|| RegistryError::NotFound(formal.into()))?;
+            .ok_or_else(|| RegistryError::NotFound(without_userinfo(formal)))?;
         next.presence.shift_remove(formal);
         Ok(next)
     }
@@ -279,7 +286,7 @@ impl RegistryFile {
         let entry = next
             .templates
             .get_mut(formal)
-            .ok_or_else(|| RegistryError::NotFound(formal.into()))?;
+            .ok_or_else(|| RegistryError::NotFound(without_userinfo(formal)))?;
         if !entry.aliases.iter().any(|v| v == alias) {
             entry.aliases.push(alias.into());
         }
@@ -298,7 +305,7 @@ impl RegistryFile {
             .templates
             .iter_mut()
             .find(|(_, e)| e.aliases.iter().any(|a| a == alias))
-            .ok_or_else(|| RegistryError::NotFound(alias.into()))?;
+            .ok_or_else(|| RegistryError::NotFound(without_userinfo(alias)))?;
         entry.aliases.retain(|a| a != alias);
         next.presence
             .entry(formal.clone())
@@ -566,7 +573,7 @@ impl Registry {
             .collect();
         if shorts.len() > 1 {
             return Err(ResolveError::Ambiguous {
-                name: name.into(),
+                name: without_userinfo(name),
                 matches: shorts.iter().map(|v| v.formal_name.clone()).collect(),
             });
         }
@@ -576,7 +583,7 @@ impl Registry {
         self.entries
             .get(name)
             .map(Listed::resolved)
-            .ok_or_else(|| ResolveError::NotFound(name.into()))
+            .ok_or_else(|| ResolveError::NotFound(without_userinfo(name)))
     }
 }
 impl Listed {

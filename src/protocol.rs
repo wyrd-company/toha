@@ -496,9 +496,11 @@ fn parse_and_verify(
     // Exact string equality: a mismatch wins over every nested question or value
     // fault, and reaches no answer evaluation.
     if wire.template != expected_template {
+        // Either identity can be an address with credentials; the error
+        // names both without user information.
         return Err(AnswersDocumentError::TemplateMismatch {
-            declared: wire.template,
-            expected: expected_template.to_string(),
+            declared: crate::source::without_userinfo(&wire.template),
+            expected: crate::source::without_userinfo(expected_template),
         });
     }
     let mut raw = RawAnswers::new();

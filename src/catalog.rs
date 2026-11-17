@@ -150,7 +150,7 @@ impl Catalog {
             .get(&resolved.formal_name)
             .cloned()
             .map(|entry| (resolved.formal_name, entry))
-            .ok_or_else(|| CatalogError::UserOnly(name.into()))
+            .ok_or_else(|| CatalogError::UserOnly(crate::source::without_userinfo(name)))
     }
 }
 fn find_templates(root: &Path, selected: Option<&str>) -> Result<Vec<PathBuf>, CatalogError> {

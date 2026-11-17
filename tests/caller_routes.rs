@@ -981,3 +981,22 @@ fn scripted_stdout_stays_one_document_with_an_uncaptured_stdout_hook() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn a_mismatched_identity_names_neither_address_with_credentials() {
+    let template = template();
+    let declared = "https://user:p%40ss-declared-secret@host.invalid/r.git";
+    let expected = "https://user:p%40ss-expected-secret@host.invalid/s.git";
+    let text = envelope(declared, json!({ "name": "Item" }));
+    let error = match protocol::answer_document_once(expected, pending(start(&template)), &text) {
+        Ok(_) => panic!("expected a document error"),
+        Err(error) => document_error(error),
+    };
+    let shown = format!("{error} {error:?}");
+    assert!(!shown.contains("secret"), "{shown}");
+    assert_eq!(
+        error.to_string(),
+        "answers template \"https://host.invalid/r.git\" does not match expected template \
+         \"https://host.invalid/s.git\""
+    );
+}

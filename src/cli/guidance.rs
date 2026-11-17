@@ -939,7 +939,7 @@ pub fn alias_in_use(template: &str, alias: &str, removable: bool) -> String {
 /// another layer.
 pub fn not_in_user_registry(name: &str) -> String {
     [
-        format!("not installed in user registry: {name}"),
+        format!("not installed in user registry: {}", shown(name)),
         format!(
             "to see the layer of each template: {}",
             toha("templates list", &["--json".into()], &[])
@@ -950,7 +950,7 @@ pub fn not_in_user_registry(name: &str) -> String {
 
 /// A template name matched more than one installed template.
 pub fn ambiguous(name: &str, matches: &[String], retry: &[String]) -> String {
-    let mut lines = vec![format!("ambiguous template name: {name}")];
+    let mut lines = vec![format!("ambiguous template name: {}", shown(name))];
     for (index, formal) in matches.iter().enumerate() {
         if let Some(command) = retry.get(index) {
             lines.push(format!("to use {formal}: {command}"));
