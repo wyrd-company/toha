@@ -1048,3 +1048,45 @@ fn an_invalid_configuration_names_no_credentials() {
         assert!(!shown.contains("secret"), "{text}: {shown}");
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn ssh_never_receives_an_address_password() {
+    use std::os::unix::fs::PermissionsExt;
+    // SSH takes no password from a URL, so the address's password never
+    // reaches the ssh process, its arguments or its environment, and an SSH
+    // remote cannot know it to write it back.
+    let root = TempDir::new().unwrap();
+    let record = root.path().join("invocation.txt");
+    let fixture = root.path().join("ssh-fixture");
+    fs::write(
+        &fixture,
+        format!(
+            "#!/bin/sh\n{{ echo \"$@\"; env; }} > '{}'\nexit 1\n",
+            record.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&fixture, fs::Permissions::from_mode(0o755)).unwrap();
+    for address in [
+        "ssh://git:p%40ss-ssh-secret@host.invalid/r.git",
+        "ssh://git:plain-ssh-secret@host.invalid:2222/r.git",
+    ] {
+        let output = command(&root)
+            .args(["templates", "add", address])
+            .env("GIT_SSH_COMMAND", &fixture)
+            .env("GIT_SSH_VARIANT", "ssh")
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{address}");
+        let invocation = fs::read_to_string(&record).unwrap();
+        assert!(invocation.contains("host.invalid"), "{invocation}");
+        assert!(!invocation.contains("secret"), "{address}: {invocation}");
+        let shown = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!shown.contains("secret"), "{address}: {shown}");
+    }
+}
