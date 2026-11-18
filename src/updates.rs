@@ -54,6 +54,30 @@ pub enum UpdateError {
         revision: crate::applied::Revision,
         reason: String,
     },
+    /// The operation's [stop signal](crate::stop) fired while the update was
+    /// prepared: while its template or merge base was fetched or loaded, which
+    /// can fetch document schemas, or its merge base rendered.
+    Stopped,
+}
+/// `error` from loading a template, or [`UpdateError::Stopped`] when the
+/// operation's stop signal ended the load.
+fn load_failure(
+    error: crate::LoadError,
+    otherwise: impl FnOnce(crate::LoadError) -> UpdateError,
+) -> UpdateError {
+    if error.stopped {
+        UpdateError::Stopped
+    } else {
+        otherwise(error)
+    }
+}
+impl From<crate::resolve::ResolveError> for UpdateError {
+    fn from(error: crate::resolve::ResolveError) -> Self {
+        match error {
+            crate::resolve::ResolveError::Stopped => Self::Stopped,
+            error => Self::Resolve(error),
+        }
+    }
 }
 impl std::fmt::Display for UpdateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -80,6 +104,7 @@ impl std::fmt::Display for UpdateError {
                 f,
                 "cannot render merge base for {template} at {revision}: {reason}"
             ),
+            Self::Stopped => f.write_str("the update was stopped"),
         }
     }
 }
@@ -100,7 +125,7 @@ pub struct Environment<'a, S: crate::context::FixedEnvironmentSource> {
     pub config: &'a crate::config::Config,
     pub registry: &'a crate::registry::Registry,
     pub cwd: &'a Path,
-    pub now: jiff::Zoned,
+    pub now: jiff::ZonedDateTime,
     pub host: crate::context::HostFacts,
     pub is_admin: bool,
     pub source: &'a mut S,
@@ -114,7 +139,7 @@ pub struct Prepared {
     pub base_application: Option<Application>,
     pub resolved: ResolvedTemplate,
     pub template: Template,
-    pub now: jiff::Zoned,
+    pub now: jiff::ZonedDateTime,
     pub context: InvocationContext,
     pub configured_defaults: RawAnswers,
     pub recorded: Vec<IndexMap<Id, RawAnswer>>,
@@ -184,7 +209,7 @@ impl Preparation {
     ) -> Result<Self, UpdateError> {
         let project = open_project(target)?;
         let resolved = crate::resolve::resolve_template(template, config, registry, dirs, cwd)
-            .map_err(UpdateError::Resolve)?;
+            .map_err(UpdateError::from)?;
         let base_application = match base {
             UpdateBase::Update => Some(
                 project
@@ -204,10 +229,8 @@ impl Preparation {
         )?;
         // The scripted route (`--answers`) reports a missing requirement as its
         // `requirement` error document; the other routes report it as text.
-        let template = match Template::load(&resolved.folder) {
-            Ok(value) => value,
-            Err(error) => return Err(UpdateError::Error(error.to_string())),
-        };
+        let template = Template::load(&resolved.folder)
+            .map_err(|e| load_failure(e, |e| UpdateError::Error(e.to_string())))?;
         if let Err(error) = crate::requirement::check(&template) {
             return Err(UpdateError::Requirements(error));
         }
@@ -398,7 +421,7 @@ pub fn resume_admitted(
         cwd,
     )?;
 
-    let resolved = match crate::resolve::resume_template(
+    let resolved = crate::resolve::resume_template(
         &saved.template,
         &saved.commit,
         saved.named,
@@ -406,14 +429,9 @@ pub fn resume_admitted(
         registry,
         dirs,
         cwd,
-    ) {
-        Ok(value) => value,
-        Err(error) => return Err(UpdateError::Resolve(error)),
-    };
-    let mut template = match Template::load(&resolved.folder).map_err(|e| e.to_string()) {
-        Ok(value) => value,
-        Err(error) => return Err(UpdateError::Error(error)),
-    };
+    )?;
+    let mut template = Template::load(&resolved.folder)
+        .map_err(|e| load_failure(e, |e| UpdateError::Error(e.to_string())))?;
 
     crate::requirement::check(&template).map_err(UpdateError::Requirements)?;
     template.part_selection = saved.part_selection.clone();
@@ -425,7 +443,7 @@ pub fn resume_admitted(
     )
     .map_err(|e| UpdateError::Error(e.to_string()))?;
     let (configured_defaults, warnings) = resolution.into_flat_defaults();
-    let now = match saved.now.parse::<jiff::Zoned>() {
+    let now = match saved.now.parse::<jiff::ZonedDateTime>() {
         Ok(value) => value,
         Err(error) => return Err(UpdateError::Error(error.to_string())),
     };
@@ -562,8 +580,12 @@ fn restore_merge_base(
         dirs,
         cwd,
     )
-    .map_err(|e| failure(e.to_string()))?;
-    let template = Template::load(&resolved.folder).map_err(|e| failure(e.to_string()))?;
+    .map_err(|e| match e {
+        crate::resolve::ResolveError::Stopped => UpdateError::Stopped,
+        e => failure(e.to_string()),
+    })?;
+    let template = Template::load(&resolved.folder)
+        .map_err(|e| load_failure(e, |e| failure(e.to_string())))?;
     let context = InvocationContext::new(
         target.clone(),
         crate::context::SelectedTemplate::new(
@@ -628,9 +650,15 @@ fn restore_merge_base(
     };
     let plan =
         crate::Plan::build(&template, &completed, target).map_err(|e| failure(e.to_string()))?;
-    project
-        .restore_base(&mut application, plan)
-        .map_err(|e| failure(e.to_string()))?;
+    // The base renders in a throwaway checkout, so once the signal fired any
+    // failure there is the stop.
+    project.restore_base(&mut application, plan).map_err(|e| {
+        if crate::stop::requested() {
+            UpdateError::Stopped
+        } else {
+            failure(e.to_string())
+        }
+    })?;
     Ok((
         Base::Application(application.clone()),
         Some(application),
@@ -1151,5 +1179,40 @@ impl std::fmt::Debug for ResumeAdmission {
         f.debug_struct("ResumeAdmission")
             .field("base_application", &self.base_application)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_stopped_template_load_is_a_stopped_update() {
+        let load = |stopped| crate::LoadError {
+            problems: vec![],
+            stopped,
+        };
+        let other = |_| UpdateError::NotGit;
+        assert!(matches!(
+            load_failure(load(true), other),
+            UpdateError::Stopped
+        ));
+        assert!(matches!(
+            load_failure(load(false), other),
+            UpdateError::NotGit
+        ));
+    }
+
+    #[test]
+    fn a_stopped_template_fetch_is_a_stopped_update() {
+        use crate::resolve::ResolveError;
+        assert!(matches!(
+            UpdateError::from(ResolveError::Stopped),
+            UpdateError::Stopped
+        ));
+        assert!(matches!(
+            UpdateError::from(ResolveError::NotFound("sample".into())),
+            UpdateError::Resolve(ResolveError::NotFound(_))
+        ));
     }
 }

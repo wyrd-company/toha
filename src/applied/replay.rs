@@ -158,7 +158,7 @@ fn replay_resume_with_overrides<'a>(
         let replayed: RawAnswers = staged_sub.iter().filter(|(id, _)| {
             !matches!(template.question(id).map(|q| &q.kind), Some(crate::template::QuestionKind::Document { contract }) if contract.admitted().is_some())
         }).map(|(id, raw)| (id.clone(), raw.clone())).collect();
-        if replayed.is_empty() {
+        if !staged_sub.is_empty() && replayed.is_empty() {
             submissions.push(staged_sub.clone());
             continue;
         }

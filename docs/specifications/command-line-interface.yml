@@ -263,8 +263,8 @@ description: >-
   retry; they do not suggest force clears this conflict. Matching outside bytes
   are admitted; ordinary whole-owned three-way merging is unchanged.
 
-  Environment. `toha --help` lists every environment variable that toha
-  reads in an `Environment:` section after its options. `TOHA_CONFIG` and
+  Environment. Top-level help lists no environment variables and points to the
+  environment variables section of the user configuration guide. `TOHA_CONFIG` and
   `TOHA_USER_CONFIG` name the local and user configuration files as the
   configuration specification defines. `XDG_CONFIG_HOME` is the base of the
   user configuration file on Linux and macOS. On Linux, `XDG_DATA_HOME` is

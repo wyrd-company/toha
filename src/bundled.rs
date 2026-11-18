@@ -161,7 +161,7 @@ fn digest(dir: &'static Dir<'static>) -> String {
         hasher.update((bytes.len() as u64).to_le_bytes());
         hasher.update(bytes);
     }
-    format!("{:x}", hasher.finalize())
+    hex::encode(hasher.finalize())
 }
 
 /// Write the embedded tree to `destination` with create-new writes, so a second
@@ -334,7 +334,7 @@ mod tests {
             hasher.update((bytes.len() as u64).to_le_bytes());
             hasher.update(&bytes);
         }
-        assert_eq!(format!("{:x}", hasher.finalize()), commit());
+        assert_eq!(hex::encode(hasher.finalize()), commit());
     }
 
     #[test]

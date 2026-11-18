@@ -211,6 +211,107 @@ answer is rejected, and `git_target::preflight` and `git_target::initialize`
 return `GitTargetError::RemotePassword`, before anything connects or writes.
 `source::has_password` tells whether a URL holds one.
 
+## Stop a fetch or an apply
+
+A stop signal lets a caller end an operation it no longer needs, such as one
+whose request has gone away. Run the operation inside `with_stop_signal` and
+call `stop` on the signal, or on any clone of it, from another thread:
+
+```rust
+use toha::stop::{StopSignal, with_stop_signal};
+
+let signal = StopSignal::new();
+let stopper = signal.clone();
+// When the request ends, from any thread:
+// stopper.stop();
+let resolved = with_stop_signal(signal, || {
+    toha::resolve::resolve_template(&address, &config, &registry, &paths, &cwd)
+});
+```
+
+The signal applies to the operation on the calling thread until it returns or
+unwinds: template fetches and commit lookups, document schema fetches while a
+template loads, the `git` question's remote probe, an apply and an update. Operations on other threads, and code after the
+call, run without it. A signal stays stopped once fired, so give each operation
+a new one. Without a signal, every operation behaves as before.
+
+Once the signal fires, the operation returns the `Stopped` variant of its
+error, inside the errors that wrap it as any other failure is:
+
+- A fetch returns `source::SourceError::Stopped`, `resolve::ResolveError::Stopped`
+  or `catalog::CatalogError::Stopped`. `Session::resume` carries the
+  `ResolveError` in `OperationError::Resolve`.
+- A template load that the signal ended fails with `LoadError::stopped` set,
+  such as while it fetched a document schema. `Session::resume` carries the
+  `LoadError` in `OperationError::Load`. `catalog::add` and `catalog::trust`
+  return `catalog::CatalogError::Stopped`. `catalog::list` and the trust check
+  at the end of `catalog::update` don't fail when a template can't be loaded:
+  they report a stopped load as they report any load failure, as not trusted
+  (`list`) or `ApprovalLapsed` (`update`), without returning the stop.
+- Preparing an update returns `updates::UpdateError::Stopped` when the signal
+  fires while its template or merge base is fetched or loaded, or its merge
+  base rendered. `UpdateSession::resume` carries it in `updates::SessionError::Update`.
+- A probe reports `git_target::RemoteState::Stopped`.
+- An apply returns `ApplyError::Stopped`; `Session::apply` carries it in
+  `OperationError::Apply`.
+- An update returns `applied::MergeError::Stopped`; `UpdateSession::apply`
+  carries it in `updates::SessionError::Merge`.
+
+A stopped apply writes no further directory, file, injected edit, repository,
+hook run or applied record. The files it wrote before the signal stay, as after
+any failed apply. A stopped update writes nothing to the working tree, or
+restores the files it already wrote, and leaves the index and applied record
+unchanged. Toha checks the signal before each write, so a hook that is already
+running finishes first.
+
+A fetch returns as soon as the signal fires, even while the remote holds the
+connection without sending anything. Inside the signal's scope, Toha runs the
+fetch on a thread of its own, under the operation's credential resolver, into
+a temporary folder that thread owns. The calling thread returns at once and the
+fetch's destination stays absent. The `git` question's remote probe runs the
+same way.
+
+### Limit: the abandoned transfer runs until the remote acts
+
+Toha's Git library, gix, cannot interrupt a transfer that waits for a remote.
+The transfer a stop abandons therefore keeps running, without blocking the
+caller, until the remote acts:
+
+- Over HTTP(S) it keeps its Toha thread, gix's curl thread and the connection
+  until the remote answers or closes the connection, or Git's
+  `http.lowSpeedLimit` and `http.lowSpeedTime` end the transfer.
+- Over SSH and `file://` it keeps its Toha thread and the `ssh` or
+  `git-upload-pack` process until that process answers or exits.
+
+The transfer then ends: it writes nothing more and removes its temporary
+folder. Releasing the transfer at the stop is tracked in
+[wyrd-company/toha#78](https://github.com/wyrd-company/toha/issues/78).
+
+A document schema fetch has no such limit, apart from its name lookup. Toha
+makes the fetch on the calling thread, with its own HTTPS connection, and
+checks the signal at least every 100 ms. The stop aborts the fetch and closes
+that connection within a fraction of a second, even while the schema endpoint
+sends nothing.
+
+### Limit: a pending schema host lookup
+
+A name lookup can't be interrupted. A stop can arrive while a lookup for the
+fetch is still pending: the schema host's, or the target's behind a
+`socks4://` or `socks5://` proxy, which curl looks up itself. The fetch then
+returns within 2 s, but the threads that wait on that lookup run on:
+
+- curl's resolver threads, which are detached rather than joined;
+- behind such a proxy, one Toha thread named `toha-schema-release`
+  (`toha-schema-rel` on Linux, which keeps 15 bytes of a thread name), which
+  finishes releasing curl's handles. Toha waits for it at most 250 ms.
+
+These threads hold no connection, because the stop has already closed it.
+They end by themselves when the system resolver returns. A stop with no
+pending lookup leaves no thread. With a libcurl that supports neither of
+curl's quick-exit options, the stop waits for the lookup instead. Making the
+lookup itself stoppable is tracked in
+[wyrd-company/toha#81](https://github.com/wyrd-company/toha/issues/81).
+
 ## Choose a hook runner and account for process inputs
 
 `HookRunner::run` receives `PlannedHook` and the absolute target. The hook has

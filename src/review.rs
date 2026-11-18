@@ -213,7 +213,7 @@ impl HookSurface {
                 hasher.update(script.sha256);
             }
         }
-        ReviewDigest(format!("sha256:{:x}", hasher.finalize()))
+        ReviewDigest(format!("sha256:{}", hex::encode(hasher.finalize())))
     }
 
     /// The difference between this live surface and a prior approved one.

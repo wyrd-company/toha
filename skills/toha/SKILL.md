@@ -16,7 +16,7 @@ An omitted key in `--answers` or `continue` uses the configured default, then th
 
 Hooks need registry trust through a name or `--trust` for this run. A folder or address supplied directly needs `--trust`, even when it matches a trusted registry entry. Inspect the plan before granting trust: on the scripted route (`apply TEMPLATE PATH --answers FILE`), untrusted hooks on a plain application make the `planned` document carry `trusted: false` and exit 3 — read it, then rerun with `--trust`. On the person and agent routes, a plain application’s `--dry-run` of untrusted hooks exits 0, prints the plan, and names on standard error the `--trust` command that runs them. Untrusted project updates preview without writing and exit 0: scripted updates return `planned` with `trusted: false`; person and staged-agent updates print completion prose and trust guidance on standard output. `--force` permits overwriting target files; without it a conflict writes nothing.
 
-Configuration files are `$TOHA_CONFIG` (local) and `$TOHA_USER_CONFIG` (user) when set and not empty; an empty value counts as unset. `toha skills view toha --path references/environment.md` lists every environment variable and directory toha reads; `toha --help` lists them too. `toha skills view toha --path references/protocol.md` prints a tested staged exchange.
+Configuration files are `$TOHA_CONFIG` (local) and `$TOHA_USER_CONFIG` (user) when set and not empty; an empty value counts as unset. `toha skills view toha --path references/environment.md` lists every environment variable and directory toha reads. `toha skills view toha --path references/protocol.md` prints a tested staged exchange.
 
 | Exit | Action |
 | --- | --- |

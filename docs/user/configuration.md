@@ -32,6 +32,35 @@ local-config-name: .project-toha.yml
 The local file cannot set `local-config-name`. It can contain only
 `templates-paths`, `presets`, and `template-defaults`.
 
+## Environment variables
+
+These variables configure Toha's paths and runtime behavior:
+
+| Variable | Purpose and default |
+| --- | --- |
+| `TOHA_CONFIG` | Local configuration file; defaults to the configured `local-config-name`, or `.toha.yml`, in the current directory. |
+| `TOHA_USER_CONFIG` | User configuration file; defaults to `$XDG_CONFIG_HOME/toha/config.yml` on Linux and macOS, or `%APPDATA%\toha\config.yml` on Windows. |
+| `XDG_CONFIG_HOME` | Base of the user configuration file on Linux and macOS; defaults to `~/.config`. |
+| `XDG_DATA_HOME` | Base of the user registry and installed templates on Linux; defaults to `~/.local/share`. macOS uses `~/Library/Application Support/toha`. |
+| `XDG_CACHE_HOME` | Base of cached Git templates in `$XDG_CACHE_HOME/toha/` on Linux; defaults to `~/.cache`. macOS uses `~/Library/Caches/toha`. |
+| `XDG_STATE_HOME` | Base of staged interviews in `$XDG_STATE_HOME/toha/staged/` on Linux; defaults to `~/.local/state`. macOS uses `~/Library/Application Support/toha/staged`. |
+| `HOME` | Home directory for `~` in addresses and the defaults above. |
+| `USERPROFILE` | Home directory when `HOME` is unset. |
+| `APPDATA` | Windows base for user configuration, registry, and installed templates in `%APPDATA%\toha`. |
+| `LOCALAPPDATA` | Windows base for fetched Git templates in `%LOCALAPPDATA%\toha\cache` and staged interviews in `%LOCALAPPDATA%\toha\staged`. |
+| `PROGRAMDATA` | Windows base for system configuration and registry in `%PROGRAMDATA%\toha`. Other platforms use `/etc/toha/config.yml` and `/usr/local/share/toha/templates.yml`. |
+| `VISUAL`, `EDITOR` | Editor for multiline answers, using `VISUAL` first. Defaults to `nano`, or `notepad` on Windows. If the editor is not found, end answers with a line containing `.`. |
+| `PATH` | Directories searched for the editor and the program of a run hook. |
+| `TOHA_RECORD` | Applied record path relative to the Git repository root; defaults to `.toha.json`. |
+| `TOHA_NOW` | Instant returned by `now()` for a new interview, for example `2026-01-02T03:04:05+00:00[UTC]`; defaults to the current time. |
+
+The XDG directory variables, `HOME`, `USERPROFILE`, `APPDATA`,
+`LOCALAPPDATA`, and `PROGRAMDATA` count only when they hold an absolute path;
+an empty or relative value counts as unset. Toha exits with code 1 when neither
+`HOME` nor `USERPROFILE` counts, and on Windows when `APPDATA`, `LOCALAPPDATA`,
+or `PROGRAMDATA` does not count. An empty `TOHA_CONFIG` or `TOHA_USER_CONFIG`
+counts as unset; nonempty values may be relative to the current directory.
+
 ## Add template search paths
 
 Use `templates-paths` to name directories Toha should scan for folders with

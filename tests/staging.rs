@@ -127,7 +127,10 @@ fn move_record_to_legacy_key(state: &Path, target_path: &Path) -> PathBuf {
         std::path::MAIN_SEPARATOR
     );
     record["target"] = json!(legacy_target);
-    let legacy_key = format!("{:x}.json", Sha256::digest(legacy_target.as_bytes()));
+    let legacy_key = format!(
+        "{}.json",
+        hex::encode(Sha256::digest(legacy_target.as_bytes()))
+    );
     let legacy_path = support::staged_dir(state).join(legacy_key);
     fs::write(&legacy_path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
     fs::remove_file(canonical_path).unwrap();
@@ -703,8 +706,10 @@ fn legacy_separator_key_migrates_only_after_a_successful_save() {
     let mut legacy_text = target.as_path().as_os_str().to_os_string();
     legacy_text.push(std::path::MAIN_SEPARATOR_STR);
     let legacy_key = format!(
-        "{:x}.json",
-        Sha256::digest(Path::new(&legacy_text).to_string_lossy().as_bytes())
+        "{}.json",
+        hex::encode(Sha256::digest(
+            Path::new(&legacy_text).to_string_lossy().as_bytes()
+        ))
     );
     let legacy_path = state.path().join(legacy_key);
     let mut record_value = serde_json::to_value(StagedRecord::new(

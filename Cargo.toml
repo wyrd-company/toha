@@ -24,7 +24,7 @@ include = [
 
 [features]
 default = ["cli"]
-cli = ["dep:clap", "dep:inquire"]
+cli = ["dep:clap", "dep:inquire", "dep:tagver"]
 
 [dependencies]
 minijinja = { version = "2.24", default-features = false, features = ["builtins", "serde", "json", "macros", "loop_controls", "multi_template", "unstable_machinery"] }
@@ -34,27 +34,31 @@ serde_norway = "0.9"
 indexmap = { version = "2", features = ["serde"] }
 thiserror = "2"
 clap = { version = "4", features = ["derive"], optional = true }
-jiff = "0.2.37"
-getrandom = "0.3"
+jiff = "1"
+getrandom = "0.4"
 heck = "0.5.0"
 regex = "1.13.1"
 toml = "1.1.6"
-jsonschema = { version = "0.58.0", default-features = false }
+jsonschema = { version = "0.61.0", default-features = false }
 globset = "0.4"
-sha2 = "0.10"
+sha2 = "0.11"
+hex = "0.4"
 jsonc-parser = { version = "0.34.0", features = ["cst", "serde_json"] }
 inquire = { version = "0.9.4", features = ["editor"], optional = true }
 tempfile = "3"
-gix = { version = "0.87.1", default-features = false, features = ["blocking-network-client", "blocking-http-transport-curl-rustls", "worktree-mutation", "revision", "sha1", "sha256", "status", "merge"] }
+gix = { version = "0.90.0", default-features = false, features = ["blocking-network-client", "blocking-http-transport-curl-rustls", "worktree-mutation", "revision", "sha1", "sha256", "status", "merge"] }
 include_dir = "0.7.4"
 rustix = { version = "1", features = ["process", "system"] }
 curl = { version = "0.4.50", default-features = false }
+# The quick-exit options a stopped schema lookup needs; no features, so that
+# curl's own TLS selection is unchanged.
+curl-sys = { version = "0.4.91", default-features = false }
 rustls-native-certs = "0.8.4"
-base64 = "0.22"
+base64 = "0.23"
 which = "8"
 
 [build-dependencies]
-tagver = "0.1.4"
+tagver = { version = "0.1.4", optional = true }
 
 [dev-dependencies]
 tagver = "0.1.4"

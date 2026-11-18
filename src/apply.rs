@@ -119,7 +119,24 @@ pub enum ApplyError {
     Record(String),
     /// The `git` question's repository could not be set up.
     #[error("{0}")]
-    Git(#[from] GitTargetError),
+    Git(GitTargetError),
+    /// The operation's [stop signal](crate::stop) fired. Files written before
+    /// it stay; no later file, hook or applied record is written.
+    #[error("the apply was stopped")]
+    Stopped,
+}
+impl From<GitTargetError> for ApplyError {
+    fn from(error: GitTargetError) -> Self {
+        match error {
+            GitTargetError::Stopped => Self::Stopped,
+            error => Self::Git(error),
+        }
+    }
+}
+impl From<crate::stop::Stopped> for ApplyError {
+    fn from(_: crate::stop::Stopped) -> Self {
+        Self::Stopped
+    }
 }
 /// A fault in a hook's captured output. Every variant is byte-free: a message
 /// carries only a position, never the stream's bytes.
@@ -173,6 +190,7 @@ impl Plan {
         runner: &dyn HookRunner,
         on_written: &mut dyn FnMut(&TargetPath),
     ) -> Result<Applied, ApplyError> {
+        crate::stop::check()?;
         crate::plan::check_directories(&self.directories, target)
             .map_err(|message| ApplyError::Deferred(PlanError::Path(message)))?;
         let mut conflicts = self.conflicts.clone();
@@ -251,7 +269,10 @@ impl Plan {
             .iter()
             .filter(|directory| !target.as_path().join(directory.as_path()).is_dir())
             .collect();
+        // The stop signal is checked before each write, so a stopped apply
+        // writes no later file.
         for directory in missing_directories {
+            crate::stop::check()?;
             let path = target.as_path().join(directory.as_path());
             fs::create_dir_all(&path).map_err(|source| ApplyError::Io { path, source })?;
             on_written(directory);
@@ -263,6 +284,7 @@ impl Plan {
             if resolved.iter().any(|e| e.path == file.path) {
                 continue;
             }
+            crate::stop::check()?;
             let path = target.as_path().join(file.path.as_path());
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).map_err(|source| ApplyError::Io {
@@ -315,12 +337,16 @@ impl Plan {
         // Commit each changed injected target once, atomically.
         for edited in &resolved {
             if let Some(bytes) = &edited.image {
+                crate::stop::check()?;
                 self.commit_edited(target, edited, bytes)?;
                 on_written(&edited.path);
                 written.push(edited.path.clone());
             }
         }
         // The repository exists before any hook runs, so a hook can use it.
+        if git.is_some() {
+            crate::stop::check()?;
+        }
         let git = git
             .map(|preflight| crate::git_target::set_up(preflight, target))
             .transpose()?;
@@ -334,6 +360,7 @@ impl Plan {
         let mut hooks_run = 0usize;
         let mut hook_reports = Vec::new();
         for (index, planned) in self.hooks.iter().enumerate() {
+            crate::stop::check()?;
             // Materialize the hook: a ready one as-is; a deferred one by rendering
             // its result-reading fields, which yields nothing when its `when` is
             // false (it does not run; its result stays the seeded not-run).
@@ -398,6 +425,7 @@ impl Plan {
                 .map_err(ApplyError::Deferred)?,
         };
         let record = if let Some(inputs) = self.record {
+            crate::stop::check()?;
             match crate::applied::Project::open(target)
                 .map_err(|e| ApplyError::Record(e.to_string()))?
             {
@@ -1116,5 +1144,120 @@ mod tests {
         );
         assert!(matches!(error, Err(ApplyError::Hook { .. })));
         assert_eq!(*events.borrow(), ["file a.txt", "file b.txt"]);
+    }
+
+    /// Apply `plan` with a stop signal that fires when `event` is recorded.
+    #[allow(clippy::result_large_err)]
+    fn apply_stopping_at(
+        plan: Plan,
+        target: &Path,
+        event: &'static str,
+        events: &Rc<RefCell<Vec<String>>>,
+    ) -> Result<Applied, ApplyError> {
+        let signal = crate::stop::StopSignal::new();
+        let runner = StoppingRunner {
+            events: events.clone(),
+            signal: signal.clone(),
+            at: event,
+        };
+        let canonical = crate::staging::canonical_target(target).unwrap();
+        crate::stop::with_stop_signal(signal.clone(), || {
+            plan.apply_reporting(&canonical, TRUSTED, &runner, &mut |path| {
+                let recorded = format!("file {path}");
+                if recorded == event {
+                    signal.stop();
+                }
+                events.borrow_mut().push(recorded);
+            })
+        })
+    }
+
+    /// Records each hook run, and fires the signal at the hook named `at`.
+    struct StoppingRunner {
+        events: Rc<RefCell<Vec<String>>>,
+        signal: crate::stop::StopSignal,
+        at: &'static str,
+    }
+    impl HookRunner for StoppingRunner {
+        fn run(&self, hook: &PlannedHook, target: &Path) -> Result<HookOutcome, HookError> {
+            let recorded = format!("hook {}", hook.argv()[1]);
+            if recorded == self.at {
+                self.signal.stop();
+            }
+            EventRunner(self.events.clone()).run(hook, target)
+        }
+    }
+
+    #[test]
+    fn a_stop_during_the_file_loop_writes_no_later_file_or_hook() {
+        let (_folder, source) = support();
+        let target = tempfile::tempdir().unwrap();
+        let events = Rc::new(RefCell::new(vec![]));
+        let plan = plan(&source, &["a.txt", "b.txt", "c.txt"], 1);
+        let error = apply_stopping_at(plan, target.path(), "file a.txt", &events);
+        assert!(matches!(error, Err(ApplyError::Stopped)), "{error:?}");
+        assert_eq!(*events.borrow(), ["file a.txt"]);
+        assert!(target.path().join("a.txt").is_file());
+        assert!(!target.path().join("b.txt").exists());
+        assert!(!target.path().join("c.txt").exists());
+    }
+
+    #[test]
+    fn a_stop_during_a_hook_runs_no_later_hook() {
+        let (_folder, source) = support();
+        let target = tempfile::tempdir().unwrap();
+        let events = Rc::new(RefCell::new(vec![]));
+        let plan = plan(&source, &["a.txt"], 3);
+        let error = apply_stopping_at(plan, target.path(), "hook 0", &events);
+        assert!(matches!(error, Err(ApplyError::Stopped)), "{error:?}");
+        assert_eq!(*events.borrow(), ["file a.txt", "hook 0"]);
+    }
+
+    #[test]
+    fn a_stop_while_creating_directories_writes_no_later_directory_or_file() {
+        let (_folder, source) = support();
+        let target = tempfile::tempdir().unwrap();
+        let events = Rc::new(RefCell::new(vec![]));
+        let mut plan = plan(&source, &["a.txt"], 0);
+        plan.directories = vec![
+            TargetPath::parse("first").unwrap(),
+            TargetPath::parse("second").unwrap(),
+        ];
+        let error = apply_stopping_at(plan, target.path(), "file first", &events);
+        assert!(matches!(error, Err(ApplyError::Stopped)), "{error:?}");
+        assert_eq!(*events.borrow(), ["file first"]);
+        assert!(target.path().join("first").is_dir());
+        assert!(!target.path().join("second").exists());
+        assert!(!target.path().join("a.txt").exists());
+    }
+
+    #[test]
+    // `ApplyError` is large, as elsewhere in the crate.
+    #[allow(clippy::result_large_err)]
+    fn a_stopped_signal_writes_nothing() {
+        let (_folder, source) = support();
+        let target = tempfile::tempdir().unwrap();
+        let mut plan = plan(&source, &["a.txt"], 0);
+        plan.directories = vec![TargetPath::parse("empty").unwrap()];
+        let signal = crate::stop::StopSignal::new();
+        signal.stop();
+        let canonical = crate::staging::canonical_target(target.path()).unwrap();
+        let error = crate::stop::with_stop_signal(signal, || {
+            plan.apply_reporting(&canonical, TRUSTED, &RecordingRunner::new(), &mut |_| {
+                panic!("nothing is written")
+            })
+        });
+        assert!(matches!(error, Err(ApplyError::Stopped)), "{error:?}");
+        assert_eq!(fs::read_dir(target.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_signal_that_never_fires_applies_everything() {
+        let (_folder, source) = support();
+        let target = tempfile::tempdir().unwrap();
+        let events = Rc::new(RefCell::new(vec![]));
+        let plan = plan(&source, &["a.txt", "b.txt"], 1);
+        apply_stopping_at(plan, target.path(), "never", &events).unwrap();
+        assert_eq!(*events.borrow(), ["file a.txt", "file b.txt", "hook 0"]);
     }
 }

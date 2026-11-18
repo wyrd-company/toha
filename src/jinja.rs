@@ -48,7 +48,7 @@ pub fn environment() -> Environment<'static> {
     env.add_filter(
         "dateformat",
         |value: String, pattern: Option<String>| -> Result<String, Error> {
-            let zoned: jiff::Zoned = value.parse().map_err(|err: jiff::Error| {
+            let zoned: jiff::ZonedDateTime = value.parse().map_err(|err: jiff::Error| {
                 Error::new(ErrorKind::InvalidOperation, err.to_string())
             })?;
             Ok(zoned
@@ -1072,7 +1072,7 @@ impl FileTmpl {
 pub fn context_from_answers(
     answers: &crate::interview::Answers,
     data: &indexmap::IndexMap<crate::template::Id, serde_json::Value>,
-    now: &jiff::Zoned,
+    now: &jiff::ZonedDateTime,
 ) -> BTreeMap<String, serde_json::Value> {
     let mut values: BTreeMap<String, serde_json::Value> = data
         .iter()
@@ -1101,6 +1101,27 @@ mod tests {
     }
 
     #[test]
+    fn collection_and_filter_values_keep_minijinja_2_semantics() {
+        let ctx = json!({"names": ["a", "b"], "map": {"k": "v"}, "obj": {"a": 2, "b": 1}});
+        for (source, expected) in [
+            ("{{ names }}", r#"["a", "b"]"#),
+            ("{{ map }}", r#"{"k": "v"}"#),
+            ("{{ obj | items | list }}", r#"[["a", 2], ["b", 1]]"#),
+            ("{{ obj | dictsort }}", r#"[["a", 2], ["b", 1]]"#),
+            ("{{ 2.5 | round }}", "3.0"),
+            ("{{ (1, 2) == [1, 2] }}", "True"),
+            ("{{ ['B', 'a'] | max }}", "a"),
+        ] {
+            assert_eq!(render(source, ctx.clone()), expected, "{source}");
+        }
+        let error = Tmpl::compile("{{ missing | length }}".into())
+            .unwrap()
+            .render(ctx)
+            .unwrap_err();
+        assert_eq!(error.kind(), minijinja::ErrorKind::InvalidOperation);
+    }
+
+    #[test]
     fn tojson_serializes_values() {
         let ctx = json!({
             "flag": true,
@@ -1112,7 +1133,32 @@ mod tests {
             render("{{ text | tojson }}", ctx.clone()),
             r#""say \"hi\"""#
         );
-        assert_eq!(render("{{ item | tojson }}", ctx), r#"{"a":"x","b":[1,2]}"#);
+        assert_eq!(
+            render("{{ item | tojson }}", ctx.clone()),
+            r#"{"a":"x","b":[1,2]}"#
+        );
+        assert_eq!(
+            render("{{ item | tojson(false) }}", ctx.clone()),
+            r#"{"a":"x","b":[1,2]}"#
+        );
+        assert_eq!(
+            render("{{ item | tojson(indent=false) }}", ctx.clone()),
+            r#"{"a":"x","b":[1,2]}"#
+        );
+        assert_eq!(
+            render("{{ item | tojson(indent=2) }}", ctx.clone()),
+            "{\n  \"a\": \"x\",\n  \"b\": [\n    1,\n    2\n  ]\n}"
+        );
+        assert_eq!(
+            render("{{ text | tojson }}", json!({"text":"<>&'"})),
+            r#""\u003c\u003e\u0026\u0027""#
+        );
+        assert!(
+            Tmpl::compile("{{ item | tojson(unused=true) }}".into())
+                .unwrap()
+                .render(ctx)
+                .is_err()
+        );
     }
 
     #[test]
@@ -1261,13 +1307,19 @@ mod tests {
         std::fs::write(dir.path().join("frag.txt"), "fragment").unwrap();
         let root = dir.path().canonicalize().unwrap();
         let partials = super::Partials::rooted(&root);
-        let body = partials
-            .compile("before {% include \"frag.txt\" %} after".into(), "body.txt")
-            .unwrap();
-        assert_eq!(
-            body.render(serde_json::json!({})).unwrap(),
-            "before fragment after"
-        );
+        for target in [
+            "\"frag.txt\"",
+            "['missing.txt', 'frag.txt']",
+            "('missing.txt', 'frag.txt')",
+        ] {
+            let body = partials
+                .compile(format!("before {{% include {target} %}} after"), "body.txt")
+                .unwrap();
+            assert_eq!(
+                body.render(serde_json::json!({})).unwrap(),
+                "before fragment after"
+            );
+        }
     }
 
     #[test]

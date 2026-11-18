@@ -20,6 +20,7 @@ tasks:
   test:consumer:
     desc: Exercise public library operations from a separate crate without CLI features
     cmds:
+      - python3 scripts/check-consumer-dependencies.py
       - cargo run --locked --manifest-path tests/consumer/Cargo.toml
   test:network:
     desc: Run local HTTPS and opt-in Unix OpenSSH Git transport tests

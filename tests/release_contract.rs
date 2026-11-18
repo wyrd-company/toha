@@ -223,7 +223,7 @@ fn manifest_contract(
         let bytes = artifacts
             .get(name)
             .ok_or("manifest names an artifact outside this build")?;
-        if !seen.insert(name) || entry["sha256"] != format!("{:x}", Sha256::digest(bytes)) {
+        if !seen.insert(name) || entry["sha256"] != hex::encode(Sha256::digest(bytes)) {
             return Err(format!(
                 "manifest digest differs from own build artifact: {name}"
             ));

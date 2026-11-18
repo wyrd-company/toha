@@ -575,7 +575,7 @@ fn normalize_body(body: &str) -> String {
 fn checksum(body: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(body.as_bytes());
-    format!("{:x}", hasher.finalize())
+    hex::encode(hasher.finalize())
 }
 
 /// Places a first-time region at its anchor, or at end of file when it has no

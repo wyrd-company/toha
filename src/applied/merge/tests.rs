@@ -563,6 +563,143 @@ fn a_failure_after_a_write_but_before_commit_rolls_the_transaction_back() {
 }
 
 #[test]
+fn a_stop_during_the_write_loop_writes_no_later_file_and_rolls_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q", "-b", "main"]);
+    for name in ["a.txt", "b.txt", "c.txt"] {
+        write(&root.join("app").join(name), b"one\n");
+    }
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "operator"]);
+    let index_before = std::fs::read(root.join(".git/index")).unwrap();
+    let files: [(&str, &[u8]); 3] = [
+        ("a.txt", b"one\n"),
+        ("b.txt", b"one\n"),
+        ("c.txt", b"one\n"),
+    ];
+    make_snapshot(root, BASE_ID, "app", &files);
+    let files: [(&str, &[u8]); 3] = [
+        ("a.txt", b"two\n"),
+        ("b.txt", b"two\n"),
+        ("c.txt", b"two\n"),
+    ];
+    make_snapshot(root, NEW_ID, "app", &files);
+    let project = open(root, "app");
+    let base = read_snapshot(&project, BASE_ID);
+    let new = read_snapshot(&project, NEW_ID);
+
+    // The caller's signal fires once a.txt is written (BTreeMap order).
+    let signal = crate::stop::StopSignal::new();
+    super::inject_fail::stop_after(1, signal.clone());
+    let result = crate::stop::with_stop_signal(signal, || {
+        merge_inner(
+            &project,
+            &Base::Application(base),
+            &new,
+            &MergeOptions {
+                trusted: true,
+                dry_run: false,
+            },
+            &[crate::TargetPath::parse("empty").unwrap()],
+        )
+    });
+    let written = super::inject_fail::count();
+    super::inject_fail::disarm();
+    assert!(matches!(result, Err(MergeError::Stopped)), "{result:?}");
+    assert_eq!(written, 1, "no path after a.txt was written");
+    for name in ["a.txt", "b.txt", "c.txt"] {
+        assert_eq!(
+            std::fs::read_to_string(root.join("app").join(name)).unwrap(),
+            "one\n",
+            "{name} holds HEAD: a.txt restored, the others never written"
+        );
+    }
+    assert!(!root.join("app/empty").exists());
+    assert!(!root.join(".toha.json").exists(), "no applied record");
+    assert_eq!(
+        std::fs::read(root.join(".git/index")).unwrap(),
+        index_before
+    );
+    assert!(git(root, &["status", "--porcelain"]).is_empty());
+}
+
+/// Fires the caller's stop signal while it runs the candidate's hook.
+struct StoppingRunner(crate::stop::StopSignal);
+impl crate::hook::HookRunner for StoppingRunner {
+    fn run(
+        &self,
+        _hook: &crate::plan::PlannedHook,
+        _target: &Path,
+    ) -> Result<crate::hook::HookOutcome, crate::hook::HookError> {
+        self.0.stop();
+        Ok(crate::hook::HookOutcome {
+            success: true,
+            code: Some(0),
+            stdout: None,
+            stderr: None,
+        })
+    }
+}
+
+#[test]
+fn a_stop_while_the_candidate_is_built_leaves_the_worktree_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q", "-b", "main"]);
+    write(&root.join("app/main.txt"), b"one\n");
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "operator"]);
+    let index_before = std::fs::read(root.join(".git/index")).unwrap();
+    make_snapshot(root, BASE_ID, "app", &[("main.txt", b"one\n")]);
+    let source = tempfile::tempdir().unwrap();
+    write(
+        &source.path().join("template.yml"),
+        // The first hook fires the signal, so the candidate's apply stops
+        // before the second.
+        b"name: example\ninterview: []\nhooks:\n  - run: [tool]\n  - run: [tool]\n",
+    );
+    write(&source.path().join("template/main.txt"), b"two\n");
+    let template = crate::template::Template::load(source.path()).unwrap();
+    let seed = crate::interview::Seed {
+        now: "2026-03-14T09:26:53+00:00[UTC]".parse().unwrap(),
+        defaults: Default::default(),
+        context: crate::context::InvocationContext::for_target(
+            canonical_target(&root.join("app")).unwrap(),
+        ),
+    };
+    let crate::interview::Interview::Complete(completed) =
+        crate::interview::Interview::start(&template, seed).unwrap()
+    else {
+        panic!("the template has no questions");
+    };
+    let project = open(root, "app");
+    let base = read_snapshot(&project, BASE_ID);
+    let signal = crate::stop::StopSignal::new();
+    let result = crate::stop::with_stop_signal(signal.clone(), || {
+        merge_apply(
+            &project,
+            Base::Application(base),
+            &template,
+            &completed,
+            snapshot_inputs(),
+            MergeOptions {
+                trusted: true,
+                dry_run: false,
+            },
+            &StoppingRunner(signal.clone()),
+        )
+    });
+    assert!(matches!(result, Err(MergeError::Stopped)), "{result:?}");
+    assert_eq!(std::fs::read(root.join("app/main.txt")).unwrap(), b"one\n");
+    assert!(!root.join(".toha.json").exists());
+    assert_eq!(
+        std::fs::read(root.join(".git/index")).unwrap(),
+        index_before
+    );
+}
+
+#[test]
 fn the_write_index_drops_the_stale_cache_tree_extension() {
     // remove_tree() is required: gix-index writes the TREE (cache-tree) extension
     // as-is, so once the transaction replaces index entries the stale cache-tree

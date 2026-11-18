@@ -5,7 +5,7 @@ relationships:
 
 # Environment and directories
 
-Toha reads these environment variables. `toha --help` lists them too.
+Toha reads these environment variables.
 
 | Variable | Use |
 | --- | --- |

@@ -71,12 +71,27 @@ pub struct ResolvedTemplate {
 pub enum ResolveError {
     Error(String),
     NotFound(String),
-    StaleRevision { message: String },
-    Ambiguous { name: String, matches: Vec<String> },
+    StaleRevision {
+        message: String,
+    },
+    Ambiguous {
+        name: String,
+        matches: Vec<String>,
+    },
+    /// The operation's [stop signal](crate::stop) fired during a fetch.
+    Stopped,
 }
 impl ResolveError {
     pub(crate) fn text(error: impl ToString) -> Self {
         Self::Error(error.to_string())
+    }
+}
+impl From<source::SourceError> for ResolveError {
+    fn from(error: source::SourceError) -> Self {
+        match error {
+            source::SourceError::Stopped => Self::Stopped,
+            error => Self::text(error),
+        }
     }
 }
 impl From<registry::ResolveError> for ResolveError {
@@ -163,9 +178,8 @@ fn cached(
             .parent()
             .ok_or_else(|| ResolveError::text("cache path has no parent"))?;
         fs::create_dir_all(parent).map_err(ResolveError::text)?;
-        let temporary = tempfile::tempdir_in(parent).map_err(ResolveError::text)?;
+        let (temporary, fetched) = source::fetch_temporary(address, parent, ".tmp")?;
         let clone = temporary.path().join("repo");
-        let fetched = source::fetch(address, &clone).map_err(ResolveError::text)?;
         if fetched.commit != commit {
             return Err(ResolveError::StaleRevision {
                 message: format!(
@@ -212,9 +226,8 @@ fn fetch_new(
         }
     }
     fs::create_dir_all(&parent).map_err(ResolveError::text)?;
-    let temporary = tempfile::tempdir_in(&parent).map_err(ResolveError::text)?;
+    let (temporary, fetched) = source::fetch_temporary(address, &parent, ".tmp")?;
     let clone = temporary.path().join("repo");
-    let fetched = source::fetch(address, &clone).map_err(ResolveError::text)?;
     let root = parent.join(&fetched.commit);
     if !root.exists() {
         fs::rename(clone, &root).map_err(ResolveError::text)?;
@@ -570,6 +583,7 @@ impl std::fmt::Display for ResolveError {
             Self::Ambiguous { name, matches } => {
                 write!(f, "template {name} is ambiguous: {}", matches.join(", "))
             }
+            Self::Stopped => f.write_str("the template fetch was stopped"),
         }
     }
 }

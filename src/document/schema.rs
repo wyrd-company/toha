@@ -10,6 +10,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 #[derive(Clone, Debug, Default)]
@@ -108,12 +109,42 @@ fn schema_files(directory: &Path, root: &Path, paths: &mut Vec<PathBuf>) -> Resu
     }
     Ok(())
 }
+/// What a schema fetch the operation's [stop signal](crate::stop) ended
+/// reports.
+const STOPPED: &str = "the schema fetch was stopped";
+/// The longest a stoppable fetch waits for curl before it checks the signal.
+const STOP_CHECK: Duration = Duration::from_millis(100);
+/// A fetched schema body, up to 1 MiB.
+#[derive(Default)]
+struct Body {
+    bytes: Vec<u8>,
+    oversized: bool,
+}
+impl curl::easy::Handler for Body {
+    fn write(&mut self, chunk: &[u8]) -> Result<usize, curl::easy::WriteError> {
+        if self.bytes.len() + chunk.len() > 1024 * 1024 {
+            self.oversized = true;
+            return Ok(0);
+        }
+        self.bytes.extend_from_slice(chunk);
+        Ok(chunk.len())
+    }
+}
+/// Fetch the schema at `uri`, on the calling thread.
+///
+/// Inside a stop signal's scope the transfer runs on a curl multi handle that
+/// this thread drives, checking the signal at least every [`STOP_CHECK`],
+/// also while the endpoint sends nothing. curl's own progress callback is not
+/// called while some builds wait for a TLS handshake. Once the signal fires,
+/// the transfer is removed and its handle dropped, which closes its
+/// connection, before this returns. Without a signal the transfer runs as
+/// before.
 fn fetch(uri: &str) -> Result<Value, String> {
     let parsed = Uri::parse(uri).map_err(|e| e.to_string())?;
     if parsed.scheme().as_str() != "https" {
         return Err("schema fetch requires HTTPS".into());
     }
-    let mut easy = curl::easy::Easy::new();
+    let mut easy = curl::easy::Easy2::new(Body::default());
     easy.url(uri).map_err(|e| e.to_string())?;
     easy.fail_on_error(true).map_err(|e| e.to_string())?;
     // Use the same platform roots as HTTPS template sources, including bundled rustls.
@@ -139,32 +170,136 @@ fn fetch(uri: &str) -> Result<Value, String> {
             easy.cainfo(roots.path()).map_err(|e| e.to_string())?;
         }
     }
-    let mut bytes = Vec::new();
-    let mut oversized = false;
-    let result = {
-        let mut transfer = easy.transfer();
-        transfer
-            .write_function(|chunk| {
-                if bytes.len() + chunk.len() > 1024 * 1024 {
-                    oversized = true;
-                    return Ok(0);
-                }
-                bytes.extend_from_slice(chunk);
-                Ok(chunk.len())
-            })
-            .map_err(|e| e.to_string())?;
-        transfer.perform()
+    let (result, body) = if crate::stop::scoped() {
+        perform_stoppable(easy)?
+    } else {
+        let result = easy.perform();
+        (result, std::mem::take(easy.get_mut()))
     };
     if let Err(e) = result {
-        return Err(if oversized {
+        return Err(if body.oversized {
             "schema exceeds 1 MiB".into()
         } else {
             e.to_string()
         });
     }
-    let schema: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    let schema: Value = serde_json::from_slice(&body.bytes).map_err(|e| e.to_string())?;
     if schema.get("$id").and_then(Value::as_str) != Some(uri) {
         return Err("fetched schema $id does not equal requested URI".into());
     }
     Ok(schema)
+}
+/// `CURLOPT_QUICK_EXIT`, which curl-sys 0.4.91 does not define: a transfer's
+/// cleanup detaches its resolver threads instead of joining them.
+const CURLOPT_QUICK_EXIT: curl_sys::CURLoption = curl_sys::CURLOPTTYPE_LONG + 322;
+/// `CURLMOPT_QUICK_EXIT`, which curl-sys 0.4.91 does not define: the multi
+/// handle's cleanup detaches its resolver pool instead of joining it.
+const CURLMOPT_QUICK_EXIT: curl_sys::CURLMoption = curl_sys::CURLOPTTYPE_LONG + 21;
+/// End a transfer the stop signal stopped, and close its connection.
+///
+/// A name lookup can't be interrupted: `getaddrinfo` runs on curl's resolver
+/// threads until the system resolver returns. Joining them would hold the
+/// caller until then. So when the lookup is still pending, the cleanup
+/// detaches them instead (wyrd-company/toha#81). They hold no connection to
+/// the schema host and end by themselves. A libcurl that resolves on a thread
+/// per transfer, such as 8.18, takes the transfer's option; one with a pool
+/// owned by the multi handle, such as 8.22, takes the multi handle's option.
+/// After the lookup the pool is joined, as without a stop, so no idle thread
+/// is left. A libcurl that knows neither option joins, and the stop waits for
+/// the lookup.
+fn release_stopped(multi: curl::multi::Multi, handle: curl::multi::Easy2Handle<Body>) {
+    // SAFETY: `handle` owns a live easy handle until `remove2` below, and
+    // CURLOPT_QUICK_EXIT takes a long. A libcurl without the option returns
+    // CURLE_UNKNOWN_OPTION and changes nothing.
+    unsafe {
+        curl_sys::curl_easy_setopt(handle.raw(), CURLOPT_QUICK_EXIT, 1 as std::ffi::c_long);
+    }
+    // Removing a transfer before it finished closes its connection at once.
+    let removed = multi.remove2(handle);
+    let lookup_pending = removed
+        .as_ref()
+        .is_ok_and(|easy| easy.namelookup_time().is_ok_and(|time| time.is_zero()));
+    if lookup_pending {
+        // SAFETY: `multi` is the live multi handle that ran the transfer, and
+        // CURLMOPT_QUICK_EXIT takes a long. A libcurl without the option
+        // returns CURLM_UNKNOWN_OPTION and changes nothing.
+        unsafe {
+            curl_sys::curl_multi_setopt(multi.raw(), CURLMOPT_QUICK_EXIT, 1 as std::ffi::c_long);
+        }
+    }
+    drop(removed);
+    release_bounded(multi);
+}
+/// How long a stop waits for curl to release its handles before it leaves
+/// the rest to the release thread.
+const RELEASE_WAIT: Duration = Duration::from_millis(250);
+/// The name of the thread that releases a stopped transfer's multi handle.
+const RELEASE_THREAD: &str = "toha-schema-release";
+/// A multi handle with no transfer attached, on its way to the thread that
+/// releases it.
+struct Unattached(
+    #[expect(dead_code, reason = "only dropped: dropping it releases the handle")]
+    curl::multi::Multi,
+);
+// SAFETY: the curl crate's `Multi` is `!Send` only because it wraps the raw
+// `CURLM` pointer. This one has no easy handle attached, and Toha sets no
+// socket or timer callback on it. libcurl allows a handle to move between
+// threads that never use it at the same time: the calling thread hands it
+// over here and doesn't touch it again.
+unsafe impl Send for Unattached {}
+/// Release `multi` on a [`RELEASE_THREAD`] thread, and wait for it at most
+/// [`RELEASE_WAIT`].
+///
+/// curl's cleanup waits for resolver threads whose lookup it doesn't report
+/// as pending, such as the target lookup behind a SOCKS4 or SOCKS5 proxy, and
+/// a lookup can't be interrupted. A release that finishes in time is joined,
+/// which is every stop with no pending lookup, so no thread is left. A slower
+/// one is left to finish when the lookup returns (wyrd-company/toha#81). It
+/// holds no connection: removing the transfer closed it. If the thread can't
+/// be started, the handle is released here.
+fn release_bounded(multi: curl::multi::Multi) {
+    let unattached = Unattached(multi);
+    let (released, done) = std::sync::mpsc::channel::<()>();
+    let spawned = std::thread::Builder::new()
+        .name(RELEASE_THREAD.into())
+        .spawn(move || {
+            drop(unattached);
+            let _ = released.send(());
+        });
+    // A failed spawn drops the closure, which releases the handle here.
+    if let Ok(thread) = spawned
+        && !matches!(
+            done.recv_timeout(RELEASE_WAIT),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        )
+    {
+        let _ = thread.join();
+    }
+}
+/// Run `easy` to completion on a multi handle this thread drives, or return
+/// [`STOPPED`] once the operation's stop signal fires. A stopped transfer is
+/// ended with [`release_stopped`], which closes its connection.
+fn perform_stoppable(
+    easy: curl::easy::Easy2<Body>,
+) -> Result<(Result<(), curl::Error>, Body), String> {
+    let multi = curl::multi::Multi::new();
+    let handle = multi.add2(easy).map_err(|e| e.to_string())?;
+    loop {
+        if crate::stop::requested() {
+            release_stopped(multi, handle);
+            return Err(STOPPED.into());
+        }
+        if multi.perform().map_err(|e| e.to_string())? == 0 {
+            break;
+        }
+        multi.wait(&mut [], STOP_CHECK).map_err(|e| e.to_string())?;
+    }
+    let mut result = Ok(());
+    multi.messages(|message| {
+        if let Some(outcome) = message.result_for2(&handle) {
+            result = outcome;
+        }
+    });
+    let mut easy = multi.remove2(handle).map_err(|e| e.to_string())?;
+    Ok((result, std::mem::take(easy.get_mut())))
 }

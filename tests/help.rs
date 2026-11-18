@@ -134,20 +134,39 @@ fn names(text: &str) -> Vec<&str> {
 }
 
 #[test]
-fn long_help_names_every_environment_variable() {
-    let text = help(&[], "--help");
-    let start = text
-        .lines()
-        .position(|line| line == "Environment:")
-        .unwrap_or_else(|| panic!("no Environment section:\n{text}"));
-    let section: Vec<_> = text
-        .lines()
-        .skip(start + 1)
-        .take_while(|line| line.is_empty() || line.starts_with(' '))
-        .collect();
-    let section = section.join("\n");
-    let named = names(&section);
-    for variable in support::ENVIRONMENT {
-        assert!(named.contains(variable), "{variable}:\n{section}");
+fn top_level_help_points_to_documentation_without_listing_variables() {
+    let documentation = include_str!("../docs/user/configuration.md");
+    let normalized = documentation.replace("\r\n", "\n");
+    let windows = normalized.replace('\n', "\r\n");
+    for guide in [&normalized, &windows] {
+        let mut lines = guide.lines();
+        assert!(
+            lines.any(|line| line == "## Environment variables"),
+            "configuration guide has no environment variables section"
+        );
+        let table = lines
+            .skip_while(|line| !line.starts_with('|'))
+            .take_while(|line| line.starts_with('|'))
+            .filter_map(|line| line.split('|').nth(1))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let documented = names(&table);
+        for variable in support::ENVIRONMENT {
+            assert!(
+                documented.contains(variable),
+                "{variable} missing from configuration guide table"
+            );
+        }
+    }
+    for flag in ["-h", "--help"] {
+        let text = help(&[], flag);
+        assert!(
+            text.contains("https://wyrd.foo/docs/toha/configuration#environment-variables"),
+            "{text}"
+        );
+        let named = names(&text);
+        for variable in support::ENVIRONMENT {
+            assert!(!named.contains(variable), "{variable}:\n{text}");
+        }
     }
 }

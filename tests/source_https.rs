@@ -752,8 +752,22 @@ fn run_credential_scenario(scenario: &str, auth: Auth) -> Vec<String> {
 }
 
 #[test]
+fn a_url_password_is_refused_before_fetch_or_probe_with_or_without_a_stop_signal() {
+    let received = run_credential_scenario("url-password", private());
+    assert!(
+        received.is_empty(),
+        "a refused URL reached the endpoint: {received:?}"
+    );
+}
+
+#[test]
 fn a_credential_resolver_fetches_a_private_https_repository() {
     run_credential_scenario("answers", private());
+}
+
+#[test]
+fn a_credential_resolver_answers_a_fetch_under_a_stop_signal() {
+    run_credential_scenario("answers-under-stop-signal", private());
 }
 
 #[test]
@@ -1038,6 +1052,60 @@ fn credential_worker() {
     let main = urls[0].clone();
     let rejected = "rejected-sample-value";
     match scenario.as_str() {
+        "url-password" => {
+            // The valid HTTPS form can reach the fixture, whose request list
+            // must stay empty. The malformed port and pathless SSH refusals
+            // are proven by the in-process error assertions below; this HTTP
+            // request list cannot establish whether those forms connected.
+            let remote = main.replacen("://", "://address-user:secret@", 1);
+            let remotes = [
+                remote.clone(),
+                remote.replace(&format!(":{}/", port(&main)), ":abc/"),
+                format!("ssh://address-user:secret@localhost:{}", port(&main)),
+            ];
+            let refuse = || {
+                let entries = || {
+                    let mut names: Vec<_> = fs::read_dir(&root)
+                        .unwrap()
+                        .map(|entry| entry.unwrap().file_name())
+                        .collect();
+                    names.sort();
+                    names
+                };
+                let before = entries();
+                for remote in &remotes {
+                    // A short commit reference would otherwise trigger a remote
+                    // lookup before the clone. Refuse both paths before any I/O.
+                    for reference in [None, Some("abcdef0".to_owned())] {
+                        let address = Address::Git {
+                            repo: remote.clone(),
+                            reference,
+                            path: None,
+                        };
+                        for dest in [
+                            root.join("refused-clone"),
+                            root.join("missing-parent/clone"),
+                        ] {
+                            let error = fetch(&address, &dest).unwrap_err();
+                            assert!(
+                                matches!(error, SourceError::Address(ref message) if message == toha::source::PASSWORD_REFUSED),
+                                "{error:?}"
+                            );
+                            assert!(!dest.exists());
+                            assert_eq!(entries(), before, "refusal changed the destination parent");
+                        }
+                    }
+                    match probe(remote) {
+                        RemoteState::Unreachable(message) => {
+                            assert_eq!(message, toha::source::PASSWORD_REFUSED);
+                        }
+                        other => panic!("expected a password refusal, got {other:?}"),
+                    }
+                }
+            };
+            refuse();
+            toha::stop::with_stop_signal(toha::stop::StopSignal::new(), refuse);
+        }
         "answers" => {
             let resolver = grant(private(), port(&main));
             with_credential_resolver(resolver.clone(), || {
@@ -1056,6 +1124,22 @@ fn credential_worker() {
             // After the operation the default applies again.
             assert!(fetch_from(&main).is_err());
             assert_eq!(resolver.asked.lock().unwrap().len(), asked.len());
+        }
+        "answers-under-stop-signal" => {
+            // With a signal in scope the fetch and the probe run on a Toha
+            // thread, which answers from the calling thread's resolver.
+            let resolver = grant(private(), port(&main));
+            let signal = toha::stop::StopSignal::new();
+            with_credential_resolver(resolver.clone(), || {
+                toha::stop::with_stop_signal(signal.clone(), || {
+                    let fetched = fetch_from(&main).unwrap();
+                    assert_eq!(fetched.commit.len(), 40);
+                    assert!(root.join("fetched-0/template.yml").is_file());
+                    assert_eq!(probe(&with_user(&main)), RemoteState::HasHistory);
+                })
+            });
+            assert!(!signal.is_stopped());
+            assert!(!resolver.asked.lock().unwrap().is_empty());
         }
         "head-branch" => {
             let remote = root.join("remote.git");

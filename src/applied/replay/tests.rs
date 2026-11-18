@@ -375,3 +375,81 @@ fn recorded_submissions_replay_across_batches_in_order() {
         ),
     }
 }
+
+fn check_empty_staged_batch(reanswer: bool) {
+    let (_f, template) = inline(TWO_BATCHES);
+    let recorded = vec![
+        sub(&[("name", json!("first")), ("more", json!(true))]),
+        sub(&[("extra", json!("gravy"))]),
+    ];
+    let staged = vec![
+        sub(&[("name", json!("changed")), ("more", json!(true))]),
+        sub(&[]),
+    ];
+    match replay_resume(&template, seed(), &recorded, &staged, reanswer).unwrap() {
+        Replay::Completed {
+            completed,
+            submissions,
+        } => {
+            assert_eq!(completed.answers[&id("extra")].to_json(), json!("gravy"));
+            assert_eq!(submissions.len(), 2);
+            assert!(submissions[1].is_empty());
+        }
+        _ => panic!("empty second batch did not complete with reanswer={reanswer}"),
+    }
+}
+
+#[test]
+fn empty_staged_batch_without_reanswer() {
+    check_empty_staged_batch(false);
+}
+
+#[test]
+fn empty_staged_batch_with_reanswer() {
+    check_empty_staged_batch(true);
+}
+
+#[test]
+fn admitted_document_only_staged_batch_is_not_submitted_again() {
+    let folder = tempfile::tempdir().unwrap();
+    std::fs::create_dir(folder.path().join("template")).unwrap();
+    std::fs::create_dir(folder.path().join("schemas")).unwrap();
+    std::fs::write(
+        folder.path().join("schemas/doc.json"),
+        r#"{"$id":"https://example.test/doc","type":"object"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        folder.path().join("template.yml"),
+        r#"
+name: t
+schemas: schemas
+interview:
+  - {id: doc, type: document, prompt: Document, schema: 'https://example.test/doc', input: doc.json}
+  - {id: name, type: text, prompt: 'Name for {{ doc.title }}', required: true}
+"#,
+    )
+    .unwrap();
+    let mut template = Template::load(folder.path()).unwrap();
+    let doc = json!({"title":"hello"});
+    crate::document::prepare(
+        &mut template,
+        folder.path(),
+        &[],
+        &sub(&[("doc", doc.clone())]),
+    )
+    .unwrap();
+    let staged = vec![sub(&[("doc", doc)]), sub(&[("name", json!("world"))])];
+    match replay_resume(&template, seed(), &[], &staged, true).unwrap() {
+        Replay::Completed {
+            completed,
+            submissions,
+        } => {
+            assert_eq!(completed.answers[&id("name")].to_json(), json!("world"));
+            assert_eq!(submissions.len(), 2);
+            assert_eq!(submissions[0][&id("doc")].0, json!({"title":"hello"}));
+            assert_eq!(submissions[1][&id("name")].0, json!("world"));
+        }
+        _ => panic!("admitted document was submitted again"),
+    }
+}

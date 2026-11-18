@@ -129,7 +129,8 @@ pub(crate) fn resolving() -> bool {
     RESOLVER.with(|current| current.borrow().is_some())
 }
 
-fn current_resolver() -> Option<Arc<dyn CredentialResolver>> {
+/// The calling thread's resolver, for a thread that works for its operation.
+pub(crate) fn current_resolver() -> Option<Arc<dyn CredentialResolver>> {
     RESOLVER.with(|current| current.borrow().clone())
 }
 
@@ -170,7 +171,7 @@ impl Supplied {
         &self,
         resolver: Arc<dyn CredentialResolver>,
         mut fallback: gix::remote::AuthenticateFn<'static>,
-    ) -> impl FnMut(helper::Action) -> protocol::Result + use<> {
+    ) -> impl FnMut(helper::Action) -> gix::Result<Option<protocol::Outcome>> + use<> {
         let supplied = self.clone();
         // Whether the resolver answered the latest `Get`; its `Store` and
         // `Erase` follow-ups then concern no helper.
@@ -184,7 +185,10 @@ impl Supplied {
                     .url
                     .clone()
                     .or_else(|| context.to_url())
-                    .ok_or(protocol::Error::UrlMissing)?;
+                    .ok_or_else(|| {
+                        gix::error::message("The URL was not present in the credential context")
+                            .validation_error()
+                    })?;
                 let request = gix::url::parse(url.as_bstr())
                     .ok()
                     .filter(|url| url.scheme == gix::url::Scheme::Https)
@@ -206,7 +210,10 @@ impl Supplied {
                         Ok(None) => {}
                         Err(reason) => {
                             supplied.lock().refusal = Some(reason);
-                            return Err(protocol::Error::Quit);
+                            return Err(gix::error::message(
+                                "The handler asked to stop trying to obtain credentials",
+                            )
+                            .cancelled_error());
                         }
                     }
                 }
@@ -291,12 +298,15 @@ fn without(message: &str, forms: &[String]) -> String {
 }
 
 /// The ways a gix message can write `secret`: as text, as Rust escapes it in
-/// a quoted string, and as the byte list gix shows for bytes a remote sent.
-fn written_forms(secret: &str) -> [String; 3] {
+/// a quoted string or escaped URL, and as a remote's byte list.
+/// gix-url uses byte `escape_ascii`, which also escapes apostrophes and UTF-8.
+pub(super) fn written_forms(secret: &str) -> [String; 5] {
     let quoted = format!("{secret:?}");
     let listed = format!("{:?}", secret.as_bytes());
     [
         secret.to_owned(),
+        secret.escape_debug().to_string(),
+        secret.as_bytes().escape_ascii().to_string(),
         quoted[1..quoted.len() - 1].to_owned(),
         listed[1..listed.len() - 1].to_owned(),
     ]
@@ -337,7 +347,7 @@ mod tests {
     }
 
     #[allow(clippy::result_large_err)]
-    fn harness() -> Harness<impl FnMut(helper::Action) -> protocol::Result> {
+    fn harness() -> Harness<impl FnMut(helper::Action) -> gix::Result<Option<protocol::Outcome>>> {
         let resolver = Arc::new(Sample::default());
         let forwarded = Arc::new(Mutex::new(Vec::new()));
         let seen = forwarded.clone();
@@ -373,7 +383,7 @@ mod tests {
         }
     }
 
-    fn password(outcome: protocol::Result) -> String {
+    fn password(outcome: gix::Result<Option<protocol::Outcome>>) -> String {
         outcome.unwrap().unwrap().identity.password
     }
 
@@ -435,7 +445,7 @@ mod tests {
     fn a_refusal_fails_with_its_reason() {
         let mut h = harness();
         let get = helper::Action::get_for_url(REFUSED);
-        assert!(matches!((h.callback)(get), Err(protocol::Error::Quit)));
+        assert!((h.callback)(get).unwrap_err().is_cancelled());
         assert!(h.forwarded().is_empty());
         let message = h.supplied.message("The handler asked to stop".into());
         assert_eq!(message, "the sample resolver refuses");
@@ -501,6 +511,20 @@ mod tests {
             message,
             "raw <redacted>, quoted \"<redacted>\", listed [<redacted>]"
         );
+    }
+
+    #[test]
+    fn messages_hold_no_ascii_or_debug_escaped_password() {
+        for password in ["it's-secret", "a\"secret", r"a\secret", "café-secret"] {
+            let supplied = Supplied::default();
+            supplied.keep_out("sample-user", password);
+            for form in [
+                password.escape_debug().to_string(),
+                password.as_bytes().escape_ascii().to_string(),
+            ] {
+                assert_eq!(supplied.message(format!("echo {form}")), "echo <redacted>");
+            }
+        }
     }
 
     #[test]

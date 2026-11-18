@@ -90,6 +90,10 @@ pub enum GitTargetError {
     Init { path: String, message: String },
     #[error("the credential resolver refused the remote {url}: {reason}")]
     CredentialRefused { url: String, reason: String },
+    /// The operation's [stop signal](crate::stop) fired while the remote was
+    /// probed.
+    #[error("the remote check was stopped")]
+    Stopped,
     /// The remote holds a password, which Toha does not accept.
     #[error("{}", crate::source::PASSWORD_REFUSED)]
     RemotePassword,
@@ -106,6 +110,9 @@ pub enum RemoteState {
     Unreachable(String),
     /// The operation's credential resolver refused the remote, for this reason.
     Refused(String),
+    /// The operation's [stop signal](crate::stop) fired before the remote
+    /// answered.
+    Stopped,
 }
 
 /// The decision taken before the apply writes anything.
@@ -164,6 +171,7 @@ pub(crate) fn preflight_with(
                     reason,
                 });
             }
+            RemoteState::Stopped => return Err(GitTargetError::Stopped),
             RemoteState::Unreachable(message) => Some(format!(
                 "warning: could not inspect the remote {}; added it without a history check: {message}",
                 crate::source::without_userinfo(url)
@@ -205,7 +213,9 @@ fn probe_location(url: &str, target: &Path) -> String {
     if parsed.scheme != gix::url::Scheme::File {
         return url.to_owned();
     }
-    let path = gix::path::from_bstr(&parsed.path);
+    let Ok(path) = gix::path::from_bstr(&parsed.path) else {
+        return url.to_owned();
+    };
     if !path.is_relative() || path.has_root() {
         // Git cannot parse a verbatim `\\?\` drive path; probe its plain form.
         return match without_verbatim(&path) {
@@ -256,11 +266,18 @@ fn inside_repository(path: &Path) -> Result<bool, GitTargetError> {
         .to_path_buf();
     match gix::discover(&start) {
         Ok(_) => Ok(true),
-        Err(gix::discover::Error::Discover(
-            gix::discover::upwards::Error::NoGitRepository { .. }
-            | gix::discover::upwards::Error::NoGitRepositoryWithinCeiling { .. }
-            | gix::discover::upwards::Error::NoGitRepositoryWithinFs { .. },
-        )) => Ok(false),
+        Err(err)
+            if matches!(
+                err.downcast_any_ref::<gix::discover::upwards::Error>(),
+                Some(
+                    gix::discover::upwards::Error::NoGitRepository { .. }
+                        | gix::discover::upwards::Error::NoGitRepositoryWithinCeiling { .. }
+                        | gix::discover::upwards::Error::NoGitRepositoryWithinFs { .. },
+                )
+            ) =>
+        {
+            Ok(false)
+        }
         Err(err) => Err(GitTargetError::Discover {
             path: path.display().to_string(),
             message: err.to_string(),
@@ -269,18 +286,28 @@ fn inside_repository(path: &Path) -> Result<bool, GitTargetError> {
 }
 
 /// List the references of the repository at `url`.
+///
+/// Inside [`with_stop_signal`](crate::stop::with_stop_signal) the listing runs
+/// on a thread Toha starts, and a stopped probe returns
+/// [`RemoteState::Stopped`] at once, even while the remote sends nothing. The
+/// abandoned listing keeps its thread and connection until the remote acts;
+/// see the limit in [`with_stop_signal`](crate::stop::with_stop_signal).
 pub fn probe(url: &str) -> RemoteState {
-    let supplied = crate::source::Supplied::default();
-    match list_refs(url, &supplied) {
-        Ok(0) => RemoteState::Empty,
-        Ok(_) => RemoteState::HasHistory,
-        Err(message) => match supplied.refusal() {
-            Some(reason) => RemoteState::Refused(reason),
-            None => {
-                RemoteState::Unreachable(supplied.message(crate::source::redacted(&message, url)))
-            }
-        },
-    }
+    let url = url.to_owned();
+    crate::stop::run(move |_| {
+        let supplied = crate::source::Supplied::default();
+        match list_refs(&url, &supplied) {
+            Ok(0) => RemoteState::Empty,
+            Ok(_) => RemoteState::HasHistory,
+            Err(message) => match supplied.refusal() {
+                Some(reason) => RemoteState::Refused(reason),
+                None => RemoteState::Unreachable(
+                    supplied.message(crate::source::redacted(&message, &url)),
+                ),
+            },
+        }
+    })
+    .unwrap_or(RemoteState::Stopped)
 }
 
 fn list_refs(url: &str, supplied: &crate::source::Supplied) -> Result<usize, String> {
@@ -288,19 +315,19 @@ fn list_refs(url: &str, supplied: &crate::source::Supplied) -> Result<usize, Str
         return Err(crate::source::PASSWORD_REFUSED.to_owned());
     }
     // A remote needs a repository to belong to; a throwaway bare one holds it.
-    let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
-    let repo = gix::init_bare(scratch.path()).map_err(|e| e.to_string())?;
+    let scratch = tempfile::tempdir().map_err(|e| format!("{e:#}"))?;
+    let repo = gix::init_bare(scratch.path()).map_err(|e| format!("{e:#}"))?;
     let remote = repo
         .remote_at(url)
-        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("{e:#}"))?
         .with_refspecs(["+refs/*:refs/probe/*"], gix::remote::Direction::Fetch)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("{e:#}"))?;
     let mut connection = remote
         .connect(gix::remote::Direction::Fetch)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("{e:#}"))?;
     let mut roots = None;
     crate::source::prepare_connection(&mut connection, &mut roots, supplied)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("{e:#}"))?;
     let (map, _) = connection
         .ref_map(
             gix::progress::Discard,
@@ -309,7 +336,7 @@ fn list_refs(url: &str, supplied: &crate::source::Supplied) -> Result<usize, Str
                 ..Default::default()
             },
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("{e:#}"))?;
     // An empty repository still advertises its unborn `HEAD`; only a reference
     // that names an object is history.
     Ok(map

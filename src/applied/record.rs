@@ -121,22 +121,22 @@ impl fmt::Display for Revision {
 /// The instant every render of a project uses, frozen at the first application so a
 /// template that renders a date stays byte-stable across updates.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FrozenNow(jiff::Zoned, String);
+pub struct FrozenNow(jiff::ZonedDateTime, String);
 
 impl FrozenNow {
     /// Wrap a zoned instant.
-    pub fn new(instant: jiff::Zoned) -> Self {
+    pub fn new(instant: jiff::ZonedDateTime) -> Self {
         let text = instant.to_string();
         Self(instant, text)
     }
 
     pub fn parse(text: &str) -> Result<Self, RecordError> {
-        text.parse::<jiff::Zoned>()
+        text.parse::<jiff::ZonedDateTime>()
             .map(|instant| Self(instant, text.to_owned()))
             .map_err(|_| RecordError::Instant(text.to_owned()))
     }
 
-    pub fn get(&self) -> &jiff::Zoned {
+    pub fn get(&self) -> &jiff::ZonedDateTime {
         &self.0
     }
 }
