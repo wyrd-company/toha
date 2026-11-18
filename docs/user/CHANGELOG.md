@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.2
+
+### Fixes
+
+- Explain that Toha refuses a git address, configured host or `git` answer that holds a password, and that a Git credential helper supplies it instead.
+
 ## 0.1.1
 
 ### Fixes

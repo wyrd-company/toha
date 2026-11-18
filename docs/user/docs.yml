@@ -16,8 +16,8 @@ assets:
 products:
   toha:
     name: toha
-    version: 0.4.1
-    docs-version: 0.1.1
+    version: 0.4.2
+    docs-version: 0.1.2
     tagline: Generate projects and files from templates.
     blurb: >-
       Toha uses one interview for terminal users, scripts, agents, and Rust
