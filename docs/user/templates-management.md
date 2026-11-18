@@ -91,6 +91,12 @@ Each shortcode expands to that host's repository URL. System or user
 configuration can add a prefix or replace a built-in host. See
 [Configuration](/docs/toha/configuration).
 
+Toha refuses an address that holds a password, such as
+`https://user:password@git.example.invalid/collection.git`. Let a
+[Git credential helper](https://git-scm.com/docs/gitcredentials) supply the
+password instead. A user name alone, as in `ssh://git@git.example.invalid/collection.git`,
+is accepted.
+
 ## List available templates
 
 ```sh

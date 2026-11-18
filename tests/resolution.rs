@@ -967,3 +967,39 @@ fn ambiguous_name_names_the_same_command_with_each_formal_name() {
         }
     }
 }
+
+#[test]
+fn an_address_with_a_password_is_refused_before_anything_is_fetched_or_written() {
+    let root = tempfile::tempdir().unwrap();
+    let target = root.path().join("target");
+    let address = "https://user:p%40ss-secret@127.0.0.1:9/r.git";
+    for args in [
+        vec!["templates", "add", address],
+        vec!["apply", address, target.to_str().unwrap()],
+        vec!["stage", address, target.to_str().unwrap()],
+    ] {
+        let output = command(&root).args(&args).output().unwrap();
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        let shown = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(shown.contains("with a password is not accepted"), "{shown}");
+        assert!(!shown.contains("secret"), "{shown}");
+    }
+    assert!(!target.exists());
+    assert!(!support::user_data_dir(root.path()).join("repos").exists());
+}
+
+#[test]
+fn an_answers_document_naming_a_template_with_a_password_is_refused() {
+    let error = toha::protocol::document_answers(
+        "https://host.invalid/r",
+        r#"{"template":"https://user:secret@host.invalid/r","answers":{}}"#,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("with a password is not accepted"), "{error}");
+    assert!(!error.contains("secret"), "{error}");
+}

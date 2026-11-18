@@ -140,7 +140,10 @@ enters the URL of its remote, or leaves the answer empty for none.
 When the interview reaches this question, Toha initializes the target as a git
 repository after it writes the files and before any hook runs, so hooks can use
 git. The branch is your configured `init.defaultBranch`; if that is unset or
-`master`, Toha uses `main`. A URL answer becomes the `origin` remote.
+`master`, Toha uses `main`. A URL answer becomes the `origin` remote. Toha
+rejects a URL that holds a password, such as
+`https://user:password@git.example.invalid/project.git`, and asks again; a Git
+credential helper supplies the password instead.
 
 Toha checks the remote before it writes anything. If the remote already has
 history, Toha stops and tells the person to clone it first, then apply the

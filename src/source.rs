@@ -76,6 +76,9 @@ fn split_git(value: &str) -> Result<(&str, Option<String>, Option<String>), Sour
 }
 pub fn parse(arg: &str, hosts: &Hosts, cwd: &Path, home: &Path) -> Result<Address, SourceError> {
     if arg.contains("://") || arg.starts_with("git@") {
+        if has_password(arg) {
+            return Err(SourceError::Address(PASSWORD_REFUSED.into()));
+        }
         let (repo, reference, path) = split_git(arg)?;
         return Ok(Address::Git {
             repo: repo.into(),
@@ -92,8 +95,14 @@ pub fn parse(arg: &str, hosts: &Hosts, cwd: &Path, home: &Path) -> Result<Addres
                 "host address requires owner/repository".into(),
             ));
         }
+        let repo = format!("{}/{}", base.trim_end_matches('/'), repo);
+        if has_password(&repo) {
+            return Err(SourceError::Address(format!(
+                "the configured host `{prefix}`: {PASSWORD_REFUSED}"
+            )));
+        }
         return Ok(Address::Git {
-            repo: format!("{}/{}", base.trim_end_matches('/'), repo),
+            repo,
             reference,
             path,
         });
@@ -193,6 +202,26 @@ pub fn without_userinfo(repo: &str) -> String {
         return format!("ssh://{rest}");
     }
     repo.to_string()
+}
+/// Why Toha refuses a git URL that holds a password. It names no part of the
+/// URL.
+pub const PASSWORD_REFUSED: &str = "a git URL with a password is not accepted; remove the password and let a Git credential helper supply it";
+/// Whether the git URL `url` holds a password, as in
+/// `https://user:password@host/repo.git`. Toha refuses such a URL, as git does
+/// with `transfer.credentialsInUrl=die`, so a password never reaches a clone, a
+/// remote, a record or a message. A user name alone, as in
+/// `ssh://git@host/repo.git`, is accepted.
+pub fn has_password(url: &str) -> bool {
+    let parsed = gix::url::parse(gix::bstr::BStr::new(url)).is_ok_and(|u| u.password().is_some());
+    // Read the authority as typed as well, so that a URL gix cannot parse,
+    // such as one whose password holds `#`, is refused rather than passed on.
+    parsed
+        || url.split_once("://").is_some_and(|(_, rest)| {
+            let authority = rest.split(['/', '?']).next().unwrap_or(rest);
+            authority
+                .rsplit_once('@')
+                .is_some_and(|(userinfo, _)| userinfo.contains(':'))
+        })
 }
 /// The fetch failure for `error`, without the credentials of `repo` or any
 /// password `supplied` saw.
@@ -390,6 +419,11 @@ pub fn fetch(address: &Address, dest: &Path) -> Result<Fetched, SourceError> {
     else {
         return Err(SourceError::Address("a git address is required".into()));
     };
+    // An address can come from a registry or record that an earlier Toha
+    // wrote with a password, or from a library caller, as well as from `parse`.
+    if has_password(repo) {
+        return Err(SourceError::Address(PASSWORD_REFUSED.into()));
+    }
     let mut kind = reference_kind(repo, reference.as_deref())?;
     if dest.exists() {
         return Err(SourceError::Address(format!(
@@ -491,10 +525,7 @@ mod tests {
             ("https://user@github.com/a/b", "gh:a/b"),
             ("https://user@github.com/a/b@v1#p", "gh:a/b@v1#p"),
             ("git@github.com:a/b@main", "gh:a/b@main"),
-            (
-                "https://user:token@else.invalid/a/b",
-                "https://else.invalid/a/b",
-            ),
+            ("https://token@else.invalid/a/b", "https://else.invalid/a/b"),
             ("gh:a/b@main#sub", "gh:a/b@main#sub"),
             ("local:a/b#sub", "local:a/b#sub"),
             ("https://else.invalid/a/b.git", "https://else.invalid/a/b"),
@@ -549,7 +580,7 @@ mod tests {
             cache_path(cwd, &address, &hosts, "abc"),
             cwd.join("sources/gh_a_b/abc")
         );
-        let repo = "https://user:token@host.invalid/o/r";
+        let repo = "https://token@host.invalid/o/r";
         let error = git_error(
             format!("clone failed for {repo}"),
             repo,
@@ -558,5 +589,58 @@ mod tests {
         .to_string();
         assert!(!error.contains("token"));
         assert!(error.contains("https://host.invalid/o/r"));
+    }
+    #[test]
+    fn a_url_with_a_password_is_refused_and_a_user_alone_is_not() {
+        for url in [
+            "https://user:secret@host.invalid/o/r.git",
+            "https://user:s%40cr%2Fet@host.invalid/o/r.git",
+            "https://user:@host.invalid/o/r.git",
+            "https://user:p@ss@host.invalid/o/r.git",
+            "https://user:p#ss@host.invalid/o/r.git",
+            "https://user:secret@host.invalid",
+            "HTTP://user:secret@host.invalid:8080/r",
+            "ssh://git:secret@host.invalid/o/r.git",
+        ] {
+            assert!(has_password(url), "{url}");
+        }
+        for url in [
+            "https://host.invalid/o/r.git",
+            "https://token@host.invalid/o/r.git",
+            "https://host.invalid:8443/o/r.git",
+            "ssh://git@host.invalid:22/o/r.git",
+            "git@host.invalid:o/r.git",
+            "https://host.invalid/o/r@a:b",
+            "file:///home/a:b@c/repo",
+            "../relative/repo",
+        ] {
+            assert!(!has_password(url), "{url}");
+        }
+    }
+    #[test]
+    fn an_address_with_a_password_is_refused_without_naming_it() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = root.path();
+        let hosts = Hosts::from([("open".into(), "https://user:secret@host.invalid".into())]);
+        for address in [
+            "https://user:secret@host.invalid/o/r.git",
+            "https://user:se#cret@host.invalid/o/r.git@main#sub",
+            "open:o/r",
+        ] {
+            let error = parse(address, &hosts, cwd, cwd).unwrap_err().to_string();
+            assert!(error.contains("with a password is not accepted"), "{error}");
+            assert!(!error.contains("secret"), "{error}");
+            assert!(!error.contains("cret"), "{error}");
+        }
+        let written = Address::Git {
+            repo: "https://user:secret@host.invalid/o/r.git".into(),
+            reference: None,
+            path: None,
+        };
+        let dest = cwd.join("clone");
+        let error = fetch(&written, &dest).unwrap_err().to_string();
+        assert!(error.contains("with a password is not accepted"), "{error}");
+        assert!(!error.contains("secret"), "{error}");
+        assert!(!dest.exists());
     }
 }

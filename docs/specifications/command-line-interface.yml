@@ -40,7 +40,19 @@ description: >-
   `#<path>` when the template is not at the repository root. The formal name of
   a local folder template is its canonical absolute path. Two refs of one
   template are two installed templates with two formal names. A formal name
-  never contains user information. A staged interview resumes a local folder
+  never contains user information.
+
+  Passwords in git URLs. Toha refuses a git URL that holds a password, as in
+  `https://user:password@host/repo.git`, as git does with
+  `transfer.credentialsInUrl=die`. A command-line argument holding one stops
+  the command with exit code 2 before it is parsed; an address, a configured
+  host's base URL, an answers document's `template` or a `git` answer holding
+  one is refused before Toha fetches, records or shows it. The refusal names
+  no part of the URL. A user name alone, as in `ssh://git@host/repo.git`, is
+  accepted. Git credential helpers, or a library caller's credential
+  resolver, supply passwords.
+
+  A staged interview resumes a local folder
   template from its recorded formal name as a filesystem path, independently
   of `<TEMPLATE>` argument classification.
 

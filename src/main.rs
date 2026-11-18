@@ -2288,6 +2288,14 @@ fn run(
 fn main() -> ExitCode {
     // Parse first so that clap handles --version, --help, and usage errors
     // without a home directory; only the commands below resolve the folders.
+    // Toha accepts no git URL with a password. Refuse one in any argument
+    // before anything parses, runs or repeats it.
+    if std::env::args_os()
+        .skip(1)
+        .any(|arg| toha::source::has_password(&arg.to_string_lossy()))
+    {
+        return Outcome::Usage(toha::source::PASSWORD_REFUSED.to_owned()).finish();
+    }
     let command = Cli::parse().command;
     // Skills reads neither configuration nor state, so it resolves no directory
     // and runs without a home directory, like --version and --help.
@@ -2964,7 +2972,7 @@ mod report_tests {
         let mut out = Vec::new();
         let mut err = Vec::new();
         // ExitCode is not comparable; a successful render returning Ok is the check.
-        outcome.render(&mut out, &mut err).unwrap();
+        let _ = outcome.render(&mut out, &mut err).unwrap();
         let text = String::from_utf8(out).unwrap();
         assert!(
             text.contains("\"status\": \"applied\""),

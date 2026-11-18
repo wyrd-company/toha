@@ -78,11 +78,10 @@ fn probe_reports_a_remote_with_history() {
 #[test]
 fn probe_reports_an_unreachable_remote_without_credentials() {
     let dir = tempfile::tempdir().unwrap();
-    let url = file_url(dir.path()).replace("file://", "https://user:secret@127.0.0.1:9/");
+    let url = file_url(dir.path()).replace("file://", "https://token@127.0.0.1:9/");
     match probe(&url) {
         RemoteState::Unreachable(message) => {
-            assert!(!message.contains("secret"), "{message}");
-            assert!(!message.contains("user:"), "{message}");
+            assert!(!message.contains("token"), "{message}");
         }
         other => panic!("expected unreachable, got {other:?}"),
     }
@@ -94,21 +93,21 @@ fn preflight_stops_for_a_remote_with_history() {
     let project = dir.path().join("project");
     std::fs::create_dir(&project).unwrap();
     let planned = PlannedGit {
-        remote: Some("https://user:secret@example.invalid/sample.git".into()),
+        remote: Some("https://token@example.invalid/sample.git".into()),
     };
     let error =
         preflight_with(&planned, &target(&project), &|_| RemoteState::HasHistory).unwrap_err();
     let message = error.to_string();
     assert!(matches!(error, GitTargetError::RemoteHasHistory { .. }));
     assert!(message.contains("clone it first"), "{message}");
-    assert!(!message.contains("secret"), "{message}");
+    assert!(!message.contains("token"), "{message}");
 }
 
 #[test]
 fn preflight_stops_for_a_remote_the_resolver_refuses() {
     let dir = tempfile::tempdir().unwrap();
     let planned = PlannedGit {
-        remote: Some("https://user:secret@example.invalid/sample.git".into()),
+        remote: Some("https://token@example.invalid/sample.git".into()),
     };
     let error = preflight_with(&planned, &target(dir.path()), &|_| {
         RemoteState::Refused("scope denied".into())
@@ -117,7 +116,7 @@ fn preflight_stops_for_a_remote_the_resolver_refuses() {
     let message = error.to_string();
     assert!(matches!(error, GitTargetError::CredentialRefused { .. }));
     assert!(message.ends_with("scope denied"), "{message}");
-    assert!(!message.contains("secret"), "{message}");
+    assert!(!message.contains("token"), "{message}");
 }
 
 #[test]
@@ -202,7 +201,7 @@ fn report_lines_put_the_warning_first_and_hide_credentials() {
     let report = GitReport {
         setup: GitSetup::Initialized {
             branch: "main".into(),
-            remote: Some("https://user:secret@example.invalid/sample.git".into()),
+            remote: Some("https://token@example.invalid/sample.git".into()),
         },
         warning: Some("warning: sample".into()),
     };
@@ -214,7 +213,7 @@ fn report_lines_put_the_warning_first_and_hide_credentials() {
     );
     assert_eq!(
         PlannedGit {
-            remote: Some("https://user:secret@example.invalid/sample.git".into())
+            remote: Some("https://token@example.invalid/sample.git".into())
         }
         .preview_line(),
         "git init (remote origin https://example.invalid/sample.git)"
@@ -267,4 +266,33 @@ fn a_verbatim_drive_path_is_probed_in_its_plain_form() {
     );
     assert_eq!(without_verbatim(Path::new(r"\\?\UNC\host\share")), None);
     assert_eq!(without_verbatim(Path::new("/sample/history.git")), None);
+}
+
+#[test]
+fn a_remote_with_a_password_is_refused_before_it_is_read_or_written() {
+    let dir = tempfile::tempdir().unwrap();
+    let remote = "https://user:secret@example.invalid/sample.git";
+    let planned = PlannedGit {
+        remote: Some(remote.into()),
+    };
+    let error = preflight_with(&planned, &target(dir.path()), &|_| {
+        panic!("a remote with a password is never probed")
+    })
+    .unwrap_err();
+    assert!(matches!(error, GitTargetError::RemotePassword));
+    assert!(!error.to_string().contains("secret"), "{error}");
+    let project = dir.path().join("project");
+    let error = initialize(&project, Some(remote)).unwrap_err();
+    assert!(matches!(error, GitTargetError::RemotePassword));
+    assert!(!project.exists());
+    match probe(remote) {
+        RemoteState::Unreachable(message) => {
+            assert!(
+                message.contains("with a password is not accepted"),
+                "{message}"
+            );
+            assert!(!message.contains("secret"), "{message}");
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
 }

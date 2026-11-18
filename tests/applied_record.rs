@@ -546,7 +546,7 @@ fn malformed_record_is_refused_without_writes_and_retired_commands_are_absent() 
 }
 
 #[test]
-fn git_answers_strip_url_user_information_from_the_record() {
+fn git_answers_refuse_a_password_and_strip_the_user_from_the_record() {
     use indexmap::IndexMap;
     use toha::{Interview, RawAnswer, Seed};
     let source = tempfile::tempdir().unwrap();
@@ -567,22 +567,35 @@ fn git_answers_strip_url_user_information_from_the_record() {
         Interview::Asking(p) => p,
         _ => panic!("git question"),
     };
-    let answers = [(
-        toha::Id::parse("remote").unwrap(),
-        RawAnswer(json!(
-            "https://example-user:example-credential@example.invalid/project"
-        )),
-    )]
-    .into_iter()
-    .collect();
-    let completed = match pending.answer(answers).unwrap() {
+    let answer = |url: &str| {
+        [(toha::Id::parse("remote").unwrap(), RawAnswer(json!(url)))]
+            .into_iter()
+            .collect()
+    };
+    let pending = match pending.answer(answer(
+        "https://example-user:example-credential@example.invalid/project",
+    )) {
+        Err(toha::AnswerError::Rejected {
+            pending,
+            rejections,
+        }) => {
+            let shown = format!("{rejections:?}");
+            assert!(shown.contains("with a password is not accepted"), "{shown}");
+            assert!(!shown.contains("example-credential"), "{shown}");
+            pending
+        }
+        _ => panic!("a git answer with a password is rejected"),
+    };
+    let completed = match pending
+        .answer(answer("https://example-user@example.invalid/project"))
+        .unwrap()
+    {
         Interview::Complete(c) => c,
         _ => panic!("completed"),
     };
     let plan = toha::Plan::build(&template, &completed, &target).unwrap();
     let values = serde_json::to_string(&plan.record.unwrap().answers).unwrap();
     assert!(!values.contains("example-user"));
-    assert!(!values.contains("example-credential"));
     assert!(values.contains("https://example.invalid/project"));
 }
 

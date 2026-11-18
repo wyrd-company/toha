@@ -170,7 +170,10 @@ description: >-
   configured `init.defaultBranch`, except that an unset or `master` value names
   `main`. An answer that is not empty after trimming whitespace is added as the
   remote `origin` with the fetch refspec `+refs/heads/*:refs/remotes/origin/*`;
-  an empty or `null` answer adds no remote. Before any write, the apply lists
+  an empty or `null` answer adds no remote. An answer that holds a password,
+  as in `https://user:password@host/repo.git`, is rejected like any invalid
+  answer, and its rejection names no part of it; a user name alone is
+  accepted. Before any write, the apply lists
   the remote's references, resolving a relative local path from the target as
   git does: a remote with any reference stops the apply, writes
   nothing, and tells the caller to clone the remote first and apply into the
