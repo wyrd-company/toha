@@ -16,7 +16,7 @@ assets:
 products:
   toha:
     name: toha
-    version: 0.4.2
+    version: 0.5.0
     docs-version: 0.1.2
     tagline: Generate projects and files from templates.
     blurb: >-

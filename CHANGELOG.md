@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.0
+
+### Breaking
+
+- A library caller's stop signal (`toha::stop`) now also ends a template load that is fetching an HTTPS document schema: the stop aborts the fetch and closes its connection within a fraction of a second (Toha checks the signal at least every 100 ms), even while the endpoint sends nothing. `LoadError` gains a `stopped` field that marks such a load. Update preparation reports it as `UpdateError::Stopped`, and `catalog::add` and `catalog::trust` report it as `CatalogError::Stopped`; `catalog::list` and the trust check at the end of `catalog::update` report a stopped load as not trusted, as they report any load failure. Without a stop signal, a schema fetch behaves as before. Limit: a name lookup can't be interrupted. A stop can arrive while a lookup is still pending: the schema host's, or the target's that curl looks up itself behind a `socks4://` or `socks5://` proxy. Then curl's resolver threads for it are detached, and behind such a proxy a `toha-schema-release` thread finishes releasing curl's handles. They hold no connection and end when the system resolver returns (wyrd-company/toha#81). With a libcurl that supports neither quick-exit option, the stop waits for the lookup (wyrd-company/toha#77).
+- Upgrade the public Rust API to jiff 1 and gix 0.90. Callers must replace jiff::Zoned with jiff::ZonedDateTime and use gix 0.90 types. Refresh dependencies and release tools, make the tagver build dependency optional for library consumers, and retain MiniJinja 2 rendering semantics; protect credentials in escaped Git error diagnostics.
+- Let a library caller stop a template fetch, a remote probe, an apply or an update with a stop signal (`toha::stop`) (wyrd-company/toha#66). A stopped call returns the new `Stopped` variant of its error and writes no further file, and a fetch held by a remote that sends nothing returns at once. Limit: gix cannot interrupt a waiting transfer, so the transfer a stop abandons keeps its Toha thread, gix's curl thread and the connection over HTTP(S), or its Toha thread and the `ssh` or `git-upload-pack` process over SSH and `file://`, until the remote answers or closes, or Git's `http.lowSpeedLimit` ends an HTTP(S) transfer; it then writes nothing more and removes its folder (wyrd-company/toha#78). `SourceError`, `ResolveError`, `CatalogError`, `UpdateError`, `ApplyError`, `MergeError`, `GitTargetError` and `RemoteState` gain a `Stopped` variant.
+
+### Fixes
+
+- Move environment variable reference from help to configuration documentation (wyrd-company/toha#65)
+- Fix update sessions repeating a batch when all its defaults are accepted (wyrd-company/toha#67).
+
 ## 0.4.2
 
 ### Features
