@@ -79,9 +79,8 @@ fn help_flags_work_without_a_home_directory() {
         }
         seen += 1;
     }
-    // toha; 8 commands; templates with 7 subcommands; skills with 2; snapshots
-    // with 2.
-    assert_eq!(seen, 1 + 6 + 7 + 2);
+    // toha; 7 root commands; templates with 7 subcommands; skills with 2.
+    assert_eq!(seen, 1 + 7 + 7 + 2);
 }
 
 #[test]

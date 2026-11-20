@@ -149,6 +149,7 @@ fn update_environment<'a>(
         source,
     }
 }
+mod events;
 mod region_safety;
 
 /// Set when the credential resolver is asked. Every remote in this consumer is
@@ -169,6 +170,8 @@ fn main() {
 
 fn run() {
     region_safety::verify();
+    events::verify();
+    events::fire_with_effective_registry_approval();
     update_null_replay_contract();
     update_start_replay_contract();
     update_start_end_contract();

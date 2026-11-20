@@ -1023,7 +1023,7 @@ fn render_inject_value(
         }
     }
 }
-fn plan_hook(
+pub(crate) fn plan_hook(
     hook: &crate::interview::RenderedHook,
     template: &Template,
 ) -> Result<PlannedHook, PlanError> {

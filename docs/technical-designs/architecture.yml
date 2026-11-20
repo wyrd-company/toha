@@ -67,6 +67,11 @@ proposed-design:
 
   module-map: >-
     `template` loads a template folder into a `Template`.
+    `events` prepares named coordination handlers from an application's recorded
+    inputs and executes a caller-authorized prepared dispatch through HookRunner.
+    The event command discovers the applied record and resolves recorded template
+    revisions before preparing the complete dispatch. Event handler declarations
+    and script bytes belong to the existing hook review surface.
     `interview` runs the interview state machine over a `Template`.
     `plan` turns a completed interview into a `Plan` of files, hooks, and
     messages. `apply` executes a `Plan` against the target directory.

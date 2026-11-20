@@ -305,3 +305,44 @@ Both values are Jinja text templates. Toha omits a message that renders to
 empty or whitespace-only text. A dry run does not show `after-apply`. To show
 a message during the interview instead, use a `message` node; see
 [Controlling the interview](/docs/toha/template-flow).
+
+## Coordinate applications with events
+
+Declare named `events` separately from apply `hooks`. A child generator can
+fire an event after changing a project so that another applied template can
+refresh a shared file:
+
+```yaml
+events:
+  component-added:
+    - script: scripts/refresh-index
+      args: ["{{ project_name }}"]
+      cwd: .
+```
+
+Run `toha event component-added PATH --dry-run` to validate the dispatch, then
+`toha event component-added PATH --trust` to execute it. `PATH` defaults to the
+current directory. Toha discovers the Git repository and reads its `.toha.json`
+(or `TOHA_RECORD` override), including applications at other subpaths. Each
+application loads its recorded template revision. Folder templates use their
+current files. An application without the named event contributes no handlers.
+An event with no handlers succeeds.
+
+Handlers use ordinary `run`, `script`, `args`, `cwd`, `each`, and `when` fields.
+They render from static template data, recorded raw answers, and recorded
+context. Context references in event fields are captured during apply under the
+same environment permission rules as other template fields. Template names are
+reconstructed from the recorded identity and loaded template. Computed answers
+and hook results are not replayed. There is no new
+interview. Working directories are relative to each application's target.
+Handlers do not run on ordinary apply, and dispatch does not run apply hooks.
+Event handlers do not capture results or tolerate failures.
+
+All handlers are prepared before any execute. Each participating template needs
+matching registry approval or explicit `--trust`; handlers and script bytes are
+part of its review digest. A dry run executes nothing. Execution follows record
+application order, then handler declaration order. The first failure stops the
+dispatch and leaves earlier script effects in place. Dispatch does not commit or
+refresh applied-record ownership. Review and commit resulting changes with your
+normal project workflow. A hook can invoke `toha event` explicitly; authors must
+avoid recursive event cycles.

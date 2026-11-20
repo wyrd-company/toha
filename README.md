@@ -32,6 +32,7 @@ then render file paths and contents with Jinja. Preview the plan before writing.
 - Reserve user-editable sections inside generated files.
 - Create empty directories with rendered paths and optional loops.
 - Use Git templates, short names, aliases, and hooks gated by trust.
+- Coordinate recorded applications with named template events (`toha event`).
 - Read embedded agent guidance with `toha skills`.
 
 Read the [Toha documentation](https://wyrd.foo/docs/toha) for detailed guides.
