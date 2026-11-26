@@ -349,10 +349,14 @@ proposed-design:
     orchestration library receives those paths and the caller's working
     directory explicitly. Existing TOHA_RECORD overrides, PATH executable lookup
     and Git global configuration (including HOME/XDG), along with the calling
-    thread's HTTPS credential resolver (`source::with_credential_resolver`) and
-    stop signal (`stop::with_stop_signal`), remain part of lower-level contracts.
+    thread's HTTPS credential resolver (`source::with_credential_resolver`),
+    SSH key (`source::with_ssh_key`) and stop signal (`stop::with_stop_signal`),
+    remain part of lower-level contracts. A scoped SSH key reaches gix as
+    in-memory `core.sshCommand` and `ssh.variant` values on the operation's own
+    repositories, after Toha has asked the agent whether it holds the key, so
+    concurrent operations never share a process-wide SSH setting.
     With a stop signal in scope, a fetch and the `git` question's remote probe
-    run on a Toha thread that carries the calling thread's resolver and signal,
+    run on a Toha thread that carries the calling thread's resolver, key and signal,
     because gix's blocking transports cannot be interrupted while they wait
     for a remote; the calling thread returns `Stopped` as soon as the signal
     fires. The abandoned transfer keeps that thread, and over HTTP(S) gix's
