@@ -50,40 +50,17 @@ fn git(root: &Path, args: &[&str]) -> Vec<u8> {
     )
 }
 
-#[test]
-#[ignore = "requires local OpenSSH sshd and ssh-keygen; run task test:network on Unix"]
-fn fetches_ssh_git_repository_with_key_authentication() {
-    let temp = TempDir::new().unwrap();
-    let root = temp.path().canonicalize().unwrap();
-    let source = root.join("source");
-    fs::create_dir(&source).unwrap();
-    git(&source, &["init", "-b", "main"]);
-    git(&source, &["config", "user.name", "Test"]);
-    git(&source, &["config", "user.email", "test@example.invalid"]);
-    fs::write(source.join("template.yml"), "name: sample\ninterview: []\n").unwrap();
-    fs::create_dir(source.join("template")).unwrap();
-    fs::write(source.join("template/.gitkeep"), "").unwrap();
-    git(&source, &["add", "."]);
-    git(&source, &["commit", "-m", "initial"]);
-    let expected_commit = String::from_utf8(git(&source, &["rev-parse", "HEAD"])).unwrap();
-    git(
-        &root,
-        &["clone", "--bare", source.to_str().unwrap(), "remote.git"],
-    );
-    for name in ["host", "client", "wrong-client"] {
-        checked(
-            Command::new("ssh-keygen")
-                .args(["-q", "-t", "ed25519", "-N", "", "-f"])
-                .arg(root.join(name)),
-        );
-    }
+/// Start a local `sshd` on an ephemeral port that accepts the keys in
+/// `authorized`, with the host key `root/host` that `root/known_hosts` trusts.
+/// Returns the server, its port and its log.
+fn sshd(root: &Path, authorized: &Path) -> (Server, u16, std::path::PathBuf) {
     // Reserve an ephemeral port, then release it immediately before sshd binds.
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let config = root.join("sshd.conf");
     fs::write(&config, format!(
-        "ListenAddress 127.0.0.1\nPort {port}\nHostKey {}/host\nPidFile {}/pid\nAuthorizedKeysFile {}/client.pub\nStrictModes no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nUsePAM no\nLogLevel VERBOSE\n",
-        root.display(), root.display(), root.display()
+        "ListenAddress 127.0.0.1\nPort {port}\nHostKey {}/host\nPidFile {}/pid\nAuthorizedKeysFile {}\nStrictModes no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nUsePAM no\nLogLevel VERBOSE\n",
+        root.display(), root.display(), authorized.display()
     )).unwrap();
     let host_key = fs::read_to_string(root.join("host.pub")).unwrap();
     fs::write(
@@ -91,11 +68,6 @@ fn fetches_ssh_git_repository_with_key_authentication() {
         format!("[127.0.0.1]:{port} {host_key}"),
     )
     .unwrap();
-    let ssh_config = root.join("ssh_config");
-    fs::write(&ssh_config, format!(
-        "Host *\n  BatchMode yes\n  IdentitiesOnly yes\n  IdentityAgent none\n  StrictHostKeyChecking yes\n  UserKnownHostsFile {}/known_hosts\n  GlobalKnownHostsFile /dev/null\n",
-        root.display()
-    )).unwrap();
     let log_path = root.join("sshd.log");
     let sshd = std::env::var_os("TOHA_TEST_SSHD").unwrap_or_else(|| "/usr/sbin/sshd".into());
     drop(listener);
@@ -129,6 +101,42 @@ fn fetches_ssh_git_repository_with_key_authentication() {
         "sshd did not start: {}",
         fs::read_to_string(&log_path).unwrap()
     );
+    (server, port, log_path)
+}
+
+#[test]
+#[ignore = "requires local OpenSSH sshd and ssh-keygen; run task test:network on Unix"]
+fn fetches_ssh_git_repository_with_key_authentication() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let source = root.join("source");
+    fs::create_dir(&source).unwrap();
+    git(&source, &["init", "-b", "main"]);
+    git(&source, &["config", "user.name", "Test"]);
+    git(&source, &["config", "user.email", "test@example.invalid"]);
+    fs::write(source.join("template.yml"), "name: sample\ninterview: []\n").unwrap();
+    fs::create_dir(source.join("template")).unwrap();
+    fs::write(source.join("template/.gitkeep"), "").unwrap();
+    git(&source, &["add", "."]);
+    git(&source, &["commit", "-m", "initial"]);
+    let expected_commit = String::from_utf8(git(&source, &["rev-parse", "HEAD"])).unwrap();
+    git(
+        &root,
+        &["clone", "--bare", source.to_str().unwrap(), "remote.git"],
+    );
+    for name in ["host", "client", "wrong-client"] {
+        checked(
+            Command::new("ssh-keygen")
+                .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+                .arg(root.join(name)),
+        );
+    }
+    let (server, port, log_path) = sshd(&root, &root.join("client.pub"));
+    let ssh_config = root.join("ssh_config");
+    fs::write(&ssh_config, format!(
+        "Host *\n  BatchMode yes\n  IdentitiesOnly yes\n  IdentityAgent none\n  StrictHostKeyChecking yes\n  UserKnownHostsFile {}/known_hosts\n  GlobalKnownHostsFile /dev/null\n",
+        root.display()
+    )).unwrap();
     let user = String::from_utf8(checked(Command::new("id").arg("-un"))).unwrap();
     let url = format!(
         "ssh://{}@127.0.0.1:{port}{}/remote.git",
@@ -208,3 +216,4 @@ fn ssh_fetch_worker() {
         );
     }
 }
+
