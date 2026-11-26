@@ -41,7 +41,7 @@ jobs:
       - name: Local Unix SSH Git transport check
         if: runner.os != 'Windows'
         shell: bash
-        run: cargo test --locked --test source_ssh fetches_ssh_git_repository_with_key_authentication -- --ignored
+        run: cargo test --locked --test source_ssh -- --ignored --exact fetches_ssh_git_repository_with_key_authentication an_ssh_key_scope_offers_only_its_key
       - name: SSH Git transport coverage is unavailable on Windows
         if: runner.os == 'Windows'
         run: echo "SSH Git transport fixture is Unix-only; Windows SSH coverage is skipped."
@@ -64,7 +64,7 @@ jobs:
       - name: Local HTTPS Git transport check
         run: cargo test --locked --test source_https fetches_https_git_repository
       - name: Local Unix SSH Git transport check
-        run: cargo test --locked --test source_ssh fetches_ssh_git_repository_with_key_authentication -- --ignored
+        run: cargo test --locked --test source_ssh -- --ignored --exact fetches_ssh_git_repository_with_key_authentication an_ssh_key_scope_offers_only_its_key
       - name: Check consumer dependency isolation
         run: python3 scripts/check-consumer-dependencies.py
       - name: Locked public library consumer without CLI features
