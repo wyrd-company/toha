@@ -259,14 +259,33 @@ impl Held {
     /// tries the agent's keys among them in the agent's order, and takes the
     /// first value given for the other two options.
     fn confirm(&self, offer: &Offer) -> Result<(), String> {
-        let host = self.url.host().unwrap_or_default();
+        use gix::url::ArgumentSafety::{Absent, Dangerous, Usable};
+        // As gix does before it runs `ssh`: a value that starts with `-`
+        // would be read as an option.
+        let dangerous = |part: &str, value: &str| {
+            format!(
+                "the SSH {part} {value:?} for the key {} could be read as an option",
+                self.key
+            )
+        };
+        let host = match self.url.host_as_argument() {
+            Usable(host) => host,
+            Dangerous(host) => return Err(dangerous("host", host)),
+            Absent => {
+                return Err(format!(
+                    "the SSH remote for the key {} has no host",
+                    self.key
+                ));
+            }
+        };
         let mut args = vec!["-G".to_owned()];
         if let Some(port) = self.url.port {
             args.extend(["-p".to_owned(), port.to_string()]);
         }
-        args.push(match self.url.user() {
-            Some(user) => format!("{user}@{host}"),
-            None => host.to_owned(),
+        args.push(match self.url.user_as_argument() {
+            Usable(user) => format!("{user}@{host}"),
+            Dangerous(user) => return Err(dangerous("user", user)),
+            Absent => host.to_owned(),
         });
         let output = std::process::Command::new("sh")
             .arg("-c")
@@ -738,5 +757,24 @@ mod tests {
             conflict("user git\nidentitiesonly yes\n", &offer).as_deref(),
             Some("does not take Toha's OpenSSH options")
         );
+    }
+
+    #[test]
+    fn a_remote_that_could_be_read_as_an_option_is_not_passed_to_ssh() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = gix::init_bare(dir.path()).unwrap();
+        for (url, part) in [
+            ("ssh://-oProxyCommand=false@host.invalid/r.git", "user"),
+            ("ssh://-oProxyCommand=false/r.git", "host"),
+        ] {
+            let mut held = held("/sample/agent.sock");
+            held.url = gix::url::parse(gix::bstr::BStr::new(url)).unwrap();
+            let offer = held.prepare(&repo).unwrap();
+            let error = held.confirm(&offer).unwrap_err();
+            assert!(
+                error.starts_with(&format!("the SSH {part} \"-oProxyCommand=false\"")),
+                "{error}"
+            );
+        }
     }
 }
