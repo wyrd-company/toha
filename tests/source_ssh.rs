@@ -46,7 +46,7 @@ fn git(root: &Path, args: &[&str]) -> Vec<u8> {
             .args(args)
             .current_dir(root)
             .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", root.join("empty.gitconfig")),
+            .env("GIT_CONFIG_GLOBAL", root.join("global.gitconfig")),
     )
 }
 
@@ -150,10 +150,12 @@ fn fetches_ssh_git_repository_with_key_authentication() {
             .args(["--ignored", "--exact", "ssh_fetch_worker", "--nocapture"])
             .env("TOHA_SSH_FIXTURE_ROOT", &root)
             .env("TOHA_SSH_FIXTURE_URL", &url)
+            .env("TOHA_SSH_FIXTURE_PORT", port.to_string())
+            .env("TOHA_SSH_FIXTURE_USER", user.trim())
             .env("TOHA_SSH_FIXTURE_KEY", key)
             .env("TOHA_SSH_EXPECTED_COMMIT", expected_commit.trim())
             .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", root.join("empty.gitconfig"))
+            .env("GIT_CONFIG_GLOBAL", root.join("global.gitconfig"))
             .env("GIT_SSH_VARIANT", "ssh")
             .env(
                 "GIT_SSH_COMMAND",
@@ -285,9 +287,11 @@ fn an_ssh_key_scope_offers_only_its_key() {
     fs::write(root.join("authorized_keys"), authorized).unwrap();
     let (server, port, log_path) = sshd(&root, &root.join("authorized_keys"));
     // Agent keys only: no IdentitiesOnly, so a client offers every agent key.
+    // The host `configured` names `alpha` as its identity.
     let ssh_config = root.join("ssh_config");
     fs::write(&ssh_config, format!(
-        "Host *\n  BatchMode yes\n  StrictHostKeyChecking yes\n  UserKnownHostsFile {}/known_hosts\n  GlobalKnownHostsFile /dev/null\n",
+        "Host *\n  BatchMode yes\n  StrictHostKeyChecking yes\n  UserKnownHostsFile {0}/known_hosts\n  GlobalKnownHostsFile /dev/null\n\
+         Host configured\n  HostName 127.0.0.1\n  IdentityFile {0}/alpha.pub\n",
         root.display()
     )).unwrap();
     let socket = root.join("agent.sock");
@@ -316,6 +320,15 @@ fn an_ssh_key_scope_offers_only_its_key() {
     );
     let user = String::from_utf8(checked(Command::new("id").arg("-un"))).unwrap();
     let url = format!("ssh://{}@127.0.0.1:{port}/any/path.git", user.trim());
+    // Git rewrites `https://rewritten.invalid/` to the SSH remote.
+    fs::write(
+        root.join("global.gitconfig"),
+        format!(
+            "[url \"ssh://{}@127.0.0.1:{port}/\"]\n\tinsteadOf = https://rewritten.invalid/\n",
+            user.trim()
+        ),
+    )
+    .unwrap();
     // `SSH_AUTH_SOCK` names the agent, then a key names it while
     // `SSH_AUTH_SOCK` names none.
     for mode in ["auth-sock", "named-agent"] {
@@ -330,11 +343,13 @@ fn an_ssh_key_scope_offers_only_its_key() {
             ])
             .env("TOHA_SSH_FIXTURE_ROOT", &root)
             .env("TOHA_SSH_FIXTURE_URL", &url)
+            .env("TOHA_SSH_FIXTURE_PORT", port.to_string())
+            .env("TOHA_SSH_FIXTURE_USER", user.trim())
             .env("TOHA_SSH_FIXTURE_MODE", mode)
             .env("TOHA_SSH_ALPHA_COMMIT", &alpha)
             .env("TOHA_SSH_BETA_COMMIT", &beta)
             .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", root.join("empty.gitconfig"))
+            .env("GIT_CONFIG_GLOBAL", root.join("global.gitconfig"))
             .env(
                 "GIT_SSH_COMMAND",
                 format!("ssh -F '{}'", ssh_config.display()),
@@ -395,15 +410,16 @@ fn ssh_key_scope_worker() {
         }
     };
     let checkouts = TempDir::new_in(&root).unwrap();
-    let fetched = |name: &str, reference: Option<&str>| {
+    let fetched_from = |url: &str, name: &str, reference: Option<&str>| {
         let address = Address::Git {
-            repo: url.clone(),
+            repo: url.to_owned(),
             reference: reference.map(str::to_owned),
             path: None,
         };
         let dest = checkouts.path().join(name);
         fetch(&address, &dest).map(|fetched| fetched.commit)
     };
+    let fetched = |name: &str, reference: Option<&str>| fetched_from(&url, name, reference);
 
     if !named_agent {
         // Without a key, the client offers every agent key and signs in with
@@ -442,11 +458,47 @@ fn ssh_key_scope_worker() {
     });
     assert_eq!(stoppable.unwrap(), beta);
 
+    // A URL that Git rewrites to the SSH remote uses the key.
+    let rewritten = "https://rewritten.invalid/any/path.git";
+    let via_rewrite = with_ssh_key(key("beta"), || fetched_from(rewritten, "rewritten", None));
+    assert_eq!(via_rewrite.unwrap(), beta);
+    assert_eq!(
+        with_ssh_key(key("empty"), || probe(rewritten)),
+        RemoteState::Empty
+    );
+
+    // An SSH configuration that names another identity fails the connection
+    // before it signs in, naming the setting and the key.
+    let port = std::env::var("TOHA_SSH_FIXTURE_PORT").unwrap();
+    let user = std::env::var("TOHA_SSH_FIXTURE_USER").unwrap();
+    let configured = format!("ssh://{user}@configured:{port}/any/path.git");
+    let conflicting = format!(
+        "sets `identityfile {}/alpha.pub`, so the connection would not offer only the key {}",
+        root.display(),
+        key("beta")
+    );
+    let failed = with_ssh_key(key("beta"), || {
+        fetched_from(&configured, "configured", None)
+    });
+    let message = failed.unwrap_err().to_string();
+    assert!(message.contains(&conflicting), "{message}");
+    match with_ssh_key(key("beta"), || probe(&configured)) {
+        RemoteState::Unreachable(message) => {
+            assert!(message.contains(&conflicting), "{message}")
+        }
+        other => panic!("the probe with a configured identity was {other:?}"),
+    }
+
     // A key the agent does not hold fails, naming the key, and no other key
-    // is tried.
+    // is tried, also through a rewrite.
     let absent = key("absent");
     let named = format!("does not offer the key {absent}");
     let failed = with_ssh_key(absent.clone(), || fetched("absent", None));
+    let message = failed.unwrap_err().to_string();
+    assert!(message.contains(&named), "{message}");
+    let failed = with_ssh_key(absent.clone(), || {
+        fetched_from(rewritten, "absent-rewritten", None)
+    });
     let message = failed.unwrap_err().to_string();
     assert!(message.contains(&named), "{message}");
     match with_ssh_key(absent, || probe(&url)) {

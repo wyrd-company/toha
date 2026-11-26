@@ -253,12 +253,25 @@ git fetch failed: the SSH agent at /run/agent.sock does not offer the key ssh-ed
 Otherwise the connection runs the configured SSH program (`core.sshCommand`,
 `GIT_SSH_COMMAND` or `GIT_SSH`, else `ssh` on `PATH`) with the OpenSSH options
 `IdentitiesOnly=yes`, `IdentityFile` naming a temporary file that holds the
-public key, and `IdentityAgent` naming the agent socket. The program must
-therefore accept OpenSSH options; `ssh.variant` is treated as `ssh`. The rest
-of the SSH configuration still applies, so an `IdentityFile` that the SSH
-configuration or the configured command names itself, such as `ssh -i`, is
-also offered. Scoped keys need a Unix agent socket; on Windows the connection
-fails.
+public key, and `IdentityAgent` naming the agent socket. Toha decides whether
+a remote is SSH after Git's `url.<base>.insteadOf` rewrites, so an HTTPS URL
+rewritten to SSH uses the key too.
+
+The rest of the SSH configuration still applies, and OpenSSH would also offer
+an identity it names. So before it connects, Toha runs the same command with
+`ssh -G`, which prints the configuration for the remote's host. When that
+configuration names another `IdentityFile`, as `ssh -i` or an SSH config file
+can, or sets `IdentitiesOnly` or `IdentityAgent` to something else, the
+connection fails before it signs in, with a message that names the setting
+and the key:
+
+```text
+git fetch failed: the SSH configuration for git.example.com sets `identityfile ~/.ssh/id_work`, so the connection would not offer only the key ssh-ed25519 SHA256:nQpreSffQ9djmqcCYLK2VAzke74gO1kFga1ppEfjsaI
+```
+
+The program must therefore accept OpenSSH options, including `-G`;
+`ssh.variant` is treated as `ssh`. Scoped keys need a Unix agent socket; on
+Windows the connection fails.
 
 ## Stop a fetch or an apply
 

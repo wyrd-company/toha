@@ -115,8 +115,15 @@ thread_local! {
 /// tried. Otherwise the connection runs the configured `ssh` program
 /// (`core.sshCommand`, `GIT_SSH_COMMAND` or `GIT_SSH`, else `ssh` on `PATH`)
 /// with the OpenSSH options `IdentitiesOnly=yes`, `IdentityFile` naming a
-/// file that holds the public key, and `IdentityAgent` naming the agent, so
-/// that the program must accept OpenSSH options.
+/// file that holds the public key, and `IdentityAgent` naming the agent.
+/// Whether a remote is SSH is decided after Git's `url.<base>.insteadOf`
+/// rewrites.
+///
+/// Before it connects, Toha runs that command with `ssh -G`. When the
+/// configuration it prints for the remote names another `IdentityFile`, or
+/// sets `IdentitiesOnly` or `IdentityAgent` otherwise, the connection fails
+/// with an error that names the setting and the key. The program must
+/// therefore accept OpenSSH options, including `-G`.
 pub fn with_ssh_key<T>(key: SshKey, operation: impl FnOnce() -> T) -> T {
     struct Restore(Option<SshKey>);
     impl Drop for Restore {
@@ -134,18 +141,27 @@ pub(crate) fn current_ssh_key() -> Option<SshKey> {
     KEY.with(|current| current.borrow().clone())
 }
 
-/// The scoped key that a connection to `url` must offer, once its agent has
-/// shown that it holds it, or `None` when `url` is not an SSH remote or no
-/// key is in scope.
-pub(crate) fn for_remote(url: &str) -> Result<Option<Held>, String> {
+/// Whether the calling thread's operation has a key.
+pub(crate) fn scoped() -> bool {
+    KEY.with(|current| current.borrow().is_some())
+}
+
+/// The scoped key that `repo`'s connections to `url` must offer, once its
+/// agent has shown that it holds it, or `None` when no key is in scope or
+/// `url` is not an SSH remote once gix has applied the `url.<base>.insteadOf`
+/// rewrites `repo` configures.
+pub(crate) fn for_remote(repo: &gix::Repository, url: &str) -> Result<Option<Held>, String> {
     let Some(key) = current_ssh_key() else {
         return Ok(None);
     };
-    let ssh = gix::url::parse(gix::bstr::BStr::new(url))
-        .is_ok_and(|url| url.scheme == gix::url::Scheme::Ssh);
-    if !ssh {
+    let remote = repo.remote_at(url).map_err(|e| format!("{e:#}"))?;
+    let Some(url) = remote
+        .url(gix::remote::Direction::Fetch)
+        .filter(|url| url.scheme == gix::url::Scheme::Ssh)
+        .cloned()
+    else {
         return Ok(None);
-    }
+    };
     let agent = match &key.agent {
         Some(agent) => agent.clone(),
         None => std::env::var_os("SSH_AUTH_SOCK")
@@ -154,7 +170,7 @@ pub(crate) fn for_remote(url: &str) -> Result<Option<Held>, String> {
             .ok_or_else(|| format!("no SSH agent for the key {key}: SSH_AUTH_SOCK is not set"))?,
     };
     match agent::holds(&agent, &key.blob) {
-        Ok(true) => Ok(Some(Held { key, agent })),
+        Ok(true) => Ok(Some(Held { key, agent, url })),
         Ok(false) => Err(format!(
             "the SSH agent at {} does not offer the key {key}",
             agent.display()
@@ -166,10 +182,11 @@ pub(crate) fn for_remote(url: &str) -> Result<Option<Held>, String> {
     }
 }
 
-/// A scoped key that its agent holds.
+/// A scoped key that its agent holds, and the SSH remote it is for.
 pub(crate) struct Held {
     key: SshKey,
     agent: PathBuf,
+    url: gix::Url,
 }
 
 /// The in-memory configuration that makes a repository's SSH connections
@@ -177,12 +194,23 @@ pub(crate) struct Held {
 /// those connections.
 pub(crate) struct Offer {
     pub(crate) overrides: Vec<String>,
+    command: String,
+    file: String,
+    agent: String,
     _file: tempfile::NamedTempFile,
 }
 
 impl Held {
-    /// The configuration for `repo`, keeping the SSH command it configures.
+    /// The configuration for `repo`, keeping the SSH command it configures,
+    /// once `ssh -G` has shown that the remote's SSH configuration adds no
+    /// other identity and keeps the options.
     pub(crate) fn offer(&self, repo: &gix::Repository) -> Result<Offer, String> {
+        let offer = self.prepare(repo)?;
+        self.confirm(&offer)?;
+        Ok(offer)
+    }
+
+    fn prepare(&self, repo: &gix::Repository) -> Result<Offer, String> {
         let configured = repo.ssh_connect_options().map_err(|e| format!("{e:#}"))?;
         let mut file = tempfile::Builder::new()
             .prefix("toha-ssh-key")
@@ -206,19 +234,85 @@ impl Held {
             }
             None => "ssh".to_owned(),
         };
+        let key_file = option_path(file.path())?;
+        let agent = option_path(&self.agent)?;
         let command = format!(
             "{program} -o IdentitiesOnly=yes -o {} -o {}",
-            quoted(&format!("IdentityFile={}", option_path(file.path())?)),
-            quoted(&format!("IdentityAgent={}", option_path(&self.agent)?)),
+            quoted(&format!("IdentityFile={key_file}")),
+            quoted(&format!("IdentityAgent={agent}")),
         );
         Ok(Offer {
             overrides: vec![
                 format!("core.sshCommand={command}"),
                 "ssh.variant=ssh".to_owned(),
             ],
+            command,
+            file: key_file,
+            agent,
             _file: file,
         })
     }
+
+    /// Fail unless the configuration `ssh -G` prints for the remote, through
+    /// the offer's command, names only the offer's identity and agent with
+    /// `IdentitiesOnly`. OpenSSH adds every `IdentityFile` it is given and
+    /// tries the agent's keys among them in the agent's order, and takes the
+    /// first value given for the other two options.
+    fn confirm(&self, offer: &Offer) -> Result<(), String> {
+        let host = self.url.host().unwrap_or_default();
+        let mut args = vec!["-G".to_owned()];
+        if let Some(port) = self.url.port {
+            args.extend(["-p".to_owned(), port.to_string()]);
+        }
+        args.push(match self.url.user() {
+            Some(user) => format!("{user}@{host}"),
+            None => host.to_owned(),
+        });
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("{} \"$@\"", offer.command))
+            .arg("ssh")
+            .args(&args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|e| format!("could not run ssh -G for the key {}: {e}", self.key))?;
+        if !output.status.success() {
+            return Err(format!(
+                "ssh -G for the key {} failed: {}",
+                self.key,
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        let printed = String::from_utf8_lossy(&output.stdout);
+        conflict(&printed, offer).map_or(Ok(()), |problem| {
+            Err(format!(
+                "the SSH configuration for {host} {problem}, so the connection would not \
+                 offer only the key {}",
+                self.key
+            ))
+        })
+    }
+}
+
+/// What in `printed`, the output of `ssh -G`, keeps a connection from
+/// offering only `offer`'s identity from `offer`'s agent.
+fn conflict(printed: &str, offer: &Offer) -> Option<String> {
+    let expected = [
+        "identitiesonly yes".to_owned(),
+        format!("identityagent {}", offer.agent),
+        format!("identityfile {}", offer.file),
+    ];
+    let mut found = 0;
+    for line in printed.lines() {
+        let name = line.split_once(' ').map_or(line, |(name, _)| name);
+        if ["identitiesonly", "identityagent", "identityfile"].contains(&name) {
+            if !expected.iter().any(|expected| expected == line) {
+                return Some(format!("sets `{line}`"));
+            }
+            found += 1;
+        }
+    }
+    (found < expected.len()).then(|| "does not take Toha's OpenSSH options".to_owned())
 }
 
 /// `path` as an OpenSSH option value, where `%` starts a token.
@@ -381,8 +475,24 @@ mod tests {
         assert!(current_ssh_key().is_none());
     }
 
+    /// A repository whose configuration rewrites `https://rewritten.invalid/`
+    /// to an SSH remote.
+    fn repository() -> (tempfile::TempDir, gix::Repository) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut repo = gix::init_bare(dir.path()).unwrap();
+        repo.config_snapshot_mut()
+            .append_config(
+                ["url.ssh://git@host.invalid/.insteadOf=https://rewritten.invalid/"],
+                gix::config::Source::Api,
+            )
+            .unwrap();
+        (dir, repo)
+    }
+
     #[test]
     fn only_ssh_remotes_use_the_key() {
+        let (_dir, repo) = repository();
+        let for_remote = |url| for_remote(&repo, url);
         // The agent does not exist, so a remote that used the key would fail.
         let key = sample().with_agent("/nonexistent/agent.sock");
         with_ssh_key(key, || {
@@ -393,7 +503,11 @@ mod tests {
             ] {
                 assert!(for_remote(url).unwrap().is_none(), "{url}");
             }
-            for url in ["ssh://git@host.invalid/r.git", "git@host.invalid:o/r.git"] {
+            for url in [
+                "ssh://git@host.invalid/r.git",
+                "git@host.invalid:o/r.git",
+                "https://rewritten.invalid/r.git",
+            ] {
                 let error = for_remote(url).err().unwrap();
                 assert!(error.contains(FINGERPRINT), "{error}");
             }
@@ -489,10 +603,14 @@ mod tests {
     fn an_agent_that_holds_the_key_lets_the_connection_offer_it() {
         let dir = tempfile::tempdir().unwrap();
         let (socket, served) = listing_agent(dir.path(), &[b"other", &sample().blob]);
+        let (_dir, repo) = repository();
         let held = with_ssh_key(sample().with_agent(&socket), || {
-            for_remote("ssh://git@host.invalid/r.git").unwrap().unwrap()
+            for_remote(&repo, "https://rewritten.invalid/r.git")
+                .unwrap()
+                .unwrap()
         });
         assert_eq!(held.agent, socket);
+        assert_eq!(held.url.to_bstring(), "ssh://git@host.invalid/r.git");
         assert_eq!(served.join().unwrap(), [0, 0, 0, 1, 11]);
     }
 
@@ -501,8 +619,11 @@ mod tests {
     fn an_agent_without_the_key_fails_the_connection_naming_it() {
         let dir = tempfile::tempdir().unwrap();
         let (socket, served) = listing_agent(dir.path(), &[b"other"]);
+        let (_dir, repo) = repository();
         let error = with_ssh_key(sample().with_agent(&socket), || {
-            for_remote("ssh://git@host.invalid/r.git").err().unwrap()
+            for_remote(&repo, "ssh://git@host.invalid/r.git")
+                .err()
+                .unwrap()
         });
         served.join().unwrap();
         assert_eq!(
@@ -516,8 +637,11 @@ mod tests {
 
     #[test]
     fn an_unreachable_agent_fails_the_connection_naming_the_key() {
+        let (_dir, repo) = repository();
         let error = with_ssh_key(sample().with_agent("/nonexistent/agent.sock"), || {
-            for_remote("ssh://git@host.invalid/r.git").err().unwrap()
+            for_remote(&repo, "ssh://git@host.invalid/r.git")
+                .err()
+                .unwrap()
         });
         let expected = format!(
             "could not ask the SSH agent at /nonexistent/agent.sock for the key ssh-ed25519 {FINGERPRINT}: "
@@ -540,6 +664,7 @@ mod tests {
         Held {
             key: sample(),
             agent: agent.into(),
+            url: gix::url::parse(gix::bstr::BStr::new("ssh://git@host.invalid/r.git")).unwrap(),
         }
     }
 
@@ -551,7 +676,7 @@ mod tests {
             .set_raw_value("core.sshCommand", "ssh -F '/sample/ssh config'")
             .unwrap();
         let held = held("/sample/it's 100%/agent.sock");
-        let offer = held.offer(&repo).unwrap();
+        let offer = held.prepare(&repo).unwrap();
         let file = offer._file.path().to_str().unwrap().to_owned();
         assert_eq!(
             std::fs::read_to_string(&file).unwrap(),
@@ -576,11 +701,42 @@ mod tests {
         repo.config_snapshot_mut()
             .set_raw_value("core.sshCommand", "")
             .unwrap();
-        let offer = held("/sample/agent.sock").offer(&repo).unwrap();
+        let offer = held("/sample/agent.sock").prepare(&repo).unwrap();
         let (command, _) = applied(&mut repo, &offer);
         assert!(
             command.starts_with("ssh -o IdentitiesOnly=yes "),
             "{command}"
+        );
+    }
+
+    #[test]
+    fn only_the_offer_s_identity_agent_and_identities_only_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = gix::init_bare(dir.path()).unwrap();
+        let offer = held("/sample/agent.sock").prepare(&repo).unwrap();
+        let ours = format!(
+            "user git\nidentitiesonly yes\nidentityagent /sample/agent.sock\n\
+             identityfile {}\nport 22\n",
+            offer.file
+        );
+        assert_eq!(conflict(&ours, &offer), None);
+        for (extra, problem) in [
+            (
+                "identityfile ~/.ssh/other",
+                "sets `identityfile ~/.ssh/other`",
+            ),
+            ("identitiesonly no", "sets `identitiesonly no`"),
+            (
+                "identityagent /other.sock",
+                "sets `identityagent /other.sock`",
+            ),
+        ] {
+            let printed = format!("{extra}\n{ours}");
+            assert_eq!(conflict(&printed, &offer).as_deref(), Some(problem));
+        }
+        assert_eq!(
+            conflict("user git\nidentitiesonly yes\n", &offer).as_deref(),
+            Some("does not take Toha's OpenSSH options")
         );
     }
 }

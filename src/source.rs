@@ -538,7 +538,6 @@ fn clone_into(
     } else {
         None
     };
-    let ssh_key = ssh_key::for_remote(repo).map_err(SourceError::Git)?;
     let mut native_roots = None;
     let supplied = Supplied::default();
     let attach = supplied.clone();
@@ -547,18 +546,22 @@ fn clone_into(
         .configure_connection(move |connection| {
             prepare_connection(connection, &mut native_roots, &attach)
         });
-    // The clone's connections take their SSH command from the configuration of
-    // the repository `prepare_clone` has just created. The offer adds the key's
-    // options to the command configured there.
-    let _offer = match &ssh_key {
-        Some(held) => {
-            let created = gix::open_opts(dest, clone_open_options())
-                .map_err(|e| git_error(e, repo, &supplied))?;
-            let offer = held.offer(&created).map_err(SourceError::Git)?;
-            clone = clone.with_in_memory_config_overrides(offer.overrides.clone());
-            Some(offer)
+    // The clone's connections take their remote's URL and SSH command from the
+    // configuration of the repository `prepare_clone` has just created. The
+    // offer adds the key's options to the command configured there.
+    let _offer = if ssh_key::scoped() {
+        let created = gix::open_opts(dest, clone_open_options())
+            .map_err(|e| git_error(e, repo, &supplied))?;
+        match ssh_key::for_remote(&created, repo).map_err(SourceError::Git)? {
+            Some(held) => {
+                let offer = held.offer(&created).map_err(SourceError::Git)?;
+                clone = clone.with_in_memory_config_overrides(offer.overrides.clone());
+                Some(offer)
+            }
+            None => None,
         }
-        None => None,
+    } else {
+        None
     };
     if credentials::resolving() {
         // gix retries a clone whose remote has a `refs/heads/HEAD` branch on a
