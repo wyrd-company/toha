@@ -172,12 +172,12 @@ pub(crate) fn with_interrupt<T>(operation: impl FnOnce(&AtomicBool) -> T) -> T {
 ///
 /// Without a signal, `work` runs on the calling thread with an interrupt flag
 /// that never fires, as before the signal existed. With one, `work` runs on a
-/// new thread, under the calling thread's signal and credential resolver, with
-/// the signal as its interrupt flag. The caller returns `Err(Stopped)` as
-/// soon as the signal fires, even when the thread is blocked on a read. That
-/// thread ends at gix's next interrupt check, or when its transfer fails, and
-/// drops what `work` returns; [`with_stop_signal`] states when that happens
-/// for each transport. A panic in `work` resumes on the caller.
+/// new thread, under the calling thread's signal, credential resolver and SSH
+/// key, with the signal as its interrupt flag. The caller returns
+/// `Err(Stopped)` as soon as the signal fires, even when the thread is blocked
+/// on a read. That thread ends at gix's next interrupt check, or when its
+/// transfer fails, and drops what `work` returns; [`with_stop_signal`] states
+/// when that happens for each transport. A panic in `work` resumes on the caller.
 pub(crate) fn run<T: Send + 'static>(
     work: impl FnOnce(&AtomicBool) -> T + Send + 'static,
 ) -> Result<T, Stopped> {
@@ -188,6 +188,7 @@ pub(crate) fn run<T: Send + 'static>(
         return Err(Stopped);
     }
     let resolver = crate::source::current_resolver();
+    let ssh_key = crate::source::current_ssh_key();
     let (sender, receiver) = mpsc::sync_channel(1);
     let worker = signal.clone();
     std::thread::Builder::new()
@@ -198,9 +199,13 @@ pub(crate) fn run<T: Send + 'static>(
                     panic::catch_unwind(AssertUnwindSafe(|| work(&worker.0.stopped)))
                 })
             };
-            let outcome = match resolver {
-                Some(resolver) => crate::source::with_credential_resolver(resolver, scoped),
+            let keyed = || match ssh_key {
+                Some(key) => crate::source::with_ssh_key(key, scoped),
                 None => scoped(),
+            };
+            let outcome = match resolver {
+                Some(resolver) => crate::source::with_credential_resolver(resolver, keyed),
+                None => keyed(),
             };
             // A caller that already returned has dropped the receiver; the
             // outcome, and any folder it owns, is dropped here.
