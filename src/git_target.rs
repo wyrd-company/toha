@@ -316,7 +316,18 @@ fn list_refs(url: &str, supplied: &crate::source::Supplied) -> Result<usize, Str
     }
     // A remote needs a repository to belong to; a throwaway bare one holds it.
     let scratch = tempfile::tempdir().map_err(|e| format!("{e:#}"))?;
-    let repo = gix::init_bare(scratch.path()).map_err(|e| format!("{e:#}"))?;
+    let mut repo = gix::init_bare(scratch.path()).map_err(|e| format!("{e:#}"))?;
+    let ssh_key = crate::source::ssh_key_for_remote(&repo, url)?;
+    let _offer = match &ssh_key {
+        Some(held) => {
+            let offer = held.offer(&repo)?;
+            repo.config_snapshot_mut()
+                .append_config(&offer.overrides, gix::config::Source::Api)
+                .map_err(|e| format!("{e:#}"))?;
+            Some(offer)
+        }
+        None => None,
+    };
     let remote = repo
         .remote_at(url)
         .map_err(|e| format!("{e:#}"))?

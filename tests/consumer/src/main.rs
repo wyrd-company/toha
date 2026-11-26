@@ -152,7 +152,8 @@ fn update_environment<'a>(
 mod region_safety;
 
 /// Set when the credential resolver is asked. Every remote in this consumer is
-/// local, and only HTTPS remotes consult the resolver.
+/// local: only HTTPS remotes consult the resolver, and only SSH remotes use
+/// the scoped SSH key.
 static RESOLVER_ASKED: AtomicBool = AtomicBool::new(false);
 
 fn main() {
@@ -160,10 +161,18 @@ fn main() {
         RESOLVER_ASKED.store(true, Ordering::Relaxed);
         Ok(None)
     });
-    toha::source::with_credential_resolver(resolver, run);
+    // The agent does not exist, so an operation that used the key would fail.
+    let key = toha::source::SshKey::parse(
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEI0dunGv3q95XjI4gMbLOj6Jyq9dSS8WXB1W2Df4u6U",
+    )
+    .unwrap()
+    .with_agent("/nonexistent/agent.sock");
+    toha::source::with_ssh_key(key, || {
+        toha::source::with_credential_resolver(resolver, run)
+    });
     assert!(!RESOLVER_ASKED.load(Ordering::Relaxed));
     println!(
-        "external consumer passed: replay, Send, document refresh, runner, preview, update, parts, pins and credentials"
+        "external consumer passed: replay, Send, document refresh, runner, preview, update, parts, pins, credentials and SSH key"
     );
 }
 

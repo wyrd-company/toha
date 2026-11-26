@@ -211,6 +211,68 @@ answer is rejected, and `git_target::preflight` and `git_target::initialize`
 return `GitTargetError::RemotePassword`, before anything connects or writes.
 `source::has_password` tells whether a URL holds one.
 
+## Choose the SSH key for SSH remotes
+
+Without a choice, Toha's SSH remotes run the configured `ssh` program, which
+offers every key of the agent at `SSH_AUTH_SOCK`. The Git host signs the
+client in with the first key it recognises, even one that can't reach the
+repository. To make one operation offer only one key of the agent, run it
+inside `with_ssh_key`:
+
+```rust
+use toha::source::{SshKey, with_ssh_key};
+
+// The public key in authorized-keys form, as `ssh-add -L` prints it.
+let key = SshKey::parse("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA...")?;
+let resolved = with_ssh_key(key, || {
+    toha::resolve::resolve_template(&address, &config, &registry, &paths, &cwd)
+});
+```
+
+The key applies to every SSH connection the operation opens on the calling
+thread: template fetches, commit lookups and the `git` question's remote
+probe. It stops when the operation returns or unwinds. Concurrent operations
+on other threads each use their own key, or none. HTTPS and local remotes
+never use it. It combines with `with_credential_resolver` and
+`with_stop_signal` in any order.
+
+`SshKey::parse` takes the key type, the base64 key and an optional comment.
+The key is picked from the agent at `SSH_AUTH_SOCK`, read when the operation
+connects; `SshKey::with_agent(socket)` names another agent socket instead.
+
+Before each SSH connection, Toha asks the agent for its keys. When the agent
+doesn't hold the key, or can't be reached, the connection fails without
+trying any other key. A fetch returns `SourceError::Git` and the `git`
+question's probe reports `RemoteState::Unreachable`, with a message that names
+the key by its type and fingerprint, as `ssh-keygen -l` prints it:
+
+```text
+git fetch failed: the SSH agent at /run/agent.sock does not offer the key ssh-ed25519 SHA256:nQpreSffQ9djmqcCYLK2VAzke74gO1kFga1ppEfjsaI
+```
+
+Otherwise the connection runs the configured SSH program (`core.sshCommand`,
+`GIT_SSH_COMMAND` or `GIT_SSH`, else `ssh` on `PATH`) with the OpenSSH options
+`IdentitiesOnly=yes`, `IdentityFile` naming a temporary file that holds the
+public key, and `IdentityAgent` naming the agent socket. Toha decides whether
+a remote is SSH after Git's `url.<base>.insteadOf` rewrites, so an HTTPS URL
+rewritten to SSH uses the key too.
+
+The rest of the SSH configuration still applies, and OpenSSH would also offer
+an identity it names. So before it connects, Toha runs the same command with
+`ssh -G`, which prints the configuration for the remote's host. When that
+configuration names another `IdentityFile`, as `ssh -i` or an SSH config file
+can, or sets `IdentitiesOnly` or `IdentityAgent` to something else, the
+connection fails before it signs in, with a message that names the setting
+and the key:
+
+```text
+git fetch failed: the SSH configuration for git.example.com sets `identityfile ~/.ssh/id_work`, so the connection would not offer only the key ssh-ed25519 SHA256:nQpreSffQ9djmqcCYLK2VAzke74gO1kFga1ppEfjsaI
+```
+
+The program must therefore accept OpenSSH options, including `-G`;
+`ssh.variant` is treated as `ssh`. Scoped keys need a Unix agent socket; on
+Windows the connection fails.
+
 ## Stop a fetch or an apply
 
 A stop signal lets a caller end an operation it no longer needs, such as one

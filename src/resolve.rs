@@ -19,7 +19,8 @@ use std::{
 /// Explicit Toha storage locations; callers also pass the resolution working directory.
 /// Git dependencies retain their supported process-global configuration lookup (including
 /// HOME/XDG Git config), the calling thread's HTTPS credential resolver
-/// ([`crate::source::with_credential_resolver`]) and SSH executable lookup through PATH.
+/// ([`crate::source::with_credential_resolver`]) and SSH key
+/// ([`crate::source::with_ssh_key`]), and SSH executable lookup through PATH.
 /// Requirements and the default process hook runner also consult PATH. Applied-record
 /// operations retain the TOHA_RECORD override. These inputs do not provide process or
 /// environment isolation.

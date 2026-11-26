@@ -12,6 +12,9 @@ pub use credentials::{
     Credential, CredentialRequest, CredentialResolver, with_credential_resolver,
 };
 pub(crate) use credentials::{Supplied, current_resolver};
+mod ssh_key;
+pub use ssh_key::{SshKey, SshKeyError, with_ssh_key};
+pub(crate) use ssh_key::{current_ssh_key, for_remote as ssh_key_for_remote};
 pub type Hosts = IndexMap<String, String>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Address {
@@ -493,6 +496,13 @@ pub(crate) fn fetch_temporary(
         Ok((folder, fetched))
     })?
 }
+/// The options `gix::prepare_clone` opens its repository with.
+fn clone_open_options() -> gix::open::Options {
+    use gix::sec::trust::DefaultForLevel;
+    let mut options = gix::open::Options::default_for_level(gix::sec::Trust::Full);
+    options.permissions.config.git_binary = true;
+    options
+}
 /// Clone `address` into `dest` on the calling thread, with `interrupt` as
 /// gix's interrupt flag.
 fn clone_into(
@@ -536,6 +546,23 @@ fn clone_into(
         .configure_connection(move |connection| {
             prepare_connection(connection, &mut native_roots, &attach)
         });
+    // The clone's connections take their remote's URL and SSH command from the
+    // configuration of the repository `prepare_clone` has just created. The
+    // offer adds the key's options to the command configured there.
+    let _offer = if ssh_key::scoped() {
+        let created = gix::open_opts(dest, clone_open_options())
+            .map_err(|e| git_error(e, repo, &supplied))?;
+        match ssh_key::for_remote(&created, repo).map_err(SourceError::Git)? {
+            Some(held) => {
+                let offer = held.offer(&created).map_err(SourceError::Git)?;
+                clone = clone.with_in_memory_config_overrides(offer.overrides.clone());
+                Some(offer)
+            }
+            None => None,
+        }
+    } else {
+        None
+    };
     if credentials::resolving() {
         // gix retries a clone whose remote has a `refs/heads/HEAD` branch on a
         // second connection it does not let Toha prepare, so that connection
